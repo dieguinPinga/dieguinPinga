@@ -1,0 +1,2062 @@
+<div id="ramas-cards">
+    <!-- ===== MODAL ===== -->
+    <div class="modal-overlay" ng-if="modal.abierto" ng-click="cerrarModal($event)">
+        <div class="modal-box" ng-click="$event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-titulo">
+                    <span class="modal-familia">{{modal.familia}}</span>
+                    <span class="modal-total">{{(modal.totalKilos/1000)|number:1}} tn</span>
+                    <span class="modal-precio-prom" ng-if="modal.precioPromedio">${{modal.precioPromedio|number:0}}/kg prom.</span>
+                </div>
+                <button class="modal-close" ng-click="modal.abierto=false">✕</button>
+            </div>
+            <div class="modal-filtros">
+                <input type="text" ng-model="modal.busq" placeholder="🔍 Buscar descripción o proveedor..." class="modal-search">
+                <select ng-model="modal.filtroEstado" class="modal-select">
+                    <option value="">Todos los estados</option>
+                    <option ng-repeat="e in modal.estados" value="{{e}}">{{e}}</option>
+                </select>
+                <select ng-model="modal.filtroColor" class="modal-select">
+                    <option value="">Todos los colores</option>
+                    <option ng-repeat="c in modal.colores" value="{{c}}">{{c}}</option>
+                </select>
+                <span class="modal-count">{{modalRegistrosFiltrados().length}} registros</span>
+            </div>
+            <div class="modal-tabla-wrap">
+                <table class="modal-tabla">
+                    <thead>
+                        <tr>
+                            <th ng-click="setSort('fecha')">Fecha
+                                <span ng-if="modal.sortCol==='fecha'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('desc')">Descripción
+                                <span ng-if="modal.sortCol==='desc'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('estado')">Estado
+                                <span ng-if="modal.sortCol==='estado'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('color')">Color
+                                <span ng-if="modal.sortCol==='color'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('kilos')" class="col-num">Kilos
+                                <span ng-if="modal.sortCol==='kilos'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('precio')" class="col-num">$/kg
+                                <span ng-if="modal.sortCol==='precio'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('proveedor')">Proveedor
+                                <span ng-if="modal.sortCol==='proveedor'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                            <th ng-click="setSort('ne')" class="col-num">NE
+                                <span ng-if="modal.sortCol==='ne'">{{modal.sortDir==='asc'?'↑':'↓'}}</span>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr ng-repeat="r in modalRegistrosFiltrados() track by $index"
+                            ng-class="{'tr-reclasificado': r.reclasificado}">
+                            <td class="col-fecha">{{r.fecha}}</td>
+                            <td class="col-desc">
+                                <span ng-if="r.reclasificado" class="tag-reclas" title="{{r.reclas}}">R</span>
+                                {{r.descEfectiva}}
+                            </td>
+                            <td><span class="tag-estado" ng-style="{'background': estadoHex(r.estado)+'22','color':estadoHex(r.estado)}">{{r.estado}}</span>
+                            </td>
+                            <td>
+                                <span class="tag-color" ng-if="r.color">
+                                    <span class="color-mini-dot" ng-style="{'background':colorHex(r.color)}"></span>{{r.color}}
+                                </span>
+                            </td>
+                            <td class="col-num col-kilos">{{r.kilos|number:0}}</td>
+                            <td class="col-num col-precio-td" ng-if="r.precio">${{r.precio|number:0}}</td>
+                            <td class="col-num col-precio-nd" ng-if="!r.precio">s/p</td>
+                            <td class="col-prov">{{r.proveedor}}</td>
+                            <td class="col-num col-ne">{{r.ne}}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <span>Total filtrado: <strong>{{(modalKilosFiltrados()/1000)|number:1}} tn</strong></span>
+                <span ng-if="modalPrecioFiltrado()"> &nbsp;·&nbsp; Prom. $<strong>{{modalPrecioFiltrado()|number:0}}/kg</strong></span>
+            </div>
+        </div>
+    </div>
+    <!-- ===== FIN MODAL ===== -->
+    <!-- ═══════════════════════════════════════════════════════
+         BARRA TOTALES — siempre visible
+    ═══════════════════════════════════════════════════════ -->
+    <div class="totales-bar">
+        <!-- Período -->
+        <div class="totales-periodo" ng-if="metadata.descripcionPeriodo || metadata.fechaInicio">
+            <div class="totales-periodo-titulo">{{metadata.descripcionPeriodo || 'Período'}}</div>
+            <div class="totales-periodo-rango" ng-if="metadata.periodoInicio">
+                {{metadata.periodoInicio}} → {{metadata.periodoFin || '?'}}
+            </div>
+        </div>
+        <!-- Total kilos -->
+        <div class="totales-item totales-item--main">
+            <span class="totales-lbl">TOTAL</span>
+            <span class="totales-val">{{(totalKilos/1000)|number:1}} tn</span>
+        </div>
+        <!-- Días hábiles -->
+        <div class="totales-dias" ng-if="metadata.diasHabilesTotales">
+            <div class="totales-dias-row">
+                <span class="totales-dias-badge totales-dias-badge--activo">{{metadata.diasConRecepcion}} días c/recep.</span>
+                <span class="totales-dias-badge totales-dias-badge--total">{{metadata.diasHabilesTranscurridos}} / {{metadata.diasHabilesTotales}} hábiles</span>
+                <span class="totales-dias-badge totales-dias-badge--pct">{{metadata.porcentajeDiasActivos}}% activos</span>
+                <span class="totales-dias-badge totales-dias-badge--sin" ng-if="metadata.diasSinActividad > 0">{{metadata.diasSinActividad}} sin actividad</span>
+            </div>
+            <div class="totales-dias-progreso">
+                <div class="totales-dias-barra">
+                    <div class="totales-dias-fill totales-dias-fill--activo"
+                        ng-style="{'width': pct(metadata.diasConRecepcion, metadata.diasHabilesTotales)+'%'}"
+                        title="Días con recepción: {{metadata.diasConRecepcion}}"></div>
+                    <div class="totales-dias-fill totales-dias-fill--transcurrido"
+                        ng-style="{'width': pct(metadata.diasSinActividad, metadata.diasHabilesTotales)+'%'}"
+                        title="Días sin actividad: {{metadata.diasSinActividad}}"></div>
+                </div>
+                <span class="totales-dias-prom" ng-if="metadata.promedioKilosDiaActivoSemanaTotal">
+                    Sem. actual: {{(metadata.kilosSemanaTotal/1000)|number:1}} tn · Prom/día: {{(metadata.promedioKilosDiaActivoSemanaTotal/1000)|number:1}} tn
+                </span>
+            </div>
+        </div>
+        <div class="totales-sep"></div>
+        <!-- ★ GRÁFICO DE TORTA — participación por familia ★ -->
+        <div class="totales-torta" ng-if="familias.length > 0">
+            <svg viewBox="-1.15 -1.15 2.3 2.3" class="torta-svg">
+                <g ng-repeat="seg in tortaData track by $index">
+                    <path ng-attr-d="{{seg.path}}" ng-attr-fill="{{seg.color}}" class="torta-seg">
+                        <title>{{seg.familia}}: {{(seg.kilos/1000)|number:1}} tn ({{(seg.pct*100)|number:1}}%)</title>
+                    </path>
+                </g>
+                <circle cx="0" cy="0" r="0.6" fill="#1e1b4b"/>
+                <text x="0" y="0.05" text-anchor="middle" dominant-baseline="middle" fill="white" font-size="0.28" font-weight="900" style="font-family:Arial,sans-serif">{{familias.length}}</text>
+                <text x="0" y="0.32" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-size="0.17" font-weight="700" style="font-family:Arial,sans-serif">familias</text>
+            </svg>
+            <div class="torta-leyenda">
+                <div class="tl-item" ng-repeat="seg in tortaData track by $index" ng-if="$index < 8">
+                    <div class="tl-dot" ng-style="{'background': seg.color}"></div>
+                    <span class="tl-fam">{{seg.familia}}</span>
+                    <span class="tl-pct">{{(seg.pct*100)|number:1}}%</span>
+                </div>
+                <div class="tl-item tl-item--mas" ng-if="tortaData.length > 8">
+                    <span class="tl-fam">+{{tortaData.length - 8}} más...</span>
+                </div>
+            </div>
+        </div>
+        <!-- Una columna por familia -->
+        <div class="totales-item" ng-repeat="fam in familias track by fam.familia">
+            <span class="totales-fam-nombre">{{fam.familia}}</span>
+            <span class="totales-fam-tn">{{(fam.totalKilos/1000)|number:1}} tn</span>
+            <span class="totales-fam-pct">{{pct(fam.totalKilos, totalKilos)}}%</span>
+            <span class="totales-fam-precio" ng-if="fam.precioPromedio">${{fam.precioPromedio|number:0}}/kg</span>
+        </div>
+        <!-- BOTÓN PDF -->
+        <div class="totales-pdf">
+            <button class="btn-pdf" ng-click="exportarPDF()">📄 PDF</button>
+        </div>
+    </div>
+    <!-- ═══════════════════════════════════════════════════════
+         NIVEL 1 — SUPER-GRUPOS
+    ═══════════════════════════════════════════════════════ -->
+    <div class="nivel-section" ng-if="superGruposResumen().length > 0">
+        <div class="nivel-header nivel-header--super">
+            <span class="nivel-icon">🏗️</span>
+            <span class="nivel-titulo">CATEGORÍAS</span>
+            <span class="nivel-count">{{superGruposResumen().length}} categorías</span>
+            <span class="nivel-subtotal">{{(totalKilos/1000)|number:1}} tn total</span>
+        </div>
+        <div class="nivel-grid nivel-grid--super">
+            <div class="supergrupo-card" ng-repeat="sg in superGruposResumen() track by sg.nombre">
+                <div class="sg-head">
+                    <div class="sg-nombre">{{sg.nombre}}</div>
+                    <div class="sg-head-right">
+                        <div class="sg-kilos">{{(sg.totalKilos/1000)|number:1}} tn</div>
+                        <div class="sg-precio" ng-if="sg.precioPromedio">${{sg.precioPromedio|number:0}}/kg</div>
+                        <div class="sg-pct">{{pct(sg.totalKilos, totalKilos)}}% del total</div>
+                    </div>
+                </div>
+                <!-- Familias que integran la categoría -->
+                <div class="sg-grupos-breakdown">
+                    <div class="sgb-header">
+                        <span class="sgb-col-nombre">Familia</span>
+                        <span class="sgb-col-tn">Toneladas</span>
+                        <span class="sgb-col-pct">%</span>
+                        <span class="sgb-col-precio">$/kg</span>
+                    </div>
+                    <div class="sgb-row" ng-repeat="f in sg.familiasDetalle track by f.nombre">
+                        <span class="sgb-col-nombre">
+                            <span class="sgb-dot" ng-style="{'background': grupoColor($index)}"></span>{{f.nombre}}
+                        </span>
+                        <span class="sgb-col-tn">{{(f.kilos/1000)|number:1}} tn</span>
+                        <span class="sgb-col-pct sgb-pct-val">{{pct(f.kilos, sg.totalKilos)}}%</span>
+                        <span class="sgb-col-precio" ng-if="f.precioPromedio">${{f.precioPromedio|number:0}}</span>
+                        <span class="sgb-col-precio sgb-nd" ng-if="!f.precioPromedio">s/p</span>
+                    </div>
+                    <!-- Mini barra apilada por familia -->
+                    <div class="sgb-barra">
+                        <div class="sgb-barra-seg" ng-repeat="f in sg.familiasDetalle track by f.nombre"
+                            ng-style="{'width': pct(f.kilos, sg.totalKilos)+'%', 'background': grupoColor($index)}"
+                            title="{{f.nombre}}: {{pct(f.kilos, sg.totalKilos)}}%"></div>
+                    </div>
+                </div>
+                <!-- Barra colores -->
+                <div class="bar-section" ng-if="sg.coloresArray && sg.coloresArray.length > 0">
+                    <div class="bar-label">Color</div>
+                    <div class="stacked-bar stacked-bar--lg">
+                        <div class="bar-seg" ng-repeat="c in sg.coloresArray track by c.color"
+                            ng-style="{'width':pct(c.kilos,sg.totalKilos)+'%','background':colorHex(c.color)}"
+                            title="{{c.color}}: {{(c.kilos/1000)|number:1}}tn ({{pct(c.kilos,sg.totalKilos)}}%)"></div>
+                    </div>
+                    <div class="bar-legend">
+                        <div class="bl-item" ng-repeat="c in sg.coloresArray track by c.color">
+                            <div class="bl-dot" ng-style="{'background':colorHex(c.color)}"></div>
+                            <span class="bl-name">{{c.color}}</span>
+                            <span class="bl-tn">{{(c.kilos/1000)|number:1}}tn</span>
+                            <span class="bl-pct">{{pct(c.kilos,sg.totalKilos)}}%</span>
+                            <span class="bl-precio" ng-if="c.precioPromedio">· ${{c.precioPromedio|number:0}}/kg</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Barra estados -->
+                <div class="bar-section" ng-if="sg.estadosArray && sg.estadosArray.length > 0">
+                    <div class="bar-label">Estado</div>
+                    <div class="stacked-bar stacked-bar--lg">
+                        <div class="bar-seg" ng-repeat="e in sg.estadosArray track by e.estado"
+                            ng-style="{'width':pct(e.kilos,sg.totalKilos)+'%','background':estadoHex(e.estado)}"
+                            title="{{e.estado}}: {{(e.kilos/1000)|number:1}}tn ({{pct(e.kilos,sg.totalKilos)}}%)"></div>
+                    </div>
+                    <div class="bar-legend">
+                        <div class="bl-item" ng-repeat="e in sg.estadosArray track by e.estado">
+                            <div class="bl-dot" ng-style="{'background':estadoHex(e.estado)}"></div>
+                            <span class="bl-name">{{e.estado}}</span>
+                            <span class="bl-tn">{{(e.kilos/1000)|number:1}}tn</span>
+                            <span class="bl-pct">{{pct(e.kilos,sg.totalKilos)}}%</span>
+                            <span class="bl-precio" ng-if="e.precioPromedio">· ${{e.precioPromedio|number:0}}/kg</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Top proveedores -->
+                <div class="section-title" style="margin-top:8px">🏭 Top Proveedores</div>
+                <div class="top-provs">
+                    <div class="prov-row" ng-repeat="p in sg.topProveedores track by $index">
+                        <div class="prov-rank">#{{$index+1}}</div>
+                        <div class="prov-name">{{p.nombre}}</div>
+                        <div class="prov-kilos">{{(p.kilos/1000)|number:1}} tn</div>
+                        <div class="prov-precio" ng-if="p.precioPromedio">${{p.precioPromedio|number:0}}/kg</div>
+                        <div class="prov-precio prov-precio--nd" ng-if="!p.precioPromedio">s/p</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- ═══════════════════════════════════════════════════════
+         NIVEL 2 — GRUPOS
+    ═══════════════════════════════════════════════════════ -->
+    <div class="nivel-section" ng-if="gruposResumen().length > 0">
+        <div class="nivel-header nivel-header--grupo">
+            <span class="nivel-icon">🗂️</span>
+            <span class="nivel-titulo">GRUPOS</span>
+            <span class="nivel-count">{{gruposResumen().length}} grupos</span>
+        </div>
+        <div class="nivel-grid nivel-grid--grupo">
+            <div class="grupo-card" ng-repeat="g in gruposResumen() track by g.nombre">
+                <div class="grupo-head">
+                    <div class="grupo-nombre">{{g.nombre}}</div>
+                    <div class="grupo-head-right">
+                        <div class="grupo-kilos">{{(g.totalKilos/1000)|number:1}} tn</div>
+                        <div class="grupo-precio" ng-if="g.precioPromedio">${{g.precioPromedio|number:0}}/kg</div>
+                    </div>
+                </div>
+                <!-- Asignación de super-grupo -->
+                <div class="supergrupo-assign-row">
+                    <span class="assign-label">Categ.:</span>
+                    <input type="text"
+                           class="assign-input"
+                           ng-model="superGrupos[g.nombre]"
+                           ng-change="guardarSuperGrupos()"
+                           placeholder="ej: PP, PE..."
+                           ng-class="{'assign-input--activo': superGrupos[g.nombre]}">
+                    <span class="assign-badge assign-badge--super" ng-if="superGrupos[g.nombre]">{{superGrupos[g.nombre]}}</span>
+                    <button class="assign-clear" ng-if="superGrupos[g.nombre]" ng-click="quitarSuperGrupo(g.nombre)" title="Quitar categoría">✕</button>
+                </div>
+                <!-- Familias que integran el grupo -->
+                <div class="sg-grupos-breakdown">
+                    <div class="sgb-header">
+                        <span class="sgb-col-nombre">Familia</span>
+                        <span class="sgb-col-tn">Toneladas</span>
+                        <span class="sgb-col-pct">%</span>
+                        <span class="sgb-col-precio">$/kg</span>
+                    </div>
+                    <div class="sgb-row" ng-repeat="f in g.familiasDetalle track by f.nombre">
+                        <span class="sgb-col-nombre">
+                            <span class="sgb-dot" ng-style="{'background': grupoColor($index)}"></span>{{f.nombre}}
+                        </span>
+                        <span class="sgb-col-tn">{{(f.kilos/1000)|number:1}} tn</span>
+                        <span class="sgb-col-pct sgb-pct-val">{{pct(f.kilos, g.totalKilos)}}%</span>
+                        <span class="sgb-col-precio" ng-if="f.precioPromedio">${{f.precioPromedio|number:0}}</span>
+                        <span class="sgb-col-precio sgb-nd" ng-if="!f.precioPromedio">s/p</span>
+                    </div>
+                    <div class="sgb-barra">
+                        <div class="sgb-barra-seg" ng-repeat="f in g.familiasDetalle track by f.nombre"
+                            ng-style="{'width': pct(f.kilos, g.totalKilos)+'%', 'background': grupoColor($index)}"
+                            title="{{f.nombre}}: {{pct(f.kilos, g.totalKilos)}}%"></div>
+                    </div>
+                </div>
+                <!-- Barra colores -->
+                <div class="bar-section" ng-if="g.coloresArray && g.coloresArray.length > 0">
+                    <div class="bar-label">Color</div>
+                    <div class="stacked-bar">
+                        <div class="bar-seg" ng-repeat="c in g.coloresArray track by c.color"
+                            ng-style="{'width':pct(c.kilos,g.totalKilos)+'%','background':colorHex(c.color)}"
+                            title="{{c.color}}: {{(c.kilos/1000)|number:1}}tn ({{pct(c.kilos,g.totalKilos)}}%)"></div>
+                    </div>
+                    <div class="bar-legend">
+                        <div class="bl-item" ng-repeat="c in g.coloresArray track by c.color">
+                            <div class="bl-dot" ng-style="{'background':colorHex(c.color)}"></div>
+                            <span class="bl-name">{{c.color}}</span>
+                            <span class="bl-tn">{{(c.kilos/1000)|number:1}}tn</span>
+                            <span class="bl-pct">{{pct(c.kilos,g.totalKilos)}}%</span>
+                            <span class="bl-precio" ng-if="c.precioPromedio">· ${{c.precioPromedio|number:0}}/kg</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Barra estados -->
+                <div class="bar-section" ng-if="g.estadosArray && g.estadosArray.length > 0">
+                    <div class="bar-label">Estado</div>
+                    <div class="stacked-bar">
+                        <div class="bar-seg" ng-repeat="e in g.estadosArray track by e.estado"
+                            ng-style="{'width':pct(e.kilos,g.totalKilos)+'%','background':estadoHex(e.estado)}"
+                            title="{{e.estado}}: {{(e.kilos/1000)|number:1}}tn ({{pct(e.kilos,g.totalKilos)}}%)"></div>
+                    </div>
+                    <div class="bar-legend">
+                        <div class="bl-item" ng-repeat="e in g.estadosArray track by e.estado">
+                            <div class="bl-dot" ng-style="{'background':estadoHex(e.estado)}"></div>
+                            <span class="bl-name">{{e.estado}}</span>
+                            <span class="bl-tn">{{(e.kilos/1000)|number:1}}tn</span>
+                            <span class="bl-pct">{{pct(e.kilos,g.totalKilos)}}%</span>
+                            <span class="bl-precio" ng-if="e.precioPromedio">· ${{e.precioPromedio|number:0}}/kg</span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Top proveedores -->
+                <div class="section-title" style="margin-top:8px">🏭 Top Proveedores</div>
+                <div class="top-provs">
+                    <div class="prov-row" ng-repeat="p in g.topProveedores track by $index">
+                        <div class="prov-rank">#{{$index+1}}</div>
+                        <div class="prov-name">{{p.nombre}}</div>
+                        <div class="prov-kilos">{{(p.kilos/1000)|number:1}} tn</div>
+                        <div class="prov-precio" ng-if="p.precioPromedio">${{p.precioPromedio|number:0}}/kg</div>
+                        <div class="prov-precio prov-precio--nd" ng-if="!p.precioPromedio">s/p</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- ═══════════════════════════════════════════════════════
+         TOOLBAR + NIVEL 3 — FAMILIAS
+    ═══════════════════════════════════════════════════════ -->
+    <div class="toolbar">
+        <input type="text" ng-model="busqueda" placeholder="Buscar familia..." class="search-box">
+        <label class="check-inline"><input type="checkbox" ng-model="soloBajo"> Solo BAJO</label>
+        <label class="check-inline"><input type="checkbox" ng-model="soloSinGrupo"> Sin grupo</label>
+        <button class="btn-limpiar btn-limpiar--grupos" ng-click="limpiarGrupos()" title="Borrar asignaciones de grupo">🗑️ Grupos</button>
+        <button class="btn-limpiar btn-limpiar--super" ng-click="limpiarSuperGrupos()" title="Borrar asignaciones de categoría">🗑️ Categorías</button>
+    </div>
+    <div class="nivel-header nivel-header--familia" ng-if="familiasFiltradas().length > 0">
+        <span class="nivel-icon">📦</span>
+        <span class="nivel-titulo">FAMILIAS</span>
+        <span class="nivel-count">{{familiasFiltradas().length}} familias</span>
+    </div>
+    <div class="cards-grid">
+        <div class="rama-card" ng-repeat="fam in familiasFiltradas() track by fam.familia">
+            <div class="rama-head">
+                <div class="rama-title">{{fam.familia}}</div>
+                <div class="rama-head-right">
+                    <div class="rama-kilos">{{(fam.totalKilos/1000)|number:1}} tn</div>
+                    <div class="rama-precio" ng-if="fam.precioPromedio">${{fam.precioPromedio|number:0}}/kg</div>
+                </div>
+            </div>
+            <!-- Asignación de grupo -->
+            <div class="grupo-assign-row">
+                <span class="assign-label">Grupo:</span>
+                <input type="text"
+                       class="assign-input"
+                       ng-model="grupos[fam.familia]"
+                       ng-change="guardarGrupos()"
+                       placeholder="ej: PEMD, PP..."
+                       ng-class="{'assign-input--activo': grupos[fam.familia]}">
+                <span class="assign-badge assign-badge--grupo" ng-if="grupos[fam.familia]">{{grupos[fam.familia]}}</span>
+                <button class="assign-clear" ng-if="grupos[fam.familia]" ng-click="quitarGrupo(fam.familia)" title="Quitar del grupo">✕</button>
+            </div>
+            <div class="rama-stats">
+                <div class="stat-box">
+                    <div class="stat-val">{{pct(fam.totalKilos, totalKilos)}}%</div>
+                    <div class="stat-lbl">Part.</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">{{fam.cantidadNotasEntrada || 0}}</div>
+                    <div class="stat-lbl">NE</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">{{regPorNE(fam)}}</div>
+                    <div class="stat-lbl">Reg/NE</div>
+                </div>
+            </div>
+            <!-- Barra colores -->
+            <div class="bar-section" ng-if="fam.coloresArray && fam.coloresArray.length > 0">
+                <div class="bar-label">Color</div>
+                <div class="stacked-bar">
+                    <div class="bar-seg" ng-repeat="c in fam.coloresArray track by c.color"
+                        ng-style="{'width':pct(c.kilos,fam.totalKilos)+'%','background':colorHex(c.color)}"
+                        title="{{c.color}}: {{(c.kilos/1000)|number:1}}tn ({{pct(c.kilos,fam.totalKilos)}}%)"></div>
+                </div>
+                <div class="bar-legend">
+                    <div class="bl-item" ng-repeat="c in fam.coloresArray track by c.color">
+                        <div class="bl-dot" ng-style="{'background':colorHex(c.color)}"></div>
+                        <span class="bl-name">{{c.color}}</span>
+                        <span class="bl-tn">{{(c.kilos/1000)|number:1}}tn</span>
+                        <span class="bl-pct">{{pct(c.kilos,fam.totalKilos)}}%</span>
+                        <span class="bl-precio" ng-if="c.precioPromedio">· ${{c.precioPromedio|number:0}}/kg</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Barra estados -->
+            <div class="bar-section" ng-if="fam.estadosArray && fam.estadosArray.length > 0">
+                <div class="bar-label">Estado</div>
+                <div class="stacked-bar">
+                    <div class="bar-seg" ng-repeat="e in fam.estadosArray track by e.estado"
+                        ng-style="{'width':pct(e.kilos,fam.totalKilos)+'%','background':estadoHex(e.estado)}"
+                        title="{{e.estado}}: {{(e.kilos/1000)|number:1}}tn ({{pct(e.kilos,fam.totalKilos)}}%)"></div>
+                </div>
+                <div class="bar-legend">
+                    <div class="bl-item" ng-repeat="e in fam.estadosArray track by e.estado">
+                        <div class="bl-dot" ng-style="{'background':estadoHex(e.estado)}"></div>
+                        <span class="bl-name">{{e.estado}}</span>
+                        <span class="bl-tn">{{(e.kilos/1000)|number:1}}tn</span>
+                        <span class="bl-pct">{{pct(e.kilos,fam.totalKilos)}}%</span>
+                        <span class="bl-precio" ng-if="e.precioPromedio">· ${{e.precioPromedio|number:0}}/kg</span>
+                    </div>
+                </div>
+            </div>
+            <div class="badge-bajo-card" ng-if="fam.badge === 'BAJO'">BAJO</div>
+            <div class="section-title">🏭 Top 10 Proveedores
+                <span class="precio-gral" ng-if="fam.precioPromedio">· Prom. gral ${{fam.precioPromedio|number:0}}/kg</span>
+            </div>
+            <div class="top-provs">
+                <div class="prov-row" ng-repeat="p in fam.topProveedores track by $index">
+                    <div class="prov-rank">#{{$index+1}}</div>
+                    <div class="prov-name">{{p.nombre}}</div>
+                    <div class="prov-kilos">{{(p.kilos/1000)|number:1}} tn</div>
+                    <div class="prov-precio" ng-if="p.precioPromedio">${{p.precioPromedio|number:0}}/kg</div>
+                    <div class="prov-precio prov-precio--nd" ng-if="!p.precioPromedio">s/p</div>
+                </div>
+            </div>
+            <div class="section-title">📋 Registros ejemplo</div>
+            <div class="ejemplos-list">
+                <div class="ej-row" ng-repeat="ej in fam.ejemplos track by $index">
+                    <div class="ej-desc">{{ej.desc}}</div>
+                    <div class="ej-meta">
+                        <span class="ej-kilos">{{ej.kilos|number:0}} kg</span>
+                        <span class="ej-estado" ng-style="{'background':estadoHex(ej.estado)+'22','color':estadoHex(ej.estado)}">{{ej.estado}}</span>
+                        <span class="ej-precio" ng-if="ej.precio">${{ej.precio|number:0}}/kg</span>
+                    </div>
+                    <div class="ej-prov">{{ej.proveedor}}</div>
+                </div>
+            </div>
+            <button class="btn-ver-todos" ng-click="abrirModal(fam)">
+                🔍 Ver todos los registros ({{fam.totalItems}})
+            </button>
+        </div>
+    </div>
+</div>
+<style>
+    #ramas-cards {
+        font-family: Arial, sans-serif;
+        padding: 10px;
+        background: #f5f7fb;
+    }
+    /* ─── BOTÓN PDF EN BARRA TOTALES ─── */
+    .totales-pdf {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        padding: 0 12px;
+    }
+    .btn-pdf {
+        background: #ffffff22;
+        border: 1.5px solid #ffffff44;
+        color: white;
+        font-weight: 900;
+        font-size: 14px;
+        padding: 8px 16px;
+        border-radius: 30px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.15s ease;
+        letter-spacing: 0.5px;
+    }
+    .btn-pdf:hover {
+        background: #ffffff44;
+        border-color: #ffffffaa;
+        transform: scale(1.02);
+    }
+    .btn-pdf:active {
+        transform: scale(0.98);
+    }
+    .totales-periodo {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 8px 16px 8px 12px;
+        border-right: 1px solid rgba(255, 255, 255, .12);
+        min-width: 130px;
+    }
+    .totales-periodo-titulo {
+        font-size: 16px;
+        font-weight: 900;
+        color: white;
+        line-height: 1.1;
+        white-space: nowrap;
+    }
+    .totales-periodo-rango {
+        font-size: 12px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, .45);
+        white-space: nowrap;
+        margin-top: 2px;
+    }
+    .totales-dias {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 7px 14px;
+        gap: 5px;
+        border-right: 1px solid rgba(255, 255, 255, .12);
+        min-width: 280px;
+    }
+    .totales-dias-row {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .totales-dias-badge {
+        font-size: 12px;
+        font-weight: 800;
+        padding: 3px 9px;
+        border-radius: 999px;
+        white-space: nowrap;
+    }
+    .totales-dias-badge--activo {
+        background: #22c55e22;
+        color: #86efac;
+        border: 1px solid #22c55e44;
+    }
+    .totales-dias-badge--total {
+        background: rgba(255, 255, 255, .08);
+        color: rgba(255, 255, 255, .6);
+        border: 1px solid rgba(255, 255, 255, .12);
+    }
+    .totales-dias-badge--pct {
+        background: #3b82f622;
+        color: #93c5fd;
+        border: 1px solid #3b82f644;
+    }
+    .totales-dias-badge--sin {
+        background: #f9731622;
+        color: #fdba74;
+        border: 1px solid #f9731644;
+    }
+    .totales-dias-progreso {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+    .totales-dias-barra {
+        display: flex;
+        height: 5px;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, .1);
+        overflow: hidden;
+        width: 100%;
+    }
+    .totales-dias-fill--activo {
+        background: #22c55e;
+        height: 100%;
+    }
+    .totales-dias-fill--transcurrido {
+        background: #f97316;
+        height: 100%;
+    }
+    .totales-dias-prom {
+        font-size: 12px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, .5);
+        white-space: nowrap;
+    }
+    /* ─── BARRA TOTALES ─── */
+    .totales-bar {
+        display: flex;
+        align-items: stretch;
+        flex-wrap: wrap;
+        gap: 0;
+        background: #1e1b4b;
+        border-radius: 12px;
+        padding: 0 4px;
+        margin-bottom: 16px;
+        overflow: hidden;
+        min-height: 52px;
+    }
+    .totales-item {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 8px 12px;
+        gap: 2px;
+        border-right: 1px solid rgba(255, 255, 255, .08);
+    }
+    .totales-item:last-child {
+        border-right: none;
+    }
+    .totales-item--main {
+        background: rgba(255, 255, 255, .07);
+        padding: 8px 18px;
+        min-width: 110px;
+    }
+    .totales-lbl {
+        font-size: 11px;
+        font-weight: 900;
+        color: rgba(255, 255, 255, .5);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+    }
+    .totales-val {
+        font-size: 24px;
+        font-weight: 900;
+        color: white;
+        line-height: 1;
+    }
+    .totales-sep {
+        width: 1px;
+        background: rgba(255, 255, 255, .15);
+        margin: 8px 0;
+    }
+    .totales-fam-nombre {
+        font-size: 12px;
+        font-weight: 900;
+        color: rgba(255, 255, 255, .7);
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+    }
+    .totales-fam-tn {
+        font-size: 15px;
+        font-weight: 900;
+        color: #93c5fd;
+        line-height: 1;
+    }
+    .totales-fam-pct {
+        font-size: 12px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, .45);
+    }
+    .totales-fam-precio {
+        font-size: 11px;
+        font-weight: 700;
+        color: #6ee7b7;
+    }
+    /* ─── GRÁFICO DE TORTA ─── */
+    .totales-torta {
+        display: flex;
+        align-items: center;
+        padding: 8px 14px;
+        gap: 12px;
+        border-right: 1px solid rgba(255, 255, 255, .12);
+    }
+    .torta-svg {
+        width: 72px;
+        height: 72px;
+        flex-shrink: 0;
+        filter: drop-shadow(0 2px 8px rgba(0, 0, 0, .35));
+    }
+    .torta-seg {
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        cursor: default;
+        transform-origin: center;
+    }
+    .torta-seg:hover {
+        opacity: 0.82;
+        filter: brightness(1.15);
+    }
+    .torta-leyenda {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        max-height: 80px;
+        overflow-y: auto;
+        padding-right: 4px;
+    }
+    .torta-leyenda::-webkit-scrollbar {
+        width: 3px;
+    }
+    .torta-leyenda::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, .2);
+        border-radius: 3px;
+    }
+    .tl-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+    }
+    .tl-item--mas {
+        padding-top: 2px;
+    }
+    .tl-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        border: 1px solid rgba(255, 255, 255, .15);
+    }
+    .tl-fam {
+        font-size: 10px;
+        font-weight: 800;
+        color: rgba(255, 255, 255, .65);
+        max-width: 90px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .tl-pct {
+        font-size: 10px;
+        font-weight: 900;
+        color: rgba(255, 255, 255, .4);
+        margin-left: auto;
+    }
+    /* ─── NIVEL HEADERS ─── */
+    .nivel-section {
+        margin-bottom: 20px;
+    }
+    .nivel-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        margin-bottom: 10px;
+        padding: 6px 10px;
+        border-radius: 8px;
+    }
+    .nivel-header--super {
+        background: linear-gradient(90deg, #1e1b4b 0%, #312e81 100%);
+        color: white;
+    }
+    .nivel-header--grupo {
+        background: linear-gradient(90deg, #1d4ed8 0%, #3b82f6 100%);
+        color: white;
+    }
+    .nivel-header--familia {
+        background: #f1f5f9;
+        color: #475569;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 10px;
+    }
+    .nivel-icon {
+        font-size: 15px;
+    }
+    .nivel-titulo {
+        font-weight: 900;
+        font-size: 13px;
+    }
+    .nivel-count {
+        font-size: 11px;
+        font-weight: 700;
+        opacity: 0.75;
+    }
+    .nivel-subtotal {
+        margin-left: auto;
+        font-size: 13px;
+        font-weight: 900;
+        opacity: 0.9;
+    }
+    /* ─── SUPER-GRUPO CARDS ─── */
+    .nivel-grid--super {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+        grid-auto-rows: 1fr;
+        gap: 12px;
+    }
+    .nivel-grid--super>.supergrupo-card {
+        max-width: 100%;
+    }
+    .supergrupo-card {
+        background: white;
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 3px 12px rgba(49, 46, 129, .12);
+        border-top: 5px solid #4f46e5;
+    }
+    .sg-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 8px;
+    }
+    .sg-nombre {
+        font-size: 28px;
+        font-weight: 900;
+        color: #1e1b4b;
+        letter-spacing: -0.03em;
+        line-height: 1;
+    }
+    .sg-head-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+    }
+    .sg-kilos {
+        font-size: 22px;
+        font-weight: 900;
+        color: #2563eb;
+        line-height: 1;
+    }
+    .sg-precio {
+        font-size: 13px;
+        font-weight: 800;
+        color: #059669;
+    }
+    .sg-pct {
+        font-size: 11px;
+        font-weight: 700;
+        color: #9ca3af;
+    }
+    .sg-grupos-breakdown {
+        margin-bottom: 10px;
+        background: #f8faff;
+        border-radius: 10px;
+        padding: 8px 10px;
+        border: 1px solid #e0e7ff;
+    }
+    .sgb-header {
+        display: grid;
+        grid-template-columns: 1fr 80px 50px 70px;
+        gap: 6px;
+        padding-bottom: 5px;
+        margin-bottom: 4px;
+        border-bottom: 1px solid #e0e7ff;
+        font-size: 10px;
+        font-weight: 900;
+        color: #9ca3af;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .sgb-row {
+        display: grid;
+        grid-template-columns: 1fr 80px 50px 70px;
+        gap: 6px;
+        align-items: center;
+        padding: 4px 0;
+        border-bottom: 1px solid #f1f5f9;
+        font-size: 12px;
+    }
+    .sgb-row:last-of-type {
+        border-bottom: none;
+    }
+    .sgb-col-nombre {
+        font-weight: 800;
+        color: #1e1b4b;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .sgb-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #6366f1;
+        flex-shrink: 0;
+    }
+    .sgb-col-tn {
+        font-weight: 900;
+        color: #2563eb;
+        text-align: right;
+    }
+    .sgb-pct-val {
+        font-weight: 700;
+        color: #6b7280;
+        text-align: right;
+    }
+    .sgb-col-precio {
+        font-weight: 800;
+        color: #059669;
+        text-align: right;
+    }
+    .sgb-nd {
+        color: #d1d5db;
+        font-weight: 600;
+    }
+    .sgb-barra {
+        display: flex;
+        height: 6px;
+        border-radius: 4px;
+        overflow: hidden;
+        background: #e5e7eb;
+        margin-top: 8px;
+    }
+    .sgb-barra-seg {
+        height: 100%;
+        min-width: 2px;
+    }
+    /* ─── GRUPO CARDS ─── */
+    .nivel-grid--grupo {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        grid-auto-rows: 1fr;
+        gap: 12px;
+    }
+    .nivel-grid--grupo>.grupo-card {
+        max-width: 100%;
+    }
+    .grupo-card {
+        background: white;
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+        border-top: 4px solid #6366f1;
+    }
+    .grupo-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+    }
+    .grupo-nombre {
+        font-size: 22px;
+        font-weight: 900;
+        color: #4338ca;
+        letter-spacing: -0.02em;
+    }
+    .grupo-head-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 3px;
+    }
+    .grupo-kilos {
+        font-size: 20px;
+        font-weight: 900;
+        color: #2563eb;
+        line-height: 1;
+    }
+    .grupo-precio {
+        font-size: 12px;
+        font-weight: 800;
+        color: #059669;
+    }
+    .grupo-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-bottom: 10px;
+    }
+    .grupo-chip {
+        display: inline-block;
+        padding: 3px 10px;
+        background: #ede9fe;
+        color: #4338ca;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        border: 1px solid #c4b5fd;
+    }
+    /* ─── INPUTS DE ASIGNACIÓN (compartidos) ─── */
+    .grupo-assign-row,
+    .supergrupo-assign-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 10px;
+        padding: 5px 8px;
+        border-radius: 8px;
+    }
+    .grupo-assign-row {
+        background: #f8faff;
+        border: 1px solid #e0e7ff;
+    }
+    .supergrupo-assign-row {
+        background: #f5f3ff;
+        border: 1px solid #ddd6fe;
+    }
+    .assign-label {
+        font-size: 11px;
+        font-weight: 900;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+    }
+    .assign-input {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #374151;
+        background: white;
+        outline: none;
+    }
+    .assign-input:focus {
+        border-color: #6366f1;
+        box-shadow: 0 0 0 2px rgba(99, 102, 241, .15);
+    }
+    .assign-input--activo {
+        border-color: #a5b4fc;
+        background: #eef2ff;
+        color: #3730a3;
+    }
+    .assign-badge {
+        display: inline-block;
+        padding: 2px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 900;
+        white-space: nowrap;
+    }
+    .assign-badge--grupo {
+        background: #6366f1;
+        color: white;
+    }
+    .assign-badge--super {
+        background: #1e1b4b;
+        color: #e0e7ff;
+    }
+    .assign-clear {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 13px;
+        color: #9ca3af;
+        padding: 2px 4px;
+        border-radius: 4px;
+        line-height: 1;
+    }
+    .assign-clear:hover {
+        background: #fee2e2;
+        color: #dc2626;
+    }
+    /* ─── TOOLBAR ─── */
+    .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
+    }
+    .search-box {
+        padding: 8px 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        min-width: 220px;
+        font-weight: 700;
+    }
+    .check-inline {
+        font-size: 13px;
+        font-weight: 700;
+        color: #374151;
+    }
+    .btn-limpiar {
+        padding: 7px 12px;
+        border-radius: 8px;
+        font-size: 12px;
+        font-weight: 800;
+        cursor: pointer;
+        border: 1.5px solid;
+        margin-left: auto;
+    }
+    .btn-limpiar--grupos {
+        background: #fef2f2;
+        border-color: #fca5a5;
+        color: #b91c1c;
+    }
+    .btn-limpiar--grupos:hover {
+        background: #fee2e2;
+    }
+    .btn-limpiar--super {
+        background: #f5f3ff;
+        border-color: #c4b5fd;
+        color: #4c1d95;
+        margin-left: 4px;
+    }
+    .btn-limpiar--super:hover {
+        background: #ede9fe;
+    }
+    /* ─── FAMILIA CARDS ─── */
+    .cards-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 12px;
+    }
+    .rama-card {
+        background: white;
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+    }
+    .rama-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .rama-title {
+        font-size: 26px;
+        font-weight: 900;
+        color: #111827;
+    }
+    .rama-head-right {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 3px;
+    }
+    .rama-kilos {
+        font-size: 24px;
+        font-weight: 900;
+        color: #2563eb;
+        line-height: 1;
+    }
+    .rama-precio {
+        font-size: 13px;
+        font-weight: 800;
+        color: #059669;
+        line-height: 1;
+    }
+    .rama-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-bottom: 10px;
+    }
+    .stat-box {
+        background: #f9fafb;
+        border-radius: 10px;
+        text-align: center;
+        padding: 8px;
+    }
+    .stat-val {
+        font-size: 22px;
+        font-weight: 900;
+        color: #111827;
+    }
+    .stat-lbl {
+        font-size: 11px;
+        color: #6b7280;
+        font-weight: 800;
+        text-transform: uppercase;
+    }
+    /* ─── BARRAS (compartidas) ─── */
+    .bar-section {
+        margin-bottom: 12px;
+    }
+    .bar-label {
+        font-size: 10px;
+        font-weight: 900;
+        text-transform: uppercase;
+        color: #9ca3af;
+        margin-bottom: 4px;
+        letter-spacing: 0.05em;
+    }
+    .stacked-bar {
+        display: flex;
+        height: 16px;
+        border-radius: 8px;
+        overflow: hidden;
+        width: 100%;
+        background: #e5e7eb;
+        margin-bottom: 7px;
+    }
+    .stacked-bar--lg {
+        height: 20px;
+        border-radius: 10px;
+    }
+    .bar-seg {
+        height: 100%;
+        min-width: 3px;
+        cursor: default;
+    }
+    .bar-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px 12px;
+    }
+    .bl-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+    }
+    .bl-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        border: 1px solid rgba(0, 0, 0, .1);
+    }
+    .bl-name {
+        font-weight: 800;
+        color: #374151;
+    }
+    .bl-tn {
+        font-weight: 900;
+        color: #111827;
+    }
+    .bl-pct {
+        font-weight: 600;
+        color: #9ca3af;
+    }
+    .bl-precio {
+        font-weight: 700;
+        color: #059669;
+        font-size: 11px;
+    }
+    /* ─── PROVEEDORES / EJEMPLOS / MISC ─── */
+    .badge-bajo-card {
+        display: inline-block;
+        margin-bottom: 10px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fcd34d;
+        font-size: 11px;
+        font-weight: 900;
+    }
+    .section-title {
+        margin-top: 10px;
+        margin-bottom: 8px;
+        font-size: 14px;
+        font-weight: 900;
+        color: #111827;
+        text-transform: uppercase;
+    }
+    .precio-gral {
+        font-size: 12px;
+        font-weight: 700;
+        color: #059669;
+        text-transform: none;
+    }
+    .top-provs {
+        margin-bottom: 12px;
+    }
+    .prov-row {
+        display: grid;
+        grid-template-columns: 34px 1fr auto auto;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px solid #f3f4f6;
+    }
+    .prov-rank {
+        font-weight: 900;
+        color: #6b7280;
+    }
+    .prov-name {
+        font-weight: 800;
+        color: #111827;
+    }
+    .prov-kilos {
+        font-weight: 900;
+        color: #2563eb;
+    }
+    .prov-precio {
+        font-weight: 800;
+        color: #059669;
+        font-size: 12px;
+        white-space: nowrap;
+    }
+    .prov-precio--nd {
+        color: #d1d5db;
+        font-weight: 600;
+    }
+    .ejemplos-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .ej-row {
+        background: #f9fafb;
+        border-radius: 8px;
+        padding: 8px 10px;
+    }
+    .ej-desc {
+        font-size: 13px;
+        font-weight: 800;
+        color: #111827;
+        margin-bottom: 4px;
+    }
+    .ej-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 3px;
+    }
+    .ej-kilos {
+        font-size: 13px;
+        font-weight: 900;
+        color: #111827;
+    }
+    .ej-estado {
+        font-size: 11px;
+        font-weight: 800;
+        padding: 2px 8px;
+        border-radius: 999px;
+    }
+    .ej-precio {
+        font-size: 11px;
+        font-weight: 800;
+        color: #059669;
+    }
+    .ej-prov {
+        font-size: 12px;
+        color: #6b7280;
+        font-weight: 700;
+    }
+    .btn-ver-todos {
+        margin-top: 12px;
+        width: 100%;
+        padding: 9px 0;
+        background: #f1f5f9;
+        border: 1.5px solid #e2e8f0;
+        border-radius: 10px;
+        font-size: 13px;
+        font-weight: 800;
+        color: #2563eb;
+        cursor: pointer;
+    }
+    .btn-ver-todos:hover {
+        background: #e0e7ff;
+    }
+    /* ─── MODAL ─── */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, .55);
+        z-index: 9999;
+        display: flex;
+        align-items: flex-start;
+        justify-content: center;
+        padding: 20px;
+        overflow-y: auto;
+    }
+    .modal-box {
+        background: white;
+        border-radius: 16px;
+        width: 100%;
+        max-width: 1100px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, .3);
+        display: flex;
+        flex-direction: column;
+        max-height: 90vh;
+    }
+    .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px 20px 12px;
+        border-bottom: 1px solid #f3f4f6;
+        flex-shrink: 0;
+    }
+    .modal-titulo {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .modal-familia {
+        font-size: 22px;
+        font-weight: 900;
+        color: #111827;
+    }
+    .modal-total {
+        font-size: 20px;
+        font-weight: 900;
+        color: #2563eb;
+    }
+    .modal-precio-prom {
+        font-size: 14px;
+        font-weight: 800;
+        color: #059669;
+    }
+    .modal-close {
+        background: #f3f4f6;
+        border: none;
+        border-radius: 8px;
+        width: 34px;
+        height: 34px;
+        font-size: 16px;
+        cursor: pointer;
+        font-weight: 900;
+        color: #374151;
+        flex-shrink: 0;
+    }
+    .modal-close:hover {
+        background: #fee2e2;
+        color: #dc2626;
+    }
+    .modal-filtros {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 20px;
+        border-bottom: 1px solid #f3f4f6;
+        flex-wrap: wrap;
+        flex-shrink: 0;
+    }
+    .modal-search {
+        flex: 1;
+        min-width: 200px;
+        padding: 7px 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    .modal-select {
+        padding: 7px 10px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        background: white;
+    }
+    .modal-count {
+        font-size: 12px;
+        font-weight: 800;
+        color: #6b7280;
+        white-space: nowrap;
+    }
+    .modal-tabla-wrap {
+        overflow-y: auto;
+        flex: 1;
+    }
+    .modal-tabla {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    .modal-tabla thead {
+        position: sticky;
+        top: 0;
+        background: #f9fafb;
+        z-index: 1;
+    }
+    .modal-tabla th {
+        padding: 9px 12px;
+        text-align: left;
+        font-size: 11px;
+        font-weight: 900;
+        color: #6b7280;
+        text-transform: uppercase;
+        border-bottom: 2px solid #e5e7eb;
+        cursor: pointer;
+        white-space: nowrap;
+        user-select: none;
+    }
+    .modal-tabla th:hover {
+        color: #2563eb;
+    }
+    .modal-tabla td {
+        padding: 8px 12px;
+        border-bottom: 1px solid #f3f4f6;
+        vertical-align: middle;
+    }
+    .modal-tabla tbody tr:hover {
+        background: #f8faff;
+    }
+    .tr-reclasificado {
+        background: #fffbeb !important;
+    }
+    .col-num {
+        text-align: right;
+    }
+    .col-fecha {
+        font-size: 11px;
+        color: #9ca3af;
+        white-space: nowrap;
+    }
+    .col-desc {
+        font-weight: 700;
+        color: #111827;
+        max-width: 260px;
+    }
+    .col-kilos {
+        font-weight: 900;
+        color: #111827;
+    }
+    .col-precio-td {
+        font-weight: 800;
+        color: #059669;
+    }
+    .col-precio-nd {
+        font-weight: 600;
+        color: #d1d5db;
+    }
+    .col-prov {
+        font-weight: 700;
+        color: #374151;
+        max-width: 160px;
+    }
+    .col-ne {
+        font-size: 11px;
+        color: #9ca3af;
+    }
+    .tag-estado {
+        font-size: 11px;
+        font-weight: 800;
+        padding: 2px 8px;
+        border-radius: 999px;
+        white-space: nowrap;
+    }
+    .tag-color {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #374151;
+        white-space: nowrap;
+    }
+    .color-mini-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, .1);
+        flex-shrink: 0;
+    }
+    .tag-reclas {
+        display: inline-block;
+        background: #fef3c7;
+        color: #92400e;
+        border: 1px solid #fcd34d;
+        border-radius: 4px;
+        font-size: 9px;
+        font-weight: 900;
+        padding: 1px 4px;
+        margin-right: 4px;
+        vertical-align: middle;
+    }
+    .modal-footer {
+        padding: 10px 20px;
+        border-top: 1px solid #f3f4f6;
+        font-size: 13px;
+        color: #6b7280;
+        font-weight: 600;
+        flex-shrink: 0;
+    }
+</style>
+<script>
+    (function(scope) {
+    // ─── STATE ──────────────────────────────────────────────
+    scope.familias   = [];
+    scope.totalKilos = 0;
+    scope.metadata   = {};
+    scope.busqueda   = "";
+    scope.soloBajo   = false;
+    scope.soloSinGrupo = false;
+    scope.tortaData  = [];
+    // ─── PERSISTENCIA ───────────────────────────────────────
+    var LS_GRUPOS      = "grupos_familias";
+    var LS_SUPERGRUPOS = "supergrupos_grupos";
+    function cargarLS(key) {
+        try { var r = localStorage.getItem(key); return r ? JSON.parse(r) : {}; }
+        catch(e) { return {}; }
+    }
+    function guardarLS(key, obj) {
+        try { localStorage.setItem(key, JSON.stringify(obj)); } catch(e) {}
+    }
+    function limpiarObjeto(obj) {
+        var out = {};
+        Object.keys(obj).forEach(function(k) {
+            var v = String(obj[k] || "").trim();
+            if (v) out[k] = v;
+        });
+        return out;
+    }
+    scope.grupos      = cargarLS(LS_GRUPOS);
+    scope.superGrupos = cargarLS(LS_SUPERGRUPOS);
+    // Grupos (familia → grupo)
+    scope.guardarGrupos = function() {
+        scope.grupos = limpiarObjeto(scope.grupos);
+        guardarLS(LS_GRUPOS, scope.grupos);
+    };
+    scope.quitarGrupo = function(familia) {
+        delete scope.grupos[familia];
+        scope.guardarGrupos();
+    };
+    scope.limpiarGrupos = function() {
+        if (!confirm("¿Borrar todas las asignaciones de grupo?")) return;
+        scope.grupos = {};
+        try { localStorage.removeItem(LS_GRUPOS); } catch(e) {}
+    };
+    // Super-grupos (grupo → super-grupo)
+    scope.guardarSuperGrupos = function() {
+        scope.superGrupos = limpiarObjeto(scope.superGrupos);
+        guardarLS(LS_SUPERGRUPOS, scope.superGrupos);
+    };
+    scope.quitarSuperGrupo = function(grupo) {
+        delete scope.superGrupos[grupo];
+        scope.guardarSuperGrupos();
+    };
+    scope.limpiarSuperGrupos = function() {
+        if (!confirm("¿Borrar todas las asignaciones de categoría?")) return;
+        scope.superGrupos = {};
+        try { localStorage.removeItem(LS_SUPERGRUPOS); } catch(e) {}
+    };
+    // ─── HELPERS ────────────────────────────────────────────
+    scope.pct = function(k, total) {
+        total = Number(total || 0); k = Number(k || 0);
+        if (!total) return "0.0";
+        return ((k / total) * 100).toFixed(1);
+    };
+    scope.regPorNE = function(fam) {
+        var ne = Number(fam.cantidadNotasEntrada || 0), reg = 0;
+        (fam.materiales || []).forEach(function(m) { reg += Number(m.registros || 0); });
+        if (!ne) return "0.0";
+        return (reg / ne).toFixed(1);
+    };
+    scope.colorHex = function(nombre) {
+        var map = {
+            'NEGRO':'#1f2937','BLANCO':'#e5e7eb','ROJO':'#dc2626',
+            'AZUL':'#2563eb','VERDE':'#16a34a','VERDE OSCURO':'#14532d',
+            'AMARILLO':'#eab308','CELESTE':'#38bdf8','CARAMELO':'#b45309',
+            'GRIS':'#9ca3af','HABANO':'#d97706','NATURAL':'#d4d4d8',
+            'TUTTY':'#f59e0b','SIN COLOR':'#d1d5db'
+        };
+        return map[nombre] || '#6b7280';
+    };
+    scope.estadoHex = function(estado) {
+        var map = {
+            'Piezas':'#f59e0b','Para Moler':'#f97316','Enfardado':'#94a3b8',
+            'Para Lavar':'#0ea5e9','Molido':'#84cc16','Lavado':'#22c55e',
+            'Extruido':'#8b5cf6','Agrumado':'#64748b','Pelletizado':'#334155'
+        };
+        return map[estado] || '#9ca3af';
+    };
+    scope.familiasFiltradas = function() {
+        var q = String(scope.busqueda || "").toLowerCase();
+        return (scope.familias || []).filter(function(f) {
+            if (scope.soloBajo && f.badge !== "BAJO") return false;
+            if (scope.soloSinGrupo && scope.grupos[f.familia]) return false;
+            if (!q) return true;
+            return String(f.familia || "").toLowerCase().indexOf(q) !== -1;
+        });
+    };
+    // ─── GRÁFICO DE TORTA (PIE CHART) ──────────────────────
+    var TORTA_COLORES = [
+        '#818cf8','#34d399','#f59e0b','#f87171','#38bdf8',
+        '#a78bfa','#fb923c','#4ade80','#e879f9','#facc15',
+        '#94a3b8','#f472b6','#2dd4bf','#fbbf24','#c084fc',
+        '#67e8f9','#fda4af','#86efac','#fdba74','#d8b4fe'
+    ];
+    function recalcularTorta() {
+        var total = Number(scope.totalKilos || 0);
+        if (!total || !scope.familias || !scope.familias.length) {
+            scope.tortaData = [];
+            return;
+        }
+        // Ordenar por kilos desc para la torta
+        var sorted = (scope.familias || []).slice().filter(function(f) {
+            return f.totalKilos > 0;
+        }).sort(function(a, b) { return b.totalKilos - a.totalKilos; });
+        var startAngle = -Math.PI / 2; // empieza desde arriba
+        scope.tortaData = sorted.map(function(fam, i) {
+            var pctVal = fam.totalKilos / total;
+            var sweep = pctVal * 2 * Math.PI;
+            var endAngle = startAngle + sweep;
+            // Calcular path del segmento
+            var x1 = Math.cos(startAngle).toFixed(6);
+            var y1 = Math.sin(startAngle).toFixed(6);
+            var x2 = Math.cos(endAngle).toFixed(6);
+            var y2 = Math.sin(endAngle).toFixed(6);
+            var largeArc = pctVal > 0.5 ? 1 : 0;
+            var path = 'M 0 0 L ' + x1 + ' ' + y1 +
+                       ' A 1 1 0 ' + largeArc + ' 1 ' + x2 + ' ' + y2 + ' Z';
+            var seg = {
+                familia: fam.familia,
+                kilos: fam.totalKilos,
+                pct: pctVal,
+                path: path,
+                color: TORTA_COLORES[i % TORTA_COLORES.length]
+            };
+            startAngle = endAngle;
+            return seg;
+        });
+    }
+    // ─── FUNCIÓN AUXILIAR: consolida kilos/precios desde array de familias ──
+    function consolidarDesdeFamilias(famsArray) {
+        var totalKilos = 0;
+        var precioSuma = 0, precioCount = 0;
+        var coloresMap = {}, estadosMap = {}, provsMap = {};
+        famsArray.forEach(function(fam) {
+            totalKilos += fam.totalKilos || 0;
+            if (fam.precioPromedio && fam.totalKilos) {
+                precioSuma  += fam.precioPromedio * fam.totalKilos;
+                precioCount += fam.totalKilos;
+            }
+            (fam.coloresArray || []).forEach(function(c) {
+                if (!coloresMap[c.color]) coloresMap[c.color] = { kilos:0, pSuma:0, pCount:0 };
+                coloresMap[c.color].kilos += c.kilos || 0;
+                if (c.precioPromedio && c.kilos) {
+                    coloresMap[c.color].pSuma  += c.precioPromedio * c.kilos;
+                    coloresMap[c.color].pCount += c.kilos;
+                }
+            });
+            (fam.estadosArray || []).forEach(function(e) {
+                if (!estadosMap[e.estado]) estadosMap[e.estado] = { kilos:0, pSuma:0, pCount:0 };
+                estadosMap[e.estado].kilos += e.kilos || 0;
+                if (e.precioPromedio && e.kilos) {
+                    estadosMap[e.estado].pSuma  += e.precioPromedio * e.kilos;
+                    estadosMap[e.estado].pCount += e.kilos;
+                }
+            });
+            (fam.topProveedores || []).forEach(function(p) {
+                var pn = p.nombre || "Sin proveedor";
+                if (!provsMap[pn]) provsMap[pn] = { kilos:0, pSuma:0, pCount:0 };
+                provsMap[pn].kilos += p.kilos || 0;
+                if (p.precioPromedio && p.kilos) {
+                    provsMap[pn].pSuma  += p.precioPromedio * p.kilos;
+                    provsMap[pn].pCount += p.kilos;
+                }
+            });
+        });
+        return {
+            totalKilos: totalKilos,
+            precioPromedio: precioCount > 0 ? Math.round(precioSuma / precioCount) : null,
+            coloresArray: Object.keys(coloresMap).map(function(c) {
+                var d = coloresMap[c];
+                return { color:c, kilos:d.kilos, precioPromedio: d.pCount>0 ? Math.round(d.pSuma/d.pCount) : null };
+            }).sort(function(a,b){ return b.kilos - a.kilos; }),
+            estadosArray: Object.keys(estadosMap).map(function(e) {
+                var d = estadosMap[e];
+                return { estado:e, kilos:d.kilos, precioPromedio: d.pCount>0 ? Math.round(d.pSuma/d.pCount) : null };
+            }).sort(function(a,b){ return b.kilos - a.kilos; }),
+            topProveedores: Object.keys(provsMap).map(function(pn) {
+                var d = provsMap[pn];
+                return { nombre:pn, kilos:d.kilos, precioPromedio: d.pCount>0 ? Math.round(d.pSuma/d.pCount) : null };
+            }).sort(function(a,b){ return b.kilos - a.kilos; }).slice(0, 10)
+        };
+    }
+    // ─── NIVEL 2: GRUPOS RESUMEN ─────────────────────────────
+    scope.grupoColor = function(idx) {
+        var palette = ['#6366f1','#2563eb','#0ea5e9','#06b6d4','#10b981','#84cc16','#f59e0b','#f97316','#ef4444','#8b5cf6'];
+        return palette[idx % palette.length];
+    };
+    scope.gruposResumen = function() {
+        var mapaGrupos = {};
+        (scope.familias || []).forEach(function(fam) {
+            var g = String(scope.grupos[fam.familia] || "").trim();
+            if (!g) return;
+            var gUp = g.toUpperCase();
+            if (!mapaGrupos[gUp]) mapaGrupos[gUp] = [];
+            mapaGrupos[gUp].push(fam);
+        });
+        return Object.keys(mapaGrupos).map(function(nombreGrupo) {
+            var fams = mapaGrupos[nombreGrupo];
+            var cons = consolidarDesdeFamilias(fams);
+            cons.nombre   = nombreGrupo;
+            cons.familias = fams.map(function(f){ return f.familia; }).sort();
+            cons.familiasDetalle = fams.map(function(fam) {
+                return {
+                    nombre: fam.familia,
+                    kilos:  fam.totalKilos,
+                    precioPromedio: fam.precioPromedio
+                };
+            }).sort(function(a, b) { return b.kilos - a.kilos; });
+            return cons;
+        }).sort(function(a, b) { return b.totalKilos - a.totalKilos; });
+    };
+    // ─── NIVEL 1: SUPER-GRUPOS RESUMEN ──────────────────────
+    scope.superGruposResumen = function() {
+        var grupos = scope.gruposResumen();
+        var mapaSuper = {};
+        grupos.forEach(function(g) {
+            var sg = String(scope.superGrupos[g.nombre] || "").trim();
+            if (!sg) return;
+            var sgUp = sg.toUpperCase();
+            if (!mapaSuper[sgUp]) mapaSuper[sgUp] = [];
+            mapaSuper[sgUp].push(g);
+        });
+        return Object.keys(mapaSuper).sort().map(function(nombreSG) {
+            var gruposDeSG = mapaSuper[nombreSG];
+            var famsDelSG = [];
+            gruposDeSG.forEach(function(g) {
+                (scope.familias || []).forEach(function(fam) {
+                    var gFam = String(scope.grupos[fam.familia] || "").trim().toUpperCase();
+                    if (gFam === g.nombre) famsDelSG.push(fam);
+                });
+            });
+            var cons = consolidarDesdeFamilias(famsDelSG);
+            cons.nombre = nombreSG;
+            cons.gruposDetalle = gruposDeSG.map(function(g) {
+                return {
+                    nombre: g.nombre,
+                    kilos:  g.totalKilos,
+                    precioPromedio: g.precioPromedio
+                };
+            }).sort(function(a, b) { return b.kilos - a.kilos; });
+            cons.grupos = cons.gruposDetalle.map(function(g){ return g.nombre; });
+            cons.familiasDetalle = famsDelSG.map(function(fam) {
+                return {
+                    nombre: fam.familia,
+                    kilos:  fam.totalKilos,
+                    precioPromedio: fam.precioPromedio
+                };
+            }).sort(function(a, b) { return b.kilos - a.kilos; });
+            return cons;
+        }).sort(function(a, b) { return b.totalKilos - a.totalKilos; });
+    };
+    // ─── MODAL ──────────────────────────────────────────────
+    scope.modal = {
+        abierto: false, familia: "", totalKilos: 0, precioPromedio: null,
+        registros: [], estados: [], colores: [],
+        busq: "", filtroEstado: "", filtroColor: "",
+        sortCol: "kilos", sortDir: "desc"
+    };
+    function detectarColorStr(desc) {
+        desc = String(desc||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+        if (desc.indexOf("negro")!=-1)        return "NEGRO";
+        if (desc.indexOf("blanco")!=-1)       return "BLANCO";
+        if (desc.indexOf("rojo")!=-1)         return "ROJO";
+        if (desc.indexOf("azul")!=-1)         return "AZUL";
+        if (desc.indexOf("verde oscuro")!=-1) return "VERDE OSCURO";
+        if (desc.indexOf("verde")!=-1)        return "VERDE";
+        if (desc.indexOf("amaril")!=-1)       return "AMARILLO";
+        if (desc.indexOf("celest")!=-1)       return "CELESTE";
+        if (desc.indexOf("carame")!=-1)       return "CARAMELO";
+        if (desc.indexOf("gris")!=-1)         return "GRIS";
+        if (desc.indexOf("habano")!=-1)       return "HABANO";
+        if (desc.indexOf("natura")!=-1)       return "NATURAL";
+        if (desc.indexOf("tuty")!=-1||desc.indexOf("tutti")!=-1||desc.indexOf("tutty")!=-1) return "TUTTY";
+        return "";
+    }
+    scope.abrirModal = function(fam) {
+        var registros = [], estadosSet = {}, coloresSet = {};
+        (fam.materiales || []).forEach(function(mat) {
+            (mat.items || []).forEach(function(it) {
+                var descEf = String(it.Reclas||"").trim() || it.Description || "";
+                var color  = detectarColorStr(descEf);
+                var estado = it._estado || "";
+                var precio = parseFloat(it.PrecioNum) || 0;
+                registros.push({
+                    fecha: it.fecha||"", desc: it.Description||"(SIN DESC)",
+                    reclas: String(it.Reclas||"").trim(),
+                    descEfectiva: descEf,
+                    reclasificado: !!String(it.Reclas||"").trim(),
+                    estado: estado, color: color,
+                    kilos: parseFloat(it.kilos)||0,
+                    precio: precio>0 ? precio : null,
+                    proveedor: it.Proveedor||"Sin proveedor",
+                    ne: it.NroLote||it.UnidadMedida||""
+                });
+                if (estado) estadosSet[estado]=true;
+                if (color)  coloresSet[color]=true;
+            });
+        });
+        var pSuma=0, pCount=0;
+        registros.forEach(function(r){ if(r.precio){pSuma+=r.precio*r.kilos;pCount+=r.kilos;} });
+        scope.modal = {
+            abierto:true, familia:fam.familia, totalKilos:fam.totalKilos,
+            precioPromedio: pCount>0 ? Math.round(pSuma/pCount) : null,
+            registros:registros, estados:Object.keys(estadosSet).sort(),
+            colores:Object.keys(coloresSet).sort(),
+            busq:"", filtroEstado:"", filtroColor:"",
+            sortCol:"kilos", sortDir:"desc"
+        };
+    };
+    scope.cerrarModal = function() { scope.modal.abierto=false; };
+    scope.setSort = function(col) {
+        if (scope.modal.sortCol===col) {
+            scope.modal.sortDir = scope.modal.sortDir==="asc" ? "desc" : "asc";
+        } else {
+            scope.modal.sortCol = col;
+            scope.modal.sortDir = col==="kilos"||col==="precio" ? "desc" : "asc";
+        }
+    };
+    scope.modalRegistrosFiltrados = function() {
+        var q=String(scope.modal.busq||"").toLowerCase();
+        var fe=String(scope.modal.filtroEstado||"");
+        var fc=String(scope.modal.filtroColor||"");
+        var col=scope.modal.sortCol, dir=scope.modal.sortDir;
+        var lista=(scope.modal.registros||[]).filter(function(r){
+            if(fe&&r.estado!==fe) return false;
+            if(fc&&r.color!==fc)  return false;
+            if(q&&(r.descEfectiva+" "+r.proveedor).toLowerCase().indexOf(q)===-1) return false;
+            return true;
+        });
+        lista.sort(function(a,b){
+            var va,vb;
+            if(col==="kilos")    {va=a.kilos;       vb=b.kilos;}
+            else if(col==="precio")   {va=a.precio||0;    vb=b.precio||0;}
+            else if(col==="fecha")    {va=a.fecha;        vb=b.fecha;}
+            else if(col==="estado")   {va=a.estado;       vb=b.estado;}
+            else if(col==="color")    {va=a.color;        vb=b.color;}
+            else if(col==="proveedor"){va=a.proveedor;    vb=b.proveedor;}
+            else if(col==="ne")       {va=a.ne;           vb=b.ne;}
+            else                      {va=a.descEfectiva; vb=b.descEfectiva;}
+            if(va<vb) return dir==="asc"?-1:1;
+            if(va>vb) return dir==="asc"?1:-1;
+            return 0;
+        });
+        return lista;
+    };
+    scope.modalKilosFiltrados = function() {
+        return scope.modalRegistrosFiltrados().reduce(function(acc,r){return acc+r.kilos;},0);
+    };
+    scope.modalPrecioFiltrado = function() {
+        var suma=0,count=0;
+        scope.modalRegistrosFiltrados().forEach(function(r){
+            if(r.precio){suma+=r.precio*r.kilos;count+=r.kilos;}
+        });
+        return count>0 ? Math.round(suma/count) : null;
+    };
+    // ─── EXPORTAR PDF ───────────────────────────────────────
+    scope.exportarPDF = function() {
+        var btn = document.querySelector('.totales-pdf');
+        if (btn) btn.style.display = 'none';
+        var PDF_W = 1080;
+        var original = document.getElementById('ramas-cards');
+        var clon     = original.cloneNode(true);
+        var wrapper = document.createElement('div');
+        wrapper.style.cssText = 'position:absolute;left:-' + (PDF_W + 50) + 'px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;z-index:-1;';
+        document.body.appendChild(wrapper);
+        wrapper.appendChild(clon);
+        clon.style.width    = PDF_W + 'px';
+        clon.style.minWidth = PDF_W + 'px';
+        clon.style.maxWidth = PDF_W + 'px';
+        clon.style.boxSizing = 'border-box';
+        ['.totales-pdf', '.btn-pdf', '.toolbar', '.btn-ver-todos',
+         '.assign-input', '.assign-clear', '.btn-limpiar',
+         '.grupo-assign-row', '.supergrupo-assign-row', '.modal-overlay'
+        ].forEach(function(sel) {
+            Array.from(clon.querySelectorAll(sel)).forEach(function(el) {
+                el.style.display = 'none';
+            });
+        });
+        Array.from(clon.querySelectorAll('.ejemplos-list')).forEach(function(lista) {
+            Array.from(lista.querySelectorAll('.ej-row')).slice(3).forEach(function(item) {
+                item.style.display = 'none';
+            });
+        });
+        Array.from(clon.querySelectorAll('.cards-grid, .nivel-grid--super, .nivel-grid--grupo')).forEach(function(el) {
+            el.style.display              = 'grid';
+            el.style.gridTemplateColumns  = 'repeat(3, 1fr)';
+            el.style.gap                  = '7px';
+        });
+        var reducciones = [
+            ['.rama-card, .supergrupo-card, .grupo-card', { padding: '10px', borderRadius: '8px' }],
+            ['.rama-title, .sg-nombre, .grupo-nombre',    { fontSize: '16px' }],
+            ['.rama-kilos, .sg-kilos, .grupo-kilos',      { fontSize: '14px' }],
+            ['.totales-val',                              { fontSize: '17px' }],
+            ['.rama-precio, .sg-precio, .grupo-precio',   { fontSize: '11px' }],
+            ['.stat-val',                                 { fontSize: '13px' }],
+            ['.stat-lbl',                                 { fontSize: '9px' }],
+            ['.section-title',                            { fontSize: '10px', marginTop: '6px', marginBottom: '5px' }],
+            ['.prov-row',                                 { padding: '3px 0', fontSize: '10px' }],
+            ['.prov-rank, .prov-name, .prov-kilos, .prov-precio', { fontSize: '10px' }],
+            ['.ej-row',                                   { padding: '5px 7px' }],
+            ['.ej-desc',                                  { fontSize: '10px', marginBottom: '2px' }],
+            ['.ej-kilos, .ej-estado, .ej-precio, .ej-prov', { fontSize: '10px' }],
+            ['.bl-item',                                  { fontSize: '9px' }],
+            ['.bar-label',                                { fontSize: '9px' }],
+            ['.stacked-bar',                              { height: '10px', marginBottom: '4px' }],
+            ['.stacked-bar--lg',                          { height: '13px' }],
+            ['.bar-section',                              { marginBottom: '7px' }],
+            ['.rama-stats',                               { gap: '5px', marginBottom: '8px' }],
+            ['.stat-box',                                 { padding: '5px' }],
+            ['.sgb-header, .sgb-row',                     { fontSize: '10px' }],
+            ['.totales-fam-tn',                           { fontSize: '12px' }],
+            ['.totales-fam-nombre',                       { fontSize: '10px' }],
+            ['.totales-fam-pct, .totales-fam-precio',     { fontSize: '10px' }],
+            ['.nivel-header',                             { padding: '4px 8px', marginBottom: '7px' }],
+        ];
+        reducciones.forEach(function(regla) {
+            Array.from(clon.querySelectorAll(regla[0])).forEach(function(el) {
+                Object.keys(regla[1]).forEach(function(prop) {
+                    el.style[prop] = regla[1][prop];
+                });
+            });
+        });
+        requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+                html2pdf()
+                    .set({
+                        margin:      [5, 5, 5, 5],
+                        filename:    'reporte-familias.pdf',
+                        image:       { type: 'jpeg', quality: 0.93 },
+                        html2canvas: {
+                            scale:       1.6,
+                            useCORS:     true,
+                            logging:     false,
+                            windowWidth: PDF_W,
+                            scrollX:     0,
+                            scrollY:     0
+                        },
+                        jsPDF:       { unit: 'mm', format: 'a4', orientation: 'landscape' },
+                        pagebreak:   { mode: 'legacy' }
+                    })
+                    .from(clon)
+                    .save()
+                    .then(function() {
+                        document.body.removeChild(wrapper);
+                        if (btn) btn.style.display = '';
+                    })
+                    .catch(function() {
+                        document.body.removeChild(wrapper);
+                        if (btn) btn.style.display = '';
+                    });
+            });
+        });
+    };
+    // ─── DATA WATCH ─────────────────────────────────────────
+    scope.$watch('msg', function(msg) {
+        if (!msg || !Array.isArray(msg.payload)) return;
+        scope.familias   = angular.copy(msg.payload);
+        scope.totalKilos = Number(msg.totalKilos || 0);
+        scope.metadata   = msg.metadata || {};
+        scope.grupos      = cargarLS(LS_GRUPOS);
+        scope.superGrupos = cargarLS(LS_SUPERGRUPOS);
+        // Enriquecer ejemplos con precio (el fn-node no lo incluye)
+        scope.familias.forEach(function(fam) {
+            var itemsMap = {};
+            (fam.materiales || []).forEach(function(mat) {
+                (mat.items || []).forEach(function(it) {
+                    var p = parseFloat(it.PrecioNum) || 0;
+                    var desc = (it.Description || '').trim();
+                    if (p > 0 && desc) itemsMap[desc] = p;
+                });
+            });
+            (fam.ejemplos || []).forEach(function(ej) {
+                if (!ej.precio) ej.precio = itemsMap[ej.desc] || null;
+            });
+        });
+        // Recalcular gráfico de torta
+        recalcularTorta();
+    }, true);
+})(scope);
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
