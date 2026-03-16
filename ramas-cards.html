@@ -422,21 +422,34 @@
                     </div>
                 </div>
             </div>
-            <!-- Barra estados -->
-            <div class="bar-section" ng-if="fam.estadosArray && fam.estadosArray.length > 0">
-                <div class="bar-label">Estado</div>
+            <!-- Estado × Color cruzado -->
+            <div class="bar-section" ng-if="fam.estadoColorCruzado && fam.estadoColorCruzado.length > 0">
+                <div class="bar-label">Estado / Color</div>
+                <!-- Barra apilada general por estado -->
                 <div class="stacked-bar">
-                    <div class="bar-seg" ng-repeat="e in fam.estadosArray track by e.estado"
+                    <div class="bar-seg" ng-repeat="e in fam.estadoColorCruzado track by e.estado"
                         ng-style="{'width':pct(e.kilos,fam.totalKilos)+'%','background':estadoHex(e.estado)}"
                         title="{{e.estado}}: {{(e.kilos/1000)|number:1}}tn ({{pct(e.kilos,fam.totalKilos)}}%)"></div>
                 </div>
-                <div class="bar-legend">
-                    <div class="bl-item" ng-repeat="e in fam.estadosArray track by e.estado">
-                        <div class="bl-dot" ng-style="{'background':estadoHex(e.estado)}"></div>
-                        <span class="bl-name">{{e.estado}}</span>
-                        <span class="bl-tn">{{(e.kilos/1000)|number:1}}tn</span>
-                        <span class="bl-pct">{{pct(e.kilos,fam.totalKilos)}}%</span>
-                        <span class="bl-precio" ng-if="e.precioPromedio">· ${{e.precioPromedio|number:0}}/kg</span>
+                <!-- Por cada estado: header + mini barra de colores + lista -->
+                <div class="ecg-grupo" ng-repeat="e in fam.estadoColorCruzado track by e.estado">
+                    <div class="ecg-header">
+                        <div class="ecg-dot" ng-style="{'background':estadoHex(e.estado)}"></div>
+                        <span class="ecg-estado">{{e.estado}}</span>
+                        <span class="ecg-tn">{{(e.kilos/1000)|number:1}}tn</span>
+                        <span class="ecg-pct">{{pct(e.kilos, fam.totalKilos)}}%</span>
+                    </div>
+                    <div class="ecg-barra" ng-if="e.colores.length > 1">
+                        <div class="bar-seg" ng-repeat="c in e.colores track by c.color"
+                            ng-style="{'width':pct(c.kilos,e.kilos)+'%','background':colorHex(c.color)}"
+                            title="{{c.color}}: {{(c.kilos/1000)|number:1}}tn"></div>
+                    </div>
+                    <div class="ecg-colores">
+                        <span class="ecg-color-item" ng-repeat="c in e.colores track by c.color">
+                            <span class="ecg-cdot" ng-style="{'background':colorHex(c.color)}"></span>
+                            <span class="ecg-cname">{{c.color}}</span>
+                            <span class="ecg-ctn">{{(c.kilos/1000)|number:1}}tn</span>
+                        </span>
                     </div>
                 </div>
             </div>
@@ -1234,6 +1247,83 @@
         color: #059669;
         font-size: 11px;
     }
+    /* ─── ESTADO × COLOR CRUZADO ─── */
+    .ecg-grupo {
+        margin-top: 5px;
+        padding: 5px 7px;
+        background: #f8faff;
+        border-radius: 7px;
+        border-left: 3px solid #e0e7ff;
+    }
+    .ecg-header {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        margin-bottom: 3px;
+    }
+    .ecg-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+    }
+    .ecg-estado {
+        font-size: 11px;
+        font-weight: 900;
+        color: #1e1b4b;
+    }
+    .ecg-tn {
+        font-size: 11px;
+        font-weight: 900;
+        color: #2563eb;
+        margin-left: 4px;
+    }
+    .ecg-pct {
+        font-size: 10px;
+        font-weight: 700;
+        color: #9ca3af;
+        margin-left: 2px;
+    }
+    .ecg-barra {
+        display: flex;
+        height: 5px;
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 4px;
+        background: #e5e7eb;
+    }
+    .ecg-colores {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+    .ecg-color-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 5px;
+        padding: 1px 5px;
+    }
+    .ecg-cdot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        display: inline-block;
+    }
+    .ecg-cname {
+        font-size: 9px;
+        font-weight: 800;
+        color: #374151;
+        text-transform: uppercase;
+    }
+    .ecg-ctn {
+        font-size: 9px;
+        font-weight: 700;
+        color: #6b7280;
+    }
     /* ─── PROVEEDORES / EJEMPLOS / MISC ─── */
     .badge-bajo-card {
         display: inline-block;
@@ -1668,10 +1758,10 @@
     };
     // ─── GRÁFICO DE TORTA (PIE CHART) ──────────────────────
     var TORTA_COLORES = [
-        '#818cf8','#34d399','#f59e0b','#f87171','#38bdf8',
-        '#a78bfa','#fb923c','#4ade80','#e879f9','#facc15',
-        '#94a3b8','#f472b6','#2dd4bf','#fbbf24','#c084fc',
-        '#67e8f9','#fda4af','#86efac','#fdba74','#d8b4fe'
+        '#e63946','#2ec4b6','#ff9f1c','#6a4c93','#1982c4',
+        '#8ac926','#ff595e','#ffca3a','#6a994e','#a4262c',
+        '#4361ee','#f72585','#fb8500','#06d6a0','#9b5de5',
+        '#00b4d8','#d62828','#3a86ff','#b5838d','#023047'
     ];
     function recalcularTorta() {
         var total = Number(scope.totalKilos || 0);
@@ -2053,6 +2143,30 @@
             (fam.ejemplos || []).forEach(function(ej) {
                 if (!ej.precio) ej.precio = itemsMap[ej.desc] || null;
             });
+        });
+        // Calcular Estado×Color cruzado por familia
+        scope.familias.forEach(function(fam) {
+            var cruzMap = {};
+            (fam.materiales || []).forEach(function(mat) {
+                (mat.items || []).forEach(function(it) {
+                    var estado = it._estado || 'Sin estado';
+                    var color  = detectarColorStr(String(it.Reclas||it.Description||'')) || 'Sin color';
+                    var kilos  = parseFloat(it.kilos) || 0;
+                    var precio = parseFloat(it.PrecioNum) || 0;
+                    if (!cruzMap[estado]) cruzMap[estado] = {};
+                    if (!cruzMap[estado][color]) cruzMap[estado][color] = { kilos:0, pSuma:0, pCount:0 };
+                    cruzMap[estado][color].kilos += kilos;
+                    if (precio > 0) { cruzMap[estado][color].pSuma += precio*kilos; cruzMap[estado][color].pCount += kilos; }
+                });
+            });
+            fam.estadoColorCruzado = Object.keys(cruzMap).map(function(estado) {
+                var colores = Object.keys(cruzMap[estado]).map(function(color) {
+                    var d = cruzMap[estado][color];
+                    return { color:color, kilos:d.kilos, precioPromedio: d.pCount>0 ? Math.round(d.pSuma/d.pCount) : null };
+                }).sort(function(a,b){ return b.kilos-a.kilos; });
+                var totalEst = colores.reduce(function(s,c){ return s+c.kilos; }, 0);
+                return { estado:estado, kilos:totalEst, colores:colores };
+            }).sort(function(a,b){ return b.kilos-a.kilos; });
         });
         // Recalcular gráfico de torta
         recalcularTorta();
