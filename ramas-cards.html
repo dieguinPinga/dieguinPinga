@@ -126,7 +126,7 @@
         <div class="totales-torta" ng-if="familias.length > 0">
             <svg viewBox="-1.15 -1.15 2.3 2.3" class="torta-svg">
                 <g ng-repeat="seg in tortaData track by $index">
-                    <path ng-attr-d="{{seg.path}}" ng-attr-fill="{{seg.color}}" class="torta-seg">
+                    <path ng-attr-d="{{seg.path}}" ng-style="{'fill': seg.color}" class="torta-seg">
                         <title>{{seg.familia}}: {{(seg.kilos/1000)|number:1}} tn ({{(seg.pct*100)|number:1}}%)</title>
                     </path>
                 </g>
