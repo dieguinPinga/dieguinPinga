@@ -125,8 +125,8 @@
         <!-- ★ GRÁFICO DE TORTA — participación por familia ★ -->
         <div class="totales-torta" ng-if="familias.length > 0">
             <svg viewBox="-1.15 -1.15 2.3 2.3" class="torta-svg">
-                <g ng-repeat="seg in tortaData track by $index">
-                    <path ng-attr-d="{{seg.path}}" ng-style="{'fill': seg.color}" class="torta-seg" ng-click="abrirModal(seg.famObj)" style="cursor:pointer">
+                <g ng-repeat="seg in tortaData track by $index" ng-click="abrirModalPorNombre(seg.familia)" style="cursor:pointer">
+                    <path ng-attr-d="{{seg.path}}" ng-style="{'fill': seg.color}" class="torta-seg" style="pointer-events:all">
                         <title>{{seg.familia}}: {{(seg.kilos/1000)|number:1}} tn ({{(seg.pct*100)|number:1}}%)</title>
                     </path>
                 </g>
@@ -135,7 +135,7 @@
                 <text x="0" y="0.32" text-anchor="middle" fill="rgba(255,255,255,0.5)" font-size="0.17" font-weight="700" style="font-family:Arial,sans-serif">familias</text>
             </svg>
             <div class="torta-leyenda">
-                <div class="tl-item" ng-repeat="seg in tortaData track by $index" ng-if="$index < 8" ng-click="abrirModal(seg.famObj)" style="cursor:pointer">
+                <div class="tl-item" ng-repeat="seg in tortaData track by $index" ng-if="$index < 8" ng-click="abrirModalPorNombre(seg.familia)" style="cursor:pointer">
                     <div class="tl-dot" ng-style="{'background': seg.color}"></div>
                     <span class="tl-fam">{{seg.familia}}</span>
                     <span class="tl-pct">{{(seg.pct*100)|number:1}}%</span>
@@ -1987,6 +1987,13 @@
         };
     };
     scope.cerrarModal = function() { scope.modal.abierto=false; };
+    scope.abrirModalPorNombre = function(nombre) {
+        var fam = null;
+        for (var i = 0; i < (scope.familias||[]).length; i++) {
+            if (scope.familias[i].familia === nombre) { fam = scope.familias[i]; break; }
+        }
+        if (fam) scope.abrirModal(fam);
+    };
     scope.setSort = function(col) {
         if (scope.modal.sortCol===col) {
             scope.modal.sortDir = scope.modal.sortDir==="asc" ? "desc" : "asc";
