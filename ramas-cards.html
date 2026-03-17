@@ -404,8 +404,8 @@
                     <div class="stat-lbl">Reg/NE</div>
                 </div>
             </div>
-            <!-- Barra colores -->
-            <div class="bar-section" ng-if="fam.coloresArray && fam.coloresArray.length > 0">
+            <!-- Barra colores (oculta: info incluida en Estado/Color) -->
+            <div class="bar-section" ng-if="false">
                 <div class="bar-label">Color</div>
                 <div class="stacked-bar">
                     <div class="bar-seg" ng-repeat="c in fam.coloresArray track by c.color"
