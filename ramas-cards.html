@@ -449,6 +449,7 @@
                             <span class="ecg-cdot" ng-style="{'background':colorHex(c.color)}"></span>
                             <span class="ecg-cname">{{c.color}}</span>
                             <span class="ecg-ctn">{{(c.kilos/1000)|number:1}}tn</span>
+                            <span class="ecg-cprecio" ng-if="c.precioPromedio">· ${{c.precioPromedio|number:0}}/kg</span>
                         </span>
                     </div>
                 </div>
@@ -1323,6 +1324,12 @@
         font-size: 9px;
         font-weight: 700;
         color: #6b7280;
+    }
+    .ecg-cprecio {
+        font-size: 9px;
+        font-weight: 700;
+        color: #0ea5e9;
+        margin-left: 2px;
     }
     /* ─── PROVEEDORES / EJEMPLOS / MISC ─── */
     .badge-bajo-card {
