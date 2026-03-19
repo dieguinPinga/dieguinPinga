@@ -2047,12 +2047,12 @@
         var original = document.getElementById('ramas-cards');
         var clon     = original.cloneNode(true);
         var wrapper = document.createElement('div');
-        wrapper.style.cssText = 'position:absolute;left:-' + (PDF_W + 50) + 'px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;z-index:-1;';
+        wrapper.style.cssText = 'position:fixed;left:-' + (PDF_W + 50) + 'px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;z-index:-1;visibility:hidden;';
         document.body.appendChild(wrapper);
         wrapper.appendChild(clon);
-        clon.style.width    = PDF_W + 'px';
-        clon.style.minWidth = PDF_W + 'px';
-        clon.style.maxWidth = PDF_W + 'px';
+        clon.style.setProperty('width',    PDF_W + 'px', 'important');
+        clon.style.setProperty('min-width', PDF_W + 'px', 'important');
+        clon.style.setProperty('max-width', PDF_W + 'px', 'important');
         clon.style.boxSizing = 'border-box';
         ['.totales-pdf', '.btn-pdf', '.toolbar', '.btn-ver-todos',
          '.assign-input', '.assign-clear', '.btn-limpiar',
@@ -2106,9 +2106,8 @@
                 });
             });
         });
-        requestAnimationFrame(function() {
-            requestAnimationFrame(function() {
-                html2pdf()
+        setTimeout(function() {
+            html2pdf()
                     .set({
                         margin:      [5, 5, 5, 5],
                         filename:    'reporte-familias.pdf',
@@ -2117,6 +2116,7 @@
                             scale:       1.6,
                             useCORS:     true,
                             logging:     false,
+                            width:       PDF_W,
                             windowWidth: PDF_W,
                             scrollX:     0,
                             scrollY:     0
@@ -2134,8 +2134,7 @@
                         document.body.removeChild(wrapper);
                         if (btn) btn.style.display = '';
                     });
-            });
-        });
+        }, 300);
     };
     // ─── DATA WATCH ─────────────────────────────────────────
     scope.$watch('msg', function(msg) {
