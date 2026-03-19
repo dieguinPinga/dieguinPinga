@@ -2057,41 +2057,35 @@
             ocultos.forEach(function(o){ o.n.style.display = o.d; o.n.style.visibility = o.v; });
         };
         setTimeout(function() {
-            html2canvas(el, {
-                scale:       3,
-                useCORS:     true,
-                logging:     false,
-                scrollX:     0,
-                scrollY:     -window.scrollY,
-                backgroundColor: '#f5f7fb'
-            }).then(function(canvas) {
-                restore();
-                var Cw = canvas.width;
-                var Ch = canvas.height;
-                // A4 landscape en mm
-                var PW = 297, PH = 210, M = 8;
-                var cW = PW - M*2;   // ancho útil: 281mm
-                var cH = PH - M*2;   // alto útil:  194mm
-                // altura total del contenido en mm (escalado a ancho completo)
-                var totalHmm = (Ch / Cw) * cW;
-                // píxeles de canvas por página
-                var pxPorPag = Math.round(Ch * (cH / totalHmm));
-                var nPags = Math.ceil(Ch / pxPorPag);
-                var JsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
-                var pdf = new JsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
-                for (var p = 0; p < nPags; p++) {
-                    if (p > 0) pdf.addPage();
-                    var sy  = p * pxPorPag;
-                    var sh  = Math.min(pxPorPag, Ch - sy);
-                    var slc = document.createElement('canvas');
-                    slc.width  = Cw;
-                    slc.height = sh;
-                    slc.getContext('2d').drawImage(canvas, 0, sy, Cw, sh, 0, 0, Cw, sh);
-                    var slcHmm = (sh / Ch) * totalHmm;
-                    pdf.addImage(slc.toDataURL('image/jpeg', 0.92), 'JPEG', M, M, cW, slcHmm);
-                }
-                pdf.save('reporte-familias.pdf');
-            }).catch(function(e) { restore(); console.error(e); });
+            try {
+                var JsPDF = (window.jspdf && window.jspdf.jsPDF) ? window.jspdf.jsPDF : window.jsPDF;
+                html2canvas(el, {
+                    scale:           3,
+                    useCORS:         true,
+                    logging:         false,
+                    scrollX:         0,
+                    scrollY:         -window.scrollY,
+                    backgroundColor: '#f5f7fb'
+                }).then(function(canvas) {
+                    restore();
+                    var Cw = canvas.width, Ch = canvas.height;
+                    var M = 8, cW = 297 - M*2, cH = 210 - M*2;
+                    var totalHmm  = (Ch / Cw) * cW;
+                    var pxPorPag  = Math.round(Ch * (cH / totalHmm));
+                    var nPags     = Math.ceil(Ch / pxPorPag);
+                    var pdf = new JsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
+                    for (var p = 0; p < nPags; p++) {
+                        if (p > 0) pdf.addPage();
+                        var sy = p * pxPorPag;
+                        var sh = Math.min(pxPorPag, Ch - sy);
+                        var slc = document.createElement('canvas');
+                        slc.width = Cw; slc.height = sh;
+                        slc.getContext('2d').drawImage(canvas, 0, sy, Cw, sh, 0, 0, Cw, sh);
+                        pdf.addImage(slc.toDataURL('image/jpeg',0.92), 'JPEG', M, M, cW, (sh/Ch)*totalHmm);
+                    }
+                    pdf.save('reporte-familias.pdf');
+                }).catch(function(e) { restore(); console.error('html2canvas error', e); });
+            } catch(e) { restore(); console.error('PDF init error', e); }
         }, 250);
     };
     // ─── DATA WATCH ─────────────────────────────────────────
@@ -2145,4 +2139,5 @@
     }, true);
 })(scope);
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
