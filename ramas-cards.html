@@ -2047,7 +2047,7 @@
         var original = document.getElementById('ramas-cards');
         var clon     = original.cloneNode(true);
         var wrapper = document.createElement('div');
-        wrapper.style.cssText = 'position:fixed;left:-' + (PDF_W + 50) + 'px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;z-index:-1;visibility:hidden;';
+        wrapper.style.cssText = 'position:absolute;left:-9999px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;';
         document.body.appendChild(wrapper);
         wrapper.appendChild(clon);
         clon.style.setProperty('width',    PDF_W + 'px', 'important');
