@@ -2041,100 +2041,58 @@
     };
     // ─── EXPORTAR PDF ───────────────────────────────────────
     scope.exportarPDF = function() {
-        var btn = document.querySelector('.totales-pdf');
-        if (btn) btn.style.display = 'none';
-        var PDF_W = 1080;
-        var original = document.getElementById('ramas-cards');
-        var clon     = original.cloneNode(true);
-        var wrapper = document.createElement('div');
-        wrapper.style.cssText = 'position:absolute;left:-9999px;top:0;width:' + PDF_W + 'px;background:#f5f7fb;';
-        document.body.appendChild(wrapper);
-        wrapper.appendChild(clon);
-        clon.style.setProperty('width',    PDF_W + 'px', 'important');
-        clon.style.setProperty('min-width', PDF_W + 'px', 'important');
-        clon.style.setProperty('max-width', PDF_W + 'px', 'important');
-        clon.style.boxSizing = 'border-box';
-        ['.totales-pdf', '.btn-pdf', '.toolbar', '.btn-ver-todos',
-         '.assign-input', '.assign-clear', '.btn-limpiar',
-         '.grupo-assign-row', '.supergrupo-assign-row', '.modal-overlay'
+        var el = document.getElementById('ramas-cards');
+        // — ocultar elementos que no van al PDF —
+        var ocultos = [];
+        ['.totales-pdf','.btn-pdf','.toolbar','.btn-ver-todos',
+         '.assign-input','.assign-clear','.btn-limpiar',
+         '.grupo-assign-row','.supergrupo-assign-row','.modal-overlay'
         ].forEach(function(sel) {
-            Array.from(clon.querySelectorAll(sel)).forEach(function(el) {
-                el.style.display = 'none';
+            Array.from(el.querySelectorAll(sel)).forEach(function(n) {
+                ocultos.push({n:n, v:n.style.visibility, d:n.style.display});
+                n.style.display = 'none';
             });
         });
-        Array.from(clon.querySelectorAll('.ejemplos-list')).forEach(function(lista) {
-            Array.from(lista.querySelectorAll('.ej-row')).slice(3).forEach(function(item) {
-                item.style.display = 'none';
-            });
-        });
-        Array.from(clon.querySelectorAll('.cards-grid, .nivel-grid--super, .nivel-grid--grupo')).forEach(function(el) {
-            el.style.display              = 'grid';
-            el.style.gridTemplateColumns  = 'repeat(3, 1fr)';
-            el.style.gap                  = '7px';
-        });
-        var reducciones = [
-            ['.rama-card, .supergrupo-card, .grupo-card', { padding: '10px', borderRadius: '8px' }],
-            ['.rama-title, .sg-nombre, .grupo-nombre',    { fontSize: '16px' }],
-            ['.rama-kilos, .sg-kilos, .grupo-kilos',      { fontSize: '14px' }],
-            ['.totales-val',                              { fontSize: '17px' }],
-            ['.rama-precio, .sg-precio, .grupo-precio',   { fontSize: '11px' }],
-            ['.stat-val',                                 { fontSize: '13px' }],
-            ['.stat-lbl',                                 { fontSize: '9px' }],
-            ['.section-title',                            { fontSize: '10px', marginTop: '6px', marginBottom: '5px' }],
-            ['.prov-row',                                 { padding: '3px 0', fontSize: '10px' }],
-            ['.prov-rank, .prov-name, .prov-kilos, .prov-precio', { fontSize: '10px' }],
-            ['.ej-row',                                   { padding: '5px 7px' }],
-            ['.ej-desc',                                  { fontSize: '10px', marginBottom: '2px' }],
-            ['.ej-kilos, .ej-estado, .ej-precio, .ej-prov', { fontSize: '10px' }],
-            ['.bl-item',                                  { fontSize: '9px' }],
-            ['.bar-label',                                { fontSize: '9px' }],
-            ['.stacked-bar',                              { height: '10px', marginBottom: '4px' }],
-            ['.stacked-bar--lg',                          { height: '13px' }],
-            ['.bar-section',                              { marginBottom: '7px' }],
-            ['.rama-stats',                               { gap: '5px', marginBottom: '8px' }],
-            ['.stat-box',                                 { padding: '5px' }],
-            ['.sgb-header, .sgb-row',                     { fontSize: '10px' }],
-            ['.totales-fam-tn',                           { fontSize: '12px' }],
-            ['.totales-fam-nombre',                       { fontSize: '10px' }],
-            ['.totales-fam-pct, .totales-fam-precio',     { fontSize: '10px' }],
-            ['.nivel-header',                             { padding: '4px 8px', marginBottom: '7px' }],
-        ];
-        reducciones.forEach(function(regla) {
-            Array.from(clon.querySelectorAll(regla[0])).forEach(function(el) {
-                Object.keys(regla[1]).forEach(function(prop) {
-                    el.style[prop] = regla[1][prop];
-                });
-            });
-        });
+        var restore = function() {
+            ocultos.forEach(function(o){ o.n.style.display = o.d; o.n.style.visibility = o.v; });
+        };
         setTimeout(function() {
-            html2pdf()
-                    .set({
-                        margin:      [5, 5, 5, 5],
-                        filename:    'reporte-familias.pdf',
-                        image:       { type: 'jpeg', quality: 0.93 },
-                        html2canvas: {
-                            scale:       1.6,
-                            useCORS:     true,
-                            logging:     false,
-                            width:       PDF_W,
-                            windowWidth: PDF_W,
-                            scrollX:     0,
-                            scrollY:     0
-                        },
-                        jsPDF:       { unit: 'mm', format: 'a4', orientation: 'landscape' },
-                        pagebreak:   { mode: 'legacy' }
-                    })
-                    .from(clon)
-                    .save()
-                    .then(function() {
-                        document.body.removeChild(wrapper);
-                        if (btn) btn.style.display = '';
-                    })
-                    .catch(function() {
-                        document.body.removeChild(wrapper);
-                        if (btn) btn.style.display = '';
-                    });
-        }, 300);
+            html2canvas(el, {
+                scale:       3,
+                useCORS:     true,
+                logging:     false,
+                scrollX:     0,
+                scrollY:     -window.scrollY,
+                backgroundColor: '#f5f7fb'
+            }).then(function(canvas) {
+                restore();
+                var Cw = canvas.width;
+                var Ch = canvas.height;
+                // A4 landscape en mm
+                var PW = 297, PH = 210, M = 8;
+                var cW = PW - M*2;   // ancho útil: 281mm
+                var cH = PH - M*2;   // alto útil:  194mm
+                // altura total del contenido en mm (escalado a ancho completo)
+                var totalHmm = (Ch / Cw) * cW;
+                // píxeles de canvas por página
+                var pxPorPag = Math.round(Ch * (cH / totalHmm));
+                var nPags = Math.ceil(Ch / pxPorPag);
+                var JsPDF = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
+                var pdf = new JsPDF({ unit:'mm', format:'a4', orientation:'landscape' });
+                for (var p = 0; p < nPags; p++) {
+                    if (p > 0) pdf.addPage();
+                    var sy  = p * pxPorPag;
+                    var sh  = Math.min(pxPorPag, Ch - sy);
+                    var slc = document.createElement('canvas');
+                    slc.width  = Cw;
+                    slc.height = sh;
+                    slc.getContext('2d').drawImage(canvas, 0, sy, Cw, sh, 0, 0, Cw, sh);
+                    var slcHmm = (sh / Ch) * totalHmm;
+                    pdf.addImage(slc.toDataURL('image/jpeg', 0.92), 'JPEG', M, M, cW, slcHmm);
+                }
+                pdf.save('reporte-familias.pdf');
+            }).catch(function(e) { restore(); console.error(e); });
+        }, 250);
     };
     // ─── DATA WATCH ─────────────────────────────────────────
     scope.$watch('msg', function(msg) {
