@@ -2046,7 +2046,8 @@
         var ocultos = [];
         ['.totales-pdf','.btn-pdf','.toolbar','.btn-ver-todos',
          '.assign-input','.assign-clear','.btn-limpiar',
-         '.grupo-assign-row','.supergrupo-assign-row','.modal-overlay'
+         '.grupo-assign-row','.supergrupo-assign-row','.modal-overlay',
+         '.ejemplos-list','.section-title'
         ].forEach(function(sel) {
             Array.from(el.querySelectorAll(sel)).forEach(function(n) {
                 ocultos.push({n:n, v:n.style.visibility, d:n.style.display});
