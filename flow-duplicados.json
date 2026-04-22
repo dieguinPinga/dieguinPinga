@@ -1,0 +1,325 @@
+[
+    {
+        "id": "c5c1e091101288eb",
+        "type": "inject",
+        "z": "7ae4ef8b052c449d",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 540,
+        "y": 280,
+        "wires": [
+            [
+                "1332a6c44a7068e3"
+            ]
+        ]
+    },
+    {
+        "id": "1332a6c44a7068e3",
+        "type": "function",
+        "z": "7ae4ef8b052c449d",
+        "name": "function 333",
+        "func": "const EPS = 0.01;  // lo dejo por si después querés usar tolerancia, ahora NO se usa\nmsg.eps = EPS;\n\nmsg.topic = `\nSELECT t.*\nFROM TiposDeMovimiento t\nJOIN (\n    SELECT rowhash, MIN(idTiposDeMovimiento) AS minid\n    FROM (\n        SELECT\n          MD5(CONCAT_WS('||',\n            IFNULL(NroLote,''),\n            IFNULL(TiposDeMovimiento,''),\n            IFNULL(UnidadMedida,''),\n            IFNULL(CAST(kilos AS CHAR),''),\n            IFNULL(CAST(FechaHora AS CHAR),''),\n            IFNULL(CAST(Fecha AS CHAR),''),\n            IFNULL(Hora,''),\n            IFNULL(CAST(Descuento AS CHAR),''),\n            IFNULL(CAST(kilosNetos AS CHAR),''),\n            IFNULL(Proveedor,''),\n            IFNULL(Materiales,''),\n            IFNULL(Description,''),\n            IFNULL(Operador,''),\n            IFNULL(Maquina,''),\n            IFNULL(Cat10,''),\n            IFNULL(Cat11,''),\n            IFNULL(Cat12,''),\n            IFNULL(\\`IF\\`,''),\n            IFNULL(NroEnsayo,''),\n            IFNULL(CAST(KgsRedond AS CHAR),''),\n            IFNULL(CAST(KgsRedondMenos AS CHAR),''),\n            IFNULL(Lote,''),\n            IFNULL(CAST(SegsEmbud AS CHAR),''),\n            IFNULL(CAST(Precio AS CHAR),''),\n            IFNULL(CAST(FechaEnsayo AS CHAR),''),\n            IFNULL(CAST(SegsFormulario AS CHAR),''),\n            IFNULL(ID_Bolson,''),\n            IFNULL(User_Bot,''),\n            IFNULL(CAST(Descuento2 AS CHAR),'')\n          )) AS rowhash,\n          idTiposDeMovimiento\n        FROM TiposDeMovimiento\n        WHERE TiposDeMovimiento NOT IN ('ERROR_REGISTRO','PABAJO','MIN_PROD_BOLSA')\n    ) x\n    GROUP BY rowhash\n    HAVING COUNT(*) > 1\n    ORDER BY minid ASC\n    LIMIT 1\n) d\n  ON d.rowhash = MD5(CONCAT_WS('||',\n    IFNULL(t.NroLote,''),\n    IFNULL(t.TiposDeMovimiento,''),\n    IFNULL(t.UnidadMedida,''),\n    IFNULL(CAST(t.kilos AS CHAR),''),\n    IFNULL(CAST(t.FechaHora AS CHAR),''),\n    IFNULL(CAST(t.Fecha AS CHAR),''),\n    IFNULL(t.Hora,''),\n    IFNULL(CAST(t.Descuento AS CHAR),''),\n    IFNULL(CAST(t.kilosNetos AS CHAR),''),\n    IFNULL(t.Proveedor,''),\n    IFNULL(t.Materiales,''),\n    IFNULL(t.Description,''),\n    IFNULL(t.Operador,''),\n    IFNULL(t.Maquina,''),\n    IFNULL(t.Cat10,''),\n    IFNULL(t.Cat11,''),\n    IFNULL(t.Cat12,''),\n    IFNULL(t.\\`IF\\`,''),\n    IFNULL(t.NroEnsayo,''),\n    IFNULL(CAST(t.KgsRedond AS CHAR),''),\n    IFNULL(CAST(t.KgsRedondMenos AS CHAR),''),\n    IFNULL(t.Lote,''),\n    IFNULL(CAST(t.SegsEmbud AS CHAR),''),\n    IFNULL(CAST(t.Precio AS CHAR),''),\n    IFNULL(CAST(t.FechaEnsayo AS CHAR),''),\n    IFNULL(CAST(t.SegsFormulario AS CHAR),''),\n    IFNULL(t.ID_Bolson,''),\n    IFNULL(t.User_Bot,''),\n    IFNULL(CAST(t.Descuento2 AS CHAR),'')\n  ))\nWHERE t.TiposDeMovimiento NOT IN ('ERROR_REGISTRO','PABAJO','MIN_PROD_BOLSA')\nORDER BY t.idTiposDeMovimiento ASC\nLIMIT 50;\n`;\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 820,
+        "y": 400,
+        "wires": [
+            [
+                "8cd366490c227f09"
+            ]
+        ]
+    },
+    {
+        "id": "8cd366490c227f09",
+        "type": "mysql",
+        "z": "7ae4ef8b052c449d",
+        "mydb": "0a44a18b0ab5b745",
+        "name": "",
+        "x": 1170,
+        "y": 420,
+        "wires": [
+            [
+                "ca7c804d7d07f858",
+                "9086d13efe84cbf2"
+            ]
+        ]
+    },
+    {
+        "id": "ca7c804d7d07f858",
+        "type": "debug",
+        "z": "7ae4ef8b052c449d",
+        "name": "debug 488",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1400,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "9086d13efe84cbf2",
+        "type": "function",
+        "z": "7ae4ef8b052c449d",
+        "name": "function 334",
+        "func": "const rows = Array.isArray(msg.payload) ? msg.payload : (msg.payload?.rows || []);\nconst now = new Date().toISOString();\n\nif (!rows.length) {\n  msg.ui = {\n    empty: true,\n    title: \"Duplicados exactos\",\n    subtitle: \"✅ No hay duplicados exactos para revisar (todo ok)\",\n    keepId: null,\n    rows: [],\n    generatedAt: now\n  };\n  msg.payload = msg.ui;\n  return msg;\n}\n\n// vienen ordenados por id ASC (tu query ya lo hace igual)\nconst sorted = rows.slice().sort((a,b)=> (a.idTiposDeMovimiento||0) - (b.idTiposDeMovimiento||0));\nconst keepId = sorted[0].idTiposDeMovimiento;\n\nmsg.ui = {\n  empty: false,\n  title: \"Duplicados exactos\",\n  subtitle: `Grupo encontrado (${sorted.length} registros) · sugerencia: conservar ID ${keepId}`,\n  keepId,\n  rows: sorted,\n  generatedAt: now\n};\n\nmsg.payload = msg.ui;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1420,
+        "y": 580,
+        "wires": [
+            [
+                "85c6554610a58470",
+                "ui_tpl_dup_clean"
+            ]
+        ]
+    },
+    {
+        "id": "85c6554610a58470",
+        "type": "debug",
+        "z": "7ae4ef8b052c449d",
+        "name": "debug 489",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1680,
+        "y": 420,
+        "wires": []
+    },
+    {
+        "id": "60548f96fef75148",
+        "type": "debug",
+        "z": "7ae4ef8b052c449d",
+        "name": "debug 490",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1860,
+        "y": 500,
+        "wires": []
+    },
+    {
+        "id": "ui_tpl_dup_clean",
+        "type": "ui_template",
+        "z": "7ae4ef8b052c449d",
+        "group": "323dbb8904c685ad",
+        "name": "UI Duplicados Exactos",
+        "order": 0,
+        "width": "24",
+        "height": "20",
+        "format": "<div style=\"font-family:Segoe UI, Arial; padding:12px;\" ng-style=\"{'opacity': (vm.ready?1:1)}\">\n  <div style=\"display:flex; align-items:flex-end; gap:12px; margin-bottom:10px;\">\n    <div style=\"font-size:18px; font-weight:900;\">🧩 {{vm.d.title || 'Duplicados exactos'}}</div>\n    <div style=\"opacity:.7; font-size:12px;\" ng-if=\"vm.d.generatedAt\">· {{vm.d.generatedAt}}</div>\n    <div style=\"margin-left:auto; opacity:.8; font-size:12px;\" ng-if=\"vm.d.subtitle\">{{vm.d.subtitle}}</div>\n  </div>\n\n  <div ng-if=\"!vm.ready\"\n    style=\"padding:12px; border-radius:12px; background:rgba(59,130,246,.08); border:1px solid rgba(59,130,246,.22);\">\n    ⏳ Esperando datos...\n  </div>\n\n  <div ng-if=\"vm.ready && vm.d.empty\"\n    style=\"padding:12px; border-radius:12px; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.35);\">\n    ✅ No hay duplicados exactos para revisar.\n  </div>\n\n  <div ng-if=\"vm.ready && !vm.d.empty\">\n    <div style=\"display:flex; gap:10px; flex-wrap:wrap;\">\n      <div ng-repeat=\"r in vm.d.rows track by r.idTiposDeMovimiento\" style=\"flex:1 1 360px; min-width:340px; border-radius:14px; padding:12px;\n                  border:1px solid rgba(59,130,246,.25);\n                  background:rgba(59,130,246,.06);\n                  box-shadow:0 6px 16px rgba(0,0,0,.08);\">\n\n        <div style=\"display:flex; align-items:center; gap:10px;\">\n          <div style=\"font-weight:900; font-size:14px;\">ID {{r.idTiposDeMovimiento}}</div>\n\n          <div style=\"margin-left:auto; font-size:11px; padding:4px 8px; border-radius:999px;\" ng-style=\"(r.idTiposDeMovimiento==vm.d.keepId)\n                        ? {'background':'rgba(16,185,129,.18)','border':'1px solid rgba(16,185,129,.45)'}\n                        : {'background':'rgba(239,68,68,.12)','border':'1px solid rgba(239,68,68,.35)'}\">\n            <span ng-if=\"r.idTiposDeMovimiento==vm.d.keepId\">✅ sugerido conservar</span>\n            <span ng-if=\"r.idTiposDeMovimiento!=vm.d.keepId\">⚠️ duplicado</span>\n          </div>\n        </div>\n\n        <div style=\"margin-top:8px; font-size:12px; line-height:1.35; opacity:.92;\">\n          <div><b>NroLote:</b> {{r.NroLote || '(vacío)'}} </div>\n          <div><b>Tipo:</b> {{r.TiposDeMovimiento || '(vacío)'}} </div>\n          <div><b>Kilos:</b> {{r.kilos}} </div>\n          <div><b>FechaHora:</b> {{r.FechaHora}} </div>\n          <div><b>Proveedor:</b> {{r.Proveedor || '-'}} </div>\n          <div><b>Máquina:</b> {{r.Maquina || '-'}} </div>\n          <div><b>Operador:</b> {{r.Operador || '-'}} </div>\n          <div style=\"margin-top:6px; opacity:.85;\">\n            <b>Description:</b>\n            <div style=\"white-space:pre-wrap;\">{{r.Description || '-'}}</div>\n          </div>\n        </div>\n\n        <div style=\"display:flex; gap:10px; margin-top:10px; align-items:center;\">\n          <button\n            ng-disabled=\"r.idTiposDeMovimiento==vm.d.keepId\"\n            ng-click=\"vm.markError(r.idTiposDeMovimiento)\"\n            style=\"padding:8px 12px; border-radius:12px; border:none; font-weight:900; cursor:pointer;\"\n            ng-style=\"(r.idTiposDeMovimiento==vm.d.keepId)\n                      ? {'opacity':'.35','cursor':'not-allowed'}\n                      : {'background':'rgba(239,68,68,.90)','color':'white'}\">\n            Marcar como erróneo\n          </button>\n\n          <button\n            ng-click=\"vm.sendDetails(r.idTiposDeMovimiento)\"\n            style=\"padding:8px 12px; border-radius:12px; border:1px solid rgba(59,130,246,.35);\n                   background:rgba(255,255,255,.6); font-weight:800; cursor:pointer;\">\n            Ver JSON\n          </button>\n\n          <div style=\"margin-left:auto; font-size:11px; opacity:.65;\">(no borra nada)</div>\n        </div>\n\n      </div>\n    </div>\n  </div>\n</div>\n\n<script>\n  (function(scope){\n  scope.vm = scope.vm || { ready:false, d:{ empty:true, rows:[] } };\n\n  function normalize(msg){\n    if(!msg) return null;\n    if(msg.payload && typeof msg.payload === 'object' && msg.payload.rows) return msg.payload;\n    if(msg.rows) return msg;\n    return null;\n  }\n\n  scope.vm.markError = function(id){\n    scope.send({ payload: { action:'mark_error', id:id } });\n  };\n\n  scope.vm.sendDetails = function(id){\n    scope.send({ payload: { action:'details', id:id } });\n  };\n\n  scope.$watch('msg', function(m){\n    var d = normalize(m);\n    if(d){\n      scope.vm.d = d;\n      scope.vm.ready = true;\n    }\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1740,
+        "y": 720,
+        "wires": [
+            [
+                "60548f96fef75148",
+                "0395952bd1345096"
+            ]
+        ]
+    },
+    {
+        "id": "1f5a5e79f27abb58",
+        "type": "ui_button",
+        "z": "7ae4ef8b052c449d",
+        "name": "",
+        "group": "323dbb8904c685ad",
+        "order": 1,
+        "width": 0,
+        "height": 0,
+        "passthru": false,
+        "label": "Buscar Registros Duplicados",
+        "tooltip": "",
+        "color": "",
+        "bgcolor": "",
+        "className": "",
+        "icon": "",
+        "payload": "",
+        "payloadType": "str",
+        "topic": "topic",
+        "topicType": "msg",
+        "x": 580,
+        "y": 400,
+        "wires": [
+            [
+                "1332a6c44a7068e3"
+            ]
+        ]
+    },
+    {
+        "id": "0395952bd1345096",
+        "type": "function",
+        "z": "7ae4ef8b052c449d",
+        "name": "function 335",
+        "func": "const p = msg.payload;\n\nif (!p || p.action !== \"mark_error\") return null;\n\nconst id = Number(p.id);\nif (!Number.isFinite(id)) return null;\n\nmsg.topic = `\nUPDATE TiposDeMovimiento\nSET TiposDeMovimiento = 'ERROR_REGISTRO'\nWHERE idTiposDeMovimiento = ${id}\n  AND TiposDeMovimiento NOT IN ('PABAJO','MIN_PROD_BOLSA')\n  AND TiposDeMovimiento <> 'ERROR_REGISTRO'\nLIMIT 1;\n`;\n\nmsg.payload = null;\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1420,
+        "y": 920,
+        "wires": [
+            [
+                "e2910da550881de6"
+            ]
+        ]
+    },
+    {
+        "id": "e2910da550881de6",
+        "type": "mysql",
+        "z": "7ae4ef8b052c449d",
+        "mydb": "0a44a18b0ab5b745",
+        "name": "",
+        "x": 1690,
+        "y": 940,
+        "wires": [
+            [
+                "46c32c6b15882124",
+                "ae078b035607c7d9"
+            ]
+        ]
+    },
+    {
+        "id": "46c32c6b15882124",
+        "type": "debug",
+        "z": "7ae4ef8b052c449d",
+        "name": "debug 491",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 1920,
+        "y": 860,
+        "wires": []
+    },
+    {
+        "id": "ae078b035607c7d9",
+        "type": "function",
+        "z": "7ae4ef8b052c449d",
+        "name": "Toast UPDATE duplicado",
+        "func": "// MySQL node suele devolver algo tipo:\n// { fieldCount, affectedRows, insertId, ... }\n// o a veces un array con eso.\n\nconst res = Array.isArray(msg.payload) ? msg.payload[0] : msg.payload;\nconst affected = res && (res.affectedRows ?? res.affected_rows ?? res['affectedRows']);\n\nconst originalId = (msg._markErrorId || (msg.payload && msg.payload.id) || msg.id);\n\nif (affected === 1) {\n  msg.payload = {\n    topic: \"OK\",\n    payload: `✅ Marcado como ERROR_REGISTRO (ID ${originalId})`,\n    type: \"success\",\n    timeout: 2500\n  };\n} else {\n  msg.payload = {\n    topic: \"Sin cambios\",\n    payload: `⚠️ No se modificó nada (quizá ya era ERROR_REGISTRO o fue filtrado).`,\n    type: \"warning\",\n    timeout: 3500\n  };\n}\n\nreturn msg;\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 1710,
+        "y": 1260,
+        "wires": [
+            [
+                "51e4d05cd7317040",
+                "58c903e3544e47ba"
+            ]
+        ]
+    },
+    {
+        "id": "51e4d05cd7317040",
+        "type": "ui_toast",
+        "z": "7ae4ef8b052c449d",
+        "position": "top right",
+        "displayTime": "3",
+        "highlight": "",
+        "outputs": 0,
+        "ok": "OK",
+        "cancel": "",
+        "raw": false,
+        "topic": "",
+        "name": "Toast Duplicados",
+        "x": 1950,
+        "y": 1260,
+        "wires": []
+    },
+    {
+        "id": "58c903e3544e47ba",
+        "type": "function",
+        "z": "7ae4ef8b052c449d",
+        "name": "function 336",
+        "func": "// Deja pasar el toast tal cual por salida 1\n// y además emite un \"pulso\" por salida 2 para refrescar (si affectedRows==1)\n\nconst toastMsg = RED.util.cloneMessage(msg);\n\nconst res = Array.isArray(msg.payload) ? msg.payload[0] : msg.payload;\nconst affected = res && (res.affectedRows ?? res.affected_rows ?? res['affectedRows']);\n\nlet refreshMsg = null;\nif (Number(affected) === 1) {\n    refreshMsg = {\n        payload: Date.now(),\n        topic: \"auto_refresh_after_update\",\n        _refresh: true\n    };\n}\n\nreturn [toastMsg, refreshMsg];\n",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 280,
+        "y": 580,
+        "wires": [
+            [
+                "1332a6c44a7068e3"
+            ]
+        ]
+    },
+    {
+        "id": "0a44a18b0ab5b745",
+        "type": "MySQLdatabase",
+        "name": "sh_etp_v2",
+        "host": "192.168.1.137",
+        "port": "3306",
+        "db": "sh_etp_v2",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "323dbb8904c685ad",
+        "type": "ui_group",
+        "name": "Default",
+        "tab": "5f65795b81850751",
+        "order": 1,
+        "disp": true,
+        "width": "24",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "5f65795b81850751",
+        "type": "ui_tab",
+        "name": "ReguistrosDuplicados",
+        "icon": "dashboard",
+        "disabled": false,
+        "hidden": false
+    }
+]
