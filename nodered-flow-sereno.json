@@ -26,17 +26,55 @@
     "collapse": false
   },
   {
-    "id": "fn_store_img",
+    "id": "fn_result_shared",
     "type": "function",
     "z": "tab_cams_sereno",
-    "name": "Guardar imagen base64",
-    "func": "const key = msg.camKey;\nif (!key) return null;\nconst st = flow.get('camStatus') || {};\nif (st[key]) {\n  st[key].img = msg.payload.toString('base64');\n  flow.set('camStatus', st);\n}\nreturn null;",
+    "name": "Verificar resultado exec",
+    "func": "const key = msg.camKey;\nconst file = msg.camFile;\nif (!key || !file) return null;\nconst rc = msg.payload;\nconst code = (typeof rc === 'object' && rc !== null) ? rc.code : parseInt(rc, 10);\nconst st = flow.get('camStatus') || {};\nif (!st[key]) st[key] = {name:key, key:key, lastUpdate:null, lastSize:null, status:'unknown', error:null, img:''};\nif (isNaN(code) || code !== 0) {\n  st[key].status = 'error';\n  st[key].error = 'rc:' + code;\n  flow.set('camStatus', st);\n  node.status({fill:'red', shape:'ring', text:'['+key+'] rc:'+code});\n  return null;\n}\nflow.set('camStatus', st);\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
-    "x": 1300,
+    "x": 900,
+    "y": 40,
+    "wires": [
+      [
+        "filein_shared"
+      ]
+    ]
+  },
+  {
+    "id": "filein_shared",
+    "type": "file in",
+    "z": "tab_cams_sereno",
+    "name": "Leer JPG (buffer)",
+    "filename": "camFile",
+    "filenameType": "msg",
+    "format": "buffer",
+    "sendError": false,
+    "encoding": "none",
+    "allProps": false,
+    "x": 1100,
+    "y": 40,
+    "wires": [
+      [
+        "fn_store_img"
+      ]
+    ]
+  },
+  {
+    "id": "fn_store_img",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Guardar imagen base64",
+    "func": "const key = msg.camKey;\nif (!key) return null;\nconst st = flow.get('camStatus') || {};\nif (!st[key]) return null;\nconst buf = Buffer.isBuffer(msg.payload)\n  ? msg.payload\n  : Buffer.from(msg.payload, 'binary');\nconst size = buf.length;\nif (size < 2000) {\n  st[key].status = 'error';\n  st[key].error = 'jpg chico: ' + size + 'B';\n  flow.set('camStatus', st);\n  node.status({fill:'red', shape:'ring', text:'['+key+'] jpg '+size+'B'});\n  return null;\n}\nst[key].img = buf.toString('base64');\nst[key].lastUpdate = Date.now();\nst[key].lastSize = size;\nst[key].status = 'ok';\nst[key].error = null;\nflow.set('camStatus', st);\nnode.status({fill:'green', shape:'dot', text:'['+key+'] ~'+Math.round(size/1024)+'KB'});\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1320,
     "y": 40,
     "wires": [
       []
@@ -60,7 +98,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 80,
+    "y": 100,
+    "wires": [
+      [
+        "fn_setup_play2"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_play2",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Play2",
+    "func": "msg.camKey='play2';\nmsg.camFile='/mnt/usbdata/cams/play2.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 100,
     "wires": [
       [
         "exec_play2"
@@ -71,105 +128,20 @@
     "id": "exec_play2",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:ZHXSSQ@192.168.1.114:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:ZHXSSQ@192.168.1.114:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/play2.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Play2",
-    "x": 400,
-    "y": 80,
+    "x": 560,
+    "y": 100,
     "wires": [
-      [
-        "fn_val_play2"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_play2",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Play2",
-    "func": "const key='play2';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Play2',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 80,
-    "wires": [
+      [],
       [
-        "file_play2"
-      ],
-      [
-        "dly_play2"
-      ]
-    ]
-  },
-  {
-    "id": "file_play2",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Play2",
-    "filename": "/mnt/usbdata/cams/play2.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 80,
-    "wires": [
-      [
-        "filein_play2"
-      ]
-    ]
-  },
-  {
-    "id": "filein_play2",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Play2",
-    "filename": "/mnt/usbdata/cams/play2.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 80,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_play2",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 130,
-    "wires": [
-      [
-        "exec_play2"
+        "fn_result_shared"
       ]
     ]
   },
@@ -194,6 +166,25 @@
     "y": 180,
     "wires": [
       [
+        "fn_setup_prod1"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_prod1",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Produccion1",
+    "func": "msg.camKey='prod1';\nmsg.camFile='/mnt/usbdata/cams/prod1.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 180,
+    "wires": [
+      [
         "exec_prod1"
       ]
     ]
@@ -202,105 +193,20 @@
     "id": "exec_prod1",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:WDTTEV@192.168.1.91:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:WDTTEV@192.168.1.91:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/prod1.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Produccion1",
-    "x": 400,
+    "x": 560,
     "y": 180,
     "wires": [
-      [
-        "fn_val_prod1"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_prod1",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Produccion1",
-    "func": "const key='prod1';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Produccion1',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 180,
-    "wires": [
+      [],
       [
-        "file_prod1"
-      ],
-      [
-        "dly_prod1"
-      ]
-    ]
-  },
-  {
-    "id": "file_prod1",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Produccion1",
-    "filename": "/mnt/usbdata/cams/prod1.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 180,
-    "wires": [
-      [
-        "filein_prod1"
-      ]
-    ]
-  },
-  {
-    "id": "filein_prod1",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Produccion1",
-    "filename": "/mnt/usbdata/cams/prod1.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 180,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_prod1",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 230,
-    "wires": [
-      [
-        "exec_prod1"
+        "fn_result_shared"
       ]
     ]
   },
@@ -322,7 +228,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 280,
+    "y": 260,
+    "wires": [
+      [
+        "fn_setup_adentro"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_adentro",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Adentro",
+    "func": "msg.camKey='adentro';\nmsg.camFile='/mnt/usbdata/cams/adentro.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 260,
     "wires": [
       [
         "exec_adentro"
@@ -333,105 +258,20 @@
     "id": "exec_adentro",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:DORYEY@192.168.1.106:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:DORYEY@192.168.1.106:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/adentro.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Adentro",
-    "x": 400,
-    "y": 280,
+    "x": 560,
+    "y": 260,
     "wires": [
-      [
-        "fn_val_adentro"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_adentro",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Adentro",
-    "func": "const key='adentro';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Adentro',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 280,
-    "wires": [
+      [],
       [
-        "file_adentro"
-      ],
-      [
-        "dly_adentro"
-      ]
-    ]
-  },
-  {
-    "id": "file_adentro",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Adentro",
-    "filename": "/mnt/usbdata/cams/adentro.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 280,
-    "wires": [
-      [
-        "filein_adentro"
-      ]
-    ]
-  },
-  {
-    "id": "filein_adentro",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Adentro",
-    "filename": "/mnt/usbdata/cams/adentro.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 280,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_adentro",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 330,
-    "wires": [
-      [
-        "exec_adentro"
+        "fn_result_shared"
       ]
     ]
   },
@@ -453,7 +293,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 380,
+    "y": 340,
+    "wires": [
+      [
+        "fn_setup_cam190"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_cam190",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CAM190",
+    "func": "msg.camKey='cam190';\nmsg.camFile='/mnt/usbdata/cams/cam190.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 340,
     "wires": [
       [
         "exec_cam190"
@@ -464,105 +323,20 @@
     "id": "exec_cam190",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HJDTKE@192.168.1.190:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HJDTKE@192.168.1.190:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/cam190.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CAM190",
-    "x": 400,
-    "y": 380,
+    "x": 560,
+    "y": 340,
     "wires": [
-      [
-        "fn_val_cam190"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_cam190",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CAM190",
-    "func": "const key='cam190';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CAM190',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 380,
-    "wires": [
+      [],
       [
-        "file_cam190"
-      ],
-      [
-        "dly_cam190"
-      ]
-    ]
-  },
-  {
-    "id": "file_cam190",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CAM190",
-    "filename": "/mnt/usbdata/cams/cam190.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 380,
-    "wires": [
-      [
-        "filein_cam190"
-      ]
-    ]
-  },
-  {
-    "id": "filein_cam190",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CAM190",
-    "filename": "/mnt/usbdata/cams/cam190.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 380,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_cam190",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 430,
-    "wires": [
-      [
-        "exec_cam190"
+        "fn_result_shared"
       ]
     ]
   },
@@ -584,7 +358,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 480,
+    "y": 420,
+    "wires": [
+      [
+        "fn_setup_cam151"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_cam151",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CAM151",
+    "func": "msg.camKey='cam151';\nmsg.camFile='/mnt/usbdata/cams/cam151.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 420,
     "wires": [
       [
         "exec_cam151"
@@ -595,105 +388,20 @@
     "id": "exec_cam151",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:QAAJSM@192.168.1.151:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:QAAJSM@192.168.1.151:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/cam151.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CAM151",
-    "x": 400,
-    "y": 480,
+    "x": 560,
+    "y": 420,
     "wires": [
-      [
-        "fn_val_cam151"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_cam151",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CAM151",
-    "func": "const key='cam151';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CAM151',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 480,
-    "wires": [
+      [],
       [
-        "file_cam151"
-      ],
-      [
-        "dly_cam151"
-      ]
-    ]
-  },
-  {
-    "id": "file_cam151",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CAM151",
-    "filename": "/mnt/usbdata/cams/cam151.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 480,
-    "wires": [
-      [
-        "filein_cam151"
-      ]
-    ]
-  },
-  {
-    "id": "filein_cam151",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CAM151",
-    "filename": "/mnt/usbdata/cams/cam151.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 480,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_cam151",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 530,
-    "wires": [
-      [
-        "exec_cam151"
+        "fn_result_shared"
       ]
     ]
   },
@@ -715,7 +423,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 580,
+    "y": 500,
+    "wires": [
+      [
+        "fn_setup_cam67"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_cam67",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CAM67",
+    "func": "msg.camKey='cam67';\nmsg.camFile='/mnt/usbdata/cams/cam67.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 500,
     "wires": [
       [
         "exec_cam67"
@@ -726,105 +453,20 @@
     "id": "exec_cam67",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:UZWDIX@192.168.1.81:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:UZWDIX@192.168.1.81:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/cam67.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CAM67",
-    "x": 400,
-    "y": 580,
+    "x": 560,
+    "y": 500,
     "wires": [
-      [
-        "fn_val_cam67"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_cam67",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CAM67",
-    "func": "const key='cam67';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CAM67',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 580,
-    "wires": [
+      [],
       [
-        "file_cam67"
-      ],
-      [
-        "dly_cam67"
-      ]
-    ]
-  },
-  {
-    "id": "file_cam67",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CAM67",
-    "filename": "/mnt/usbdata/cams/cam67.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 580,
-    "wires": [
-      [
-        "filein_cam67"
-      ]
-    ]
-  },
-  {
-    "id": "filein_cam67",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CAM67",
-    "filename": "/mnt/usbdata/cams/cam67.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 580,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_cam67",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 630,
-    "wires": [
-      [
-        "exec_cam67"
+        "fn_result_shared"
       ]
     ]
   },
@@ -846,7 +488,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 680,
+    "y": 580,
+    "wires": [
+      [
+        "fn_setup_cam64"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_cam64",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CAM64",
+    "func": "msg.camKey='cam64';\nmsg.camFile='/mnt/usbdata/cams/cam64.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 580,
     "wires": [
       [
         "exec_cam64"
@@ -857,105 +518,20 @@
     "id": "exec_cam64",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HMUSSP@192.168.1.73:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HMUSSP@192.168.1.73:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/cam64.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CAM64",
-    "x": 400,
-    "y": 680,
+    "x": 560,
+    "y": 580,
     "wires": [
-      [
-        "fn_val_cam64"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_cam64",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CAM64",
-    "func": "const key='cam64';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CAM64',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 680,
-    "wires": [
+      [],
       [
-        "file_cam64"
-      ],
-      [
-        "dly_cam64"
-      ]
-    ]
-  },
-  {
-    "id": "file_cam64",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CAM64",
-    "filename": "/mnt/usbdata/cams/cam64.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 680,
-    "wires": [
-      [
-        "filein_cam64"
-      ]
-    ]
-  },
-  {
-    "id": "filein_cam64",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CAM64",
-    "filename": "/mnt/usbdata/cams/cam64.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 680,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_cam64",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 730,
-    "wires": [
-      [
-        "exec_cam64"
+        "fn_result_shared"
       ]
     ]
   },
@@ -977,7 +553,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 780,
+    "y": 660,
+    "wires": [
+      [
+        "fn_setup_bal1_afuera"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_bal1_afuera",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup BAL1 Afuera",
+    "func": "msg.camKey='bal1_afuera';\nmsg.camFile='/mnt/usbdata/cams/bal1_afuera.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 660,
     "wires": [
       [
         "exec_bal1_afuera"
@@ -988,105 +583,20 @@
     "id": "exec_bal1_afuera",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:TZEKDZ@192.168.1.104:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:TZEKDZ@192.168.1.104:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/bal1_afuera.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura BAL1 Afuera",
-    "x": 400,
-    "y": 780,
+    "x": 560,
+    "y": 660,
     "wires": [
-      [
-        "fn_val_bal1_afuera"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_bal1_afuera",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar BAL1 Afuera",
-    "func": "const key='bal1_afuera';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'BAL1 Afuera',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 780,
-    "wires": [
+      [],
       [
-        "file_bal1_afuera"
-      ],
-      [
-        "dly_bal1_afuera"
-      ]
-    ]
-  },
-  {
-    "id": "file_bal1_afuera",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar BAL1 Afuera",
-    "filename": "/mnt/usbdata/cams/bal1_afuera.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 780,
-    "wires": [
-      [
-        "filein_bal1_afuera"
-      ]
-    ]
-  },
-  {
-    "id": "filein_bal1_afuera",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer BAL1 Afuera",
-    "filename": "/mnt/usbdata/cams/bal1_afuera.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 780,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_bal1_afuera",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 830,
-    "wires": [
-      [
-        "exec_bal1_afuera"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1108,7 +618,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 880,
+    "y": 740,
+    "wires": [
+      [
+        "fn_setup_pt_galpon"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_pt_galpon",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup PT Galpon",
+    "func": "msg.camKey='pt_galpon';\nmsg.camFile='/mnt/usbdata/cams/pt_galpon.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 740,
     "wires": [
       [
         "exec_pt_galpon"
@@ -1119,105 +648,20 @@
     "id": "exec_pt_galpon",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:PJWIIK@192.168.1.78:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:PJWIIK@192.168.1.78:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/pt_galpon.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura PT Galpon",
-    "x": 400,
-    "y": 880,
+    "x": 560,
+    "y": 740,
     "wires": [
-      [
-        "fn_val_pt_galpon"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_pt_galpon",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar PT Galpon",
-    "func": "const key='pt_galpon';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'PT Galpon',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 880,
-    "wires": [
+      [],
       [
-        "file_pt_galpon"
-      ],
-      [
-        "dly_pt_galpon"
-      ]
-    ]
-  },
-  {
-    "id": "file_pt_galpon",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar PT Galpon",
-    "filename": "/mnt/usbdata/cams/pt_galpon.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 880,
-    "wires": [
-      [
-        "filein_pt_galpon"
-      ]
-    ]
-  },
-  {
-    "id": "filein_pt_galpon",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer PT Galpon",
-    "filename": "/mnt/usbdata/cams/pt_galpon.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 880,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_pt_galpon",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 930,
-    "wires": [
-      [
-        "exec_pt_galpon"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1239,7 +683,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 980,
+    "y": 820,
+    "wires": [
+      [
+        "fn_setup_molino_chino"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_molino_chino",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Molino Chino",
+    "func": "msg.camKey='molino_chino';\nmsg.camFile='/mnt/usbdata/cams/molino_chino.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 820,
     "wires": [
       [
         "exec_molino_chino"
@@ -1250,105 +713,20 @@
     "id": "exec_molino_chino",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:ABTBSV@192.168.1.173:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:ABTBSV@192.168.1.173:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/molino_chino.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Molino Chino",
-    "x": 400,
-    "y": 980,
+    "x": 560,
+    "y": 820,
     "wires": [
-      [
-        "fn_val_molino_chino"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_molino_chino",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Molino Chino",
-    "func": "const key='molino_chino';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Molino Chino',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 980,
-    "wires": [
+      [],
       [
-        "file_molino_chino"
-      ],
-      [
-        "dly_molino_chino"
-      ]
-    ]
-  },
-  {
-    "id": "file_molino_chino",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Molino Chino",
-    "filename": "/mnt/usbdata/cams/molino_chino.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 980,
-    "wires": [
-      [
-        "filein_molino_chino"
-      ]
-    ]
-  },
-  {
-    "id": "filein_molino_chino",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Molino Chino",
-    "filename": "/mnt/usbdata/cams/molino_chino.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 980,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_molino_chino",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 1030,
-    "wires": [
-      [
-        "exec_molino_chino"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1370,7 +748,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 1080,
+    "y": 900,
+    "wires": [
+      [
+        "fn_setup_fondo"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_fondo",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Fondo",
+    "func": "msg.camKey='fondo';\nmsg.camFile='/mnt/usbdata/cams/fondo.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 900,
     "wires": [
       [
         "exec_fondo"
@@ -1381,105 +778,20 @@
     "id": "exec_fondo",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HZAMII@192.168.1.194:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:HZAMII@192.168.1.194:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/fondo.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Fondo",
-    "x": 400,
-    "y": 1080,
+    "x": 560,
+    "y": 900,
     "wires": [
-      [
-        "fn_val_fondo"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_fondo",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Fondo",
-    "func": "const key='fondo';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Fondo',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 1080,
-    "wires": [
+      [],
       [
-        "file_fondo"
-      ],
-      [
-        "dly_fondo"
-      ]
-    ]
-  },
-  {
-    "id": "file_fondo",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Fondo",
-    "filename": "/mnt/usbdata/cams/fondo.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 1080,
-    "wires": [
-      [
-        "filein_fondo"
-      ]
-    ]
-  },
-  {
-    "id": "filein_fondo",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Fondo",
-    "filename": "/mnt/usbdata/cams/fondo.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 1080,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_fondo",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 1130,
-    "wires": [
-      [
-        "exec_fondo"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1501,7 +813,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 1180,
+    "y": 980,
+    "wires": [
+      [
+        "fn_setup_camcom2"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_camcom2",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CamCom2",
+    "func": "msg.camKey='camcom2';\nmsg.camFile='/mnt/usbdata/cams/camcom2.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 980,
     "wires": [
       [
         "exec_camcom2"
@@ -1512,105 +843,20 @@
     "id": "exec_camcom2",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:PYKXQN@192.168.1.120:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:PYKXQN@192.168.1.120:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/camcom2.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CamCom2",
-    "x": 400,
-    "y": 1180,
+    "x": 560,
+    "y": 980,
     "wires": [
-      [
-        "fn_val_camcom2"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_camcom2",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CamCom2",
-    "func": "const key='camcom2';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CamCom2',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 1180,
-    "wires": [
+      [],
       [
-        "file_camcom2"
-      ],
-      [
-        "dly_camcom2"
-      ]
-    ]
-  },
-  {
-    "id": "file_camcom2",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CamCom2",
-    "filename": "/mnt/usbdata/cams/camcom2.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 1180,
-    "wires": [
-      [
-        "filein_camcom2"
-      ]
-    ]
-  },
-  {
-    "id": "filein_camcom2",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CamCom2",
-    "filename": "/mnt/usbdata/cams/camcom2.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 1180,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_camcom2",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 1230,
-    "wires": [
-      [
-        "exec_camcom2"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1632,7 +878,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 1280,
+    "y": 1060,
+    "wires": [
+      [
+        "fn_setup_playon1"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_playon1",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup Playon1",
+    "func": "msg.camKey='playon1';\nmsg.camFile='/mnt/usbdata/cams/playon1.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 1060,
     "wires": [
       [
         "exec_playon1"
@@ -1643,105 +908,20 @@
     "id": "exec_playon1",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:Palala81@192.168.1.102:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:Palala81@192.168.1.102:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/playon1.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura Playon1",
-    "x": 400,
-    "y": 1280,
+    "x": 560,
+    "y": 1060,
     "wires": [
-      [
-        "fn_val_playon1"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_playon1",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar Playon1",
-    "func": "const key='playon1';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'Playon1',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 1280,
-    "wires": [
+      [],
       [
-        "file_playon1"
-      ],
-      [
-        "dly_playon1"
-      ]
-    ]
-  },
-  {
-    "id": "file_playon1",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar Playon1",
-    "filename": "/mnt/usbdata/cams/playon1.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 1280,
-    "wires": [
-      [
-        "filein_playon1"
-      ]
-    ]
-  },
-  {
-    "id": "filein_playon1",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer Playon1",
-    "filename": "/mnt/usbdata/cams/playon1.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 1280,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_playon1",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 1330,
-    "wires": [
-      [
-        "exec_playon1"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1763,7 +943,26 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 1380,
+    "y": 1140,
+    "wires": [
+      [
+        "fn_setup_cam96"
+      ]
+    ]
+  },
+  {
+    "id": "fn_setup_cam96",
+    "type": "function",
+    "z": "tab_cams_sereno",
+    "name": "Setup CAM96",
+    "func": "msg.camKey='cam96';\nmsg.camFile='/mnt/usbdata/cams/cam96.jpg';\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 340,
+    "y": 1140,
     "wires": [
       [
         "exec_cam96"
@@ -1774,105 +973,20 @@
     "id": "exec_cam96",
     "type": "exec",
     "z": "tab_cams_sereno",
-    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:OQTPQX@192.168.1.96:554 -vf scale=480:270 -vframes 1 -q:v 31 -f image2 -",
+    "command": "timeout 15s ffmpeg -hide_banner -loglevel error -rtsp_transport tcp -i rtsp://admin:OQTPQX@192.168.1.96:554 -vf scale=480:270 -vframes 1 -q:v 31 -y /mnt/usbdata/cams/cam96.jpg",
     "addpay": false,
     "append": "",
     "useSpawn": "false",
     "timer": "",
     "winHide": false,
     "name": "Captura CAM96",
-    "x": 400,
-    "y": 1380,
+    "x": 560,
+    "y": 1140,
     "wires": [
-      [
-        "fn_val_cam96"
-      ],
       [],
-      []
-    ]
-  },
-  {
-    "id": "fn_val_cam96",
-    "type": "function",
-    "z": "tab_cams_sereno",
-    "name": "Validar CAM96",
-    "func": "const key='cam96';\nconst payload=msg.payload;\nconst size=payload?payload.length:0;\nconst minSize=3000;\nconst st=flow.get('camStatus')||{};\nif(!st[key])st[key]={name:'CAM96',key:key,lastUpdate:null,lastSize:null,status:'unknown',error:null,img:''};\nif(size<minSize){\n  st[key].status='error'; st[key].error='stdout '+size+'B';\n  flow.set('camStatus',st);\n  node.status({fill:'red',shape:'ring',text:'error: '+size+'B'});\n  if(!msg._retry){msg._retry=true;return[null,msg];}\n  return null;\n}\nst[key].status='ok'; st[key].lastUpdate=Date.now(); st[key].lastSize=size; st[key].error=null;\nflow.set('camStatus',st);\nnode.status({fill:'green',shape:'dot',text:'OK ~'+Math.round(size/1024)+'KB'});\nmsg.camKey=key;\nreturn[msg,null];",
-    "outputs": 2,
-    "noerr": 0,
-    "initialize": "",
-    "finalize": "",
-    "libs": [],
-    "x": 660,
-    "y": 1380,
-    "wires": [
+      [],
       [
-        "file_cam96"
-      ],
-      [
-        "dly_cam96"
-      ]
-    ]
-  },
-  {
-    "id": "file_cam96",
-    "type": "file",
-    "z": "tab_cams_sereno",
-    "name": "Guardar CAM96",
-    "filename": "/mnt/usbdata/cams/cam96.jpg",
-    "filenameType": "str",
-    "appendNewline": false,
-    "createDir": false,
-    "overwriteFile": "true",
-    "encoding": "none",
-    "x": 900,
-    "y": 1380,
-    "wires": [
-      [
-        "filein_cam96"
-      ]
-    ]
-  },
-  {
-    "id": "filein_cam96",
-    "type": "file in",
-    "z": "tab_cams_sereno",
-    "name": "Leer CAM96",
-    "filename": "/mnt/usbdata/cams/cam96.jpg",
-    "filenameType": "str",
-    "format": "buffer",
-    "sendError": false,
-    "encoding": "none",
-    "allProps": false,
-    "x": 1100,
-    "y": 1380,
-    "wires": [
-      [
-        "fn_store_img"
-      ]
-    ]
-  },
-  {
-    "id": "dly_cam96",
-    "type": "delay",
-    "z": "tab_cams_sereno",
-    "name": "Retry 3s",
-    "pauseType": "delay",
-    "timeout": "3",
-    "timeoutUnits": "seconds",
-    "rate": "1",
-    "nbRateUnits": "1",
-    "rateUnits": "second",
-    "randomFirst": "1",
-    "randomLast": "5",
-    "randomUnits": "seconds",
-    "drop": false,
-    "allowrate": false,
-    "outputs": 1,
-    "x": 660,
-    "y": 1430,
-    "wires": [
-      [
-        "exec_cam96"
+        "fn_result_shared"
       ]
     ]
   },
@@ -1894,7 +1008,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 150,
-    "y": 1560,
+    "y": 1320,
     "wires": [
       [
         "fn_ui_data"
@@ -1906,14 +1020,14 @@
     "type": "function",
     "z": "tab_cams_sereno",
     "name": "Armar datos UI",
-    "func": "const status=flow.get('camStatus')||{};\nconst keys=[\"play2\", \"prod1\", \"adentro\", \"cam190\", \"cam151\", \"cam67\", \"cam64\", \"bal1_afuera\", \"pt_galpon\", \"molino_chino\", \"fondo\", \"camcom2\", \"playon1\", \"cam96\"];\nconst names={\"play2\": \"Play2\", \"prod1\": \"Produccion1\", \"adentro\": \"Adentro\", \"cam190\": \"CAM190\", \"cam151\": \"CAM151\", \"cam67\": \"CAM67\", \"cam64\": \"CAM64\", \"bal1_afuera\": \"BAL1 Afuera\", \"pt_galpon\": \"PT Galpon\", \"molino_chino\": \"Molino Chino\", \"fondo\": \"Fondo\", \"camcom2\": \"CamCom2\", \"playon1\": \"Playon1\", \"cam96\": \"CAM96\"};\nconst now=Date.now(); const OLD_SEC=90;\nmsg.payload=keys.map(k=>{\n  const s=status[k]||{};\n  const age=s.lastUpdate?Math.floor((now-s.lastUpdate)/1000):null;\n  let st=s.status||'unknown';\n  if(st==='ok'&&age!==null&&age>OLD_SEC)st='old';\n  let txt=age!==null?(st==='error'?'Error (hace '+age+'s)':st==='old'?'Vieja (hace '+age+'s)':'Hace '+age+'s'):(st==='error'?'Error: '+(s.error||''):'Sin datos');\n  const kb=s.lastSize?Math.round(s.lastSize/1024)+' KB':'--';\n  return{key:k,name:names[k]||k,status:st,statusText:txt,sizeText:kb,img:s.img||''};\n});\nreturn msg;",
+    "func": "const status = flow.get('camStatus') || {};\nconst keys = [\"play2\", \"prod1\", \"adentro\", \"cam190\", \"cam151\", \"cam67\", \"cam64\", \"bal1_afuera\", \"pt_galpon\", \"molino_chino\", \"fondo\", \"camcom2\", \"playon1\", \"cam96\"];\nconst names = {\"play2\": \"Play2\", \"prod1\": \"Produccion1\", \"adentro\": \"Adentro\", \"cam190\": \"CAM190\", \"cam151\": \"CAM151\", \"cam67\": \"CAM67\", \"cam64\": \"CAM64\", \"bal1_afuera\": \"BAL1 Afuera\", \"pt_galpon\": \"PT Galpon\", \"molino_chino\": \"Molino Chino\", \"fondo\": \"Fondo\", \"camcom2\": \"CamCom2\", \"playon1\": \"Playon1\", \"cam96\": \"CAM96\"};\nconst now = Date.now();\nconst OLD_SEC = 90;\nmsg.payload = keys.map(k => {\n  const s = status[k] || {};\n  const age = s.lastUpdate ? Math.floor((now - s.lastUpdate) / 1000) : null;\n  let st = s.status || 'unknown';\n  if (st === 'ok' && age !== null && age > OLD_SEC) st = 'old';\n  let txt;\n  if (age !== null) {\n    if (st === 'error') txt = 'Error (hace ' + age + 's)';\n    else if (st === 'old') txt = 'Vieja (hace ' + age + 's)';\n    else txt = 'Hace ' + age + 's';\n  } else {\n    txt = st === 'error' ? ('Error: ' + (s.error || '')) : 'Sin datos';\n  }\n  const kb = s.lastSize ? Math.round(s.lastSize / 1024) + ' KB' : '--';\n  return { key: k, name: names[k] || k, status: st, statusText: txt, sizeText: kb, img: s.img || '' };\n});\nreturn msg;",
     "outputs": 1,
     "noerr": 0,
     "initialize": "",
     "finalize": "",
     "libs": [],
     "x": 360,
-    "y": 1560,
+    "y": 1320,
     "wires": [
       [
         "ui_tpl"
@@ -1929,14 +1043,14 @@
     "order": 1,
     "width": "24",
     "height": "20",
-    "format": "<style>\n.sg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px;background:#111}\n@media(max-width:800px){.sg-grid{grid-template-columns:repeat(2,1fr)}}\n@media(max-width:500px){.sg-grid{grid-template-columns:1fr}}\n.sg-card{border:2px solid #555;border-radius:6px;overflow:hidden;background:#1e1e1e;font-family:sans-serif}\n.sg-card.ok{border-color:#4caf50}.sg-card.old{border-color:#ff9800}.sg-card.error{border-color:#f44336}.sg-card.unknown{border-color:#616161}\n.sg-img{width:100%;height:140px;object-fit:cover;display:block;background:#000}\n.sg-noimg{width:100%;height:140px;background:#111;display:flex;align-items:center;justify-content:center;color:#333;font-size:11px}\n.sg-info{padding:5px 8px;color:#eee;font-size:11px;line-height:1.6}\n.sg-name{font-size:13px;font-weight:bold;display:flex;align-items:center;gap:6px;margin-bottom:2px}\n.sg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;display:inline-block}\n.dot-ok{background:#4caf50}.dot-old{background:#ff9800}.dot-error{background:#f44336}.dot-unknown{background:#9e9e9e}\n.sg-stat{color:#aaa;font-size:10px}\n</style>\n<div class=\"sg-grid\">\n  <div ng-repeat=\"cam in msg.payload track by cam.key\" class=\"sg-card\" ng-class=\"cam.status\">\n    <img class=\"sg-img\" ng-if=\"cam.img\" ng-src=\"'data:image/jpeg;base64,'+cam.img\" alt=\"{{cam.name}}\">\n    <div class=\"sg-noimg\" ng-if=\"!cam.img\">sin imagen</div>\n    <div class=\"sg-info\">\n      <div class=\"sg-name\"><span class=\"sg-dot\" ng-class=\"'dot-'+cam.status\"></span>{{cam.name}}</div>\n      <div class=\"sg-stat\">{{cam.statusText}} &bull; {{cam.sizeText}}</div>\n    </div>\n  </div>\n</div>",
+    "format": "<style>\n.sg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px;background:#111}\n@media(max-width:800px){.sg-grid{grid-template-columns:repeat(2,1fr)}}\n@media(max-width:500px){.sg-grid{grid-template-columns:1fr}}\n.sg-card{border:2px solid #555;border-radius:6px;overflow:hidden;background:#1e1e1e;font-family:sans-serif}\n.sg-card.ok{border-color:#4caf50}.sg-card.old{border-color:#ff9800}.sg-card.error{border-color:#f44336}.sg-card.unknown{border-color:#616161}\n.sg-img{width:100%;height:140px;object-fit:cover;display:block;background:#000}\n.sg-noimg{width:100%;height:140px;background:#111;display:flex;align-items:center;justify-content:center;color:#444;font-size:11px}\n.sg-info{padding:5px 8px;color:#eee;font-size:11px;line-height:1.6}\n.sg-name{font-size:13px;font-weight:bold;display:flex;align-items:center;gap:6px;margin-bottom:2px}\n.sg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;display:inline-block}\n.dot-ok{background:#4caf50}.dot-old{background:#ff9800}.dot-error{background:#f44336}.dot-unknown{background:#9e9e9e}\n.sg-stat{color:#aaa;font-size:10px}\n</style>\n<div class=\"sg-grid\">\n  <div ng-repeat=\"cam in msg.payload track by cam.key\" class=\"sg-card\" ng-class=\"cam.status\">\n    <img class=\"sg-img\" ng-if=\"cam.img\" ng-src=\"'data:image/jpeg;base64,'+cam.img\" alt=\"{{cam.name}}\">\n    <div class=\"sg-noimg\" ng-if=\"!cam.img\">sin imagen</div>\n    <div class=\"sg-info\">\n      <div class=\"sg-name\"><span class=\"sg-dot\" ng-class=\"'dot-'+cam.status\"></span>{{cam.name}}</div>\n      <div class=\"sg-stat\">{{cam.statusText}} &bull; {{cam.sizeText}}</div>\n    </div>\n  </div>\n</div>",
     "storeOutMessages": false,
     "fwdInMessages": true,
     "resendOnRefresh": true,
     "templateScope": "local",
     "className": "",
-    "x": 580,
-    "y": 1560,
+    "x": 570,
+    "y": 1320,
     "wires": [
       []
     ]
