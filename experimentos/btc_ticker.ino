@@ -3,6 +3,7 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <PubSubClient.h>
 #include "esp32-hal-cpu.h"
 
 #define BL_PIN 22
@@ -72,6 +73,18 @@ WifiNet wifiList[] = {
 };
 const int wifiCount = sizeof(wifiList) / sizeof(wifiList[0]);
 int currentWifiIdx = -1;
+
+// -------------------- MQTT --------------------
+#define MQTT_HOST     "raspberrypi.local"
+#define MQTT_PORT     1883
+#define MQTT_CLIENT   "esp32-btc"
+#define MQTT_TOPIC    "btc/snapshot"
+const unsigned long MQTT_PUBLISH_MS = 1000;
+
+WiFiClient      mqttNet;
+PubSubClient    mqtt(mqttNet);
+unsigned long   lastMqttPublish       = 0;
+unsigned long   lastMqttReconnectMs   = 0;
 
 // -------------------- Pantalla --------------------
 Arduino_DataBus *bus = new Arduino_ESP32SPI(15, 14, 7, 6, -1);
@@ -1558,6 +1571,55 @@ void connectCoinbaseWS() {
   wsCoinbase.enableHeartbeat(15000, 3000, 2);
 }
 
+// -------------------- MQTT funciones --------------------
+void mqttReconnect() {
+  unsigned long now = millis();
+  if (now - lastMqttReconnectMs < 5000) return;
+  lastMqttReconnectMs = now;
+  Serial.print("[MQTT] Conectando...");
+  if (mqtt.connect(MQTT_CLIENT)) {
+    Serial.println(" OK");
+  } else {
+    Serial.printf(" FAIL rc=%d\n", mqtt.state());
+  }
+}
+
+void publishMqttSnapshot() {
+  if (weightedPrice <= 0) return;
+
+  float smaFast = 0.0f, smaSlow = 0.0f;
+  bool hasFast = (newestValidIndex >= 0) && calcSMAAt(newestValidIndex, SMA_FAST_PERIOD, &smaFast);
+  bool hasSlow = (newestValidIndex >= 0) && calcSMAAt(newestValidIndex, SMA_SLOW_PERIOD, &smaSlow);
+
+  const char* trendStr = "FLAT";
+  if (currentTrendSignal == SIGNAL_LONG)  trendStr = "LONG";
+  else if (currentTrendSignal == SIGNAL_SHORT) trendStr = "SHORT";
+
+  float pctChange = 0.0f;
+  int firstIdx = firstValidHistoryIndex();
+  if (firstIdx >= 0 && history[firstIdx] > 0.0f) {
+    pctChange = ((weightedPrice - history[firstIdx]) / history[firstIdx]) * 100.0f;
+  }
+
+  char buf[320];
+  snprintf(buf, sizeof(buf),
+    "{\"price\":%.2f,\"flow\":%.4f,\"pct\":%.3f,\"trend\":\"%s\","
+    "\"sma_fast\":%.2f,\"sma_slow\":%.2f,"
+    "\"bin_w\":%d,\"cb_w\":%d,\"window_s\":%lu}",
+    weightedPrice,
+    totalFlowBTCs,
+    pctChange,
+    trendStr,
+    hasFast ? smaFast : 0.0f,
+    hasSlow ? smaSlow : 0.0f,
+    (int)(binance.weight  * 100),
+    (int)(coinbase.weight * 100),
+    CHART_WINDOW_SECONDS
+  );
+
+  mqtt.publish(MQTT_TOPIC, buf);
+}
+
 // -------------------- Setup / Loop --------------------
 void setup() {
   setCpuFrequencyMhz(80);
@@ -1609,6 +1671,8 @@ void setup() {
     connectBinanceWS();
     connectCoinbaseWS();
     lastFlowCalc = millis();
+    mqtt.setServer(MQTT_HOST, MQTT_PORT);
+    mqttReconnect();
   }
 
   drawHeader();
@@ -1632,6 +1696,15 @@ void loop() {
   static unsigned long lastLedUpdate = 0;
   unsigned long nowMs = millis();
   advanceChartTimeIfNeeded();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqtt.connected()) mqttReconnect();
+    mqtt.loop();
+    if (mqtt.connected() && (nowMs - lastMqttPublish >= MQTT_PUBLISH_MS)) {
+      lastMqttPublish = nowMs;
+      publishMqttSnapshot();
+    }
+  }
 
   if (nowMs - lastLedUpdate >= 50) {
     lastLedUpdate = nowMs;
