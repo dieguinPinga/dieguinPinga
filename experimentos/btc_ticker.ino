@@ -75,7 +75,7 @@ const int wifiCount = sizeof(wifiList) / sizeof(wifiList[0]);
 int currentWifiIdx = -1;
 
 // -------------------- MQTT --------------------
-#define MQTT_HOST     "raspberrypi.local"
+#define MQTT_HOST     "192.168.1.58"
 #define MQTT_PORT     1883
 #define MQTT_CLIENT   "esp32-btc"
 #define MQTT_TOPIC    "btc/snapshot"
