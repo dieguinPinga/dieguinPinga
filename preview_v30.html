@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>MAPA V30 Preview</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f1117; font-family: monospace; }
+
+.v30 { color: #e5e7eb; font-size: 12px; }
+
+/* Header */
+.v30 .hdr { display:flex; gap:6px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid #1f2937; margin-bottom:10px; align-items:center; }
+.v30 .m { background:#1f2937; border:1px solid #374151; border-radius:4px; padding:4px 10px; font-size:11px; }
+.v30 .m b { font-size:17px; display:block; line-height:1.1; }
+.v30 .ts { margin-left:auto; font-size:9px; color:#4b5563; }
+
+/* Board */
+.v30 .board { padding:12px 16px; }
+.v30 .block { margin-bottom:32px; padding-bottom:24px; border-bottom:2px solid #1f2937; }
+
+/* Connector */
+.v30 .conn { text-align:center; color:#374151; font-size:16px; line-height:14px; margin:3px 0; user-select:none; }
+
+/* Row */
+.v30 .row { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:5px 0; }
+
+/* Section label */
+.v30 .slbl { font-size:9px; color:#4b5563; text-align:center; letter-spacing:.08em; text-transform:uppercase; margin:4px 0 2px; }
+
+/* ---- NOTA PILL ---- */
+.v30 .nota-pill {
+  position:relative;
+  background:#1e293b; border:2px solid #ca8a04; border-radius:8px;
+  padding:7px 16px; cursor:default; text-align:center; min-width:180px;
+}
+.v30 .nota-pill .n1 { font-size:22px; font-weight:bold; color:#fbbf24; line-height:1; }
+.v30 .nota-pill .n2 { font-size:10px; color:#94a3b8; margin-top:2px; }
+
+/* ---- BAG PILL ---- */
+.v30 .bag-pill {
+  position: relative;
+  width: 68px; height: 52px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #1f2937;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+  cursor: default;
+}
+.v30 .bag-pill.dead { opacity: .45; }
+.v30 .bag-pill .bp-id {
+  font-size: 9px; color: #93c5fd; font-weight: bold;
+  max-width: 60px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.v30 .bag-pill .bp-kg { font-size: 13px; font-weight: bold; color: #f1f5f9; }
+.v30 .bag-pill .bp-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ---- PARTE CARD ---- */
+.v30 .parte-card {
+  position: relative;
+  background: #f8fafc; color: #111827;
+  border: 2px solid #c4b5fd; border-radius: 10px;
+  padding: 10px 20px; min-width: 180px; text-align: center;
+  cursor: default;
+}
+.v30 .parte-card .pc-num { font-size: 32px; font-weight: bold; color: #7c3aed; line-height: 1; }
+.v30 .parte-card .pc-maq { font-size: 12px; font-weight: bold; color: #0f766e; margin-top: 2px; }
+.v30 .parte-card .pc-bal {
+  font-size: 10px; margin-top: 6px; padding: 2px 8px;
+  border-radius: 4px; display: inline-block; color: #fff; font-weight: bold;
+}
+
+/* ---- OUT PILL ---- */
+.v30 .out-pill {
+  position: relative;
+  width: 68px; height: 52px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #1f2937;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+  cursor: default;
+}
+.v30 .out-pill.dead { opacity: .5; }
+.v30 .out-pill .op-id {
+  font-size: 9px; color: #86efac; font-weight: bold;
+  max-width: 60px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.v30 .out-pill .op-kg { font-size: 13px; font-weight: bold; color: #f1f5f9; }
+.v30 .out-pill .op-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ---- TOOLTIP ---- */
+.v30 .tip {
+  visibility: hidden; opacity: 0;
+  position: absolute; z-index: 200;
+  left: 50%; transform: translateX(-50%);
+  top: calc(100% + 8px);
+  min-width: 230px; max-width: 310px;
+  background: #020617; color: #e2e8f0;
+  border: 1px solid #334155; border-radius: 8px;
+  padding: 10px 12px; font-size: 10px; line-height: 1.6;
+  white-space: normal; text-align: left;
+  pointer-events: none;
+  transition: opacity .1s;
+  box-shadow: 0 8px 24px #000a;
+}
+.v30 .tip b { color: #fbbf24; display: block; margin-bottom: 4px; font-size: 11px; }
+.v30 .tip .tr { display: flex; gap: 6px; }
+.v30 .tip .tl { color: #64748b; min-width: 64px; }
+
+.v30 .nota-pill:hover .tip,
+.v30 .bag-pill:hover .tip,
+.v30 .parte-card:hover .tip,
+.v30 .out-pill:hover .tip { visibility: visible; opacity: 1; }
+
+/* prevent tooltip from overflowing left */
+.v30 .bag-pill:first-child .tip,
+.v30 .out-pill:first-child .tip { left: 0; transform: none; }
+.v30 .bag-pill:last-child .tip,
+.v30 .out-pill:last-child .tip { left: auto; right: 0; transform: none; }
+</style>
+</head>
+<body>
+<div class="v30" id="app"></div>
+
+<script>
+/* ── MOCK DATA ── */
+const payload = {
+  timestamp: "04/06/2026 10:42:00",
+  resumen: {
+    notas: 3, inputs: 18, notas_total_items: 30, notas_libres_items: 12,
+    gen2_partes: 2, partes_alerta: 1, inputs_completos: 18, in_produccion: 3, out_del_parte: 10
+  },
+  notas_unicas: [
+    {
+      nota: "13205", proveedor: "Gustavo González",
+      total_items: 8, total_kg: 2100, items: 5, kg: 1350.4,
+      usados_items: 5, usados_kg: 1350.4, restantes_items: 3, restantes_kg: 749.6,
+      partes_destino: "13115",
+      bolsones: [
+        { id:"HQ78", lote:"HQ78", kg:773.6, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Gustavo González", nota:"13205" },
+        { id:"HQ79", lote:"HQ79", kg:210.2, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"", proveedor:"Gustavo González", nota:"13205" },
+        { id:"HQ80", lote:"HQ80", kg:366.6, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Gustavo González", nota:"13205" },
+      ]
+    },
+    {
+      nota: "13207", proveedor: "Recortec",
+      total_items: 12, total_kg: 3800, items: 8, kg: 2663.8,
+      usados_items: 8, usados_kg: 2663.8, restantes_items: 4, restantes_kg: 1136.2,
+      partes_destino: "13115, 13127",
+      bolsones: [
+        { id:"HQ89", lote:"HQ89", kg:535.0, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Recortec", nota:"13207" },
+        { id:"HQ91", lote:"HQ91", kg:649.2, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Recortec", nota:"13207" },
+        { id:"HR01", lote:"HR01", kg:479.6, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Recortec", nota:"13207" },
+        { id:"HR02", lote:"HR02", kg:250.0, desc:"Film Stretch", familia:"FILM", color:"#22c55e", cat12:"IN 13127", proveedor:"Recortec", nota:"13207" },
+      ]
+    }
+  ],
+  gen1: [
+    {
+      parte: "13115", maquina: "LINEA LAVADO", producto: "Baldes Polipr Blanco Molido", operador: "CRISTIAN NIEVES",
+      audit_in_items: 5, audit_in_kg: 3170.8, audit_out_items: 5, audit_out_kg: 3170.2,
+      audit_delta_kg: -0.6, audit_label: "OK", audit_color: "#15803d",
+      full_inputs: [
+        { id:"HQ78", lote:"HQ78", kg:773.6, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13205", proveedor:"Gustavo González", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+        { id:"HQ89", lote:"HQ89", kg:535.0, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13207", proveedor:"Recortec", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+        { id:"HQ91", lote:"HQ91", kg:649.2, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13207", proveedor:"Recortec", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+        { id:"HR01", lote:"HR01", kg:479.6, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13207", proveedor:"Recortec", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+        { id:"HQ80", lote:"HQ80", kg:366.6, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13205", proveedor:"Gustavo González", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+      ],
+      full_inputs_kg: 2804.0,
+      outputs: [
+        { id:"HY54", lote:"HY54", etiqueta:"LL-211-5-26", kg:632.0, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"REINGRESA", detalle:"IN 13127", parte_origen:"13115", dias:5 },
+        { id:"HY56", lote:"HY56", etiqueta:"LL-212-5-26", kg:706.4, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"VIVO", detalle:"", parte_origen:"13115", dias:5 },
+        { id:"HY59", lote:"HY59", etiqueta:"LL-213-5-26", kg:639.2, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"REINGRESA", detalle:"IN 13146", parte_origen:"13115", dias:4 },
+        { id:"HY60", lote:"HY60", etiqueta:"LL-214-5-26", kg:619.0, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"REINGRESA", detalle:"IN 13139", parte_origen:"13115", dias:4 },
+        { id:"HY61", lote:"HY61", etiqueta:"LL-215-5-26", kg:573.6, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"VIVO", detalle:"", parte_origen:"13115", dias:3 },
+      ]
+    },
+    {
+      parte: "13127", maquina: "MOLIENDA 2", producto: "Film Stretch Molido", operador: "PABLO R",
+      audit_in_items: 3, audit_in_kg: 1588.6, audit_out_items: 0, audit_out_kg: 0,
+      audit_delta_kg: -1588.6, audit_label: "SALE MENOS / SALDO", audit_color: "#92400e",
+      full_inputs: [
+        { id:"HY54", lote:"HY54", kg:632.0, desc:"Baldes Polipr Blanco Molido", mov:"PRODUCCION", unidad:"LL-211-5-26", proveedor:"", operador:"PABLO R", maquina:"MOLIENDA 2", familia:"OTROS", color:"#94a3b8", cat11:"OUT 13115" },
+        { id:"HR02", lote:"HR02", kg:250.0, desc:"Film Stretch", mov:"ING PESAJE INTERNO", unidad:"13207", proveedor:"Recortec", operador:"", maquina:"MOLIENDA 2", familia:"FILM", color:"#22c55e", cat11:"" },
+        { id:"HZ01", lote:"HZ01", kg:706.6, desc:"Film Stretch", mov:"ING PESAJE INTERNO", unidad:"7361", proveedor:"Damico Fernando", operador:"", maquina:"MOLIENDA 2", familia:"FILM", color:"#22c55e", cat11:"" },
+      ],
+      full_inputs_kg: 1588.6,
+      outputs: []
+    }
+  ]
+};
+
+/* ── RENDER ── */
+function stateColor(estado) {
+  if (estado === 'VIVO') return '#22c55e';
+  if (estado === 'DESPACHADO') return '#ef4444';
+  return '#f97316';
+}
+
+function row(label, val) {
+  if (!val && val !== 0) return '';
+  return `<div class="tr"><span class="tl">${label}</span>${val}</div>`;
+}
+
+function bagPill(b, notaNota) {
+  const dead = b.cat12 ? 'dead' : '';
+  const dot = b.cat12 ? '#f97316' : '#22c55e';
+  return `
+    <div class="bag-pill ${dead}" style="border-top:3px solid ${b.color}">
+      <div class="bp-id">${b.id || b.lote}</div>
+      <div class="bp-kg">${Math.round(b.kg)}</div>
+      <div class="bp-dot" style="background:${dot}"></div>
+      <div class="tip">
+        <b>${b.id || b.lote}</b>
+        ${row('Familia', b.familia)}
+        ${row('kg', b.kg.toFixed(1))}
+        ${row('Proveedor', b.proveedor)}
+        ${row('Nota', b.nota)}
+        ${row('Desc', b.desc)}
+        ${row('Destino', b.cat12 || 'SIN IN')}
+      </div>
+    </div>`;
+}
+
+function inPill(i, notaNota) {
+  const dot = i.unidad === notaNota ? '#38bdf8' : i.mov === 'PRODUCCION' ? '#a78bfa' : '#f59e0b';
+  return `
+    <div class="bag-pill dead" style="border-top:3px solid ${i.color}">
+      <div class="bp-id">${i.id || i.lote}</div>
+      <div class="bp-kg">${Math.round(i.kg)}</div>
+      <div class="bp-dot" style="background:${dot}"></div>
+      <div class="tip">
+        <b>${i.id || i.lote}</b>
+        ${row('Familia', i.familia)}
+        ${row('kg', i.kg.toFixed(1))}
+        ${row('Mov', i.mov)}
+        ${row('Nota/UM', i.unidad)}
+        ${row('Proveedor', i.proveedor)}
+        ${row('Operador', i.operador)}
+        ${row('Maquina', i.maquina)}
+        ${row('Cat11', i.cat11)}
+        ${row('Desc', i.desc)}
+      </div>
+    </div>`;
+}
+
+function outPill(o) {
+  const sc = stateColor(o.estado);
+  const dead = o.estado !== 'VIVO' ? 'dead' : '';
+  const glow = o.estado === 'VIVO' ? `box-shadow:0 0 7px ${sc}55` : '';
+  return `
+    <div class="out-pill ${dead}" style="border-top:3px solid ${sc}; ${glow}">
+      <div class="op-id">${o.id || o.etiqueta || o.lote}</div>
+      <div class="op-kg">${Math.round(o.kg)}</div>
+      <div class="op-dot" style="background:${sc}"></div>
+      <div class="tip">
+        <b>${o.id || o.etiqueta || o.lote}</b>
+        ${row('Estado', `<span style="color:${sc}">${o.estado}</span>`)}
+        ${row('Detalle', o.detalle)}
+        ${row('kg', o.kg.toFixed(1))}
+        ${row('Familia', o.familia)}
+        ${row('Producto', o.producto || o.desc_limpia)}
+        ${row('Operador', o.operador)}
+        ${row('Maquina', o.maquina)}
+        ${row('Etiqueta', o.etiqueta)}
+        ${row('Dias', o.dias)}
+      </div>
+    </div>`;
+}
+
+function parteCard(p) {
+  const balBg = p.audit_color || '#374151';
+  return `
+    <div class="parte-card">
+      <div class="pc-num">${p.parte}</div>
+      <div class="pc-maq">${p.maquina}</div>
+      <div class="pc-bal" style="background:${balBg}">
+        ${p.full_inputs.length} IN → ${p.audit_out_items || 0} OUT &nbsp;·&nbsp; ${p.audit_label || '?'} ${p.audit_delta_kg !== undefined ? p.audit_delta_kg.toFixed(0) : ''} kg
+      </div>
+      <div class="tip">
+        <b>Parte ${p.parte}</b>
+        ${row('Máquina', p.maquina)}
+        ${row('Producto', p.producto)}
+        ${row('Operador', p.operador)}
+        ${row('IN items', p.audit_in_items)}
+        ${row('IN kg', (p.audit_in_kg||0).toFixed(1))}
+        ${row('OUT items', p.audit_out_items)}
+        ${row('OUT kg', (p.audit_out_kg||0).toFixed(1))}
+        ${row('Delta', (p.audit_delta_kg||0).toFixed(1) + ' kg')}
+        ${row('Balance', `<span style="color:${p.audit_color}">${p.audit_label}</span>`)}
+      </div>
+    </div>`;
+}
+
+function render(data) {
+  const r = data.resumen;
+  let html = `<div class="v30">
+  <div class="hdr">
+    <div class="m"><b>${r.notas||0}</b>notas</div>
+    <div class="m"><b>${r.inputs}</b>bolsones IN</div>
+    <div class="m"><b style="color:#22c55e">${r.notas_libres_items||0}</b>resto nota</div>
+    <div class="m"><b style="color:#a78bfa">${r.gen2_partes||0}</b>gen2</div>
+    <div class="m"><b style="color:#f97316">${r.partes_alerta||0}</b>alertas</div>
+    <div class="m"><b style="color:#38bdf8">${r.inputs_completos||0}</b>in completos</div>
+    <div class="ts">${data.timestamp}</div>
+  </div>
+  <div class="board">`;
+
+  for (const n of data.notas_unicas) {
+    html += `<div class="block">`;
+
+    // Nota pill
+    html += `<div class="row">
+      <div class="nota-pill">
+        <div class="n1">${n.nota}</div>
+        <div class="n2">${n.proveedor} &nbsp;·&nbsp; ${n.total_items||n.items} bolsones &nbsp;·&nbsp; ${Math.round(n.total_kg||n.kg)} kg</div>
+        <div class="tip">
+          <b>${n.nota}</b>
+          ${row('Proveedor', n.proveedor)}
+          ${row('Llegada', `${n.total_items||n.items} bolsones / ${(n.total_kg||n.kg).toFixed(1)} kg`)}
+          ${row('Usados', `${n.usados_items||n.items} / ${(n.usados_kg||n.kg).toFixed(1)} kg`)}
+          ${row('Resto', `${n.restantes_items||0} / ${(n.restantes_kg||0).toFixed(1)} kg`)}
+          ${row('Partes', n.partes_destino)}
+        </div>
+      </div>
+    </div>`;
+
+    html += `<div class="conn">│<br>▼</div>`;
+    html += `<div class="slbl">hermanos de nota ${n.nota}</div>`;
+
+    // Bolsones hermanos
+    html += `<div class="row">`;
+    for (const b of n.bolsones) html += bagPill(b, n.nota);
+    html += `</div>`;
+
+    html += `<div class="conn">│<br>▼</div>`;
+
+    // Partes de esta nota
+    const partesDestino = (n.partes_destino || '').split(',').map(s => s.trim());
+    for (const p of data.gen1) {
+      if (!partesDestino.includes(String(p.parte))) continue;
+
+      html += `<div class="slbl">entran a ${p.parte}</div>`;
+      html += `<div class="row">`;
+      for (const i of p.full_inputs) html += inPill(i, n.nota);
+      html += `</div>`;
+
+      html += `<div class="conn">│<br>▼</div>`;
+      html += `<div class="row">${parteCard(p)}</div>`;
+      html += `<div class="conn">│<br>▼</div>`;
+
+      html += `<div class="slbl">salen de ${p.parte}</div>`;
+      html += `<div class="row">`;
+      for (const o of p.outputs) html += outPill(o);
+      if (!p.outputs.length) html += `<span style="color:#4b5563; font-size:10px;">sin OUT registrado</span>`;
+      html += `</div>`;
+    }
+
+    html += `</div>`; // .block
+  }
+
+  html += `</div></div>`; // .board .v30
+  document.getElementById('app').innerHTML = html;
+}
+
+render(payload);
+</script>
+</body>
+</html>
