@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>MAPA V31 Preview</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f1117; font-family: monospace; }
+
+.v31 { color: #e5e7eb; font-size: 12px; }
+
+/* Header */
+.v31 .hdr { display:flex; gap:6px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid #1f2937; margin-bottom:10px; align-items:center; }
+.v31 .m { background:#1f2937; border:1px solid #374151; border-radius:4px; padding:4px 10px; font-size:11px; }
+.v31 .m b { font-size:17px; display:block; line-height:1.1; }
+.v31 .ts { margin-left:auto; font-size:9px; color:#4b5563; }
+
+/* Chips resumen extras */
+.v31 .chip { background:#1f2937; border:1px solid #374151; border-radius:12px; padding:3px 10px; font-size:10px; display:inline-flex; align-items:center; gap:4px; }
+.v31 .chip b { font-size:14px; }
+
+/* Alertas panel */
+.v31 .alertas-wrap { margin:0 14px 14px; }
+.v31 .alertas-toggle {
+  display:flex; align-items:center; gap:8px; cursor:pointer;
+  background:#1f2937; border:1px solid #7f1d1d; border-radius:6px;
+  padding:7px 14px; font-size:11px; color:#fca5a5; user-select:none;
+}
+.v31 .alertas-toggle .at-icon { font-size:14px; transition:transform .2s; }
+.v31 .alertas-toggle.open .at-icon { transform:rotate(90deg); }
+.v31 .alertas-body { display:none; margin-top:2px; border:1px solid #374151; border-radius:6px; overflow:hidden; }
+.v31 .alertas-body.open { display:block; }
+.v31 .a-table { width:100%; border-collapse:collapse; font-size:10px; }
+.v31 .a-table th { background:#1f2937; color:#94a3b8; padding:5px 10px; text-align:left; border-bottom:1px solid #374151; font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+.v31 .a-table td { padding:5px 10px; border-bottom:1px solid #1f2937; color:#e2e8f0; }
+.v31 .a-table tr:last-child td { border-bottom:none; }
+.v31 .pri-badge { display:inline-block; padding:2px 7px; border-radius:3px; font-size:9px; font-weight:bold; }
+.v31 .pri-alta { background:#7f1d1d; color:#fca5a5; }
+.v31 .pri-media { background:#78350f; color:#fde68a; }
+.v31 .pri-baja { background:#1e3a5f; color:#93c5fd; }
+
+/* Download button */
+.v31 .dl-btn {
+  margin:0 14px 16px; display:inline-flex; align-items:center; gap:6px;
+  background:#1f2937; border:1px solid #3b82f6; color:#93c5fd;
+  border-radius:6px; padding:6px 14px; font-size:10px; cursor:pointer;
+  font-family:monospace; letter-spacing:.05em; transition:background .15s;
+}
+.v31 .dl-btn:hover { background:#1e3a5f; }
+
+/* Board */
+.v31 .board { padding:12px 16px; }
+.v31 .block { margin-bottom:32px; padding-bottom:24px; border-bottom:2px solid #1f2937; }
+
+/* Connector */
+.v31 .conn { text-align:center; color:#374151; font-size:16px; line-height:14px; margin:3px 0; user-select:none; }
+
+/* Row */
+.v31 .row { display:flex; gap:6px; flex-wrap:wrap; justify-content:center; margin:5px 0; }
+
+/* Section label */
+.v31 .slbl { font-size:9px; color:#4b5563; text-align:center; letter-spacing:.08em; text-transform:uppercase; margin:4px 0 2px; }
+
+/* ---- NOTA PILL ---- */
+.v31 .nota-pill {
+  position:relative;
+  background:#1e293b; border:2px solid #ca8a04; border-radius:8px;
+  padding:7px 16px; cursor:default; text-align:center; min-width:180px;
+}
+.v31 .nota-pill .n1 { font-size:22px; font-weight:bold; color:#fbbf24; line-height:1; }
+.v31 .nota-pill .n2 { font-size:10px; color:#94a3b8; margin-top:2px; }
+
+/* ---- BAG PILL ---- */
+.v31 .bag-pill {
+  position: relative;
+  width: 68px; height: 52px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #1f2937;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+  cursor: default;
+}
+.v31 .bag-pill.dead { opacity: .45; }
+.v31 .bag-pill .bp-id {
+  font-size: 9px; color: #93c5fd; font-weight: bold;
+  max-width: 60px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.v31 .bag-pill .bp-kg { font-size: 13px; font-weight: bold; color: #f1f5f9; }
+.v31 .bag-pill .bp-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ---- QUALITY BADGE ---- */
+.v31 .qbadge {
+  display:inline-block; padding:2px 7px; border-radius:3px;
+  font-size:8px; font-weight:bold; letter-spacing:.04em; margin-top:4px;
+}
+
+/* ---- PARTE CARD ---- */
+.v31 .parte-card {
+  position: relative;
+  background: #f8fafc; color: #111827;
+  border: 2px solid #c4b5fd; border-radius: 10px;
+  padding: 10px 20px; min-width: 180px; text-align: center;
+  cursor: default;
+}
+.v31 .parte-card .pc-num { font-size: 32px; font-weight: bold; color: #7c3aed; line-height: 1; }
+.v31 .parte-card .pc-maq { font-size: 12px; font-weight: bold; color: #0f766e; margin-top: 2px; }
+.v31 .parte-card .pc-bal {
+  font-size: 10px; margin-top: 6px; padding: 2px 8px;
+  border-radius: 4px; display: inline-block; color: #fff; font-weight: bold;
+}
+
+/* ---- OUT PILL ---- */
+.v31 .out-pill {
+  position: relative;
+  width: 68px; height: 52px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: #1f2937;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px;
+  cursor: default;
+}
+.v31 .out-pill.dead { opacity: .5; }
+.v31 .out-pill .op-id {
+  font-size: 9px; color: #86efac; font-weight: bold;
+  max-width: 60px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.v31 .out-pill .op-kg { font-size: 13px; font-weight: bold; color: #f1f5f9; }
+.v31 .out-pill .op-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* ---- TOOLTIP ---- */
+.v31 .tip {
+  visibility: hidden; opacity: 0;
+  position: absolute; z-index: 200;
+  left: 50%; transform: translateX(-50%);
+  top: calc(100% + 8px);
+  min-width: 230px; max-width: 320px;
+  background: #020617; color: #e2e8f0;
+  border: 1px solid #334155; border-radius: 8px;
+  padding: 10px 12px; font-size: 10px; line-height: 1.6;
+  white-space: normal; text-align: left;
+  pointer-events: none;
+  transition: opacity .1s;
+  box-shadow: 0 8px 24px #000a;
+}
+.v31 .tip b { color: #fbbf24; display: block; margin-bottom: 4px; font-size: 11px; }
+.v31 .tip .tr { display: flex; gap: 6px; }
+.v31 .tip .tl { color: #64748b; min-width: 70px; }
+.v31 .tip .tip-badge { display:inline-block; padding:1px 6px; border-radius:3px; font-size:9px; font-weight:bold; }
+
+.v31 .nota-pill:hover .tip,
+.v31 .bag-pill:hover .tip,
+.v31 .parte-card:hover .tip,
+.v31 .out-pill:hover .tip { visibility: visible; opacity: 1; }
+
+/* prevent tooltip from overflowing left/right */
+.v31 .bag-pill:first-child .tip,
+.v31 .out-pill:first-child .tip { left: 0; transform: none; }
+.v31 .bag-pill:last-child .tip,
+.v31 .out-pill:last-child .tip { left: auto; right: 0; transform: none; }
+
+/* parte-card tooltip positioned above on smaller screens */
+.v31 .parte-card .tip { min-width: 260px; top: calc(100% + 8px); }
+</style>
+</head>
+<body>
+<div class="v31" id="app"></div>
+
+<script>
+/* ── MOCK DATA ── */
+const payload = {
+  timestamp: "04/06/2026 10:42:00",
+  resumen: {
+    notas: 10, inputs: 109, notas_total_items: 180, notas_libres_items: 71,
+    gen2_partes: 13, gen3_partes: 3, gen4_partes: 1,
+    partes_alerta: 3, inputs_completos: 109, in_produccion: 12,
+    out_del_parte: 98, gen4_out: 4,
+    vivos: 52, reingresan: 32, despachados: 7, sin_estado: 5
+  },
+  alertas: [
+    { parte:"13171", tipo:"BALANCE_ABIERTO", kg_in:1344.6, kg_out:6423.8, delta_kg:5079.2, lectura:"sale mas que entra", prioridad:"alta" },
+    { parte:"13123", tipo:"BALANCE_ABIERTO", kg_in:1411.0, kg_out:4187.0, delta_kg:2776.0, lectura:"sale mas que entra", prioridad:"alta" },
+    { parte:"13113", tipo:"BALANCE_ABIERTO", kg_in:3416.8, kg_out:1000.4, delta_kg:-2416.4, lectura:"sale menos que entra / saldo posible", prioridad:"alta" }
+  ],
+  notas_unicas: [
+    {
+      nota: "13205", proveedor: "Gustavo González",
+      total_items: 8, total_kg: 2100, items: 5, kg: 1350.4,
+      usados_items: 5, usados_kg: 1350.4, restantes_items: 3, restantes_kg: 749.6,
+      partes_destino: "13115, 13111",
+      bolsones: [
+        { id:"HQ78", lote:"HQ78", kg:773.6, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13115", proveedor:"Gustavo González", nota:"13205" },
+        { id:"HQ79", lote:"HQ79", kg:210.2, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"", proveedor:"Gustavo González", nota:"13205" },
+        { id:"HQ80", lote:"HQ80", kg:366.6, desc:"Baldes Polipr Blanco Molido", familia:"OTROS", color:"#94a3b8", cat12:"IN 13111", proveedor:"Gustavo González", nota:"13205" },
+      ]
+    }
+  ],
+  gen1: [
+    {
+      parte: "13115", maquina: "LINEA LAVADO", producto: "Baldes Polipr Blanco Molido", operador: "CRISTIAN NIEVES",
+      audit_in_items: 5, audit_in_kg: 3170.8, audit_out_items: 5, audit_out_kg: 3170.2,
+      audit_delta_kg: -0.6, audit_label: "OK", audit_color: "#15803d",
+      full_inputs_kg: 1350.4,
+      full_inputs: [
+        { id:"HQ78", lote:"HQ78", kg:773.6, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13205", proveedor:"Gustavo González", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+        { id:"HQ89", lote:"HQ89", kg:576.8, desc:"Baldes Polipr Blanco Molido", mov:"ING PESAJE INTERNO", unidad:"13207", proveedor:"Recortec", operador:"", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", cat11:"" },
+      ],
+      outputs: [
+        { id:"HY56", lote:"HY56", etiqueta:"LL-212-5-26", kg:706.4, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"VIVO", detalle:"", parte_origen:"13115", dias:5 },
+        { id:"HY54", lote:"HY54", etiqueta:"LL-211-5-26", kg:632.0, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"REINGRESA", detalle:"IN 13127", parte_origen:"13115", dias:5 },
+        { id:"HZ73", lote:"HZ73", etiqueta:"M2-001-5-26", kg:1000.8, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"DESPACHADO", detalle:"E1-135-5-26 / CLIENTE A", parte_origen:"13115", dias:3, despacho:{kg:1000.8, patente:"E1-135-5-26", cliente:"CLIENTE A"}, despacho_confianza:"kg_cierra" },
+        { id:"HZ20", lote:"HZ20", etiqueta:"M2-002-5-26", kg:1000.0, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:"DESPACHADO", detalle:"E1-136-5-26 / CLIENTE B", parte_origen:"13115", dias:2, despacho:{kg:5.2, patente:"E1-136-5-26", cliente:"CLIENTE B"}, despacho_confianza:"kg_distinto_posible_muestra" },
+        { id:"HZ21", lote:"HZ21", etiqueta:"", kg:831.0, desc_limpia:"Baldes Polipr Blanco Molido", producto:"Baldes Polipr Blanco Molido", operador:"CRISTIAN NIEVES", maquina:"LINEA LAVADO", familia:"OTROS", color:"#94a3b8", estado:undefined, detalle:"", parte_origen:"13115", dias:1 },
+      ]
+    },
+    {
+      parte: "13171", maquina: "INYECTORA 3", producto: "Sillas Apilables", operador: "MARIO G",
+      audit_in_items: 8, audit_in_kg: 1344.6, audit_out_items: 22, audit_out_kg: 6423.8,
+      audit_delta_kg: 5079.2, audit_label: "SALE MAS QUE ENTRA", audit_color: "#b91c1c",
+      full_inputs_kg: 1344.6,
+      full_inputs: [
+        { id:"HA01", lote:"HA01", kg:672.3, desc:"Sillas Apilables PP", mov:"ING PESAJE INTERNO", unidad:"13210", proveedor:"PlastProv", operador:"", maquina:"INYECTORA 3", familia:"SILLAS", color:"#a855f7", cat11:"" },
+        { id:"HA02", lote:"HA02", kg:672.3, desc:"Sillas Apilables PP", mov:"ING PESAJE INTERNO", unidad:"13210", proveedor:"PlastProv", operador:"", maquina:"INYECTORA 3", familia:"SILLAS", color:"#a855f7", cat11:"" },
+      ],
+      outputs: [
+        { id:"HB01", lote:"HB01", etiqueta:"INY-001", kg:290.4, desc_limpia:"Sillas Apilables", producto:"Sillas Apilables", operador:"MARIO G", maquina:"INYECTORA 3", familia:"SILLAS", color:"#a855f7", estado:"VIVO", detalle:"", parte_origen:"13171", dias:2 },
+        { id:"HB02", lote:"HB02", etiqueta:"INY-002", kg:291.0, desc_limpia:"Sillas Apilables", producto:"Sillas Apilables", operador:"MARIO G", maquina:"INYECTORA 3", familia:"SILLAS", color:"#a855f7", estado:"VIVO", detalle:"", parte_origen:"13171", dias:2 },
+      ]
+    }
+  ],
+  gen2: [], gen3: [], gen4: []
+};
+
+/* ── QUALITY BADGE LOGIC ── */
+function qualityBadge(p) {
+  const threshold = Math.max(25, (p.audit_in_kg || 0) * 0.05);
+  if ((p.audit_delta_kg || 0) > threshold)
+    return { label: 'BALANCE RARO', color: '#fca5a5', bg: '#7f1d1d' };
+  if ((p.audit_delta_kg || 0) < -threshold)
+    return { label: 'SALDO PENDIENTE', color: '#fdba74', bg: '#431407' };
+  const ratio = p.audit_in_kg > 0 ? (p.full_inputs_kg || 0) / p.audit_in_kg : 1;
+  if (ratio < 0.6)
+    return { label: `RAMA PARCIAL ${Math.round(ratio * 100)}%`, color: '#93c5fd', bg: '#1e3a5f' };
+  return { label: 'OK', color: '#86efac', bg: '#14532d' };
+}
+
+/* ── OUTPUT BADGE LOGIC ── */
+function outBadge(o) {
+  if (!o.estado) return { label: 'SIN ESTADO', color: '#94a3b8', bg: '#1f2937', dot: '#475569' };
+  if (o.estado === 'DESPACHADO' && o.despacho_confianza === 'kg_distinto_posible_muestra')
+    return { label: 'DESP KG?', color: '#fde68a', bg: '#78350f', dot: '#ca8a04' };
+  if (o.estado === 'DESPACHADO')
+    return { label: 'DESP OK', color: '#86efac', bg: '#14532d', dot: '#22c55e' };
+  if (o.estado === 'REINGRESA')
+    return { label: o.detalle || 'REINGRESA', color: '#c4b5fd', bg: '#2e1065', dot: '#a78bfa' };
+  return { label: 'VIVO', color: '#86efac', bg: '#052e16', dot: '#22c55e' };
+}
+
+/* ── HELPERS ── */
+function row(label, val) {
+  if (val === null || val === undefined || val === '') return '';
+  return `<div class="tr"><span class="tl">${label}</span>${val}</div>`;
+}
+
+function bagPill(b) {
+  const dead = b.cat12 ? 'dead' : '';
+  const dot = b.cat12 ? '#f97316' : '#22c55e';
+  return `
+    <div class="bag-pill ${dead}" style="border-top:3px solid ${b.color}">
+      <div class="bp-id">${b.id || b.lote}</div>
+      <div class="bp-kg">${Math.round(b.kg)}</div>
+      <div class="bp-dot" style="background:${dot}"></div>
+      <div class="tip">
+        <b>${b.id || b.lote}</b>
+        ${row('Familia', b.familia)}
+        ${row('kg', b.kg.toFixed(1))}
+        ${row('Proveedor', b.proveedor)}
+        ${row('Nota', b.nota)}
+        ${row('Desc', b.desc)}
+        ${row('Destino', b.cat12 || 'SIN IN')}
+      </div>
+    </div>`;
+}
+
+function inPill(i, notaNota) {
+  const dot = i.unidad === notaNota ? '#38bdf8' : i.mov === 'PRODUCCION' ? '#a78bfa' : '#f59e0b';
+  return `
+    <div class="bag-pill dead" style="border-top:3px solid ${i.color}">
+      <div class="bp-id">${i.id || i.lote}</div>
+      <div class="bp-kg">${Math.round(i.kg)}</div>
+      <div class="bp-dot" style="background:${dot}"></div>
+      <div class="tip">
+        <b>${i.id || i.lote}</b>
+        ${row('Familia', i.familia)}
+        ${row('kg', i.kg.toFixed(1))}
+        ${row('Mov', i.mov)}
+        ${row('Nota/UM', i.unidad)}
+        ${row('Proveedor', i.proveedor)}
+        ${row('Operador', i.operador)}
+        ${row('Maquina', i.maquina)}
+        ${row('Cat11', i.cat11)}
+        ${row('Desc', i.desc)}
+      </div>
+    </div>`;
+}
+
+function outPill(o) {
+  const badge = outBadge(o);
+  const isVivo = o.estado === 'VIVO';
+  const glow = isVivo ? `box-shadow:0 0 7px ${badge.dot}55` : '';
+  const dead = !isVivo ? 'dead' : '';
+
+  let despachoDet = '';
+  if (o.despacho) {
+    despachoDet = `
+      ${row('Patente', o.despacho.patente)}
+      ${row('Cliente', o.despacho.cliente)}
+      ${row('Desp kg', o.despacho.kg)}
+      ${row('Confianza', `<span class="tip-badge" style="background:${badge.bg};color:${badge.color}">${badge.label}</span>`)}`;
+  }
+
+  return `
+    <div class="out-pill ${dead}" style="border-top:3px solid ${badge.dot}; ${glow}">
+      <div class="op-id">${o.id || o.etiqueta || o.lote}</div>
+      <div class="op-kg">${Math.round(o.kg)}</div>
+      <div class="op-dot" style="background:${badge.dot}"></div>
+      <div class="tip">
+        <b>${o.id || o.etiqueta || o.lote}</b>
+        <span class="tip-badge" style="background:${badge.bg};color:${badge.color};margin-bottom:4px;display:inline-block">${badge.label}</span>
+        ${row('Estado', `<span style="color:${badge.dot}">${o.estado || 'SIN ESTADO'}</span>`)}
+        ${row('kg', o.kg.toFixed(1))}
+        ${row('Familia', o.familia)}
+        ${row('Producto', o.producto || o.desc_limpia)}
+        ${row('Operador', o.operador)}
+        ${row('Maquina', o.maquina)}
+        ${row('Etiqueta', o.etiqueta)}
+        ${row('Dias', o.dias)}
+        ${row('Detalle', o.detalle)}
+        ${despachoDet}
+      </div>
+    </div>`;
+}
+
+function parteCard(p) {
+  const balBg = p.audit_color || '#374151';
+  const qb = qualityBadge(p);
+  const ratio = p.audit_in_kg > 0 ? Math.round((p.full_inputs_kg || 0) / p.audit_in_kg * 100) : 100;
+
+  return `
+    <div class="parte-card">
+      <div class="pc-num">${p.parte}</div>
+      <div class="pc-maq">${p.maquina}</div>
+      <div class="pc-bal" style="background:${balBg}">
+        ${p.full_inputs.length} IN → ${p.audit_out_items || 0} OUT &nbsp;·&nbsp; ${p.audit_delta_kg !== undefined ? p.audit_delta_kg.toFixed(0) : '?'} kg
+      </div>
+      <div>
+        <span class="qbadge" style="background:${qb.bg};color:${qb.color}">${qb.label}</span>
+        ${ratio < 100 ? `<span style="font-size:9px;color:#64748b;margin-left:4px">${ratio}% visible</span>` : ''}
+      </div>
+      <div class="tip">
+        <b>Parte ${p.parte}</b>
+        <span class="tip-badge" style="background:${qb.bg};color:${qb.color};margin-bottom:6px;display:inline-block">${qb.label}</span>
+        ${row('Máquina', p.maquina)}
+        ${row('Producto', p.producto)}
+        ${row('Operador', p.operador)}
+        ${row('IN items', p.audit_in_items)}
+        ${row('IN kg (total)', (p.audit_in_kg || 0).toFixed(1))}
+        ${row('IN kg (rama)', (p.full_inputs_kg || 0).toFixed(1) + ` (${ratio}%)`)}
+        ${row('OUT items', p.audit_out_items)}
+        ${row('OUT kg', (p.audit_out_kg || 0).toFixed(1))}
+        ${row('Delta', (p.audit_delta_kg || 0).toFixed(1) + ' kg')}
+        ${row('Balance', `<span style="color:${p.audit_color}">${p.audit_label}</span>`)}
+      </div>
+    </div>`;
+}
+
+/* ── RENDER ── */
+function render(data) {
+  const r = data.resumen;
+
+  /* HEADER */
+  let html = `<div class="v31">
+  <div class="hdr">
+    <div class="m"><b>${r.notas || 0}</b>notas</div>
+    <div class="m"><b>${r.inputs}</b>bolsones IN</div>
+    <div class="m"><b style="color:#22c55e">${r.notas_libres_items || 0}</b>resto nota</div>
+    <div class="m"><b style="color:#a78bfa">${r.gen2_partes || 0}</b>gen2</div>
+    <div class="m"><b style="color:#67e8f9">${r.gen3_partes || 0}</b>gen3</div>
+    <div class="m"><b style="color:#f9a8d4">${r.gen4_partes || 0}</b>gen4</div>
+    <div class="m"><b style="color:#f97316">${r.partes_alerta || 0}</b>alertas</div>
+    <div class="m"><b style="color:#38bdf8">${r.inputs_completos || 0}</b>in compl.</div>
+    <div class="ts">${data.timestamp}</div>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;padding:6px 14px 12px;">
+    <span class="chip"><b style="color:#22c55e">${r.vivos || 0}</b> VIVOS</span>
+    <span class="chip"><b style="color:#a78bfa">${r.reingresan || 0}</b> REINGRESAN</span>
+    <span class="chip"><b style="color:#ef4444">${r.despachados || 0}</b> DESPACHADOS</span>
+    <span class="chip"><b style="color:#475569">${r.sin_estado || 0}</b> SIN ESTADO</span>
+    <span class="chip"><b style="color:#f9a8d4">${r.gen4_partes || 0}</b> GEN4 PARTES</span>
+    <span class="chip"><b style="color:#fbbf24">${r.out_del_parte || 0}</b> OUT DEL PARTE</span>
+  </div>`;
+
+  /* ALERTAS PANEL */
+  if (data.alertas && data.alertas.length) {
+    html += `<div class="alertas-wrap">
+      <div class="alertas-toggle" id="alertas-toggle" onclick="toggleAlertas()">
+        <span class="at-icon">▶</span>
+        <span>⚠ ${data.alertas.length} ALERTAS DE BALANCE</span>
+        <span style="margin-left:auto;font-size:9px;color:#94a3b8">click para expandir</span>
+      </div>
+      <div class="alertas-body" id="alertas-body">
+        <table class="a-table">
+          <thead>
+            <tr>
+              <th>Parte</th><th>kg IN</th><th>kg OUT</th><th>Delta kg</th><th>Lectura</th><th>Prioridad</th>
+            </tr>
+          </thead>
+          <tbody>`;
+    for (const a of data.alertas) {
+      const priClass = a.prioridad === 'alta' ? 'pri-alta' : a.prioridad === 'media' ? 'pri-media' : 'pri-baja';
+      const deltaColor = a.delta_kg > 0 ? '#f87171' : '#34d399';
+      html += `<tr>
+        <td style="font-weight:bold;color:#fbbf24">${a.parte}</td>
+        <td>${a.kg_in.toFixed(1)}</td>
+        <td>${a.kg_out.toFixed(1)}</td>
+        <td style="color:${deltaColor};font-weight:bold">${a.delta_kg > 0 ? '+' : ''}${a.delta_kg.toFixed(1)}</td>
+        <td style="color:#94a3b8">${a.lectura}</td>
+        <td><span class="pri-badge ${priClass}">${a.prioridad.toUpperCase()}</span></td>
+      </tr>`;
+    }
+    html += `</tbody></table></div></div>`;
+  }
+
+  /* DOWNLOAD BUTTON */
+  html += `<button class="dl-btn" onclick="downloadJSON()">⬇ DOWNLOAD JSON</button>`;
+
+  /* BOARD */
+  html += `<div class="board">`;
+
+  // Collect all partes from gen1..gen4
+  const allPartes = [
+    ...(data.gen1 || []),
+    ...(data.gen2 || []),
+    ...(data.gen3 || []),
+    ...(data.gen4 || []),
+  ];
+  const parteByNum = {};
+  for (const p of allPartes) parteByNum[String(p.parte)] = p;
+
+  for (const n of data.notas_unicas) {
+    html += `<div class="block">`;
+
+    // Nota pill
+    html += `<div class="row">
+      <div class="nota-pill">
+        <div class="n1">${n.nota}</div>
+        <div class="n2">${n.proveedor} &nbsp;·&nbsp; ${n.total_items || n.items} bolsones &nbsp;·&nbsp; ${Math.round(n.total_kg || n.kg)} kg</div>
+        <div class="tip">
+          <b>${n.nota}</b>
+          ${row('Proveedor', n.proveedor)}
+          ${row('Llegada', `${n.total_items || n.items} bolsones / ${(n.total_kg || n.kg).toFixed(1)} kg`)}
+          ${row('Usados', `${n.usados_items || n.items} / ${(n.usados_kg || n.kg).toFixed(1)} kg`)}
+          ${row('Resto', `${n.restantes_items || 0} / ${(n.restantes_kg || 0).toFixed(1)} kg`)}
+          ${row('Partes', n.partes_destino)}
+        </div>
+      </div>
+    </div>`;
+
+    html += `<div class="conn">│<br>▼</div>`;
+    html += `<div class="slbl">hermanos de nota ${n.nota}</div>`;
+
+    // Bolsones hermanos
+    html += `<div class="row">`;
+    for (const b of n.bolsones) html += bagPill(b);
+    html += `</div>`;
+
+    html += `<div class="conn">│<br>▼</div>`;
+
+    // Partes destino de esta nota
+    const partesDestino = (n.partes_destino || '').split(',').map(s => s.trim()).filter(Boolean);
+
+    for (const pNum of partesDestino) {
+      const p = parteByNum[pNum];
+      if (!p) {
+        html += `<div class="slbl" style="color:#f97316">parte ${pNum} — sin datos</div>`;
+        continue;
+      }
+
+      html += `<div class="slbl">entran a ${p.parte}</div>`;
+      html += `<div class="row">`;
+      for (const i of p.full_inputs) html += inPill(i, n.nota);
+      if (!p.full_inputs.length) html += `<span style="color:#4b5563;font-size:10px;">sin IN registrado</span>`;
+      html += `</div>`;
+
+      html += `<div class="conn">│<br>▼</div>`;
+      html += `<div class="row">${parteCard(p)}</div>`;
+      html += `<div class="conn">│<br>▼</div>`;
+
+      html += `<div class="slbl">salen de ${p.parte}</div>`;
+      html += `<div class="row">`;
+      for (const o of p.outputs) html += outPill(o);
+      if (!p.outputs.length) html += `<span style="color:#4b5563;font-size:10px;">sin OUT registrado</span>`;
+      html += `</div>`;
+    }
+
+    html += `</div>`; // .block
+  }
+
+  html += `</div></div>`; // .board .v31
+  document.getElementById('app').innerHTML = html;
+}
+
+function toggleAlertas() {
+  const btn = document.getElementById('alertas-toggle');
+  const body = document.getElementById('alertas-body');
+  btn.classList.toggle('open');
+  body.classList.toggle('open');
+}
+
+function downloadJSON() {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'flow_v31_payload.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+render(payload);
+</script>
+</body>
+</html>
