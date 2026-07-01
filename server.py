@@ -4038,6 +4038,26 @@ def _ensure_tablas_derivadas(cur):
             cur.execute(f"ALTER TABLE ia_protagonistas_operativos ADD COLUMN IF NOT EXISTS {_col} {_ddl}")
         except Exception:
             pass
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_cola_curiosidad (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            tipo_tarea VARCHAR(64) NOT NULL COMMENT 'perfil_proveedor_historico | ranking_vecinos_proveedor_mes | perfil_proveedor_material_historico | perfil_material_global',
+            tipo_nodo VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material | material',
+            entidad VARCHAR(200) NOT NULL COMMENT 'proveedor, o material si tipo_nodo=proveedor_material/material',
+            entidad_2 VARCHAR(200) NULL COMMENT 'proveedor padre si tipo_nodo=proveedor_material',
+            periodo VARCHAR(7) NOT NULL,
+            origen VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'protagonista_nivel1 | biografia_proveedor | protagonista_nivel2',
+            motivo VARCHAR(300) NULL,
+            prioridad_score DECIMAL(10,4) NOT NULL DEFAULT 0,
+            profundidad TINYINT NOT NULL DEFAULT 1,
+            estado VARCHAR(16) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | en_proceso | completada | descartada',
+            cooldown_hasta DATETIME NULL,
+            creado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            KEY idx_cola_estado (estado, prioridad_score),
+            KEY idx_cola_dedup (tipo_tarea, entidad, entidad_2, periodo)
+        ) CHARACTER SET utf8mb4
+    """)
 
 
 def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
@@ -4449,6 +4469,123 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
     return filas
 
 
+def _encolar_curiosidad(cur_lab, tarea):
+    """Inserta una tarea en ia_cola_curiosidad si no hay ya una pendiente/en_proceso
+    ni una completada reciente (30 días) para el mismo tipo_tarea+entidad+entidad_2+periodo.
+    Devuelve 1 si insertó, 0 si dedupe."""
+    cur_lab.execute("""
+        SELECT id FROM ia_cola_curiosidad
+        WHERE tipo_tarea = %s AND entidad = %s
+          AND COALESCE(entidad_2, '') = COALESCE(%s, '')
+          AND periodo = %s
+          AND (estado IN ('pendiente', 'en_proceso')
+               OR (estado = 'completada' AND actualizado_en >= NOW() - INTERVAL 30 DAY))
+        LIMIT 1
+    """, (tarea["tipo_tarea"], tarea["entidad"], tarea.get("entidad_2"), tarea["periodo"]))
+    if cur_lab.fetchone():
+        return 0
+    cur_lab.execute("""
+        INSERT INTO ia_cola_curiosidad
+            (tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
+             prioridad_score, profundidad, estado)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 'pendiente')
+    """, (
+        tarea["tipo_tarea"], tarea["tipo_nodo"], tarea["entidad"], tarea.get("entidad_2"),
+        tarea["periodo"], tarea.get("origen") or "", tarea.get("motivo"),
+        float(tarea.get("prioridad_score") or 0),
+    ))
+    return 1
+
+
+def calcular_cola_curiosidad(cur_lab, periodo_actual):
+    """Genera tareas de exploración determinísticas en ia_cola_curiosidad a partir
+    de protagonistas y biografías del periodo actual. Solo encola: no ejecuta
+    microtareas ni llama a Ollama. Devuelve cantidad de tareas encoladas."""
+    encoladas = 0
+
+    # 1) Proveedores protagonistas nivel 1 -> perfil_proveedor_historico
+    cur_lab.execute("""
+        SELECT entidad, prioridad_score
+        FROM ia_protagonistas_operativos
+        WHERE nivel = 1 AND periodo = %s AND criterio_version = %s
+    """, (periodo_actual, DERIVADAS_VERSION))
+    for r in (cur_lab.fetchall() or []):
+        encoladas += _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_proveedor_historico",
+            "tipo_nodo": "proveedor",
+            "entidad": r["entidad"],
+            "entidad_2": None,
+            "periodo": periodo_actual,
+            "origen": "protagonista_nivel1",
+            "motivo": f"Proveedor protagonista nivel 1 en {periodo_actual}",
+            "prioridad_score": r["prioridad_score"],
+        })
+
+    # 2) Biografías de proveedor con historial -> ranking_vecinos_proveedor_mes
+    #    para su último mes cerrado con actividad
+    cur_lab.execute("""
+        SELECT entidad, ultimo_mes_con_actividad, meses_con_actividad, prioridad_score
+        FROM ia_biografia_protagonistas
+        WHERE tipo_entidad = 'proveedor' AND periodo_actual = %s AND criterio_version = %s
+    """, (periodo_actual, DERIVADAS_VERSION))
+    for r in (cur_lab.fetchall() or []):
+        if int(r["meses_con_actividad"] or 0) <= 0 or not r["ultimo_mes_con_actividad"]:
+            continue
+        encoladas += _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "ranking_vecinos_proveedor_mes",
+            "tipo_nodo": "proveedor",
+            "entidad": r["entidad"],
+            "entidad_2": None,
+            "periodo": r["ultimo_mes_con_actividad"],
+            "origen": "biografia_proveedor",
+            "motivo": f"Comparar contra vecinos en su último mes cerrado ({r['ultimo_mes_con_actividad']})",
+            "prioridad_score": r["prioridad_score"],
+        })
+
+    # 3) proveedor_material protagonistas (nivel 2) -> perfil_proveedor_material_historico
+    cur_lab.execute("""
+        SELECT entidad AS material, entidad_2 AS proveedor, prioridad_score
+        FROM ia_protagonistas_operativos
+        WHERE nivel = 2 AND periodo = %s AND criterio_version = %s
+    """, (periodo_actual, DERIVADAS_VERSION))
+    nivel2 = cur_lab.fetchall() or []
+    for r in nivel2:
+        if not r["material"] or not r["proveedor"]:
+            continue
+        encoladas += _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_proveedor_material_historico",
+            "tipo_nodo": "proveedor_material",
+            "entidad": r["material"],
+            "entidad_2": r["proveedor"],
+            "periodo": periodo_actual,
+            "origen": "protagonista_nivel2",
+            "motivo": f"Material protagonista dentro de {r['proveedor']} en {periodo_actual}",
+            "prioridad_score": r["prioridad_score"],
+        })
+
+    # 4) Materiales protagonistas (distintos) -> perfil_material_global
+    #    prioridad heredada: la máxima entre sus apariciones nivel 2
+    materiales = {}
+    for r in nivel2:
+        mat = r["material"]
+        score = float(r["prioridad_score"] or 0)
+        if mat and (mat not in materiales or score > materiales[mat]):
+            materiales[mat] = score
+    for mat, score in materiales.items():
+        encoladas += _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_material_global",
+            "tipo_nodo": "material",
+            "entidad": mat,
+            "entidad_2": None,
+            "periodo": periodo_actual,
+            "origen": "protagonista_nivel2",
+            "motivo": f"Material protagonista en {periodo_actual}; perfilar a nivel global",
+            "prioridad_score": score,
+        })
+
+    return encoladas
+
+
 def _normalizar_proveedor_material(r):
     """Agrega claves explícitas proveedor/material/etiqueta a una fila de
     ia_biografia_protagonistas o ia_protagonistas_operativos.
@@ -4558,6 +4695,51 @@ def leer_protagonistas_operativos():
         conn.close()
     except Exception as e:
         print(f"Error en leer_protagonistas_operativos: {e}", file=sys.stderr)
+    return resultado
+
+
+def leer_cola_curiosidad(limite_top=10):
+    """Lee estado de ia_cola_curiosidad para /api/ia/cerebro. Solo lectura."""
+    resultado = {"pendientes": 0, "top_pendientes": []}
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM ia_cola_curiosidad WHERE estado = 'pendiente'")
+        fila = cur.fetchone() or {}
+        resultado["pendientes"] = int(fila.get("n") or 0)
+
+        cur.execute("""
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
+                   prioridad_score, profundidad, estado, cooldown_hasta, creado_en, actualizado_en
+            FROM ia_cola_curiosidad
+            WHERE estado = 'pendiente'
+            ORDER BY prioridad_score DESC, id ASC
+            LIMIT %s
+        """, (int(limite_top),))
+        for r in (cur.fetchall() or []):
+            for k in ("cooldown_hasta", "creado_en", "actualizado_en"):
+                if r.get(k) is not None:
+                    r[k] = str(r[k])
+            # Claves explícitas proveedor/material según tipo_nodo
+            if r.get("tipo_nodo") == "proveedor_material":
+                r["material"] = r.get("entidad")
+                r["proveedor"] = r.get("entidad_2")
+                r["etiqueta"] = f"{r.get('entidad_2') or '?'} → {r.get('entidad') or '?'}"
+            elif r.get("tipo_nodo") == "material":
+                r["material"] = r.get("entidad")
+                r["proveedor"] = None
+                r["etiqueta"] = r.get("entidad") or "?"
+            else:
+                r["proveedor"] = r.get("entidad")
+                r["material"] = None
+                r["etiqueta"] = r.get("entidad") or "?"
+            resultado["top_pendientes"].append(r)
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en leer_cola_curiosidad: {e}", file=sys.stderr)
     return resultado
 
 
@@ -4848,10 +5030,18 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         except Exception as e_bio:
             resultado["errores"].append(f"biografia: {e_bio}")
 
+        # Cola de curiosidad determinística desde protagonistas y biografías
+        filas_cola = 0
+        try:
+            filas_cola = calcular_cola_curiosidad(cur_lab, periodo_actual)
+        except Exception as e_cola:
+            resultado["errores"].append(f"cola_curiosidad: {e_cola}")
+
         conn_lab.commit()
         resultado["ok"] = True
         resultado["filas_protagonistas"] = filas_prot
         resultado["filas_biografias"] = filas_bio
+        resultado["filas_cola_curiosidad"] = filas_cola
 
         add_reasoning_step(
             "tablas_derivadas",
@@ -8237,6 +8427,7 @@ def get_ia_cerebro():
             "tablas_derivadas": leer_tablas_derivadas_resumen(),
             "protagonistas_operativos": leer_protagonistas_operativos(),
             "biografias_protagonistas": leer_biografia_protagonistas(),
+            "cola_curiosidad": leer_cola_curiosidad(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -8927,6 +9118,9 @@ def ia_dashboard():
   <!-- -- BIOGRAFIA PROTAGONISTAS -- -->
   <div class="section-title" style="margin-top:20px;">Biografía de protagonistas</div>
   <div id="biografiaProtagonistas" style="margin-bottom:16px;"></div>
+
+  <!-- -- COLA DE CURIOSIDAD (contador) -- -->
+  <div id="colaCuriosidad" style="margin-bottom:16px;font-size:12px;color:#8b949e;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -9919,6 +10113,14 @@ function renderBiografiaProtagonistas(bio) {
   }
 }
 
+/* -- Cola de curiosidad (contador simple) ------------------- */
+function renderColaCuriosidad(cc) {
+  const el = document.getElementById("colaCuriosidad");
+  if (!el) return;
+  const n = (cc && cc.pendientes) || 0;
+  el.textContent = "Cola de curiosidad: " + n + " pendientes.";
+}
+
 /* -- Sonido discreto cuando aparece observación útil nueva -- */
 let _ultimoIdObsUtil = null;
 function _sonarObsUtil() {
@@ -10372,6 +10574,7 @@ function renderCerebro(c) {
 
   renderProtagonistas(c.protagonistas_operativos || null);
   renderBiografiaProtagonistas(c.biografias_protagonistas || null);
+  renderColaCuriosidad(c.cola_curiosidad || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
