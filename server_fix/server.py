@@ -3975,6 +3975,31 @@ def _ensure_tablas_derivadas(cur):
         ) CHARACTER SET utf8mb4
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_biografia_protagonistas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
+            tipo_entidad VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material',
+            entidad VARCHAR(200) NOT NULL,
+            entidad_2 VARCHAR(200) NULL COMMENT 'material si aplica',
+            periodo_actual VARCHAR(7) NOT NULL,
+            kg_actual DECIMAL(16,2) NOT NULL DEFAULT 0,
+            pct_actual_contexto DECIMAL(8,2) NOT NULL DEFAULT 0,
+            meses_con_actividad INT NOT NULL DEFAULT 0,
+            kg_promedio_meses_activos DECIMAL(16,2) NOT NULL DEFAULT 0,
+            kg_min_mes_activo DECIMAL(16,2) NOT NULL DEFAULT 0,
+            kg_max_mes_activo DECIMAL(16,2) NOT NULL DEFAULT 0,
+            pct_promedio_meses_activos DECIMAL(8,2) NOT NULL DEFAULT 0,
+            ultimo_mes_con_actividad VARCHAR(7) NULL,
+            meses_base_total INT NOT NULL DEFAULT 0,
+            confiabilidad VARCHAR(24) NOT NULL DEFAULT 'sin_historia',
+            historial_json TEXT NULL,
+            lectura_backend TEXT NULL,
+            prioridad_score DECIMAL(10,4) NOT NULL DEFAULT 0,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_bio (criterio_version, tipo_entidad, entidad, entidad_2, periodo_actual)
+        ) CHARACTER SET utf8mb4
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_protagonistas_operativos (
             id INT AUTO_INCREMENT PRIMARY KEY,
             origen_tipo VARCHAR(48) NOT NULL DEFAULT '' COMMENT 'periodo | periodo_tipo_movimiento | proveedor_periodo | material_periodo | maquina_periodo',
@@ -4174,6 +4199,294 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
             filas += 1
 
     return filas
+
+
+def _confiabilidad_bio(n):
+    n = int(n or 0)
+    if n >= 6:  return "fuerte"
+    if n >= 3:  return "media"
+    if n == 2:  return "debil"
+    if n == 1:  return "antecedente_unico"
+    return "sin_historia"
+
+
+def _lectura_bio(tipo_entidad, confiab, pct_actual, pct_promedio, meses):
+    """Genera texto determinístico corto para lectura_backend."""
+    if meses == 0:
+        return "Sin historial previo en meses cerrados. Dato inicial."
+    nuevo = meses <= 1
+    if nuevo:
+        return "Protagonista nuevo o casi nuevo; no usar como normalidad todavía."
+    sup = pct_actual > pct_promedio * 1.15 if pct_promedio else False
+    inf = pct_actual < pct_promedio * 0.85 if pct_promedio else False
+    if tipo_entidad == "proveedor":
+        base = "Proveedor protagonista actual"
+        if confiab == "fuerte":
+            base += "; historial fuerte"
+        elif confiab == "media":
+            base += "; historial moderado"
+        else:
+            base += "; historial débil, tratar como señal exploratoria"
+        if sup:
+            base += " y participación actual superior a su promedio histórico."
+        elif inf:
+            base += " pero participación actual inferior a su promedio histórico."
+        else:
+            base += " con participación dentro de su rango histórico."
+        return base
+    else:
+        base = "Material dominante dentro del proveedor este mes"
+        if confiab in ("fuerte", "media"):
+            base += "; con historial consistente."
+        else:
+            base += "; historial débil, tratar como señal exploratoria."
+        return base
+
+
+def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
+    """Genera ficha histórica determinística para cada protagonista nivel1/nivel2.
+    Usa ia_resumen_mensual_ingresos_proveedor (meses cerrados) como fuente.
+    No llama a Ollama."""
+    filas = 0
+
+    # ---------- Nivel 1: proveedores ----------
+    # Protagonistas nivel 1 del periodo actual
+    cur_lab.execute("""
+        SELECT entidad, kg_entidad AS kg_actual, pct_del_contexto AS pct_actual, prioridad_score
+        FROM ia_protagonistas_operativos
+        WHERE nivel = 1 AND periodo = %s AND criterio_version = %s
+        ORDER BY prioridad_score DESC
+    """, (periodo_actual, DERIVADAS_VERSION))
+    prot_n1 = cur_lab.fetchall() or []
+
+    # Total ingresos por mes cerrado (para calcular pct histórico del proveedor)
+    cur_lab.execute("""
+        SELECT periodo, SUM(kilos_total) AS kg_total
+        FROM ia_resumen_mensual_ingresos_proveedor
+        WHERE estado_periodo = 'cerrado' AND criterio_version = %s
+        GROUP BY periodo
+        ORDER BY periodo
+    """, (DERIVADAS_VERSION,))
+    totales_mes = {r["periodo"]: float(r["kg_total"] or 0) for r in (cur_lab.fetchall() or [])}
+    meses_base_total = len(totales_mes)
+
+    for pn in prot_n1:
+        proveedor = pn["entidad"]
+        kg_actual = float(pn["kg_actual"] or 0)
+        pct_actual = float(pn["pct_actual"] or 0)
+
+        cur_lab.execute("""
+            SELECT periodo, kilos_total AS kg, registros
+            FROM ia_resumen_mensual_ingresos_proveedor
+            WHERE Proveedor = %s AND estado_periodo = 'cerrado' AND criterio_version = %s
+            ORDER BY periodo
+        """, (proveedor, DERIVADAS_VERSION))
+        hist_rows = cur_lab.fetchall() or []
+
+        historial = []
+        for h in hist_rows:
+            kg_mes = float(h["kg"] or 0)
+            tot_mes = totales_mes.get(h["periodo"], 0)
+            pct_mes = round(kg_mes / tot_mes * 100, 2) if tot_mes > 0 else 0
+            historial.append({
+                "periodo": h["periodo"],
+                "kg": kg_mes,
+                "registros": int(h["registros"] or 0),
+                "pct_contexto": pct_mes,
+            })
+
+        n_activos = len(historial)
+        confiab = _confiabilidad_bio(n_activos)
+        kg_vals = [h["kg"] for h in historial]
+        pct_vals = [h["pct_contexto"] for h in historial]
+        kg_prom = round(sum(kg_vals) / n_activos, 2) if n_activos else 0
+        kg_min  = round(min(kg_vals), 2) if n_activos else 0
+        kg_max  = round(max(kg_vals), 2) if n_activos else 0
+        pct_prom = round(sum(pct_vals) / n_activos, 2) if n_activos else 0
+        ultimo_mes = historial[-1]["periodo"] if historial else None
+        lectura = _lectura_bio("proveedor", confiab, pct_actual, pct_prom, n_activos)
+
+        cur_lab.execute("""
+            INSERT INTO ia_biografia_protagonistas
+                (criterio_version, tipo_entidad, entidad, entidad_2, periodo_actual,
+                 kg_actual, pct_actual_contexto, meses_con_actividad,
+                 kg_promedio_meses_activos, kg_min_mes_activo, kg_max_mes_activo,
+                 pct_promedio_meses_activos, ultimo_mes_con_actividad,
+                 meses_base_total, confiabilidad, historial_json, lectura_backend, prioridad_score)
+            VALUES (%s, 'proveedor', %s, NULL, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                kg_actual = VALUES(kg_actual),
+                pct_actual_contexto = VALUES(pct_actual_contexto),
+                meses_con_actividad = VALUES(meses_con_actividad),
+                kg_promedio_meses_activos = VALUES(kg_promedio_meses_activos),
+                kg_min_mes_activo = VALUES(kg_min_mes_activo),
+                kg_max_mes_activo = VALUES(kg_max_mes_activo),
+                pct_promedio_meses_activos = VALUES(pct_promedio_meses_activos),
+                ultimo_mes_con_actividad = VALUES(ultimo_mes_con_actividad),
+                meses_base_total = VALUES(meses_base_total),
+                confiabilidad = VALUES(confiabilidad),
+                historial_json = VALUES(historial_json),
+                lectura_backend = VALUES(lectura_backend),
+                prioridad_score = VALUES(prioridad_score),
+                actualizado_en = CURRENT_TIMESTAMP
+        """, (
+            DERIVADAS_VERSION, proveedor, periodo_actual,
+            kg_actual, pct_actual, n_activos,
+            kg_prom, kg_min, kg_max,
+            pct_prom, ultimo_mes,
+            meses_base_total, confiab,
+            json.dumps(historial[-12:], ensure_ascii=False),
+            lectura,
+            float(pn["prioridad_score"] or 0),
+        ))
+        filas += 1
+
+    # ---------- Nivel 2: materiales por proveedor ----------
+    cur_lab.execute("""
+        SELECT entidad AS material, entidad_2 AS proveedor,
+               kg_entidad AS kg_actual, pct_del_contexto AS pct_actual, prioridad_score
+        FROM ia_protagonistas_operativos
+        WHERE nivel = 2 AND periodo = %s AND criterio_version = %s
+        ORDER BY entidad_2, prioridad_score DESC
+    """, (periodo_actual, DERIVADAS_VERSION))
+    prot_n2 = cur_lab.fetchall() or []
+
+    for pm in prot_n2:
+        proveedor = pm["proveedor"] or ""
+        material  = pm["material"] or ""
+        kg_actual = float(pm["kg_actual"] or 0)
+        pct_actual = float(pm["pct_actual"] or 0)
+
+        # Historial del material dentro del proveedor (meses cerrados desde sh_etp_v2_local)
+        try:
+            cur_op.execute("""
+                SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
+                       COUNT(*) AS registros,
+                       COALESCE(SUM(kilos), 0) AS kg,
+                       COALESCE(SUM(SUM(kilos)) OVER (PARTITION BY DATE_FORMAT(FechaHora,'%%Y-%%m')), 0) AS kg_prov_mes
+                FROM TiposDeMovimiento
+                WHERE TiposDeMovimiento LIKE 'ING %%'
+                  AND Proveedor = %s
+                  AND (Description = %s OR Materiales = %s)
+                  AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
+                GROUP BY periodo
+                ORDER BY periodo
+            """, (proveedor, material, material, periodo_actual))
+            hist_mat_raw = cur_op.fetchall() or []
+        except Exception:
+            hist_mat_raw = []
+
+        # Para pct_contexto por mes necesitamos kg del proveedor ese mes
+        # Usamos ia_resumen_mensual_ingresos_proveedor como fuente
+        cur_lab.execute("""
+            SELECT periodo, kilos_total AS kg_prov
+            FROM ia_resumen_mensual_ingresos_proveedor
+            WHERE Proveedor = %s AND estado_periodo = 'cerrado' AND criterio_version = %s
+            ORDER BY periodo
+        """, (proveedor, DERIVADAS_VERSION))
+        prov_kg_mes = {r["periodo"]: float(r["kg_prov"] or 0) for r in (cur_lab.fetchall() or [])}
+
+        historial = []
+        for h in hist_mat_raw:
+            kg_mes = float(h["kg"] or 0)
+            kg_prov = prov_kg_mes.get(h["periodo"], 0)
+            pct_mes = round(kg_mes / kg_prov * 100, 2) if kg_prov > 0 else 0
+            historial.append({
+                "periodo": h["periodo"],
+                "kg": kg_mes,
+                "registros": int(h["registros"] or 0),
+                "pct_contexto": pct_mes,
+            })
+
+        n_activos = len(historial)
+        confiab = _confiabilidad_bio(n_activos)
+        kg_vals = [h["kg"] for h in historial]
+        pct_vals = [h["pct_contexto"] for h in historial]
+        kg_prom = round(sum(kg_vals) / n_activos, 2) if n_activos else 0
+        kg_min  = round(min(kg_vals), 2) if n_activos else 0
+        kg_max  = round(max(kg_vals), 2) if n_activos else 0
+        pct_prom = round(sum(pct_vals) / n_activos, 2) if n_activos else 0
+        ultimo_mes = historial[-1]["periodo"] if historial else None
+        lectura = _lectura_bio("proveedor_material", confiab, pct_actual, pct_prom, n_activos)
+
+        cur_lab.execute("""
+            INSERT INTO ia_biografia_protagonistas
+                (criterio_version, tipo_entidad, entidad, entidad_2, periodo_actual,
+                 kg_actual, pct_actual_contexto, meses_con_actividad,
+                 kg_promedio_meses_activos, kg_min_mes_activo, kg_max_mes_activo,
+                 pct_promedio_meses_activos, ultimo_mes_con_actividad,
+                 meses_base_total, confiabilidad, historial_json, lectura_backend, prioridad_score)
+            VALUES (%s, 'proveedor_material', %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                kg_actual = VALUES(kg_actual),
+                pct_actual_contexto = VALUES(pct_actual_contexto),
+                meses_con_actividad = VALUES(meses_con_actividad),
+                kg_promedio_meses_activos = VALUES(kg_promedio_meses_activos),
+                kg_min_mes_activo = VALUES(kg_min_mes_activo),
+                kg_max_mes_activo = VALUES(kg_max_mes_activo),
+                pct_promedio_meses_activos = VALUES(pct_promedio_meses_activos),
+                ultimo_mes_con_actividad = VALUES(ultimo_mes_con_actividad),
+                meses_base_total = VALUES(meses_base_total),
+                confiabilidad = VALUES(confiabilidad),
+                historial_json = VALUES(historial_json),
+                lectura_backend = VALUES(lectura_backend),
+                prioridad_score = VALUES(prioridad_score),
+                actualizado_en = CURRENT_TIMESTAMP
+        """, (
+            DERIVADAS_VERSION, material, proveedor, periodo_actual,
+            kg_actual, pct_actual, n_activos,
+            kg_prom, kg_min, kg_max,
+            pct_prom, ultimo_mes,
+            meses_base_total, confiab,
+            json.dumps(historial[-12:], ensure_ascii=False),
+            lectura,
+            float(pm["prioridad_score"] or 0),
+        ))
+        filas += 1
+
+    return filas
+
+
+def leer_biografia_protagonistas(periodo_actual=None):
+    """Lee biografías del periodo actual para /api/ia/cerebro."""
+    resultado = {"proveedores": [], "materiales": [], "actualizado_en": None}
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        if not periodo_actual:
+            periodo_actual = date.today().strftime("%Y-%m")
+
+        cur.execute("""
+            SELECT tipo_entidad, entidad, entidad_2, periodo_actual,
+                   kg_actual, pct_actual_contexto, meses_con_actividad,
+                   kg_promedio_meses_activos, kg_min_mes_activo, kg_max_mes_activo,
+                   pct_promedio_meses_activos, ultimo_mes_con_actividad,
+                   meses_base_total, confiabilidad, historial_json, lectura_backend,
+                   prioridad_score, actualizado_en
+            FROM ia_biografia_protagonistas
+            WHERE criterio_version = %s AND periodo_actual = %s
+            ORDER BY tipo_entidad, prioridad_score DESC
+        """, (DERIVADAS_VERSION, periodo_actual))
+        for r in (cur.fetchall() or []):
+            try:
+                r["historial_json"] = json.loads(r["historial_json"] or "[]")
+            except Exception:
+                r["historial_json"] = []
+            if r.get("actualizado_en") and not resultado["actualizado_en"]:
+                resultado["actualizado_en"] = str(r["actualizado_en"])
+            if r["tipo_entidad"] == "proveedor":
+                resultado["proveedores"].append(r)
+            else:
+                resultado["materiales"].append(r)
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en leer_biografia_protagonistas: {e}", file=sys.stderr)
+    return resultado
 
 
 def leer_protagonistas_operativos():
@@ -4506,9 +4819,18 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                 except Exception as e_prot:
                     resultado["errores"].append(f"protagonistas: {e_prot}")
 
+        # Biografías históricas determinísticas para protagonistas del mes actual
+        filas_bio = 0
+        periodo_actual = date.today().strftime("%Y-%m")
+        try:
+            filas_bio = calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual)
+        except Exception as e_bio:
+            resultado["errores"].append(f"biografia: {e_bio}")
+
         conn_lab.commit()
         resultado["ok"] = True
         resultado["filas_protagonistas"] = filas_prot
+        resultado["filas_biografias"] = filas_bio
 
         add_reasoning_step(
             "tablas_derivadas",
@@ -7868,6 +8190,7 @@ def get_ia_cerebro():
             "autonomia": estado_autonomia_ia(),
             "tablas_derivadas": leer_tablas_derivadas_resumen(),
             "protagonistas_operativos": leer_protagonistas_operativos(),
+            "biografias_protagonistas": leer_biografia_protagonistas(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -8554,6 +8877,10 @@ def ia_dashboard():
   <!-- -- PROTAGONISTAS OPERATIVOS -- -->
   <div class="section-title" style="margin-top:28px;">Protagonistas operativos (ingresos)</div>
   <div id="protagonistasOperativos" style="margin-bottom:16px;"></div>
+
+  <!-- -- BIOGRAFIA PROTAGONISTAS -- -->
+  <div class="section-title" style="margin-top:20px;">Biografía de protagonistas</div>
+  <div id="biografiaProtagonistas" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -9449,6 +9776,101 @@ function renderProtagonistas(po) {
   }
 }
 
+/* -- Biografía de protagonistas ----------------------------- */
+function renderBiografiaProtagonistas(bio) {
+  const cont = document.getElementById("biografiaProtagonistas");
+  if (!cont) return;
+  cont.innerHTML = "";
+  if (!bio) return;
+  const provs = asArray(bio.proveedores);
+  const mats  = asArray(bio.materiales);
+  if (!provs.length && !mats.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin biografías disponibles. Ejecutar recalcular derivadas.";
+    cont.appendChild(p);
+    return;
+  }
+
+  function fmtKg(v) { return v != null ? Number(v).toLocaleString("es-AR") + " kg" : "-"; }
+  function fmtPct(v) { return v != null ? Number(v).toFixed(1) + "%" : "-"; }
+
+  const CONF_COLOR = {fuerte:"#3fb950", media:"#d29922", debil:"#f85149", antecedente_unico:"#8b949e", sin_historia:"#484f58"};
+
+  function ficha(r, esProveedor) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,.03);";
+
+    const titulo = document.createElement("div");
+    titulo.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;";
+    const nombre = document.createElement("span");
+    nombre.textContent = esProveedor ? r.entidad : (r.entidad_2 + " → " + r.entidad);
+    nombre.style.cssText = "font-weight:600;color:#e6edf3;flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    nombre.title = nombre.textContent;
+    const badge = document.createElement("span");
+    badge.textContent = r.confiabilidad || "?";
+    badge.style.cssText = `font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:${CONF_COLOR[r.confiabilidad]||"#8b949e"};white-space:nowrap;`;
+    titulo.appendChild(nombre);
+    titulo.appendChild(badge);
+    wrap.appendChild(titulo);
+
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 8px;font-size:11px;color:#8b949e;";
+    const cells = [
+      ["Actual", fmtKg(r.kg_actual)],
+      ["% ctx actual", fmtPct(r.pct_actual_contexto)],
+      ["Meses activos", r.meses_con_actividad || 0],
+      ["Prom. hist.", fmtKg(r.kg_promedio_meses_activos)],
+      ["% ctx prom.", fmtPct(r.pct_promedio_meses_activos)],
+      ["Último mes", r.ultimo_mes_con_actividad || "-"],
+    ];
+    cells.forEach(([lbl, val]) => {
+      const c = document.createElement("div");
+      c.innerHTML = `<span style="color:#484f58;">${lbl}</span><br><span style="color:#c9d1d9;">${val}</span>`;
+      grid.appendChild(c);
+    });
+    wrap.appendChild(grid);
+
+    if (r.lectura_backend) {
+      const lec = document.createElement("div");
+      lec.style.cssText = "margin-top:6px;font-size:11px;color:#8b949e;font-style:italic;border-top:1px solid rgba(255,255,255,.06);padding-top:5px;";
+      lec.textContent = r.lectura_backend;
+      wrap.appendChild(lec);
+    }
+    return wrap;
+  }
+
+  const grid2 = document.createElement("div");
+  grid2.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;";
+  cont.appendChild(grid2);
+
+  if (provs.length) {
+    const col = document.createElement("div");
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:11px;font-weight:600;color:#58a6ff;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;";
+    h.textContent = "Proveedores";
+    col.appendChild(h);
+    provs.forEach(r => col.appendChild(ficha(r, true)));
+    grid2.appendChild(col);
+  }
+
+  if (mats.length) {
+    const col = document.createElement("div");
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:11px;font-weight:600;color:#3fb950;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;";
+    h.textContent = "Materiales";
+    col.appendChild(h);
+    mats.forEach(r => col.appendChild(ficha(r, false)));
+    grid2.appendChild(col);
+  }
+
+  if (bio.actualizado_en) {
+    const ts = document.createElement("div");
+    ts.style.cssText = "margin-top:6px;font-size:10px;color:#484f58;text-align:right;";
+    ts.textContent = "Actualizado: " + bio.actualizado_en;
+    cont.appendChild(ts);
+  }
+}
+
 /* -- Sonido discreto cuando aparece observación útil nueva -- */
 let _ultimoIdObsUtil = null;
 function _sonarObsUtil() {
@@ -9901,6 +10323,7 @@ function renderCerebro(c) {
   }
 
   renderProtagonistas(c.protagonistas_operativos || null);
+  renderBiografiaProtagonistas(c.biografias_protagonistas || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
