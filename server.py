@@ -6456,11 +6456,19 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
 
 def ejecutar_fase2_ia(cerebro):
     """Fase 2: exploración autónoma de la base de datos — el modelo elige sus propias queries."""
-    add_reasoning_step(
-        "explorador_inicio",
-        "Iniciando exploración autónoma de la base de datos.",
-        f"Solo lectura. Max {FASE2_MAX_PASOS} pasos por sesion. Esquema operativo precargado."
-    )
+    if MICROTAREAS_ENABLED:
+        # El ciclo prioriza microtareas: no anunciar exploración libre que no va a ocurrir.
+        add_reasoning_step(
+            "explorador_inicio",
+            "Iniciando ciclo IA operativo.",
+            "Microtareas y pendientes estructurales priorizados. Solo lectura."
+        )
+    else:
+        add_reasoning_step(
+            "explorador_inicio",
+            "Iniciando exploración autónoma de la base de datos.",
+            f"Solo lectura. Max {FASE2_MAX_PASOS} pasos por sesion. Esquema operativo precargado."
+        )
 
     cartografia = guardar_cartografia_base_si_corresponde()
     if cartografia.get("ok"):
@@ -7006,10 +7014,27 @@ def _ejecutar_ciclo_ia_impl(modo="manual"):
     metricas = cerebro.get("metricas") or {}
     proxima = cerebro.get("proxima_accion")
 
+    # Resumen principal: estado real actual de la cartografía.
+    # Las columnas base de fase 1 quedan solo como métrica secundaria.
+    _prot = cerebro.get("protagonistas_operativos") or {}
+    _bio = cerebro.get("biografias_protagonistas") or {}
+    n_protagonistas = len(_prot.get("nivel1") or [])
+    n_biografias = len(_bio.get("proveedores") or []) + len(_bio.get("materiales") or [])
+    detalle_obs = (
+        f"Cartografía activa: {metricas.get('columnas_perfiladas', 0)}/{metricas.get('columnas_esquema_total', 0)} columnas perfiladas; "
+        f"{metricas.get('tipos_movimiento_perfilados', 0)} tipos; "
+        f"{metricas.get('relaciones_estructurales', 0)} relaciones"
+    )
+    if n_protagonistas or n_biografias:
+        detalle_obs += f"; {n_protagonistas} protagonistas; {n_biografias} biografías"
+    detalle_obs += (
+        f". Secundario: {metricas.get('columnas_comprendidas', 0)}/{metricas.get('columnas_exploradas', 0)} columnas base; "
+        f"{metricas.get('hipotesis_activas', 0)} hipótesis activas."
+    )
     add_reasoning_step(
         "observacion",
         "Revisé el estado del cerebro IA.",
-        f"{metricas.get('columnas_comprendidas', 0)} de {metricas.get('columnas_exploradas', 0)} columnas comprendidas; {metricas.get('hipotesis_activas', 0)} hipótesis activas."
+        detalle_obs
     )
 
     diccionario = guardar_diccionario_columnas_si_corresponde()
