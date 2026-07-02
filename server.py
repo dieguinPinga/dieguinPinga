@@ -4037,6 +4037,10 @@ DERIVADAS_VERSION = "derivadas_v1"
 # un proveedor dominante descubierto amerite estudio.
 MAX_COLA_PROFUNDIDAD = int(os.environ.get("MAX_COLA_PROFUNDIDAD", "3"))
 COLA_KG_MINIMO_DOMINANTE = float(os.environ.get("COLA_KG_MINIMO_DOMINANTE", "500"))
+# Cola por cobertura mensual: proveedores que explican hasta este % de los
+# ingresos de cada mes cerrado, con tope de proveedores por mes.
+COBERTURA_PROVEEDORES_PCT = float(os.environ.get("COBERTURA_PROVEEDORES_PCT", "80"))
+COBERTURA_PROVEEDORES_MAX_POR_MES = int(os.environ.get("COBERTURA_PROVEEDORES_MAX_POR_MES", "20"))
 
 
 def _ensure_tablas_derivadas(cur):
@@ -4798,6 +4802,95 @@ def calcular_cola_curiosidad(cur_lab, periodo_actual):
         })
 
     return encoladas
+
+
+def calcular_cola_proveedores_por_cobertura(cur_lab):
+    """Camada de descubrimiento por cobertura mensual: para cada mes cerrado de
+    ia_resumen_mensual_ingresos_proveedor, encola perfil_proveedor_historico y
+    ranking_vecinos_proveedor_mes para los proveedores que explican hasta
+    COBERTURA_PROVEEDORES_PCT% de los kilos del mes (tope
+    COBERTURA_PROVEEDORES_MAX_POR_MES por mes). Determinístico, sin Ollama.
+    Alcanza proveedores históricos relevantes que no son protagonistas actuales
+    ni dominantes de materiales. Devuelve {"encoladas", "dedupe", "periodos"}."""
+    resultado = {"encoladas": 0, "dedupe": 0, "periodos": 0}
+
+    cur_lab.execute("""
+        SELECT periodo, Proveedor, kilos_total
+        FROM ia_resumen_mensual_ingresos_proveedor
+        WHERE estado_periodo = 'cerrado' AND criterio_version = %s
+        ORDER BY periodo DESC, kilos_total DESC
+    """, (DERIVADAS_VERSION,))
+    filas = cur_lab.fetchall() or []
+    if not filas:
+        return resultado
+
+    por_periodo = {}
+    for r in filas:
+        por_periodo.setdefault(r["periodo"], []).append(r)
+
+    periodos = sorted(por_periodo.keys(), reverse=True)
+    p_max = periodos[0]
+    y_max, m_max = int(p_max[:4]), int(p_max[5:7])
+    periodo_actual = date.today().strftime("%Y-%m")
+
+    for periodo in periodos:
+        provs = por_periodo[periodo]
+        total_mes = sum(float(x["kilos_total"] or 0) for x in provs)
+        if total_mes <= 0:
+            continue
+        resultado["periodos"] += 1
+        y, m = int(periodo[:4]), int(periodo[5:7])
+        meses_atras = (y_max - y) * 12 + (m_max - m)
+        recencia = 0.9 ** meses_atras
+
+        pct_acumulado = 0.0
+        for idx, x in enumerate(provs):
+            if idx >= COBERTURA_PROVEEDORES_MAX_POR_MES:
+                break
+            if pct_acumulado >= COBERTURA_PROVEEDORES_PCT:
+                break
+            proveedor = x["Proveedor"]
+            kg_mes = float(x["kilos_total"] or 0)
+            pct_mes = round(kg_mes / total_mes * 100, 2)
+            pct_acumulado = round(pct_acumulado + pct_mes, 2)
+            if not proveedor or not str(proveedor).strip():
+                continue
+
+            # Prioridad: mayor por kg del mes, % del mes y recencia del periodo
+            prioridad = round((kg_mes * 0.7 + pct_mes * 50.0) * recencia, 4)
+            motivo = (
+                f"Proveedor explica {pct_mes}% del periodo {periodo}; "
+                f"acumulado hasta este proveedor {pct_acumulado}%"
+            )
+            base = {
+                "tipo_nodo": "proveedor",
+                "entidad": proveedor,
+                "entidad_2": None,
+                "origen": "cobertura_mensual_proveedor",
+                "motivo": motivo,
+                "prioridad_score": prioridad,
+                "profundidad": 1,
+            }
+            # Perfil histórico: uno por proveedor (periodo = mes en curso, dedupe natural)
+            insertada = _encolar_curiosidad(cur_lab, dict(
+                base, tipo_tarea="perfil_proveedor_historico", periodo=periodo_actual))
+            resultado["encoladas"] += insertada
+            resultado["dedupe"] += 1 - insertada
+            # Ranking de vecinos en el mes cerrado que lo hizo relevante
+            insertada = _encolar_curiosidad(cur_lab, dict(
+                base, tipo_tarea="ranking_vecinos_proveedor_mes", periodo=periodo))
+            resultado["encoladas"] += insertada
+            resultado["dedupe"] += 1 - insertada
+
+    if resultado["encoladas"] or resultado["dedupe"]:
+        add_reasoning_step(
+            "cola_curiosidad_cobertura_proveedores",
+            (f"Cobertura mensual: {resultado['encoladas']} tareas encoladas "
+             f"sobre {resultado['periodos']} meses cerrados"),
+            (f"dedupe={resultado['dedupe']} | umbral={COBERTURA_PROVEEDORES_PCT}% | "
+             f"max/mes={COBERTURA_PROVEEDORES_MAX_POR_MES}")
+        )
+    return resultado
 
 
 def _normalizar_proveedor_material(r):
@@ -6008,11 +6101,21 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         except Exception as e_cola:
             resultado["errores"].append(f"cola_curiosidad: {e_cola}")
 
+        # Cola por cobertura mensual: proveedores históricos relevantes que no
+        # aparecen como protagonistas actuales ni dominantes de materiales
+        cobertura = {"encoladas": 0, "dedupe": 0, "periodos": 0}
+        try:
+            cobertura = calcular_cola_proveedores_por_cobertura(cur_lab)
+        except Exception as e_cob:
+            resultado["errores"].append(f"cola_cobertura: {e_cob}")
+
         conn_lab.commit()
         resultado["ok"] = True
         resultado["filas_protagonistas"] = filas_prot
         resultado["filas_biografias"] = filas_bio
         resultado["filas_cola_curiosidad"] = filas_cola
+        resultado["filas_cola_cobertura"] = cobertura.get("encoladas", 0)
+        resultado["cola_cobertura_dedupe"] = cobertura.get("dedupe", 0)
 
         add_reasoning_step(
             "tablas_derivadas",
