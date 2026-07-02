@@ -5431,6 +5431,112 @@ def _propagar_dominantes_material(cur_lab, tarea, ficha):
     return resultado
 
 
+def propagar_dominantes_existentes():
+    """Backfill determinístico: recorre las fichas perfil_material_global ya
+    completadas (la más reciente por material) y ejecuta la propagación de
+    proveedores dominantes para cada una, con el dedupe habitual. Sin Ollama.
+    Respeta MAX_COLA_PROFUNDIDAD y COLA_KG_MINIMO_DOMINANTE."""
+    resultado = {
+        "ok": False,
+        "fichas_revisadas": 0,
+        "tareas_insertadas": 0,
+        "tareas_dedupe": 0,
+        "errores": [],
+    }
+    conn_lab = get_ia_connection()
+    if not conn_lab:
+        resultado["errores"].append("Sin conexión a crowdbot_lab")
+        return resultado
+    conn_op = None
+    cur_op = None
+    try:
+        cur_lab = conn_lab.cursor()
+        cur_lab.execute("""
+            SELECT id, cola_id, entidad, periodo, datos_json
+            FROM ia_fichas_operativas
+            WHERE tipo_tarea = 'perfil_material_global'
+            ORDER BY id DESC
+        """)
+        fichas = cur_lab.fetchall() or []
+
+        materiales_vistos = set()
+        proveedores_descubiertos = []
+        for f in fichas:
+            material = f["entidad"]
+            if material in materiales_vistos:
+                continue  # solo la ficha más reciente de cada material
+            materiales_vistos.add(material)
+            resultado["fichas_revisadas"] += 1
+
+            try:
+                datos = json.loads(f["datos_json"] or "{}")
+            except Exception:
+                datos = {}
+
+            # Si datos_json no alcanza, recalcular determinísticamente desde SQL
+            if not (datos.get("proveedores_historicos") and float(datos.get("kg_total_historico") or 0) > 0):
+                try:
+                    if conn_op is None:
+                        conn_op = get_db_connection()
+                        if conn_op:
+                            cur_op = conn_op.cursor()
+                    if cur_op is not None:
+                        ficha_recalc = _ficha_perfil_material_global(
+                            cur_op, {"entidad": material, "periodo": f["periodo"]}
+                        )
+                        datos = ficha_recalc.get("datos") or {}
+                except Exception as e_rec:
+                    resultado["errores"].append(f"{material}: recalculo fallo: {e_rec}")
+                    continue
+
+            # Profundidad de la tarea que originó la ficha, para respetar el límite
+            profundidad = 1
+            if f.get("cola_id"):
+                cur_lab.execute(
+                    "SELECT profundidad FROM ia_cola_curiosidad WHERE id = %s",
+                    (f["cola_id"],)
+                )
+                fila_cola = cur_lab.fetchone()
+                if fila_cola:
+                    profundidad = int(fila_cola.get("profundidad") or 1)
+
+            prop = _propagar_dominantes_material(
+                cur_lab,
+                {"entidad": material, "periodo": f["periodo"], "profundidad": profundidad},
+                {"datos": datos},
+            )
+            resultado["tareas_insertadas"] += prop["encoladas"]
+            resultado["tareas_dedupe"] += prop["dedupe"]
+            proveedores_descubiertos.extend(prop["proveedores"])
+
+        conn_lab.commit()
+        cur_lab.close()
+        resultado["ok"] = True
+
+        add_reasoning_step(
+            "cola_curiosidad_backfill_dominantes",
+            (f"Backfill dominantes: {resultado['fichas_revisadas']} fichas de material revisadas; "
+             f"{resultado['tareas_insertadas']} tareas nuevas, {resultado['tareas_dedupe']} dedupe"),
+            ("Descubiertos: " + "; ".join(proveedores_descubiertos[:12])) if proveedores_descubiertos else None
+        )
+    except Exception as e:
+        resultado["errores"].append(str(e))
+        print(f"Error en propagar_dominantes_existentes: {e}", file=sys.stderr)
+    finally:
+        try:
+            conn_lab.close()
+        except Exception:
+            pass
+        try:
+            if cur_op is not None:
+                cur_op.close()
+            if conn_op is not None:
+                conn_op.close()
+        except Exception:
+            pass
+    return resultado
+
+
 def hay_cola_curiosidad_pendiente_disponible(cur_lab=None):
     """True si hay al menos una tarea pendiente y fuera de cooldown en
     ia_cola_curiosidad. Acepta un cursor lab existente o abre conexión propia."""
@@ -9499,6 +9605,15 @@ def api_ia_cerebro():
 @app.route('/api/ia/derivadas/recalcular', methods=['POST'])
 def api_ia_derivadas_recalcular():
     resultado = guardar_tablas_derivadas_si_corresponde(forzar=True)
+    status = 200 if resultado.get("ok") else 500
+    return jsonify(resultado), status
+
+
+@app.route('/api/ia/cola/propagar-dominantes', methods=['POST'])
+def api_ia_cola_propagar_dominantes():
+    """Backfill: propaga proveedores dominantes desde fichas
+    perfil_material_global ya completadas hacia ia_cola_curiosidad."""
+    resultado = propagar_dominantes_existentes()
     status = 200 if resultado.get("ok") else 500
     return jsonify(resultado), status
 
