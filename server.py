@@ -1006,10 +1006,172 @@ def notificar_telegram_inicio_async():
     return t
 
 
+def _bio_proveedor_frase(nombre_prov, bio, pct_mes=None):
+    """Frase corta determinística sobre el historial de un proveedor.
+    bio: fila normalizada de ia_biografia_protagonistas o None."""
+    if not bio or int(bio.get("meses_con_actividad") or 0) == 0:
+        return f"{nombre_prov} sin historial previo"
+    conf = bio.get("confiabilidad")
+    base = {
+        "fuerte": "habitual fuerte",
+        "media": "habitual",
+        "debil": "historial débil",
+        "antecedente_unico": "un solo mes previo",
+    }.get(conf, "historial débil")
+    frase = f"{nombre_prov} {base}"
+    pct_a = float(bio.get("pct_actual_contexto") or 0)
+    pct_p = float(bio.get("pct_promedio_meses_activos") or 0)
+    if pct_p > 0:
+        if pct_a >= pct_p * 1.5:
+            frase += f", muy por encima de su histórico ({pct_a:.1f}% vs {pct_p:.1f}% prom.)"
+        elif pct_a <= pct_p * 0.5:
+            frase += f", muy por debajo de su histórico ({pct_a:.1f}% vs {pct_p:.1f}% prom.)"
+    return frase
+
+
+def _maquina_es_habitual_normalidad(maquina):
+    """True/False según normalidad mensual de la máquina; None si no se puede saber."""
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return None
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT meses_con_actividad
+            FROM ia_normalidad_mensual_produccion_maquina
+            WHERE entidad = %s AND criterio_version = %s
+            LIMIT 1
+        """, (maquina, DERIVADAS_VERSION))
+        fila = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not fila:
+            return False
+        return int(fila.get("meses_con_actividad") or 0) >= 3
+    except Exception:
+        return None
+
+
+def construir_mensaje_telegram_inteligente(tipo_microtarea, evidencia, cerebro):
+    """Arma un mensaje Telegram masticado y accionable para las microtareas de
+    estado (produccion/ingresos del mes actual). Devuelve None si el mensaje
+    solo podría decir total/vs esperado (nada enriquecible con protagonistas,
+    biografías o normalidad)."""
+    evidencia = evidencia or {}
+    cerebro = cerebro or {}
+    periodo = evidencia.get("periodo") or "?"
+    total_kg = float(evidencia.get("total_kg") or 0)
+    avance_pct = evidencia.get("avance_mes_pct")
+    vs_esp = evidencia.get("actual_vs_esperado_pct")
+
+    es_ingresos = "ingresos" in str(tipo_microtarea)
+    es_produccion = "produccion" in str(tipo_microtarea)
+    if not (es_ingresos or es_produccion):
+        return None
+
+    if vs_esp is None:
+        estado_txt = ""
+    elif vs_esp >= 25:
+        estado_txt = " altos vs esperado"
+    elif vs_esp <= -25:
+        estado_txt = " bajos vs esperado"
+    else:
+        estado_txt = " en rango esperado"
+
+    titulo = "📦 Ingresos" if es_ingresos else "🏭 Producción"
+    encabezado = f"{titulo} {periodo}{estado_txt}: {int(total_kg):,} kg"
+    if vs_esp is not None:
+        encabezado += f" ({vs_esp:+.1f}% vs esperado)"
+    if avance_pct is not None:
+        encabezado += f" | {avance_pct}% del mes"
+
+    senales = []   # avisos prioritarios (⚠️), en orden de prioridad
+    lineas = []    # contexto masticado
+
+    if es_ingresos:
+        top = evidencia.get("top_proveedores") or []
+        bios = {}
+        for b in ((cerebro.get("biografias_protagonistas") or {}).get("proveedores") or []):
+            nombre_b = b.get("proveedor") or b.get("entidad")
+            if nombre_b:
+                bios[nombre_b] = b
+
+        items = []
+        for t in top[:3]:
+            prov = t.get("Proveedor") or "?"
+            kg = float(t.get("kilos_total") or 0)
+            pct = round(kg / total_kg * 100, 1) if total_kg > 0 else 0
+            items.append({"proveedor": prov, "kg": kg, "pct": pct})
+        if items:
+            lineas.append("Explican: " + ", ".join(f"{i['proveedor']} {i['pct']}%" for i in items))
+
+        frases_bio = []
+        for i in items:
+            bio = bios.get(i["proveedor"])
+            # Señal prioritaria 1: protagonista sin historia con mucho kg
+            sin_historia = (not bio) or int(bio.get("meses_con_actividad") or 0) == 0
+            if sin_historia and i["pct"] >= 15:
+                senal = f"⚠️ {i['proveedor']} sin historial previo concentra {i['pct']}% ({int(i['kg']):,} kg)"
+                if i is items[0]:
+                    # Señal prioritaria 3: ranking inusual (líder del mes sin historia)
+                    senal += " y lidera el mes"
+                senales.append(senal)
+                continue
+            # Señal prioritaria 2: cambio fuerte vs histórico
+            if bio:
+                pct_a = float(bio.get("pct_actual_contexto") or 0)
+                pct_p = float(bio.get("pct_promedio_meses_activos") or 0)
+                if pct_p > 0 and (pct_a >= pct_p * 1.5 or pct_a <= pct_p * 0.5):
+                    senales.append(f"⚠️ {_bio_proveedor_frase(i['proveedor'], bio)}")
+                    continue
+            frases_bio.append(_bio_proveedor_frase(i["proveedor"], bio))
+        if frases_bio:
+            lineas.append("; ".join(frases_bio))
+
+    else:  # producción
+        top_maq = evidencia.get("top_maquinas") or []
+        if top_maq:
+            lider = top_maq[0]
+            maquina = lider.get("Maquina") or "?"
+            kg_maq = float(lider.get("kilos_total") or 0)
+            pct_maq = round(kg_maq / total_kg * 100, 1) if total_kg > 0 else 0
+            linea = f"Máquina líder: {maquina} ({pct_maq}% del total, {int(kg_maq):,} kg)"
+            habitual = _maquina_es_habitual_normalidad(maquina)
+            if habitual is True:
+                linea += ", habitual según su normalidad"
+            elif habitual is False:
+                # Señal prioritaria: líder sin normalidad previa = ranking inusual
+                senales.append(f"⚠️ {maquina} lidera producción sin normalidad previa (máquina nueva o poco vista)")
+            lineas.append(linea)
+
+    # Señal prioritaria 4: ficha operativa interesante del periodo
+    try:
+        for f in ((cerebro.get("fichas_operativas") or {}).get("recientes") or [])[:3]:
+            sen = f.get("senales_json") or {}
+            if f.get("periodo") == periodo and (
+                sen.get("monoproveedor") or sen.get("dominante_concentra_mas_50pct")
+                or sen.get("es_lider_mes") or not sen.get("tiene_biografia", True)
+            ):
+                lineas.append(f"Ficha: {f.get('titulo')}")
+                break
+    except Exception:
+        pass
+
+    # Sin protagonistas, biografías ni normalidad: el mensaje sería solo
+    # total/vs esperado -> no accionable, no enviar.
+    if not senales and not lineas:
+        return None
+
+    return "\n".join([encabezado] + senales + lineas)
+
+
 def notificar_telegram_microtarea(nombre, periodo, avance_pct, total_kg,
-                                   vs_esperado_pct, confianza, conclusion_txt):
+                                   vs_esperado_pct, confianza, conclusion_txt,
+                                   evidencia=None, cerebro=None):
     """Envía notificación Telegram para observación de microtarea si califica.
-    Regla: abs(vs_esperado_pct) >= 25 o confianza >= 0.75.
+    Regla: (abs(vs_esperado_pct) >= 25 o confianza >= 0.75) Y además el mensaje
+    se puede enriquecer con protagonistas/biografía/normalidad; un mensaje que
+    solo diría total/vs esperado no se envía.
     Registra reasoning_step tanto si filtra como si envía o falla."""
     califica = (abs(vs_esperado_pct or 0) >= 25) or (confianza >= 0.75)
     if not califica:
@@ -1020,13 +1182,14 @@ def notificar_telegram_microtarea(nombre, periodo, avance_pct, total_kg,
         )
         return
 
-    mensaje = (
-        f"📊 Microtarea {nombre}\n"
-        f"Periodo: {periodo} ({avance_pct}% del mes)\n"
-        f"Total: {int(total_kg):,} kg"
-        + (f" | vs esperado: {vs_esperado_pct:+.1f}%" if vs_esperado_pct is not None else "")
-        + f"\nConf: {confianza}\n{conclusion_txt[:300]}"
-    )
+    mensaje = construir_mensaje_telegram_inteligente(nombre, evidencia, cerebro)
+    if mensaje is None:
+        add_reasoning_step(
+            "telegram_microtarea_filtrado",
+            f"{nombre}: no notifica",
+            "sin lectura accionable"
+        )
+        return
 
     def _enviar():
         try:
@@ -6938,7 +7101,8 @@ def ejecutar_microtarea_estado_produccion_mes_actual(cerebro):
         # Telegram instrumentado
         notificar_telegram_microtarea(
             nombre, periodo, avance_pct, total_kg,
-            vs_esperado_pct, confianza, conclusion_txt
+            vs_esperado_pct, confianza, conclusion_txt,
+            evidencia=evidencia_doc, cerebro=cerebro
         )
 
         _insert_conclusion_autonoma(cur_lab, {
@@ -7148,7 +7312,8 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
         # Telegram instrumentado
         notificar_telegram_microtarea(
             nombre, periodo, avance_pct, total_kg,
-            vs_esperado_pct, confianza, conclusion_txt
+            vs_esperado_pct, confianza, conclusion_txt,
+            evidencia=evidencia_doc, cerebro=cerebro
         )
 
         _insert_conclusion_autonoma(cur_lab, {
