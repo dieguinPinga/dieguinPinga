@@ -3980,7 +3980,7 @@ def _ensure_tablas_derivadas(cur):
             criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
             tipo_entidad VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material',
             entidad VARCHAR(200) NOT NULL COMMENT 'proveedor, o material si tipo_entidad=proveedor_material',
-            entidad_2 VARCHAR(200) NULL COMMENT 'proveedor padre si tipo_entidad=proveedor_material',
+            entidad_2 VARCHAR(200) NOT NULL DEFAULT '' COMMENT 'proveedor padre si tipo_entidad=proveedor_material; vacío para proveedor (NULL rompe la UNIQUE)',
             periodo_actual VARCHAR(7) NOT NULL,
             kg_actual DECIMAL(16,2) NOT NULL DEFAULT 0,
             pct_actual_contexto DECIMAL(8,2) NOT NULL DEFAULT 0,
@@ -3999,6 +3999,27 @@ def _ensure_tablas_derivadas(cur):
             UNIQUE KEY uk_bio (criterio_version, tipo_entidad, entidad, entidad_2, periodo_actual)
         ) CHARACTER SET utf8mb4
     """)
+    # Migración defensiva: entidad_2 NULL en biografías de proveedor rompía la
+    # UNIQUE uk_bio (MySQL permite múltiples NULL en claves únicas) y duplicaba
+    # filas en cada recálculo. Dedupe dejando la fila de mayor id, luego NULL -> ''.
+    try:
+        cur.execute("""
+            DELETE b1 FROM ia_biografia_protagonistas b1
+            JOIN ia_biografia_protagonistas b2
+              ON b1.criterio_version = b2.criterio_version
+             AND b1.tipo_entidad = b2.tipo_entidad
+             AND b1.entidad = b2.entidad
+             AND COALESCE(b1.entidad_2, '') = COALESCE(b2.entidad_2, '')
+             AND b1.periodo_actual = b2.periodo_actual
+             AND b1.id < b2.id
+        """)
+        cur.execute("UPDATE ia_biografia_protagonistas SET entidad_2 = '' WHERE entidad_2 IS NULL")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE ia_biografia_protagonistas MODIFY entidad_2 VARCHAR(200) NOT NULL DEFAULT '' COMMENT 'proveedor padre si tipo_entidad=proveedor_material; vacío para proveedor'")
+    except Exception:
+        pass
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_protagonistas_operativos (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -4050,12 +4071,36 @@ def _ensure_tablas_derivadas(cur):
             motivo VARCHAR(300) NULL,
             prioridad_score DECIMAL(10,4) NOT NULL DEFAULT 0,
             profundidad TINYINT NOT NULL DEFAULT 1,
-            estado VARCHAR(16) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | en_proceso | completada | descartada',
+            estado VARCHAR(16) NOT NULL DEFAULT 'pendiente' COMMENT 'pendiente | en_proceso | completada | descartada | error',
+            resultado_resumen VARCHAR(300) NULL,
             cooldown_hasta DATETIME NULL,
             creado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             KEY idx_cola_estado (estado, prioridad_score),
             KEY idx_cola_dedup (tipo_tarea, entidad, entidad_2, periodo)
+        ) CHARACTER SET utf8mb4
+    """)
+    try:
+        cur.execute("ALTER TABLE ia_cola_curiosidad ADD COLUMN IF NOT EXISTS resultado_resumen VARCHAR(300) NULL")
+    except Exception:
+        pass
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_fichas_operativas (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            cola_id INT NULL COMMENT 'id de la tarea en ia_cola_curiosidad que la generó',
+            tipo_tarea VARCHAR(64) NOT NULL,
+            tipo_nodo VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material | material',
+            entidad VARCHAR(200) NOT NULL COMMENT 'proveedor, o material si tipo_nodo=proveedor_material/material',
+            entidad_2 VARCHAR(200) NULL COMMENT 'proveedor padre si tipo_nodo=proveedor_material',
+            periodo VARCHAR(7) NOT NULL,
+            titulo VARCHAR(300) NOT NULL,
+            resumen_deterministico TEXT NULL,
+            datos_json TEXT NULL,
+            senales_json TEXT NULL,
+            prioridad_score DECIMAL(10,4) NOT NULL DEFAULT 0,
+            creado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_ficha_creado (creado_en),
+            KEY idx_ficha_cola (cola_id)
         ) CHARACTER SET utf8mb4
     """)
 
@@ -4333,7 +4378,7 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
                  kg_promedio_meses_activos, kg_min_mes_activo, kg_max_mes_activo,
                  pct_promedio_meses_activos, ultimo_mes_con_actividad,
                  meses_base_total, confiabilidad, historial_json, lectura_backend, prioridad_score)
-            VALUES (%s, 'proveedor', %s, NULL, %s,
+            VALUES (%s, 'proveedor', %s, '', %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 kg_actual = VALUES(kg_actual),
@@ -4591,7 +4636,10 @@ def _normalizar_proveedor_material(r):
     ia_biografia_protagonistas o ia_protagonistas_operativos.
     Convención real de almacenamiento: en filas de material (tipo_entidad
     'material' o 'proveedor_material'), entidad = material y entidad_2 =
-    proveedor padre; en filas de proveedor, entidad = proveedor."""
+    proveedor padre; en filas de proveedor, entidad = proveedor y entidad_2
+    vacío ('' o NULL; se normaliza a None)."""
+    if r.get("entidad_2") == "":
+        r["entidad_2"] = None
     tipo = str(r.get("tipo_entidad") or "")
     if tipo in ("material", "proveedor_material"):
         r["material"] = r.get("entidad")
@@ -4698,9 +4746,32 @@ def leer_protagonistas_operativos():
     return resultado
 
 
+def _normalizar_nodo_cola(r):
+    """Claves explícitas proveedor/material/etiqueta según tipo_nodo, y fechas a str.
+    Para filas de ia_cola_curiosidad e ia_fichas_operativas."""
+    if r.get("entidad_2") == "":
+        r["entidad_2"] = None
+    for k in ("cooldown_hasta", "creado_en", "actualizado_en"):
+        if r.get(k) is not None:
+            r[k] = str(r[k])
+    if r.get("tipo_nodo") == "proveedor_material":
+        r["material"] = r.get("entidad")
+        r["proveedor"] = r.get("entidad_2")
+        r["etiqueta"] = f"{r.get('entidad_2') or '?'} → {r.get('entidad') or '?'}"
+    elif r.get("tipo_nodo") == "material":
+        r["material"] = r.get("entidad")
+        r["proveedor"] = None
+        r["etiqueta"] = r.get("entidad") or "?"
+    else:
+        r["proveedor"] = r.get("entidad")
+        r["material"] = None
+        r["etiqueta"] = r.get("entidad") or "?"
+    return r
+
+
 def leer_cola_curiosidad(limite_top=10):
     """Lee estado de ia_cola_curiosidad para /api/ia/cerebro. Solo lectura."""
-    resultado = {"pendientes": 0, "top_pendientes": []}
+    resultado = {"pendientes": 0, "top_pendientes": [], "completadas_recientes": []}
     try:
         conn = get_ia_connection()
         if not conn:
@@ -4719,28 +4790,498 @@ def leer_cola_curiosidad(limite_top=10):
             LIMIT %s
         """, (int(limite_top),))
         for r in (cur.fetchall() or []):
-            for k in ("cooldown_hasta", "creado_en", "actualizado_en"):
-                if r.get(k) is not None:
-                    r[k] = str(r[k])
-            # Claves explícitas proveedor/material según tipo_nodo
-            if r.get("tipo_nodo") == "proveedor_material":
-                r["material"] = r.get("entidad")
-                r["proveedor"] = r.get("entidad_2")
-                r["etiqueta"] = f"{r.get('entidad_2') or '?'} → {r.get('entidad') or '?'}"
-            elif r.get("tipo_nodo") == "material":
-                r["material"] = r.get("entidad")
-                r["proveedor"] = None
-                r["etiqueta"] = r.get("entidad") or "?"
-            else:
-                r["proveedor"] = r.get("entidad")
-                r["material"] = None
-                r["etiqueta"] = r.get("entidad") or "?"
-            resultado["top_pendientes"].append(r)
+            resultado["top_pendientes"].append(_normalizar_nodo_cola(r))
+
+        cur.execute("""
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen,
+                   prioridad_score, estado, resultado_resumen, actualizado_en
+            FROM ia_cola_curiosidad
+            WHERE estado = 'completada'
+            ORDER BY actualizado_en DESC, id DESC
+            LIMIT %s
+        """, (int(limite_top),))
+        for r in (cur.fetchall() or []):
+            resultado["completadas_recientes"].append(_normalizar_nodo_cola(r))
         cur.close()
         conn.close()
     except Exception as e:
         print(f"Error en leer_cola_curiosidad: {e}", file=sys.stderr)
     return resultado
+
+
+def leer_fichas_operativas(limite=10):
+    """Lee fichas determinísticas recientes para /api/ia/cerebro. Solo lectura."""
+    resultado = {"total": 0, "recientes": []}
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS n FROM ia_fichas_operativas")
+        fila = cur.fetchone() or {}
+        resultado["total"] = int(fila.get("n") or 0)
+
+        cur.execute("""
+            SELECT id, cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
+                   titulo, resumen_deterministico, datos_json, senales_json,
+                   prioridad_score, creado_en
+            FROM ia_fichas_operativas
+            ORDER BY creado_en DESC, id DESC
+            LIMIT %s
+        """, (int(limite),))
+        for r in (cur.fetchall() or []):
+            for k in ("datos_json", "senales_json"):
+                try:
+                    r[k] = json.loads(r[k] or "{}")
+                except Exception:
+                    r[k] = {}
+            resultado["recientes"].append(_normalizar_nodo_cola(r))
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en leer_fichas_operativas: {e}", file=sys.stderr)
+    return resultado
+
+
+def _ficha_kg(v):
+    try:
+        return f"{float(v or 0):,.0f} kg"
+    except Exception:
+        return f"{v} kg"
+
+
+def _ficha_perfil_proveedor_historico(cur_lab, tarea):
+    """Ficha determinística: historia mensual de un proveedor + ranking actual."""
+    proveedor = tarea["entidad"]
+    periodo = tarea["periodo"]
+    datos = {"proveedor": proveedor, "periodo": periodo}
+    senales = {}
+
+    cur_lab.execute("""
+        SELECT meses_con_actividad, kg_promedio_meses_activos, kg_min_mes_activo,
+               kg_max_mes_activo, pct_promedio_meses_activos, ultimo_mes_con_actividad,
+               confiabilidad, historial_json, kg_actual, pct_actual_contexto
+        FROM ia_biografia_protagonistas
+        WHERE tipo_entidad = 'proveedor' AND entidad = %s
+          AND periodo_actual = %s AND criterio_version = %s
+        LIMIT 1
+    """, (proveedor, periodo, DERIVADAS_VERSION))
+    bio = cur_lab.fetchone()
+    senales["tiene_biografia"] = bool(bio)
+
+    if bio:
+        try:
+            historial = json.loads(bio["historial_json"] or "[]")
+        except Exception:
+            historial = []
+        datos.update({
+            "meses_con_actividad": int(bio["meses_con_actividad"] or 0),
+            "kg_promedio_meses_activos": float(bio["kg_promedio_meses_activos"] or 0),
+            "kg_min_mes_activo": float(bio["kg_min_mes_activo"] or 0),
+            "kg_max_mes_activo": float(bio["kg_max_mes_activo"] or 0),
+            "pct_promedio_meses_activos": float(bio["pct_promedio_meses_activos"] or 0),
+            "ultimo_mes_con_actividad": bio["ultimo_mes_con_actividad"],
+            "confiabilidad": bio["confiabilidad"],
+            "historial_12m": historial[-12:],
+            "kg_actual": float(bio["kg_actual"] or 0),
+            "pct_actual_contexto": float(bio["pct_actual_contexto"] or 0),
+        })
+    else:
+        # Fallback determinístico desde el resumen mensual de meses cerrados
+        cur_lab.execute("""
+            SELECT periodo, kilos_total AS kg, registros
+            FROM ia_resumen_mensual_ingresos_proveedor
+            WHERE Proveedor = %s AND estado_periodo = 'cerrado' AND criterio_version = %s
+            ORDER BY periodo
+        """, (proveedor, DERIVADAS_VERSION))
+        hist = [
+            {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
+            for h in (cur_lab.fetchall() or [])
+        ]
+        kg_vals = [h["kg"] for h in hist]
+        datos.update({
+            "meses_con_actividad": len(hist),
+            "kg_promedio_meses_activos": round(sum(kg_vals) / len(kg_vals), 2) if kg_vals else 0,
+            "kg_min_mes_activo": round(min(kg_vals), 2) if kg_vals else 0,
+            "kg_max_mes_activo": round(max(kg_vals), 2) if kg_vals else 0,
+            "pct_promedio_meses_activos": None,
+            "ultimo_mes_con_actividad": hist[-1]["periodo"] if hist else None,
+            "confiabilidad": None,
+            "historial_12m": hist[-12:],
+        })
+
+    # Ranking actual del proveedor entre protagonistas nivel 1 del periodo
+    cur_lab.execute("""
+        SELECT entidad, kg_entidad
+        FROM ia_protagonistas_operativos
+        WHERE nivel = 1 AND periodo = %s AND criterio_version = %s
+        ORDER BY kg_entidad DESC, entidad
+    """, (periodo, DERIVADAS_VERSION))
+    ranking = cur_lab.fetchall() or []
+    posicion = next((i + 1 for i, r in enumerate(ranking) if r["entidad"] == proveedor), None)
+    datos["ranking_actual"] = (
+        {"posicion": posicion, "total_protagonistas": len(ranking)} if posicion else None
+    )
+    senales["en_ranking_actual"] = posicion is not None
+    senales["meses_con_actividad"] = datos["meses_con_actividad"]
+
+    n = datos["meses_con_actividad"]
+    resumen = (
+        f"{proveedor}: {n} meses cerrados con actividad; "
+        f"promedio {_ficha_kg(datos['kg_promedio_meses_activos'])}/mes "
+        f"(min {_ficha_kg(datos['kg_min_mes_activo'])}, max {_ficha_kg(datos['kg_max_mes_activo'])})."
+    ) if n else f"{proveedor}: sin meses cerrados con actividad registrada."
+    if datos.get("pct_promedio_meses_activos"):
+        resumen += f" Participación promedio {datos['pct_promedio_meses_activos']}% del contexto."
+    if posicion:
+        resumen += f" En {periodo} es #{posicion} de {len(ranking)} protagonistas de ingresos."
+    else:
+        resumen += f" Sin ranking de protagonistas en {periodo}."
+
+    return {
+        "titulo": f"Perfil histórico de proveedor: {proveedor}",
+        "resumen": resumen,
+        "datos": datos,
+        "senales": senales,
+    }
+
+
+def _ficha_ranking_vecinos_proveedor_mes(cur_lab, tarea):
+    """Ficha determinística: posición del proveedor entre vecinos en un mes cerrado."""
+    proveedor = tarea["entidad"]
+    periodo = tarea["periodo"]
+
+    cur_lab.execute("""
+        SELECT Proveedor, kilos_total AS kg, registros
+        FROM ia_resumen_mensual_ingresos_proveedor
+        WHERE periodo = %s AND criterio_version = %s
+        ORDER BY kilos_total DESC, Proveedor
+    """, (periodo, DERIVADAS_VERSION))
+    filas = cur_lab.fetchall() or []
+    total_kg = sum(float(f["kg"] or 0) for f in filas)
+
+    def _item(f):
+        kg = float(f["kg"] or 0)
+        return {
+            "proveedor": f["Proveedor"],
+            "kg": kg,
+            "pct": round(kg / total_kg * 100, 2) if total_kg > 0 else 0,
+        }
+
+    idx = next((i for i, f in enumerate(filas) if f["Proveedor"] == proveedor), None)
+    datos = {
+        "proveedor": proveedor,
+        "periodo": periodo,
+        "total_proveedores": len(filas),
+        "ranking_top": [_item(f) for f in filas[:10]],
+        "posicion": (idx + 1) if idx is not None else None,
+        "kg_mes": _item(filas[idx])["kg"] if idx is not None else 0,
+        "pct_mes": _item(filas[idx])["pct"] if idx is not None else 0,
+        "vecino_anterior": _item(filas[idx - 1]) if idx is not None and idx > 0 else None,
+        "vecino_siguiente": _item(filas[idx + 1]) if idx is not None and idx + 1 < len(filas) else None,
+    }
+    senales = {
+        "en_ranking": idx is not None,
+        "es_lider_mes": idx == 0,
+        "proveedores_mes": len(filas),
+    }
+
+    if idx is None:
+        resumen = f"En {periodo}, {proveedor} no registró ingresos (ranking de {len(filas)} proveedores sin él)."
+    else:
+        resumen = (
+            f"En {periodo}, {proveedor} fue #{idx + 1} de {len(filas)} proveedores de ingresos "
+            f"con {_ficha_kg(datos['kg_mes'])} ({datos['pct_mes']}% del mes)."
+        )
+        if datos["vecino_anterior"]:
+            resumen += f" Arriba: {datos['vecino_anterior']['proveedor']} ({_ficha_kg(datos['vecino_anterior']['kg'])})."
+        else:
+            resumen += " Fue el líder del mes."
+        if datos["vecino_siguiente"]:
+            resumen += f" Abajo: {datos['vecino_siguiente']['proveedor']} ({_ficha_kg(datos['vecino_siguiente']['kg'])})."
+
+    return {
+        "titulo": f"Ranking de vecinos {periodo}: {proveedor}",
+        "resumen": resumen,
+        "datos": datos,
+        "senales": senales,
+    }
+
+
+def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
+    """Ficha determinística: material dentro de un proveedor, actual + historia."""
+    material = tarea["entidad"]
+    proveedor = tarea["entidad_2"]
+    periodo = tarea["periodo"]
+    datos = {"proveedor": proveedor, "material": material, "periodo": periodo}
+    senales = {}
+
+    cur_lab.execute("""
+        SELECT kg_actual, pct_actual_contexto, meses_con_actividad,
+               confiabilidad, historial_json, ultimo_mes_con_actividad
+        FROM ia_biografia_protagonistas
+        WHERE tipo_entidad = 'proveedor_material' AND entidad = %s AND entidad_2 = %s
+          AND periodo_actual = %s AND criterio_version = %s
+        LIMIT 1
+    """, (material, proveedor, periodo, DERIVADAS_VERSION))
+    bio = cur_lab.fetchone()
+    senales["tiene_biografia"] = bool(bio)
+
+    if bio:
+        try:
+            historial = json.loads(bio["historial_json"] or "[]")
+        except Exception:
+            historial = []
+        datos.update({
+            "kg_actual": float(bio["kg_actual"] or 0),
+            "pct_dentro_proveedor": float(bio["pct_actual_contexto"] or 0),
+            "meses_con_actividad": int(bio["meses_con_actividad"] or 0),
+            "confiabilidad": bio["confiabilidad"],
+            "ultimo_mes_con_actividad": bio["ultimo_mes_con_actividad"],
+            "historial_12m": historial[-12:],
+        })
+    else:
+        # Fallback: historia en meses cerrados desde la base operativa
+        cur_op.execute("""
+            SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
+                   COUNT(*) AS registros,
+                   COALESCE(SUM(kilos), 0) AS kg
+            FROM TiposDeMovimiento
+            WHERE TiposDeMovimiento LIKE 'ING %%'
+              AND Proveedor = %s
+              AND (Description = %s OR Materiales = %s)
+              AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
+            GROUP BY periodo
+            ORDER BY periodo
+        """, (proveedor, material, material, periodo))
+        hist = [
+            {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
+            for h in (cur_op.fetchall() or [])
+        ]
+        cur_lab.execute("""
+            SELECT kg_entidad, pct_del_contexto
+            FROM ia_protagonistas_operativos
+            WHERE nivel = 2 AND entidad = %s AND entidad_2 = %s
+              AND periodo = %s AND criterio_version = %s
+            LIMIT 1
+        """, (material, proveedor, periodo, DERIVADAS_VERSION))
+        prot = cur_lab.fetchone() or {}
+        datos.update({
+            "kg_actual": float(prot.get("kg_entidad") or 0),
+            "pct_dentro_proveedor": float(prot.get("pct_del_contexto") or 0),
+            "meses_con_actividad": len(hist),
+            "confiabilidad": None,
+            "ultimo_mes_con_actividad": hist[-1]["periodo"] if hist else None,
+            "historial_12m": hist[-12:],
+        })
+
+    senales["meses_con_actividad"] = datos["meses_con_actividad"]
+    n = datos["meses_con_actividad"]
+    resumen = (
+        f"{material} de {proveedor}: {_ficha_kg(datos['kg_actual'])} en {periodo} "
+        f"({datos['pct_dentro_proveedor']}% de los kilos del proveedor); "
+    )
+    resumen += (
+        f"activo {n} meses cerrados previos (último: {datos['ultimo_mes_con_actividad']})."
+        if n else "sin meses cerrados previos con este material."
+    )
+
+    return {
+        "titulo": f"Perfil histórico proveedor+material: {proveedor} → {material}",
+        "resumen": resumen,
+        "datos": datos,
+        "senales": senales,
+    }
+
+
+def _ficha_perfil_material_global(cur_op, tarea):
+    """Ficha determinística: material a nivel global (todos los proveedores, meses cerrados)."""
+    material = tarea["entidad"]
+    periodo = tarea["periodo"]
+    inicio_periodo = f"{periodo}-01"  # meses cerrados = anteriores al periodo de la tarea
+
+    cur_op.execute("""
+        SELECT Proveedor,
+               COUNT(*) AS registros,
+               COALESCE(SUM(kilos), 0) AS kg
+        FROM TiposDeMovimiento
+        WHERE TiposDeMovimiento LIKE 'ING %%'
+          AND (Description = %s OR Materiales = %s)
+          AND FechaHora < %s
+          AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> ''
+        GROUP BY Proveedor
+        ORDER BY kg DESC
+    """, (material, material, inicio_periodo))
+    provs = [
+        {"proveedor": p["Proveedor"], "kg": float(p["kg"] or 0), "registros": int(p["registros"] or 0)}
+        for p in (cur_op.fetchall() or [])
+    ]
+    kg_total = sum(p["kg"] for p in provs)
+
+    cur_op.execute("""
+        SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
+               COUNT(*) AS registros,
+               COALESCE(SUM(kilos), 0) AS kg
+        FROM TiposDeMovimiento
+        WHERE TiposDeMovimiento LIKE 'ING %%'
+          AND (Description = %s OR Materiales = %s)
+          AND FechaHora < %s
+        GROUP BY periodo
+        ORDER BY periodo DESC
+        LIMIT 12
+    """, (material, material, inicio_periodo))
+    kg_por_mes = [
+        {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
+        for h in reversed(cur_op.fetchall() or [])
+    ]
+
+    dominante = provs[0] if provs else None
+    pct_dominante = round(dominante["kg"] / kg_total * 100, 2) if dominante and kg_total > 0 else 0
+    datos = {
+        "material": material,
+        "periodo": periodo,
+        "proveedores_historicos": provs[:10],
+        "proveedores_distintos": len(provs),
+        "kg_total_historico": round(kg_total, 2),
+        "kg_por_mes_12m": kg_por_mes,
+        "proveedor_dominante": ({**dominante, "pct": pct_dominante} if dominante else None),
+    }
+    senales = {
+        "proveedores_distintos": len(provs),
+        "monoproveedor": len(provs) == 1,
+        "dominante_concentra_mas_50pct": pct_dominante > 50,
+    }
+
+    if not provs:
+        resumen = f"{material}: sin ingresos registrados en meses cerrados."
+    else:
+        kg_12m = sum(h["kg"] for h in kg_por_mes)
+        resumen = (
+            f"{material}: traído históricamente por {len(provs)} proveedores; "
+            f"dominante {dominante['proveedor']} ({pct_dominante}% del kg histórico). "
+            f"Últimos {len(kg_por_mes)} meses cerrados: {_ficha_kg(kg_12m)}."
+        )
+
+    return {
+        "titulo": f"Perfil global de material: {material}",
+        "resumen": resumen,
+        "datos": datos,
+        "senales": senales,
+    }
+
+
+def ejecutar_tarea_cola_curiosidad():
+    """Consumidor determinístico de ia_cola_curiosidad: toma la tarea pendiente de
+    mayor prioridad, calcula su ficha según tipo_tarea y la guarda en
+    ia_fichas_operativas. No llama a Ollama. Devuelve dict con el resultado,
+    o None si no hay tareas pendientes elegibles."""
+    conn_lab = get_ia_connection()
+    if not conn_lab:
+        return None
+    tarea = None
+    conn_op = None
+    try:
+        cur_lab = conn_lab.cursor()
+        cur_lab.execute("""
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
+                   origen, motivo, prioridad_score, profundidad
+            FROM ia_cola_curiosidad
+            WHERE estado = 'pendiente'
+              AND (cooldown_hasta IS NULL OR cooldown_hasta <= NOW())
+            ORDER BY prioridad_score DESC, id ASC
+            LIMIT 1
+        """)
+        tarea = cur_lab.fetchone()
+        if not tarea:
+            cur_lab.close()
+            conn_lab.close()
+            return None
+
+        cur_lab.execute(
+            "UPDATE ia_cola_curiosidad SET estado = 'en_proceso' WHERE id = %s",
+            (tarea["id"],)
+        )
+        conn_lab.commit()
+
+        tipo = tarea["tipo_tarea"]
+        if tipo in ("perfil_proveedor_material_historico", "perfil_material_global"):
+            conn_op = get_db_connection()
+            if not conn_op:
+                raise RuntimeError("Sin conexión a la base operativa")
+            cur_op = conn_op.cursor()
+
+        if tipo == "perfil_proveedor_historico":
+            ficha = _ficha_perfil_proveedor_historico(cur_lab, tarea)
+        elif tipo == "ranking_vecinos_proveedor_mes":
+            ficha = _ficha_ranking_vecinos_proveedor_mes(cur_lab, tarea)
+        elif tipo == "perfil_proveedor_material_historico":
+            ficha = _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea)
+        elif tipo == "perfil_material_global":
+            ficha = _ficha_perfil_material_global(cur_op, tarea)
+        else:
+            raise ValueError(f"tipo_tarea sin constructor de ficha: {tipo}")
+
+        cur_lab.execute("""
+            INSERT INTO ia_fichas_operativas
+                (cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
+                 titulo, resumen_deterministico, datos_json, senales_json, prioridad_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            tarea["id"], tipo, tarea["tipo_nodo"], tarea["entidad"], tarea["entidad_2"],
+            tarea["periodo"], ficha["titulo"], ficha["resumen"],
+            json.dumps(ficha.get("datos") or {}, ensure_ascii=False, default=str),
+            json.dumps(ficha.get("senales") or {}, ensure_ascii=False, default=str),
+            float(tarea["prioridad_score"] or 0),
+        ))
+        cur_lab.execute("""
+            UPDATE ia_cola_curiosidad
+            SET estado = 'completada', resultado_resumen = %s
+            WHERE id = %s
+        """, (shorten_text(ficha["resumen"], 290), tarea["id"]))
+        conn_lab.commit()
+        cur_lab.close()
+        conn_lab.close()
+
+        add_reasoning_step(
+            "cola_curiosidad_ficha",
+            ficha["titulo"],
+            shorten_text(ficha["resumen"], 300)
+        )
+        return {"ok": True, "cola_id": tarea["id"], "tipo_tarea": tipo, "titulo": ficha["titulo"]}
+
+    except Exception as e:
+        # La tarea no se borra: queda en 'error' con el motivo, para revisión.
+        try:
+            if tarea:
+                cur_err = conn_lab.cursor()
+                cur_err.execute("""
+                    UPDATE ia_cola_curiosidad
+                    SET estado = 'error', resultado_resumen = %s
+                    WHERE id = %s
+                """, (shorten_text(str(e), 290), tarea["id"]))
+                conn_lab.commit()
+                cur_err.close()
+        except Exception:
+            pass
+        try:
+            conn_lab.close()
+        except Exception:
+            pass
+        if tarea:
+            add_reasoning_step(
+                "cola_curiosidad_error",
+                f"Falló ficha de cola id={tarea['id']} ({tarea.get('tipo_tarea')})",
+                shorten_text(str(e), 300)
+            )
+            return {"ok": False, "cola_id": tarea["id"], "error": str(e)}
+        print(f"Error en ejecutar_tarea_cola_curiosidad: {e}", file=sys.stderr)
+        return None
+    finally:
+        try:
+            if conn_op:
+                conn_op.close()
+        except Exception:
+            pass
 
 
 def _generar_periodos_desde_db(cur_op):
@@ -6670,6 +7211,14 @@ def ejecutar_fase2_ia(cerebro):
     elif cartografia.get("error"):
         add_reasoning_step("cartografia_base_error", "No pude actualizar cartografia deterministica.", cartografia.get("error"))
 
+    # Cola de curiosidad: consumidor determinístico, sin Ollama. Mientras haya
+    # tareas pendientes tiene prioridad y los pendientes estructurales viejos
+    # (prompts largos) no se ejecutan.
+    resultado_cola = ejecutar_tarea_cola_curiosidad()
+    if resultado_cola is not None:
+        cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
+        return cerebro
+
     cerebro_pendiente = ejecutar_pendiente_estructural(cerebro)
     if cerebro_pendiente is not None:
         return cerebro_pendiente
@@ -8428,6 +8977,7 @@ def get_ia_cerebro():
             "protagonistas_operativos": leer_protagonistas_operativos(),
             "biografias_protagonistas": leer_biografia_protagonistas(),
             "cola_curiosidad": leer_cola_curiosidad(),
+            "fichas_operativas": leer_fichas_operativas(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -9121,6 +9671,10 @@ def ia_dashboard():
 
   <!-- -- COLA DE CURIOSIDAD (contador) -- -->
   <div id="colaCuriosidad" style="margin-bottom:16px;font-size:12px;color:#8b949e;"></div>
+
+  <!-- -- FICHAS OPERATIVAS RECIENTES -- -->
+  <div class="section-title" style="margin-top:20px;">Fichas operativas recientes</div>
+  <div id="fichasOperativas" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -10121,6 +10675,58 @@ function renderColaCuriosidad(cc) {
   el.textContent = "Cola de curiosidad: " + n + " pendientes.";
 }
 
+/* -- Fichas operativas recientes ---------------------------- */
+function renderFichasOperativas(fo) {
+  const cont = document.getElementById("fichasOperativas");
+  if (!cont) return;
+  cont.innerHTML = "";
+  const items = fo ? asArray(fo.recientes) : [];
+  if (!items.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin fichas operativas todavía.";
+    cont.appendChild(p);
+    return;
+  }
+  items.forEach(f => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,.03);";
+
+    const top = document.createElement("div");
+    top.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:4px;";
+    const tit = document.createElement("span");
+    tit.textContent = f.titulo || "?";
+    tit.style.cssText = "font-weight:600;color:#e6edf3;flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    tit.title = f.titulo || "";
+    const tag = document.createElement("span");
+    tag.textContent = f.tipo_tarea || "";
+    tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#58a6ff;white-space:nowrap;";
+    top.appendChild(tit);
+    top.appendChild(tag);
+    wrap.appendChild(top);
+
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:10px;color:#484f58;margin-bottom:4px;";
+    const partes = [f.etiqueta || f.entidad || ""];
+    if (f.periodo) partes.push(f.periodo);
+    if (f.creado_en) partes.push(f.creado_en);
+    meta.textContent = partes.join(" · ");
+    wrap.appendChild(meta);
+
+    const res = document.createElement("div");
+    res.style.cssText = "font-size:11px;color:#8b949e;";
+    res.textContent = f.resumen_deterministico || "";
+    wrap.appendChild(res);
+
+    cont.appendChild(wrap);
+  });
+  if (fo.total != null) {
+    const ts = document.createElement("div");
+    ts.style.cssText = "margin-top:4px;font-size:10px;color:#484f58;text-align:right;";
+    ts.textContent = "Total fichas: " + fo.total;
+    cont.appendChild(ts);
+  }
+}
+
 /* -- Sonido discreto cuando aparece observación útil nueva -- */
 let _ultimoIdObsUtil = null;
 function _sonarObsUtil() {
@@ -10575,6 +11181,7 @@ function renderCerebro(c) {
   renderProtagonistas(c.protagonistas_operativos || null);
   renderBiografiaProtagonistas(c.biografias_protagonistas || null);
   renderColaCuriosidad(c.cola_curiosidad || null);
+  renderFichasOperativas(c.fichas_operativas || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
