@@ -7148,6 +7148,9 @@ MICROTAREAS_ENABLED = os.environ.get("MICROTAREAS_ENABLED", "1").strip().lower()
 MICROTAREA_COOLDOWN_SEGUNDOS = int(os.environ.get("MICROTAREA_COOLDOWN_SEGUNDOS", "1200"))
 MICROTAREA_OLLAMA_TIMEOUT = int(os.environ.get("MICROTAREA_OLLAMA_TIMEOUT", "180"))
 MICROTAREA_OLLAMA_NUM_PREDICT = int(os.environ.get("MICROTAREA_OLLAMA_NUM_PREDICT", "120"))
+# Cooldown corto tras timeout de Ollama: no reintentar la misma microtarea
+# enseguida (clave en modo drain para no bloquear la cola con reintentos de 180s)
+MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS = int(os.environ.get("MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS", "1800"))
 
 
 def _ensure_microtareas_estado(cur):
@@ -7165,16 +7168,36 @@ def _ensure_microtareas_estado(cur):
 def _microtarea_en_cooldown(cur, nombre, cooldown_segundos):
     try:
         cur.execute("""
-            SELECT ultima_ok FROM ia_microtareas_estado
+            SELECT ultima_ok, ultimo_error FROM ia_microtareas_estado
             WHERE microtarea = %s
         """, (nombre,))
         row = cur.fetchone()
-        if not row or not row.get("ultima_ok"):
+        if not row:
             return False
-        delta = (datetime.now() - row["ultima_ok"]).total_seconds()
-        return delta < cooldown_segundos
+        if row.get("ultima_ok"):
+            delta = (datetime.now() - row["ultima_ok"]).total_seconds()
+            if delta < cooldown_segundos:
+                return True
+        # Cooldown corto tras timeout/fallo de Ollama: no reintentar enseguida
+        if row.get("ultimo_error"):
+            delta_err = (datetime.now() - row["ultimo_error"]).total_seconds()
+            if delta_err < MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS:
+                return True
+        return False
     except Exception:
         return False
+
+
+def _microtarea_marcar_timeout(cur, nombre):
+    """Registra un fallo/timeout de Ollama para activar el cooldown corto."""
+    try:
+        cur.execute("""
+            INSERT INTO ia_microtareas_estado (microtarea, ultimo_error)
+            VALUES (%s, NOW())
+            ON DUPLICATE KEY UPDATE ultimo_error = NOW()
+        """, (nombre,))
+    except Exception:
+        pass
 
 
 def _microtarea_marcar_ok(cur, nombre):
@@ -7436,6 +7459,13 @@ def ejecutar_microtarea_estado_produccion_mes_actual(cerebro):
         modelo = llamar_ollama(prompt, timeout=MICROTAREA_OLLAMA_TIMEOUT, num_predict=MICROTAREA_OLLAMA_NUM_PREDICT)
         if not modelo.get("ok"):
             add_reasoning_step("microtarea_error", f"{nombre}: Ollama no respondió: {modelo.get('error')}", None)
+            _microtarea_marcar_timeout(cur_lab, nombre)
+            conn_lab.commit()
+            add_reasoning_step(
+                "microtarea_timeout_cooldown",
+                f"{nombre}: cooldown de {MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS // 60} min tras timeout de Ollama; no se reintenta en las próximas cadenas.",
+                None
+            )
             cur_lab.close()
             conn_lab.close()
             cerebro["fase2_avance"] = False
@@ -7650,6 +7680,13 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
         modelo = llamar_ollama(prompt, timeout=MICROTAREA_OLLAMA_TIMEOUT, num_predict=MICROTAREA_OLLAMA_NUM_PREDICT)
         if not modelo.get("ok"):
             add_reasoning_step("microtarea_error", f"{nombre}: Ollama no respondió: {modelo.get('error')}", None)
+            _microtarea_marcar_timeout(cur_lab, nombre)
+            conn_lab.commit()
+            add_reasoning_step(
+                "microtarea_timeout_cooldown",
+                f"{nombre}: cooldown de {MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS // 60} min tras timeout de Ollama; no se reintenta en las próximas cadenas.",
+                None
+            )
             cur_lab.close()
             conn_lab.close()
             cerebro["fase2_avance"] = False
@@ -7725,8 +7762,10 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
         return None
 
 
-def ejecutar_fase2_ia(cerebro):
-    """Fase 2: exploración autónoma de la base de datos — el modelo elige sus propias queries."""
+def ejecutar_fase2_ia(cerebro, modo_drain=False):
+    """Fase 2: exploración autónoma de la base de datos — el modelo elige sus propias queries.
+    Con modo_drain=True (cadena lanzada por drain de cola) el orden es
+    cola -> microtareas opcionales -> pendientes -> explorador."""
     if MICROTAREAS_ENABLED:
         # El ciclo prioriza microtareas: no anunciar exploración libre que no va a ocurrir.
         add_reasoning_step(
@@ -7751,10 +7790,23 @@ def ejecutar_fase2_ia(cerebro):
     elif cartografia.get("error"):
         add_reasoning_step("cartografia_base_error", "No pude actualizar cartografia deterministica.", cartografia.get("error"))
 
-    # Orden del ciclo: 1. microtareas operativas -> 2. cola de curiosidad ->
+    # Orden normal: 1. microtareas operativas -> 2. cola de curiosidad ->
     # 3. pendientes estructurales (solo con cola vacía/cooldown) -> 4. explorador viejo.
+    # En modo drain la cola va primero y las microtareas quedan como paso opcional.
 
-    # 1. Microtareas operativas actuales
+    if modo_drain:
+        resultado_cola = ejecutar_tarea_cola_curiosidad()
+        if resultado_cola is not None:
+            add_reasoning_step(
+                "cola_curiosidad_priorizada",
+                "Modo drain: cola de curiosidad procesada antes que microtareas.",
+                f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
+            )
+            cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
+            return cerebro
+
+    # 1. Microtareas operativas actuales (en modo drain llegan acá solo con la
+    #    cola vacía; sus cooldowns —incluido el de timeout— evitan reintentos)
     if MICROTAREAS_ENABLED:
         cerebro_microtarea = ejecutar_microtarea_estado_produccion_mes_actual(cerebro)
         if cerebro_microtarea is not None:
@@ -7769,16 +7821,17 @@ def ejecutar_fase2_ia(cerebro):
             None
         )
 
-    # 2. Cola de curiosidad disponible: consumidor determinístico, sin Ollama.
-    resultado_cola = ejecutar_tarea_cola_curiosidad()
-    if resultado_cola is not None:
-        add_reasoning_step(
-            "cola_curiosidad_priorizada",
-            "Cola de curiosidad priorizada; pendientes estructurales pospuestos este ciclo.",
-            f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
-        )
-        cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
-        return cerebro
+    # 2. Cola de curiosidad disponible (en modo drain ya se intentó arriba)
+    if not modo_drain:
+        resultado_cola = ejecutar_tarea_cola_curiosidad()
+        if resultado_cola is not None:
+            add_reasoning_step(
+                "cola_curiosidad_priorizada",
+                "Cola de curiosidad priorizada; pendientes estructurales pospuestos este ciclo.",
+                f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
+            )
+            cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
+            return cerebro
 
     # 3. Pendientes estructurales: solo cuando la cola está vacía o toda en cooldown.
     if hay_cola_curiosidad_pendiente_disponible():
@@ -8387,7 +8440,7 @@ def _ejecutar_ciclo_ia_impl(modo="manual"):
 
     if not proxima:
         # Fase 2: análisis operativo cuando el esquema ya está comprendido
-        cerebro = ejecutar_fase2_ia(cerebro)
+        cerebro = ejecutar_fase2_ia(cerebro, modo_drain=(modo == "autonomo_drain"))
         fase2_avance = bool(cerebro.get("fase2_avance"))
         cerebro["ciclo"] = {
             "modo": modo,
@@ -8551,6 +8604,7 @@ def ciclo_autonomo_worker():
     time.sleep(10)
     drain_cadenas = 0
     drain_inicio = None
+    modo_cadena = "autonomo"
     while AUTO_IA_ENABLED:
         if AUTO_IA_LOCK.acquire(blocking=False):
             try:
@@ -8562,9 +8616,9 @@ def ciclo_autonomo_worker():
                     add_reasoning_step(
                         "autonomia",
                         "Inicio ciclo autonomo de exploracion.",
-                        f"Cadena: {chain_count}/{AUTO_IA_MAX_CHAIN_CYCLES}; modelo: {OLLAMA_MODEL}"
+                        f"Cadena: {chain_count}/{AUTO_IA_MAX_CHAIN_CYCLES}; modo: {modo_cadena}; modelo: {OLLAMA_MODEL}"
                     )
-                    resultado = ejecutar_ciclo_ia(modo="autonomo")
+                    resultado = ejecutar_ciclo_ia(modo=modo_cadena)
                     ciclo = (resultado or {}).get("ciclo") or {}
                     if ciclo.get("sin_pendientes"):
                         break
@@ -8605,6 +8659,7 @@ def ciclo_autonomo_worker():
                 )
                 drain_cadenas = 0
                 drain_inicio = None
+                modo_cadena = "autonomo"
                 time.sleep(AUTO_IA_INTERVAL_SECONDS)
                 continue
             add_reasoning_step(
@@ -8613,6 +8668,9 @@ def ciclo_autonomo_worker():
                 (f"cadena_drain={drain_cadenas}/{AUTO_COLA_DRAIN_MAX_CADENAS} "
                  f"espera={AUTO_COLA_DRAIN_SLEEP_SECONDS}s")
             )
+            # La próxima cadena arranca directo por la cola (saltea microtareas
+            # salvo que la cola se vacíe en el medio)
+            modo_cadena = "autonomo_drain"
             time.sleep(AUTO_COLA_DRAIN_SLEEP_SECONDS)
             continue
 
@@ -8625,6 +8683,7 @@ def ciclo_autonomo_worker():
             )
         drain_cadenas = 0
         drain_inicio = None
+        modo_cadena = "autonomo"
         time.sleep(AUTO_IA_INTERVAL_SECONDS)
 
 
