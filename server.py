@@ -60,7 +60,7 @@ ACCIONES_ESTRUCTURALES_JSON_EJEMPLO = """{"action":"conclude","conclusion":"lect
 FASE2_PROMPT_MAX_CHARS = int(os.environ.get("FASE2_PROMPT_MAX_CHARS", "2800"))
 FASE2_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("FASE2_OLLAMA_TIMEOUT_SECONDS", "120"))
 FASE2_OLLAMA_NUM_PREDICT = int(os.environ.get("FASE2_OLLAMA_NUM_PREDICT", "180"))
-PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "180"))
+PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "900"))
 PENDIENTE_OLLAMA_NUM_PREDICT = int(os.environ.get("PENDIENTE_OLLAMA_NUM_PREDICT", "140"))
 AUTO_IA_LOCK = threading.Lock()
 AUTO_IA_LAST_RUN = None
@@ -5431,6 +5431,32 @@ def _propagar_dominantes_material(cur_lab, tarea, ficha):
     return resultado
 
 
+def hay_cola_curiosidad_pendiente_disponible(cur_lab=None):
+    """True si hay al menos una tarea pendiente y fuera de cooldown en
+    ia_cola_curiosidad. Acepta un cursor lab existente o abre conexión propia."""
+    q = """
+        SELECT 1 FROM ia_cola_curiosidad
+        WHERE estado = 'pendiente'
+          AND (cooldown_hasta IS NULL OR cooldown_hasta <= NOW())
+        LIMIT 1
+    """
+    try:
+        if cur_lab is not None:
+            cur_lab.execute(q)
+            return cur_lab.fetchone() is not None
+        conn = get_ia_connection()
+        if not conn:
+            return False
+        cur = conn.cursor()
+        cur.execute(q)
+        hay = cur.fetchone() is not None
+        cur.close()
+        conn.close()
+        return hay
+    except Exception:
+        return False
+
+
 def ejecutar_tarea_cola_curiosidad():
     """Consumidor determinístico de ia_cola_curiosidad: toma la tarea pendiente de
     mayor prioridad, calcula su ficha según tipo_tarea y la guarda en
@@ -7482,7 +7508,7 @@ def ejecutar_fase2_ia(cerebro):
         add_reasoning_step(
             "explorador_inicio",
             "Iniciando ciclo IA operativo.",
-            "Microtareas y pendientes estructurales priorizados. Solo lectura."
+            "Orden: microtareas -> cola de curiosidad -> pendientes estructurales -> explorador. Solo lectura."
         )
     else:
         add_reasoning_step(
@@ -7501,35 +7527,52 @@ def ejecutar_fase2_ia(cerebro):
     elif cartografia.get("error"):
         add_reasoning_step("cartografia_base_error", "No pude actualizar cartografia deterministica.", cartografia.get("error"))
 
-    # Cola de curiosidad: consumidor determinístico, sin Ollama. Mientras haya
-    # tareas pendientes tiene prioridad y los pendientes estructurales viejos
-    # (prompts largos) no se ejecutan.
+    # Orden del ciclo: 1. microtareas operativas -> 2. cola de curiosidad ->
+    # 3. pendientes estructurales (solo con cola vacía/cooldown) -> 4. explorador viejo.
+
+    # 1. Microtareas operativas actuales
+    if MICROTAREAS_ENABLED:
+        cerebro_microtarea = ejecutar_microtarea_estado_produccion_mes_actual(cerebro)
+        if cerebro_microtarea is not None:
+            return cerebro_microtarea
+        # Produccion en cooldown: intentar ingresos antes de seguir.
+        cerebro_microtarea = ejecutar_microtarea_estado_ingresos_mes_actual(cerebro)
+        if cerebro_microtarea is not None:
+            return cerebro_microtarea
+        add_reasoning_step(
+            "microtarea_sin_pendientes",
+            "Microtareas habilitadas pero ninguna disponible (cooldown o sin datos). Sigo con cola de curiosidad.",
+            None
+        )
+
+    # 2. Cola de curiosidad disponible: consumidor determinístico, sin Ollama.
     resultado_cola = ejecutar_tarea_cola_curiosidad()
     if resultado_cola is not None:
+        add_reasoning_step(
+            "cola_curiosidad_priorizada",
+            "Cola de curiosidad priorizada; pendientes estructurales pospuestos este ciclo.",
+            f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
+        )
         cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
+        return cerebro
+
+    # 3. Pendientes estructurales: solo cuando la cola está vacía o toda en cooldown.
+    if hay_cola_curiosidad_pendiente_disponible():
+        # El consumidor no pudo tomar la tarea (p.ej. error transitorio de conexión)
+        # pero la cola sigue disponible: no gastar Ollama en pendientes estructurales.
+        add_reasoning_step(
+            "cola_curiosidad_priorizada",
+            "Cola de curiosidad disponible; salteo pendiente estructural en este ciclo.",
+            None
+        )
+        cerebro["fase2_avance"] = False
         return cerebro
 
     cerebro_pendiente = ejecutar_pendiente_estructural(cerebro)
     if cerebro_pendiente is not None:
         return cerebro_pendiente
 
-    if MICROTAREAS_ENABLED:
-        cerebro_microtarea = ejecutar_microtarea_estado_produccion_mes_actual(cerebro)
-        if cerebro_microtarea is not None:
-            return cerebro_microtarea
-        # Produccion en cooldown: intentar ingresos antes de rendirse.
-        cerebro_microtarea = ejecutar_microtarea_estado_ingresos_mes_actual(cerebro)
-        if cerebro_microtarea is not None:
-            return cerebro_microtarea
-        # Ambas en cooldown o sin datos: cortar ciclo, no caer al explorador libre.
-        add_reasoning_step(
-            "microtarea_sin_pendientes",
-            "Microtareas habilitadas pero ninguna disponible (cooldown o sin datos). Ciclo terminado.",
-            None
-        )
-        cerebro["fase2_avance"] = False
-        return cerebro
-
+    # 4. Explorador viejo
     conocimientos_completos = []
     relaciones_interesantes = (cerebro.get("relaciones_interesantes") or [])[:5]
 
