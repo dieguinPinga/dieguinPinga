@@ -5122,6 +5122,154 @@ def leer_fichas_operativas(limite=10):
     return resultado
 
 
+def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
+    """Matriz proveedores x meses para el dashboard, determinística y sin Ollama.
+    Filas: proveedores descubiertos por ia_fichas_operativas / ia_cola_curiosidad,
+    priorizados por kg total histórico, meses con actividad y prioridad_score.
+    Columnas: meses de ia_periodos_procesados (reciente -> antiguo).
+    Celdas: kg, pct del mes, ranking (top1/top3/top10), ficha de ranking
+    completada y tarea pendiente para ese proveedor/mes."""
+    resultado = {
+        "meses": [], "proveedores": [], "totales_mes": {},
+        "resumen": {"proveedores_mostrados": 0, "meses_mostrados": 0,
+                    "fichas_completadas": 0, "pendientes": 0},
+    }
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+
+        # 1. Meses (reciente -> antiguo)
+        cur.execute("""
+            SELECT periodo FROM ia_periodos_procesados
+            WHERE criterio_version = %s
+            ORDER BY periodo DESC
+            LIMIT %s
+        """, (DERIVADAS_VERSION, int(max_meses)))
+        meses = [r["periodo"] for r in (cur.fetchall() or [])]
+        if not meses:
+            cur.close()
+            conn.close()
+            return resultado
+        resultado["meses"] = meses
+        meses_set = set(meses)
+
+        # 2. Resumen mensual de ingresos por proveedor para esos meses
+        marcadores = ", ".join(["%s"] * len(meses))
+        cur.execute(f"""
+            SELECT periodo, Proveedor, kilos_total
+            FROM ia_resumen_mensual_ingresos_proveedor
+            WHERE criterio_version = %s AND periodo IN ({marcadores})
+        """, tuple([DERIVADAS_VERSION] + meses))
+        kg_por_prov_mes = {}
+        kg_por_mes = {}
+        for r in (cur.fetchall() or []):
+            prov, per, kg = r["Proveedor"], r["periodo"], float(r["kilos_total"] or 0)
+            if not prov:
+                continue
+            kg_por_prov_mes[(prov, per)] = kg
+            kg_por_mes.setdefault(per, []).append((prov, kg))
+        rank_por_prov_mes = {}
+        for per, lista in kg_por_mes.items():
+            lista.sort(key=lambda x: (-x[1], x[0]))
+            resultado["totales_mes"][per] = round(sum(kg for _, kg in lista), 2)
+            for pos, (prov, _kg) in enumerate(lista, start=1):
+                rank_por_prov_mes[(prov, per)] = pos
+
+        # 3. Proveedores descubiertos por cola y fichas + indicadores
+        def _prov_de(fila):
+            if fila.get("tipo_nodo") == "proveedor_material":
+                return fila.get("entidad_2")
+            if fila.get("tipo_nodo") == "material":
+                return None
+            return fila.get("entidad")
+
+        descubiertos = {}
+        pendientes_prov_mes = set()
+        total_pendientes = 0
+        cur.execute("""
+            SELECT tipo_nodo, entidad, entidad_2, periodo, estado, prioridad_score
+            FROM ia_cola_curiosidad
+        """)
+        for r in (cur.fetchall() or []):
+            if r.get("estado") == "pendiente":
+                total_pendientes += 1
+            prov = _prov_de(r)
+            if not prov:
+                continue
+            score = float(r.get("prioridad_score") or 0)
+            if score > descubiertos.get(prov, 0) or prov not in descubiertos:
+                descubiertos[prov] = max(descubiertos.get(prov, 0), score)
+            if r.get("estado") == "pendiente" and r.get("periodo") in meses_set:
+                pendientes_prov_mes.add((prov, r["periodo"]))
+
+        fichas_ranking_prov_mes = set()
+        fichas_por_prov = {}
+        cur.execute("""
+            SELECT tipo_tarea, tipo_nodo, entidad, entidad_2, periodo
+            FROM ia_fichas_operativas
+        """)
+        for r in (cur.fetchall() or []):
+            prov = _prov_de(r)
+            if not prov:
+                continue
+            descubiertos.setdefault(prov, 0)
+            fichas_por_prov[prov] = fichas_por_prov.get(prov, 0) + 1
+            if r.get("tipo_tarea") == "ranking_vecinos_proveedor_mes" and r.get("periodo") in meses_set:
+                fichas_ranking_prov_mes.add((prov, r["periodo"]))
+        cur.close()
+        conn.close()
+
+        # 4. Priorizar filas: kg total histórico, meses activos, prioridad_score
+        candidatos = []
+        for prov, score in descubiertos.items():
+            kg_total = sum(kg_por_prov_mes.get((prov, m), 0) for m in meses)
+            meses_activos = sum(1 for m in meses if kg_por_prov_mes.get((prov, m), 0) > 0)
+            candidatos.append((prov, kg_total, meses_activos, score))
+        candidatos.sort(key=lambda x: (-x[1], -x[2], -x[3], x[0]))
+        candidatos = candidatos[:int(max_proveedores)]
+
+        fichas_mostradas = 0
+        for prov, kg_total, meses_activos, score in candidatos:
+            celdas = {}
+            for m in meses:
+                kg = kg_por_prov_mes.get((prov, m), 0)
+                tiene_ficha = (prov, m) in fichas_ranking_prov_mes
+                tiene_pendiente = (prov, m) in pendientes_prov_mes
+                if kg <= 0 and not tiene_ficha and not tiene_pendiente:
+                    continue  # celda vacía: no viaja en el JSON
+                total_mes = resultado["totales_mes"].get(m, 0)
+                rank = rank_por_prov_mes.get((prov, m))
+                celdas[m] = {
+                    "kg": round(kg, 2),
+                    "pct": round(kg / total_mes * 100, 2) if total_mes > 0 and kg > 0 else 0,
+                    "rank": rank,
+                    "top": ("top1" if rank == 1 else "top3" if rank and rank <= 3
+                            else "top10" if rank and rank <= 10 else None),
+                    "ficha_ranking": tiene_ficha,
+                    "pendiente": tiene_pendiente,
+                }
+            fichas_mostradas += fichas_por_prov.get(prov, 0)
+            resultado["proveedores"].append({
+                "proveedor": prov,
+                "kg_total": round(kg_total, 2),
+                "meses_activos": meses_activos,
+                "prioridad": round(score, 4),
+                "celdas": celdas,
+            })
+
+        resultado["resumen"] = {
+            "proveedores_mostrados": len(resultado["proveedores"]),
+            "meses_mostrados": len(meses),
+            "fichas_completadas": fichas_mostradas,
+            "pendientes": total_pendientes,
+        }
+    except Exception as e:
+        print(f"Error en leer_mapa_historico_proveedores: {e}", file=sys.stderr)
+    return resultado
+
+
 def _ficha_kg(v):
     try:
         return f"{float(v or 0):,.0f} kg"
@@ -9635,6 +9783,7 @@ def get_ia_cerebro():
             "biografias_protagonistas": leer_biografia_protagonistas(),
             "cola_curiosidad": leer_cola_curiosidad(),
             "fichas_operativas": leer_fichas_operativas(),
+            "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -10353,6 +10502,10 @@ def ia_dashboard():
   <!-- -- FICHAS OPERATIVAS RECIENTES -- -->
   <div class="section-title" style="margin-top:20px;">Fichas operativas recientes</div>
   <div id="fichasOperativas" style="margin-bottom:16px;"></div>
+
+  <!-- -- MAPA HISTORICO PROVEEDORES -- -->
+  <div class="section-title" style="margin-top:20px;">Mapa histórico proveedores</div>
+  <div id="mapaHistoricoProveedores" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -11405,6 +11558,99 @@ function renderFichasOperativas(fo) {
   }
 }
 
+/* -- Mapa histórico proveedores (matriz proveedores x meses) -- */
+function renderMapaHistoricoProveedores(mh) {
+  const cont = document.getElementById("mapaHistoricoProveedores");
+  if (!cont) return;
+  cont.innerHTML = "";
+  const meses = mh ? asArray(mh.meses) : [];
+  const provs = mh ? asArray(mh.proveedores) : [];
+  if (!meses.length || !provs.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin datos para el mapa histórico. Ejecutar recalcular derivadas.";
+    cont.appendChild(p);
+    return;
+  }
+
+  const res = mh.resumen || {};
+  const head = document.createElement("div");
+  head.style.cssText = "font-size:11px;color:#8b949e;margin-bottom:6px;";
+  head.textContent =
+    res.proveedores_mostrados + " proveedores · " + res.meses_mostrados + " meses · " +
+    res.fichas_completadas + " fichas completadas · " + res.pendientes + " pendientes en cola";
+  cont.appendChild(head);
+
+  const leyenda = document.createElement("div");
+  leyenda.style.cssText = "font-size:10px;color:#484f58;margin-bottom:6px;";
+  leyenda.textContent = "👑 top 1 · ★ top 3 · · top 10 · ✓ ficha ranking · ○ pendiente en cola";
+  cont.appendChild(leyenda);
+
+  const scroll = document.createElement("div");
+  scroll.style.cssText = "overflow-x:auto;border:1px solid rgba(255,255,255,.08);border-radius:6px;";
+  cont.appendChild(scroll);
+
+  const tabla = document.createElement("table");
+  tabla.style.cssText = "border-collapse:collapse;font-size:10px;min-width:100%;";
+  scroll.appendChild(tabla);
+
+  function fmtKgCorto(v) {
+    if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k";
+    return String(Math.round(v));
+  }
+
+  const thead = document.createElement("tr");
+  const thProv = document.createElement("th");
+  thProv.textContent = "Proveedor";
+  thProv.style.cssText = "position:sticky;left:0;background:#161b22;color:#8b949e;text-align:left;padding:4px 8px;white-space:nowrap;z-index:1;";
+  thead.appendChild(thProv);
+  meses.forEach(m => {
+    const th = document.createElement("th");
+    th.textContent = m.slice(2);  // "26-06"
+    th.style.cssText = "color:#484f58;padding:4px 4px;white-space:nowrap;font-weight:400;";
+    thead.appendChild(th);
+  });
+  tabla.appendChild(thead);
+
+  provs.forEach((p, idx) => {
+    const tr = document.createElement("tr");
+    if (idx % 2 === 0) tr.style.background = "rgba(255,255,255,.02)";
+    const tdNombre = document.createElement("td");
+    tdNombre.style.cssText = "position:sticky;left:0;background:#161b22;padding:3px 8px;white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;color:#c9d1d9;z-index:1;";
+    tdNombre.textContent = p.proveedor;
+    tdNombre.title = p.proveedor + " · " + Number(p.kg_total).toLocaleString("es-AR") +
+      " kg históricos · " + p.meses_activos + " meses activos";
+    tr.appendChild(tdNombre);
+
+    const celdas = p.celdas || {};
+    meses.forEach(m => {
+      const td = document.createElement("td");
+      td.style.cssText = "padding:3px 4px;text-align:center;white-space:nowrap;min-width:44px;";
+      const c = celdas[m];
+      if (c) {
+        // Intensidad por % del mes
+        const pct = Number(c.pct) || 0;
+        const alpha = pct >= 50 ? 0.55 : pct >= 25 ? 0.4 : pct >= 10 ? 0.25 : pct > 0 ? 0.12 : 0;
+        if (alpha) td.style.background = "rgba(63,185,80," + alpha + ")";
+        let txt = c.kg > 0 ? fmtKgCorto(c.kg) : "";
+        if (c.top === "top1") txt = "👑" + txt;
+        else if (c.top === "top3") txt = "★" + txt;
+        else if (c.top === "top10") txt = "·" + txt;
+        if (c.ficha_ranking) txt += "✓";
+        if (c.pendiente) txt += "○";
+        td.textContent = txt;
+        td.style.color = "#e6edf3";
+        td.title = p.proveedor + " " + m + ": " + Number(c.kg).toLocaleString("es-AR") + " kg" +
+          (c.pct ? " (" + c.pct + "% del mes)" : "") +
+          (c.rank ? " · #" + c.rank + " del mes" : "") +
+          (c.ficha_ranking ? " · ficha ranking completada" : "") +
+          (c.pendiente ? " · tarea pendiente en cola" : "");
+      }
+      tr.appendChild(td);
+    });
+    tabla.appendChild(tr);
+  });
+}
+
 /* -- Sonido discreto cuando aparece observación útil nueva -- */
 let _ultimoIdObsUtil = null;
 function _sonarObsUtil() {
@@ -11860,6 +12106,7 @@ function renderCerebro(c) {
   renderBiografiaProtagonistas(c.biografias_protagonistas || null);
   renderColaCuriosidad(c.cola_curiosidad || null);
   renderFichasOperativas(c.fichas_operativas || null);
+  renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
