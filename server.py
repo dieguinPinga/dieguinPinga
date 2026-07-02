@@ -28,6 +28,11 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:7b"
 AUTO_IA_ENABLED = True
 AUTO_IA_INTERVAL_SECONDS = int(os.environ.get("AUTO_IA_INTERVAL_SECONDS", "300"))
+# Modo drain: si al terminar una cadena queda cola de curiosidad pendiente,
+# lanzar otra cadena tras una espera corta en vez del intervalo largo.
+AUTO_COLA_DRAIN_SLEEP_SECONDS = int(os.environ.get("AUTO_COLA_DRAIN_SLEEP_SECONDS", "5"))
+AUTO_COLA_DRAIN_MAX_CADENAS = int(os.environ.get("AUTO_COLA_DRAIN_MAX_CADENAS", "20"))
+AUTO_COLA_DRAIN_MAX_MINUTES = int(os.environ.get("AUTO_COLA_DRAIN_MAX_MINUTES", "60"))
 AUTO_IA_CHAIN_DELAY_SECONDS = 5
 AUTO_IA_MAX_CHAIN_CYCLES = 10
 AUTO_IA_MIN_CONFIDENCE = 0.55
@@ -8544,6 +8549,8 @@ def _ejecutar_ciclo_ia_impl(modo="manual"):
 def ciclo_autonomo_worker():
     global AUTO_IA_LAST_RUN, AUTO_IA_LAST_ERROR
     time.sleep(10)
+    drain_cadenas = 0
+    drain_inicio = None
     while AUTO_IA_ENABLED:
         if AUTO_IA_LOCK.acquire(blocking=False):
             try:
@@ -8579,6 +8586,45 @@ def ciclo_autonomo_worker():
                 )
             finally:
                 AUTO_IA_LOCK.release()
+
+        # Modo drain: si queda cola de curiosidad pendiente, seguir masticando
+        # fichas en tandas cortas en vez de esperar el intervalo largo.
+        if (AUTO_IA_ENABLED and not AUTO_IA_IN_PROGRESS
+                and hay_cola_curiosidad_pendiente_disponible()):
+            if drain_inicio is None:
+                drain_inicio = time.time()
+            drain_cadenas += 1
+            minutos_drain = (time.time() - drain_inicio) / 60.0
+            if (drain_cadenas > AUTO_COLA_DRAIN_MAX_CADENAS
+                    or minutos_drain >= AUTO_COLA_DRAIN_MAX_MINUTES):
+                add_reasoning_step(
+                    "cola_curiosidad_drain_pausada",
+                    "Drain de cola pausado por límite de seguridad; vuelvo al intervalo normal.",
+                    (f"cadenas={drain_cadenas - 1}/{AUTO_COLA_DRAIN_MAX_CADENAS} "
+                     f"minutos={minutos_drain:.1f}/{AUTO_COLA_DRAIN_MAX_MINUTES}")
+                )
+                drain_cadenas = 0
+                drain_inicio = None
+                time.sleep(AUTO_IA_INTERVAL_SECONDS)
+                continue
+            add_reasoning_step(
+                "cola_curiosidad_drain_continua",
+                "Queda cola de curiosidad pendiente; lanzo otra cadena en breve.",
+                (f"cadena_drain={drain_cadenas}/{AUTO_COLA_DRAIN_MAX_CADENAS} "
+                 f"espera={AUTO_COLA_DRAIN_SLEEP_SECONDS}s")
+            )
+            time.sleep(AUTO_COLA_DRAIN_SLEEP_SECONDS)
+            continue
+
+        # Cola vacía (o autonomía ocupada): si veníamos drenando, cerrar el drain
+        if drain_cadenas:
+            add_reasoning_step(
+                "cola_curiosidad_drain_completa",
+                "Cola de curiosidad drenada; vuelvo al intervalo normal.",
+                f"cadenas_drain={drain_cadenas}"
+            )
+        drain_cadenas = 0
+        drain_inicio = None
         time.sleep(AUTO_IA_INTERVAL_SECONDS)
 
 
