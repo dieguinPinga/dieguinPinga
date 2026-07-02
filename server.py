@@ -5431,15 +5431,17 @@ def _propagar_dominantes_material(cur_lab, tarea, ficha):
     return resultado
 
 
-def propagar_dominantes_existentes():
+def propagar_dominantes_materiales_existentes(forzar=False):
     """Backfill determinístico: recorre las fichas perfil_material_global ya
-    completadas (la más reciente por material) y ejecuta la propagación de
-    proveedores dominantes para cada una, con el dedupe habitual. Sin Ollama.
-    Respeta MAX_COLA_PROFUNDIDAD y COLA_KG_MINIMO_DOMINANTE."""
+    completadas y ejecuta la propagación de proveedores dominantes para cada
+    una, con el dedupe habitual. Sin Ollama. Respeta MAX_COLA_PROFUNDIDAD y
+    COLA_KG_MINIMO_DOMINANTE.
+    Por defecto procesa solo la ficha más reciente de cada material; con
+    forzar=True revisa todas las filas (el dedupe evita duplicados igual)."""
     resultado = {
         "ok": False,
         "fichas_revisadas": 0,
-        "tareas_insertadas": 0,
+        "tareas_encoladas": 0,
         "tareas_dedupe": 0,
         "errores": [],
     }
@@ -5452,7 +5454,8 @@ def propagar_dominantes_existentes():
     try:
         cur_lab = conn_lab.cursor()
         cur_lab.execute("""
-            SELECT id, cola_id, entidad, periodo, datos_json
+            SELECT id, cola_id, tipo_nodo, entidad, entidad_2, periodo,
+                   prioridad_score, datos_json
             FROM ia_fichas_operativas
             WHERE tipo_tarea = 'perfil_material_global'
             ORDER BY id DESC
@@ -5463,7 +5466,7 @@ def propagar_dominantes_existentes():
         proveedores_descubiertos = []
         for f in fichas:
             material = f["entidad"]
-            if material in materiales_vistos:
+            if not forzar and material in materiales_vistos:
                 continue  # solo la ficha más reciente de cada material
             materiales_vistos.add(material)
             resultado["fichas_revisadas"] += 1
@@ -5489,23 +5492,30 @@ def propagar_dominantes_existentes():
                     resultado["errores"].append(f"{material}: recalculo fallo: {e_rec}")
                     continue
 
-            # Profundidad de la tarea que originó la ficha, para respetar el límite
-            profundidad = 1
+            # Profundidad real de la tarea que originó la ficha si existe;
+            # si no hay info, 2 (material global suele nacer de un protagonista)
+            profundidad = 2
             if f.get("cola_id"):
                 cur_lab.execute(
                     "SELECT profundidad FROM ia_cola_curiosidad WHERE id = %s",
                     (f["cola_id"],)
                 )
                 fila_cola = cur_lab.fetchone()
-                if fila_cola:
-                    profundidad = int(fila_cola.get("profundidad") or 1)
+                if fila_cola and fila_cola.get("profundidad"):
+                    profundidad = int(fila_cola["profundidad"])
 
-            prop = _propagar_dominantes_material(
-                cur_lab,
-                {"entidad": material, "periodo": f["periodo"], "profundidad": profundidad},
-                {"datos": datos},
-            )
-            resultado["tareas_insertadas"] += prop["encoladas"]
+            # Tarea mínima reconstruida desde la ficha
+            tarea_min = {
+                "tipo_tarea": "perfil_material_global",
+                "tipo_nodo": f.get("tipo_nodo") or "material",
+                "entidad": material,
+                "entidad_2": f.get("entidad_2"),
+                "periodo": f["periodo"],
+                "prioridad_score": float(f.get("prioridad_score") or 0),
+                "profundidad": profundidad,
+            }
+            prop = _propagar_dominantes_material(cur_lab, tarea_min, {"datos": datos})
+            resultado["tareas_encoladas"] += prop["encoladas"]
             resultado["tareas_dedupe"] += prop["dedupe"]
             proveedores_descubiertos.extend(prop["proveedores"])
 
@@ -5516,12 +5526,12 @@ def propagar_dominantes_existentes():
         add_reasoning_step(
             "cola_curiosidad_backfill_dominantes",
             (f"Backfill dominantes: {resultado['fichas_revisadas']} fichas de material revisadas; "
-             f"{resultado['tareas_insertadas']} tareas nuevas, {resultado['tareas_dedupe']} dedupe"),
+             f"{resultado['tareas_encoladas']} tareas encoladas, {resultado['tareas_dedupe']} dedupe"),
             ("Descubiertos: " + "; ".join(proveedores_descubiertos[:12])) if proveedores_descubiertos else None
         )
     except Exception as e:
         resultado["errores"].append(str(e))
-        print(f"Error en propagar_dominantes_existentes: {e}", file=sys.stderr)
+        print(f"Error en propagar_dominantes_materiales_existentes: {e}", file=sys.stderr)
     finally:
         try:
             conn_lab.close()
@@ -9605,15 +9615,27 @@ def api_ia_cerebro():
 @app.route('/api/ia/derivadas/recalcular', methods=['POST'])
 def api_ia_derivadas_recalcular():
     resultado = guardar_tablas_derivadas_si_corresponde(forzar=True)
+    # Backfill de dominantes sobre fichas de material ya completadas
+    # (dedupe lo hace idempotente y barato)
+    try:
+        resultado["backfill_dominantes"] = propagar_dominantes_materiales_existentes()
+    except Exception as e_bf:
+        resultado["backfill_dominantes"] = {"ok": False, "errores": [str(e_bf)]}
     status = 200 if resultado.get("ok") else 500
     return jsonify(resultado), status
 
 
 @app.route('/api/ia/cola/propagar-dominantes', methods=['POST'])
 def api_ia_cola_propagar_dominantes():
-    """Backfill: propaga proveedores dominantes desde fichas
+    """Backfill manual: propaga proveedores dominantes desde fichas
     perfil_material_global ya completadas hacia ia_cola_curiosidad."""
-    resultado = propagar_dominantes_existentes()
+    forzar = False
+    try:
+        data = request.get_json(silent=True) or {}
+        forzar = bool(data.get("forzar"))
+    except Exception:
+        pass
+    resultado = propagar_dominantes_materiales_existentes(forzar=forzar)
     status = 200 if resultado.get("ok") else 500
     return jsonify(resultado), status
 
