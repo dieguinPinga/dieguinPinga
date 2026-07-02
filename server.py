@@ -4032,6 +4032,11 @@ def ensure_ia_verdades_periodo(cur):
 
 
 DERIVADAS_VERSION = "derivadas_v1"
+# Cola de curiosidad: límite de profundidad de propagación (protagonistas ->
+# materiales -> proveedores dominantes -> ...) y kg histórico mínimo para que
+# un proveedor dominante descubierto amerite estudio.
+MAX_COLA_PROFUNDIDAD = int(os.environ.get("MAX_COLA_PROFUNDIDAD", "3"))
+COLA_KG_MINIMO_DOMINANTE = float(os.environ.get("COLA_KG_MINIMO_DOMINANTE", "500"))
 
 
 def _ensure_tablas_derivadas(cur):
@@ -4696,11 +4701,12 @@ def _encolar_curiosidad(cur_lab, tarea):
         INSERT INTO ia_cola_curiosidad
             (tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
              prioridad_score, profundidad, estado)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1, 'pendiente')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pendiente')
     """, (
         tarea["tipo_tarea"], tarea["tipo_nodo"], tarea["entidad"], tarea.get("entidad_2"),
         tarea["periodo"], tarea.get("origen") or "", tarea.get("motivo"),
         float(tarea.get("prioridad_score") or 0),
+        int(tarea.get("profundidad") or 1),
     ))
     return 1
 
@@ -4934,7 +4940,7 @@ def _normalizar_nodo_cola(r):
 
 def leer_cola_curiosidad(limite_top=10):
     """Lee estado de ia_cola_curiosidad para /api/ia/cerebro. Solo lectura."""
-    resultado = {"pendientes": 0, "top_pendientes": [], "completadas_recientes": []}
+    resultado = {"pendientes": 0, "top_pendientes": [], "completadas_recientes": [], "resumen_por_origen": {}}
     try:
         conn = get_ia_connection()
         if not conn:
@@ -4943,6 +4949,18 @@ def leer_cola_curiosidad(limite_top=10):
         cur.execute("SELECT COUNT(*) AS n FROM ia_cola_curiosidad WHERE estado = 'pendiente'")
         fila = cur.fetchone() or {}
         resultado["pendientes"] = int(fila.get("n") or 0)
+
+        cur.execute("""
+            SELECT origen, COUNT(*) AS pendientes
+            FROM ia_cola_curiosidad
+            WHERE estado = 'pendiente'
+            GROUP BY origen
+            ORDER BY pendientes DESC
+        """)
+        resultado["resumen_por_origen"] = {
+            (r.get("origen") or "sin_origen"): int(r.get("pendientes") or 0)
+            for r in (cur.fetchall() or [])
+        }
 
         cur.execute("""
             SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
@@ -5333,6 +5351,86 @@ def _ficha_perfil_material_global(cur_op, tarea):
     }
 
 
+def _propagar_dominantes_material(cur_lab, tarea, ficha):
+    """Propagación determinística de la red de curiosidad: cuando una ficha
+    perfil_material_global descubre proveedores dominantes históricos, encola
+    su estudio (perfil histórico, ranking de vecinos y proveedor+material).
+    Sin Ollama. Respeta MAX_COLA_PROFUNDIDAD e ignora dominio bajo o volumen
+    histórico chico. Devuelve {"encoladas", "dedupe", "proveedores"}."""
+    resultado = {"encoladas": 0, "dedupe": 0, "proveedores": []}
+    profundidad_nueva = int(tarea.get("profundidad") or 1) + 1
+    if profundidad_nueva > MAX_COLA_PROFUNDIDAD:
+        return resultado
+
+    material = tarea["entidad"]
+    datos = (ficha or {}).get("datos") or {}
+    kg_total = float(datos.get("kg_total_historico") or 0)
+    if kg_total <= 0:
+        return resultado
+    kg_por_mes = datos.get("kg_por_mes_12m") or []
+    ultimo_mes_cerrado = kg_por_mes[-1]["periodo"] if kg_por_mes else None
+
+    for p in (datos.get("proveedores_historicos") or []):
+        proveedor = p.get("proveedor")
+        kg_p = float(p.get("kg") or 0)
+        registros_p = int(p.get("registros") or 0)
+        if not proveedor:
+            continue
+        # Volumen histórico muy chico: no amerita estudio, sea cual sea el dominio
+        if kg_p < COLA_KG_MINIMO_DOMINANTE:
+            continue
+        pct = round(kg_p / kg_total * 100, 2)
+        if pct >= 80:
+            factor = 1.0    # prioridad alta
+        elif pct >= 50:
+            factor = 0.6    # prioridad media
+        elif pct >= 30:
+            factor = 0.35   # prioridad baja/media (ya pasó el piso de kg)
+        else:
+            continue        # dominio bajo: ignorar
+
+        # Misma escala que _score de protagonistas, con descuento por profundidad
+        prioridad = round(
+            (kg_p * 0.7 + registros_p * 10.0) * factor * (0.8 ** (profundidad_nueva - 1)), 4
+        )
+        motivo = (
+            f"Proveedor dominante histórico del material {material} "
+            f"con {pct}% del kg histórico"
+        )
+
+        tareas_nuevas = [
+            {"tipo_tarea": "perfil_proveedor_historico", "periodo": tarea["periodo"],
+             "tipo_nodo": "proveedor", "entidad": proveedor, "entidad_2": None},
+        ]
+        if ultimo_mes_cerrado:
+            tareas_nuevas.append(
+                {"tipo_tarea": "ranking_vecinos_proveedor_mes", "periodo": ultimo_mes_cerrado,
+                 "tipo_nodo": "proveedor", "entidad": proveedor, "entidad_2": None}
+            )
+        if pct >= 50:
+            tareas_nuevas.append(
+                {"tipo_tarea": "perfil_proveedor_material_historico", "periodo": tarea["periodo"],
+                 "tipo_nodo": "proveedor_material", "entidad": material, "entidad_2": proveedor}
+            )
+
+        nuevas = 0
+        for t in tareas_nuevas:
+            t.update({
+                "origen": "material_global_dominante",
+                "motivo": motivo,
+                "prioridad_score": prioridad,
+                "profundidad": profundidad_nueva,
+            })
+            insertada = _encolar_curiosidad(cur_lab, t)
+            nuevas += insertada
+            resultado["dedupe"] += 1 - insertada
+        resultado["encoladas"] += nuevas
+        if nuevas:
+            resultado["proveedores"].append(f"{proveedor} ({pct}%)")
+
+    return resultado
+
+
 def ejecutar_tarea_cola_curiosidad():
     """Consumidor determinístico de ia_cola_curiosidad: toma la tarea pendiente de
     mayor prioridad, calcula su ficha según tipo_tarea y la guarda en
@@ -5401,6 +5499,18 @@ def ejecutar_tarea_cola_curiosidad():
             SET estado = 'completada', resultado_resumen = %s
             WHERE id = %s
         """, (shorten_text(ficha["resumen"], 290), tarea["id"]))
+
+        # Propagación determinística: material global -> proveedores dominantes
+        propagacion = None
+        if tipo == "perfil_material_global":
+            try:
+                propagacion = _propagar_dominantes_material(cur_lab, tarea, ficha)
+            except Exception as e_prop:
+                add_reasoning_step(
+                    "cola_curiosidad_error",
+                    f"Propagación desde material {tarea['entidad']} falló",
+                    shorten_text(str(e_prop), 200)
+                )
         conn_lab.commit()
         cur_lab.close()
         conn_lab.close()
@@ -5410,7 +5520,22 @@ def ejecutar_tarea_cola_curiosidad():
             ficha["titulo"],
             shorten_text(ficha["resumen"], 300)
         )
-        return {"ok": True, "cola_id": tarea["id"], "tipo_tarea": tipo, "titulo": ficha["titulo"]}
+        if propagacion and propagacion.get("encoladas"):
+            add_reasoning_step(
+                "cola_curiosidad_propagada",
+                f"Material {tarea['entidad']}: encolados {propagacion['encoladas']} estudios de proveedores dominantes",
+                "Descubiertos: " + "; ".join(propagacion.get("proveedores") or [])
+            )
+        if propagacion and propagacion.get("dedupe"):
+            add_reasoning_step(
+                "cola_curiosidad_dedupe",
+                f"Material {tarea['entidad']}: {propagacion['dedupe']} tareas de dominantes ya existían, no se duplicaron",
+                None
+            )
+        return {
+            "ok": True, "cola_id": tarea["id"], "tipo_tarea": tipo,
+            "titulo": ficha["titulo"], "propagacion": propagacion,
+        }
 
     except Exception as e:
         # La tarea no se borra: queda en 'error' con el motivo, para revisión.
