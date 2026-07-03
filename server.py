@@ -8129,15 +8129,15 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
 
 
 def ejecutar_fase2_ia(cerebro, modo_drain=False):
-    """Fase 2: exploración autónoma de la base de datos — el modelo elige sus propias queries.
-    Con modo_drain=True (cadena lanzada por drain de cola) el orden es
-    cola -> microtareas opcionales -> pendientes -> explorador."""
+    """Fase 2: análisis operativo. En todos los modos el orden es
+    cola de curiosidad -> microtareas Ollama -> pendientes estructurales ->
+    explorador viejo (opt-in). modo_drain se conserva por compatibilidad."""
     if MICROTAREAS_ENABLED:
         # El ciclo prioriza microtareas: no anunciar exploración libre que no va a ocurrir.
         add_reasoning_step(
             "explorador_inicio",
             "Iniciando ciclo IA operativo.",
-            "Orden: microtareas -> cola de curiosidad -> pendientes estructurales -> explorador. Solo lectura."
+            "Orden: cola de curiosidad -> microtareas -> pendientes estructurales -> explorador. Solo lectura."
         )
     else:
         add_reasoning_step(
@@ -8156,23 +8156,24 @@ def ejecutar_fase2_ia(cerebro, modo_drain=False):
     elif cartografia.get("error"):
         add_reasoning_step("cartografia_base_error", "No pude actualizar cartografia deterministica.", cartografia.get("error"))
 
-    # Orden normal: 1. microtareas operativas -> 2. cola de curiosidad ->
-    # 3. pendientes estructurales (solo con cola vacía/cooldown) -> 4. explorador viejo.
-    # En modo drain la cola va primero y las microtareas quedan como paso opcional.
+    # Orden del ciclo (todos los modos): 1. cola de curiosidad (determinística,
+    # sin Ollama) -> 2. microtareas Ollama -> 3. pendientes estructurales (solo
+    # sin cola disponible) -> 4. explorador viejo (opt-in).
+    # La cola nunca espera a Ollama: un timeout de microtarea no puede bloquearla.
 
-    if modo_drain:
-        resultado_cola = ejecutar_tarea_cola_curiosidad()
-        if resultado_cola is not None:
-            add_reasoning_step(
-                "cola_curiosidad_priorizada",
-                "Modo drain: cola de curiosidad procesada antes que microtareas.",
-                f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
-            )
-            cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
-            return cerebro
+    # 1. Cola de curiosidad disponible: consumir SIEMPRE antes de llamar a Ollama
+    resultado_cola = ejecutar_tarea_cola_curiosidad()
+    if resultado_cola is not None:
+        add_reasoning_step(
+            "cola_curiosidad_priorizada",
+            "Cola de curiosidad procesada antes de microtareas/Ollama.",
+            f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
+        )
+        cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
+        return cerebro
 
-    # 1. Microtareas operativas actuales (en modo drain llegan acá solo con la
-    #    cola vacía; sus cooldowns —incluido el de timeout— evitan reintentos)
+    # 2. Microtareas operativas (Ollama); sus cooldowns —incluido el de
+    #    timeout— evitan reintentos repetidos
     if MICROTAREAS_ENABLED:
         cerebro_microtarea = ejecutar_microtarea_estado_produccion_mes_actual(cerebro)
         if cerebro_microtarea is not None:
@@ -8183,21 +8184,9 @@ def ejecutar_fase2_ia(cerebro, modo_drain=False):
             return cerebro_microtarea
         add_reasoning_step(
             "microtarea_sin_pendientes",
-            "Microtareas habilitadas pero ninguna disponible (cooldown o sin datos). Sigo con cola de curiosidad.",
+            "Microtareas habilitadas pero ninguna disponible (cooldown o sin datos). Sigo con pendientes estructurales.",
             None
         )
-
-    # 2. Cola de curiosidad disponible (en modo drain ya se intentó arriba)
-    if not modo_drain:
-        resultado_cola = ejecutar_tarea_cola_curiosidad()
-        if resultado_cola is not None:
-            add_reasoning_step(
-                "cola_curiosidad_priorizada",
-                "Cola de curiosidad priorizada; pendientes estructurales pospuestos este ciclo.",
-                f"tarea={resultado_cola.get('tipo_tarea')} cola_id={resultado_cola.get('cola_id')}"
-            )
-            cerebro["fase2_avance"] = bool(resultado_cola.get("ok"))
-            return cerebro
 
     # 3. Pendientes estructurales: solo cuando la cola está vacía o toda en cooldown.
     if hay_cola_curiosidad_pendiente_disponible():
