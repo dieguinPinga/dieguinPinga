@@ -65,8 +65,8 @@ ACCIONES_ESTRUCTURALES_JSON_EJEMPLO = """{"action":"conclude","conclusion":"lect
 FASE2_PROMPT_MAX_CHARS = int(os.environ.get("FASE2_PROMPT_MAX_CHARS", "2800"))
 FASE2_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("FASE2_OLLAMA_TIMEOUT_SECONDS", "120"))
 FASE2_OLLAMA_NUM_PREDICT = int(os.environ.get("FASE2_OLLAMA_NUM_PREDICT", "180"))
-PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "900"))
-PENDIENTE_OLLAMA_NUM_PREDICT = int(os.environ.get("PENDIENTE_OLLAMA_NUM_PREDICT", "140"))
+PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "180"))
+PENDIENTE_OLLAMA_NUM_PREDICT = int(os.environ.get("PENDIENTE_OLLAMA_NUM_PREDICT", "110"))
 AUTO_IA_LOCK = threading.Lock()
 AUTO_IA_LAST_RUN = None
 AUTO_IA_LAST_ERROR = None
@@ -7435,6 +7435,157 @@ def extraer_query_sql_desde_texto(text):
         q = re.split(r'["\n\r]', q, maxsplit=1)[0].strip()
     return preparar_query_explorador(q)
 
+def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
+    """Ficha compacta y con foco reciente de una columna de TiposDeMovimiento
+    para pendientes estructurales. Máx ~20 ejemplos (12 recientes + hasta 8
+    históricos solo si aportan valores distintos). Sin co-presencia ni
+    evidencia gigante. Recency: 7d alta, 30d media, histórico como contexto."""
+    if not re.match(r"^[A-Za-z0-9_]+$", str(columna or "")):
+        return None
+    col = f"`{columna}`"
+    no_vacio = f"{col} IS NOT NULL AND TRIM(CAST({col} AS CHAR)) <> ''"
+    ficha = {"columna": columna}
+
+    cur_op.execute(f"""
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN {no_vacio} THEN 1 ELSE 0 END) AS no_nulos,
+               SUM(CASE WHEN {no_vacio} AND FechaHora >= NOW() - INTERVAL 7 DAY THEN 1 ELSE 0 END) AS nn7,
+               SUM(CASE WHEN {no_vacio} AND FechaHora >= NOW() - INTERVAL 30 DAY THEN 1 ELSE 0 END) AS nn30
+        FROM TiposDeMovimiento
+    """)
+    tot = cur_op.fetchone() or {}
+    ficha["registros_total"] = int(tot.get("total") or 0)
+    ficha["no_nulos_total"] = int(tot.get("no_nulos") or 0)
+    ficha["no_nulos_7d"] = int(tot.get("nn7") or 0)
+    ficha["no_nulos_30d"] = int(tot.get("nn30") or 0)
+
+    # Distribución liviana por tipo de movimiento (solo registros con valor)
+    cur_op.execute(f"""
+        SELECT TiposDeMovimiento AS tipo, COUNT(*) AS n
+        FROM TiposDeMovimiento
+        WHERE {no_vacio}
+        GROUP BY TiposDeMovimiento
+        ORDER BY n DESC LIMIT 5
+    """)
+    ficha["top_tipos_movimiento"] = [
+        {"tipo": shorten_text(r["tipo"], 30), "n": int(r["n"] or 0)}
+        for r in (cur_op.fetchall() or [])
+    ]
+
+    # Top valores frecuentes
+    cur_op.execute(f"""
+        SELECT CAST({col} AS CHAR) AS valor, COUNT(*) AS n
+        FROM TiposDeMovimiento
+        WHERE {no_vacio}
+        GROUP BY valor
+        ORDER BY n DESC LIMIT 5
+    """)
+    ficha["top_valores"] = [
+        {"valor": shorten_text(r["valor"], 40), "n": int(r["n"] or 0)}
+        for r in (cur_op.fetchall() or [])
+    ]
+
+    # Últimos valores no nulos recientes
+    cur_op.execute(f"""
+        SELECT DATE_FORMAT(FechaHora, '%%Y-%%m-%%d') AS fecha,
+               TiposDeMovimiento AS tipo,
+               CAST({col} AS CHAR) AS valor
+        FROM TiposDeMovimiento
+        WHERE {no_vacio}
+        ORDER BY FechaHora DESC
+        LIMIT 12
+    """)
+    recientes = [
+        {"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": shorten_text(r["valor"], 40)}
+        for r in (cur_op.fetchall() or [])
+    ]
+    ficha["ejemplos_recientes"] = recientes
+
+    # Ejemplos antiguos solo si muestran valores distintos a los recientes
+    valores_recientes = {e["valor"] for e in recientes}
+    cur_op.execute(f"""
+        SELECT DATE_FORMAT(FechaHora, '%%Y-%%m-%%d') AS fecha,
+               TiposDeMovimiento AS tipo,
+               CAST({col} AS CHAR) AS valor
+        FROM TiposDeMovimiento
+        WHERE {no_vacio} AND FechaHora < NOW() - INTERVAL 30 DAY
+        ORDER BY FechaHora DESC
+        LIMIT 60
+    """)
+    distintos = []
+    for r in (cur_op.fetchall() or []):
+        v = shorten_text(r["valor"], 40)
+        if v in valores_recientes or any(d["valor"] == v for d in distintos):
+            continue
+        distintos.append({"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": v})
+        if len(distintos) >= 8:
+            break
+    ficha["ejemplos_distintos_historicos"] = distintos
+
+    # Lectura previa del diccionario, si existe
+    ficha["lectura_backend_previa"] = None
+    if cur_lab is not None:
+        try:
+            cur_lab.execute("""
+                SELECT significado_inferido FROM ia_diccionario_columnas
+                WHERE columna = %s ORDER BY actualizado_en DESC LIMIT 1
+            """, (columna,))
+            fila_dic = cur_lab.fetchone()
+            if fila_dic and fila_dic.get("significado_inferido"):
+                ficha["lectura_backend_previa"] = shorten_text(fila_dic["significado_inferido"], 160)
+        except Exception:
+            pass
+
+    # Señales de recencia
+    nn, nn30 = ficha["no_nulos_total"], ficha["no_nulos_30d"]
+    ficha["uso_reciente"] = nn30 > 0
+    ficha["solo_historico"] = nn > 0 and nn30 == 0
+    # Casi todo lo cargado es de los últimos 30 días: columna nueva o que
+    # empezó a cargarse recientemente -> señal interesante
+    ficha["aparicion_reciente"] = nn > 0 and (nn - nn30) <= max(3, int(nn * 0.05))
+    return ficha
+
+
+def prompt_pendiente_columna_compacto(columna, ficha):
+    """Prompt corto (<900 chars) para interpretar una columna desde su ficha compacta."""
+    f = dict(ficha or {})
+    lectura_previa = f.pop("lectura_backend_previa", None)
+    # Recortar ejemplos y campos largos para que el prompt no crezca
+    f.pop("registros_total", None)
+    f["ejemplos_recientes"] = (f.get("ejemplos_recientes") or [])[:5]
+    f["ejemplos_distintos_historicos"] = (f.get("ejemplos_distintos_historicos") or [])[:3]
+    ficha_txt = json.dumps(f, ensure_ascii=False, separators=(",", ":"), default=str)[:430]
+    prompt = (
+        f"Interpreta la columna {columna} de TiposDeMovimiento (planta reciclado). "
+        "Prioriza uso RECIENTE (7d/30d). Si solo hay uso viejo, decilo y baja confianza. "
+        "Si empezo a cargarse hace poco, es senal interesante.\n"
+        f"FICHA:{ficha_txt}\n"
+        + (f"Lectura previa:{shorten_text(lectura_previa, 110)}\n" if lectura_previa else "")
+        + 'SOLO JSON: {"action":"conclude","conclusion":"max 2 frases","confianza":0.55-0.75}. Sin SQL ni markdown.'
+    )
+    return limitar_prompt(prompt, 900)
+
+
+def _columna_de_pendiente(pendiente):
+    """Extrae el nombre de columna de un pendiente estructural, si lo es."""
+    ev = pendiente.get("evidencia")
+    if isinstance(ev, dict) and ev.get("columna"):
+        return str(ev["columna"])
+    m = re.search(r"columna\s+([A-Za-z0-9_]+)",
+                  f"{pendiente.get('tema') or ''} {pendiente.get('tarea') or ''}", re.I)
+    return m.group(1) if m else None
+
+
+def _texto_similar(a, b, umbral=0.7):
+    """True si dos textos comparten la mayoría de sus palabras (sin novedad)."""
+    def _toks(t):
+        return set(re.findall(r"[a-záéíóúñü0-9]{3,}", str(t or "").lower()))
+    ta, tb = _toks(a), _toks(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / max(1, min(len(ta), len(tb))) >= umbral
+
+
 def ejecutar_pendiente_estructural(cerebro):
     pendiente = elegir_pendiente_estructural()
     if not pendiente:
@@ -7447,15 +7598,50 @@ def ejecutar_pendiente_estructural(cerebro):
         f"Trabajo sobre pendiente estructural: {tema}",
         shorten_text(pendiente.get("tarea"), 220)
     )
-    prompt = mapa_estructural_prompt_compacto(pendiente)
-    ficha_chars = len(json.dumps(compactar_evidencia_estructural(pendiente.get("evidencia") or {}), ensure_ascii=False, default=str))
+
+    # Pendiente de columna: ficha compacta reciente en vez de cartografía completa
+    columna = _columna_de_pendiente(pendiente)
+    ficha = None
+    if columna:
+        conn_op_f = None
+        conn_lab_f = None
+        try:
+            conn_op_f = get_db_connection()
+            conn_lab_f = get_ia_connection()
+            if conn_op_f:
+                cur_op_f = conn_op_f.cursor()
+                cur_lab_f = conn_lab_f.cursor() if conn_lab_f else None
+                ficha = construir_ficha_compacta_columna(cur_op_f, cur_lab_f, columna)
+                cur_op_f.close()
+                if cur_lab_f is not None:
+                    cur_lab_f.close()
+        except Exception as e_ficha:
+            add_reasoning_step("pendiente_ficha_error", f"No pude armar ficha compacta de {columna}: {e_ficha}", None)
+            ficha = None
+        finally:
+            for _c in (conn_op_f, conn_lab_f):
+                try:
+                    if _c:
+                        _c.close()
+                except Exception:
+                    pass
+
+    if ficha:
+        prompt = prompt_pendiente_columna_compacto(columna, ficha)
+        ficha_chars = len(json.dumps(ficha, ensure_ascii=False, default=str))
+    else:
+        prompt = mapa_estructural_prompt_compacto(pendiente)
+        ficha_chars = len(json.dumps(compactar_evidencia_estructural(pendiente.get("evidencia") or {}), ensure_ascii=False, default=str))
     add_reasoning_step(
         "pendiente_prompt_preparado",
         f"Pendiente estructural listo: {tema}",
         f"prompt_chars={len(prompt)}; ficha_chars={ficha_chars}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}; timeout={PENDIENTE_OLLAMA_TIMEOUT_SECONDS}"
+        + ("; ficha_compacta_columna" if ficha else "")
     )
     modelo = llamar_ollama(prompt, timeout=PENDIENTE_OLLAMA_TIMEOUT_SECONDS, num_predict=PENDIENTE_OLLAMA_NUM_PREDICT)
     if not modelo.get("ok"):
+        # El cooldown de tema (registrar_exploracion_tema) evita reintentos
+        # inmediatos; la cola y el ciclo no se bloquean (la cola corre antes).
         registrar_exploracion_tema(firma, tema, "ollama_error", {"error": modelo.get("error"), "timeout": PENDIENTE_OLLAMA_TIMEOUT_SECONDS})
         add_reasoning_step("pendiente_error_ollama", f"Ollama no respondio pendiente estructural: {modelo.get('error')}", f"timeout={PENDIENTE_OLLAMA_TIMEOUT_SECONDS}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}")
         cerebro["fase2_avance"] = False
@@ -7464,7 +7650,7 @@ def ejecutar_pendiente_estructural(cerebro):
     parseado = extraer_json_modelo(modelo.get("texto"))
     if not parseado.get("ok"):
         registrar_exploracion_tema(firma, tema, "parse_error", {"raw": shorten_text(parseado.get("raw"), 500)})
-        add_reasoning_step("explorador_error_parse", "Pendiente estructural sin JSON valido; no guardo conocimiento.", shorten_text(parseado.get("raw"), 220))
+        add_reasoning_step("pendiente_error_parse", "Pendiente estructural sin JSON valido; no guardo conocimiento.", shorten_text(parseado.get("raw"), 220))
         cerebro["fase2_avance"] = False
         return cerebro
 
@@ -7480,24 +7666,53 @@ def ejecutar_pendiente_estructural(cerebro):
     )
     if not texto:
         registrar_exploracion_tema(firma, tema, "sin_texto_util", {"decision": decision})
-        add_reasoning_step("explorador_sin_conclusion", "El pendiente estructural no produjo texto util.", shorten_text(json.dumps(decision, ensure_ascii=False, default=str), 220))
+        add_reasoning_step("pendiente_sin_conclusion", "El pendiente estructural no produjo texto util.", shorten_text(json.dumps(decision, ensure_ascii=False, default=str), 220))
         cerebro["fase2_avance"] = False
         return cerebro
 
     conf = confianza_float(decision.get("confianza")) or 0.62
     conf = max(0.55, min(0.75, conf))
+    # Contenido útil casi todo antiguo: bajar confianza
+    if ficha and ficha.get("solo_historico"):
+        conf = min(conf, 0.60)
+
+    # Guardar solo si aporta algo nuevo con confianza razonable
+    if conf < 0.60:
+        registrar_exploracion_tema(firma, tema, "confianza_baja", {"conclusion": shorten_text(texto, 300), "confianza": conf})
+        add_reasoning_step("pendiente_sin_aporte", f"{tema}: confianza baja ({conf}); no guardo conclusión.", shorten_text(texto, 180))
+        cerebro["fase2_avance"] = False
+        return cerebro
+    lectura_previa = (ficha or {}).get("lectura_backend_previa")
+    if lectura_previa and _texto_similar(texto, lectura_previa):
+        registrar_exploracion_tema(firma, tema, "sin_novedad", {"conclusion": shorten_text(texto, 300)})
+        add_reasoning_step("pendiente_sin_aporte", f"{tema}: la conclusión repite la lectura previa; no la guardo.", shorten_text(texto, 180))
+        cerebro["fase2_avance"] = False
+        return cerebro
+
+    senales = ["pendiente_estructural", "cartografia_deterministica"]
+    if ficha:
+        senales.append("ficha_compacta_columna")
+        if ficha.get("aparicion_reciente"):
+            senales.append("columna_empezo_a_cargarse_recientemente")
+            add_reasoning_step(
+                "pendiente_senal_interesante",
+                f"Columna {columna}: empezó a cargarse recientemente.",
+                f"no_nulos_total={ficha.get('no_nulos_total')} no_nulos_30d={ficha.get('no_nulos_30d')}"
+            )
+        if ficha.get("solo_historico"):
+            senales.append("sin_uso_reciente")
     observacion = {
         "ok": True,
-        "columna": "mapa_estructural",
+        "columna": columna or "mapa_estructural",
         "conclusion": texto,
         "confianza": conf,
         "evidencia": {
             "firma": firma,
             "tema": tema,
             "tarea": pendiente.get("tarea"),
-            "evidencia_deterministica": pendiente.get("evidencia"),
+            "evidencia_deterministica": ficha if ficha else pendiente.get("evidencia"),
         },
-        "senales": ["pendiente_estructural", "cartografia_deterministica"],
+        "senales": senales,
         "fuerte": False,
     }
     persistencia = persistir_observacion_exploratoria(observacion, decision)
