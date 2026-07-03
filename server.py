@@ -4408,6 +4408,7 @@ def _ensure_tablas_derivadas(cur):
             tipo_nodo VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material | material',
             entidad VARCHAR(200) NOT NULL COMMENT 'proveedor, o material si tipo_nodo=proveedor_material/material',
             entidad_2 VARCHAR(200) NULL COMMENT 'proveedor padre si tipo_nodo=proveedor_material',
+            material_fuente VARCHAR(32) NOT NULL DEFAULT 'Description' COMMENT 'Description | DescriptionNormalizada (no mezclar entidades entre fuentes)',
             periodo VARCHAR(7) NOT NULL,
             origen VARCHAR(64) NOT NULL DEFAULT '' COMMENT 'protagonista_nivel1 | biografia_proveedor | protagonista_nivel2',
             motivo VARCHAR(300) NULL,
@@ -4426,6 +4427,14 @@ def _ensure_tablas_derivadas(cur):
         cur.execute("ALTER TABLE ia_cola_curiosidad ADD COLUMN IF NOT EXISTS resultado_resumen VARCHAR(300) NULL")
     except Exception:
         pass
+    try:
+        cur.execute("ALTER TABLE ia_cola_curiosidad ADD COLUMN IF NOT EXISTS material_fuente VARCHAR(32) NOT NULL DEFAULT 'Description'")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE ia_fichas_operativas ADD COLUMN IF NOT EXISTS material_fuente VARCHAR(32) NOT NULL DEFAULT 'Description'")
+    except Exception:
+        pass
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_fichas_operativas (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -4434,6 +4443,7 @@ def _ensure_tablas_derivadas(cur):
             tipo_nodo VARCHAR(32) NOT NULL COMMENT 'proveedor | proveedor_material | material',
             entidad VARCHAR(200) NOT NULL COMMENT 'proveedor, o material si tipo_nodo=proveedor_material/material',
             entidad_2 VARCHAR(200) NULL COMMENT 'proveedor padre si tipo_nodo=proveedor_material',
+            material_fuente VARCHAR(32) NOT NULL DEFAULT 'Description' COMMENT 'Description | DescriptionNormalizada',
             periodo VARCHAR(7) NOT NULL,
             titulo VARCHAR(300) NOT NULL,
             resumen_deterministico TEXT NULL,
@@ -4627,6 +4637,11 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
         filas += 1
 
     # --- NIVEL 2: materiales por proveedor protagonista ---
+    # Fuente de materiales del periodo: normalizada si su cobertura lo permite.
+    # No se mezclan fuentes en la misma corrida: o todas las entidades salen de
+    # DescriptionNormalizada, o todas de Description/Materiales cruda.
+    fuente_mat = fuente_material_para_periodo(cur_lab, periodo)
+
     # Tomar top proveedores nivel 1 (los que explican más del 5% o los top 10)
     provs_para_drill = [
         r["entidad"] for r in nivel1_provs[:10]
@@ -4642,29 +4657,45 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
         # Incluir todas las variantes crudas del proveedor canónico
         variantes = variantes_proveedor(proveedor, inverso_alias)
         marcadores_var = ", ".join(["%s"] * len(variantes))
-        cur_op.execute(f"""
-            SELECT
-              CASE
-                WHEN Description IS NOT NULL AND TRIM(Description) <> '' THEN Description
-                ELSE Materiales
-              END AS entidad,
-              MAX(CASE
-                WHEN Description IS NOT NULL AND TRIM(Description) <> '' THEN 'Description'
-                ELSE 'Materiales'
-              END) AS campo_usado,
-              COUNT(*) AS registros,
-              COALESCE(SUM(kilos), 0) AS kg
-            FROM TiposDeMovimiento
-            WHERE FechaHora >= %s AND FechaHora < %s
-              AND TiposDeMovimiento LIKE 'ING %%'
-              AND Proveedor IN ({marcadores_var})
-              AND (
-                (Description IS NOT NULL AND TRIM(Description) <> '')
-                OR (Materiales IS NOT NULL AND TRIM(Materiales) <> '')
-              )
-            GROUP BY entidad
-            ORDER BY kg DESC LIMIT 10
-        """, tuple([inicio, fin_excl] + variantes))
+        if fuente_mat == "DescriptionNormalizada":
+            cur_op.execute(f"""
+                SELECT
+                  DescriptionNormalizada AS entidad,
+                  'DescriptionNormalizada' AS campo_usado,
+                  COUNT(*) AS registros,
+                  COALESCE(SUM(kilos), 0) AS kg
+                FROM TiposDeMovimiento
+                WHERE FechaHora >= %s AND FechaHora < %s
+                  AND TiposDeMovimiento LIKE 'ING %%'
+                  AND Proveedor IN ({marcadores_var})
+                  AND DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> ''
+                GROUP BY entidad
+                ORDER BY kg DESC LIMIT 10
+            """, tuple([inicio, fin_excl] + variantes))
+        else:
+            cur_op.execute(f"""
+                SELECT
+                  CASE
+                    WHEN Description IS NOT NULL AND TRIM(Description) <> '' THEN Description
+                    ELSE Materiales
+                  END AS entidad,
+                  MAX(CASE
+                    WHEN Description IS NOT NULL AND TRIM(Description) <> '' THEN 'Description'
+                    ELSE 'Materiales'
+                  END) AS campo_usado,
+                  COUNT(*) AS registros,
+                  COALESCE(SUM(kilos), 0) AS kg
+                FROM TiposDeMovimiento
+                WHERE FechaHora >= %s AND FechaHora < %s
+                  AND TiposDeMovimiento LIKE 'ING %%'
+                  AND Proveedor IN ({marcadores_var})
+                  AND (
+                    (Description IS NOT NULL AND TRIM(Description) <> '')
+                    OR (Materiales IS NOT NULL AND TRIM(Materiales) <> '')
+                  )
+                GROUP BY entidad
+                ORDER BY kg DESC LIMIT 10
+            """, tuple([inicio, fin_excl] + variantes))
         mats = cur_op.fetchall() or []
 
         for rm in mats:
@@ -4748,6 +4779,8 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
     No llama a Ollama."""
     filas = 0
     _mapa_alias_bio, inverso_alias_bio = cargar_alias_proveedores(cur_lab)
+    # Fuente de materiales del periodo (misma decisión que protagonistas nivel 2)
+    fuente_mat_bio = fuente_material_para_periodo(cur_lab, periodo_actual)
 
     # ---------- Nivel 1: proveedores ----------
     # Protagonistas nivel 1 del periodo actual
@@ -4843,6 +4876,12 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
         filas += 1
 
     # ---------- Nivel 2: materiales por proveedor ----------
+    # Regenerar desde cero las biografías de material del periodo: si la fuente
+    # cambió (cruda -> normalizada) no deben quedar entidades de la fuente vieja.
+    cur_lab.execute("""
+        DELETE FROM ia_biografia_protagonistas
+        WHERE tipo_entidad = 'proveedor_material' AND periodo_actual = %s AND criterio_version = %s
+    """, (periodo_actual, DERIVADAS_VERSION))
     cur_lab.execute("""
         SELECT entidad AS material, entidad_2 AS proveedor,
                kg_entidad AS kg_actual, pct_del_contexto AS pct_actual, prioridad_score
@@ -4859,9 +4898,16 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
         pct_actual = float(pm["pct_actual"] or 0)
 
         # Historial del material dentro del proveedor (meses cerrados desde sh_etp_v2_local)
+        # La condición de material respeta la fuente del periodo (sin mezclar)
         try:
             variantes_b = variantes_proveedor(proveedor, inverso_alias_bio)
             marcadores_b = ", ".join(["%s"] * len(variantes_b))
+            if fuente_mat_bio == "DescriptionNormalizada":
+                cond_material = "DescriptionNormalizada = %s"
+                params_material = [material]
+            else:
+                cond_material = "(Description = %s OR Materiales = %s)"
+                params_material = [material, material]
             cur_op.execute(f"""
                 SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
                        COUNT(*) AS registros,
@@ -4870,11 +4916,11 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
                 FROM TiposDeMovimiento
                 WHERE TiposDeMovimiento LIKE 'ING %%'
                   AND Proveedor IN ({marcadores_b})
-                  AND (Description = %s OR Materiales = %s)
+                  AND {cond_material}
                   AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
                 GROUP BY periodo
                 ORDER BY periodo
-            """, tuple(variantes_b + [material, material, periodo_actual]))
+            """, tuple(variantes_b + params_material + [periodo_actual]))
             hist_mat_raw = cur_op.fetchall() or []
         except Exception:
             hist_mat_raw = []
@@ -4953,31 +4999,52 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
 
 def _encolar_curiosidad(cur_lab, tarea):
     """Inserta una tarea en ia_cola_curiosidad si no hay ya una pendiente/en_proceso
-    ni una completada reciente (30 días) para el mismo tipo_tarea+entidad+entidad_2+periodo.
-    Devuelve 1 si insertó, 0 si dedupe."""
+    ni una completada reciente (30 días) para el mismo tipo_tarea+entidad+entidad_2+
+    periodo+material_fuente (dedupe separado por fuente: una entidad cruda vieja no
+    bloquea a la misma entidad normalizada nueva). Devuelve 1 si insertó, 0 si dedupe."""
+    fuente = tarea.get("material_fuente") or "Description"
     cur_lab.execute("""
         SELECT id FROM ia_cola_curiosidad
         WHERE tipo_tarea = %s AND entidad = %s
           AND COALESCE(entidad_2, '') = COALESCE(%s, '')
           AND periodo = %s
+          AND COALESCE(material_fuente, 'Description') = %s
           AND (estado IN ('pendiente', 'en_proceso')
                OR (estado = 'completada' AND actualizado_en >= NOW() - INTERVAL 30 DAY))
         LIMIT 1
-    """, (tarea["tipo_tarea"], tarea["entidad"], tarea.get("entidad_2"), tarea["periodo"]))
+    """, (tarea["tipo_tarea"], tarea["entidad"], tarea.get("entidad_2"), tarea["periodo"], fuente))
     if cur_lab.fetchone():
         return 0
     cur_lab.execute("""
         INSERT INTO ia_cola_curiosidad
-            (tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
+            (tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente, periodo, origen, motivo,
              prioridad_score, profundidad, estado)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pendiente')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pendiente')
     """, (
         tarea["tipo_tarea"], tarea["tipo_nodo"], tarea["entidad"], tarea.get("entidad_2"),
-        tarea["periodo"], tarea.get("origen") or "", tarea.get("motivo"),
+        fuente, tarea["periodo"], tarea.get("origen") or "", tarea.get("motivo"),
         float(tarea.get("prioridad_score") or 0),
         int(tarea.get("profundidad") or 1),
     ))
     return 1
+
+
+def fuente_material_para_periodo(cur_lab, periodo):
+    """Decide la fuente de materiales para un periodo: 'DescriptionNormalizada'
+    si su cobertura es fuerte/parcial; si es débil o no hay datos, 'Description'."""
+    try:
+        cur_lab.execute("""
+            SELECT estado_confianza
+            FROM ia_resumen_mensual_description_normalizada
+            WHERE periodo = %s AND criterio_version = %s
+            LIMIT 1
+        """, (periodo, DERIVADAS_VERSION))
+        fila = cur_lab.fetchone()
+        if fila and fila.get("estado_confianza") in ("fuerte", "parcial"):
+            return "DescriptionNormalizada"
+    except Exception:
+        pass
+    return "Description"
 
 
 def calcular_cola_curiosidad(cur_lab, periodo_actual):
@@ -5026,6 +5093,9 @@ def calcular_cola_curiosidad(cur_lab, periodo_actual):
         })
 
     # 3) proveedor_material protagonistas (nivel 2) -> perfil_proveedor_material_historico
+    # Las entidades de nivel 2 se generaron con la fuente del periodo; las tareas
+    # heredan esa fuente para no mezclar crudo/normalizado en la misma entidad.
+    fuente_mat_cola = fuente_material_para_periodo(cur_lab, periodo_actual)
     cur_lab.execute("""
         SELECT entidad AS material, entidad_2 AS proveedor, prioridad_score
         FROM ia_protagonistas_operativos
@@ -5040,6 +5110,7 @@ def calcular_cola_curiosidad(cur_lab, periodo_actual):
             "tipo_nodo": "proveedor_material",
             "entidad": r["material"],
             "entidad_2": r["proveedor"],
+            "material_fuente": fuente_mat_cola,
             "periodo": periodo_actual,
             "origen": "protagonista_nivel2",
             "motivo": f"Material protagonista dentro de {r['proveedor']} en {periodo_actual}",
@@ -5060,6 +5131,7 @@ def calcular_cola_curiosidad(cur_lab, periodo_actual):
             "tipo_nodo": "material",
             "entidad": mat,
             "entidad_2": None,
+            "material_fuente": fuente_mat_cola,
             "periodo": periodo_actual,
             "origen": "protagonista_nivel2",
             "motivo": f"Material protagonista en {periodo_actual}; perfilar a nivel global",
@@ -5281,6 +5353,7 @@ def _normalizar_nodo_cola(r):
     for k in ("cooldown_hasta", "creado_en", "actualizado_en"):
         if r.get(k) is not None:
             r[k] = str(r[k])
+    r["material_normalizado"] = (r.get("material_fuente") == "DescriptionNormalizada")
     if r.get("tipo_nodo") == "proveedor_material":
         r["material"] = r.get("entidad")
         r["proveedor"] = r.get("entidad_2")
@@ -5321,7 +5394,8 @@ def leer_cola_curiosidad(limite_top=10):
         }
 
         cur.execute("""
-            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen, motivo,
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente,
+                   periodo, origen, motivo,
                    prioridad_score, profundidad, estado, cooldown_hasta, creado_en, actualizado_en
             FROM ia_cola_curiosidad
             WHERE estado = 'pendiente'
@@ -5332,7 +5406,8 @@ def leer_cola_curiosidad(limite_top=10):
             resultado["top_pendientes"].append(_normalizar_nodo_cola(r))
 
         cur.execute("""
-            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo, origen,
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente,
+                   periodo, origen,
                    prioridad_score, estado, resultado_resumen, actualizado_en
             FROM ia_cola_curiosidad
             WHERE estado = 'completada'
@@ -5361,8 +5436,8 @@ def leer_fichas_operativas(limite=10):
         resultado["total"] = int(fila.get("n") or 0)
 
         cur.execute("""
-            SELECT id, cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
-                   titulo, resumen_deterministico, datos_json, senales_json,
+            SELECT id, cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente,
+                   periodo, titulo, resumen_deterministico, datos_json, senales_json,
                    prioridad_score, creado_en
             FROM ia_fichas_operativas
             ORDER BY creado_en DESC, id DESC
@@ -5763,8 +5838,11 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
     material = tarea["entidad"]
     proveedor = tarea["entidad_2"]
     periodo = tarea["periodo"]
-    datos = {"proveedor": proveedor, "material": material, "periodo": periodo}
-    senales = {}
+    fuente_material = tarea.get("material_fuente") or "Description"
+    es_normalizado = fuente_material == "DescriptionNormalizada"
+    datos = {"proveedor": proveedor, "material": material, "periodo": periodo,
+             "material_fuente": fuente_material}
+    senales = {"material_normalizado": es_normalizado}
 
     cur_lab.execute("""
         SELECT kg_actual, pct_actual_contexto, meses_con_actividad,
@@ -5792,10 +5870,17 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
         })
     else:
         # Fallback: historia en meses cerrados desde la base operativa
-        # (incluye variantes crudas del proveedor canónico por alias)
+        # (incluye variantes crudas del proveedor canónico por alias; la
+        # condición de material respeta la fuente de la tarea, sin mezclar)
         _mapa_f, inverso_f = cargar_alias_proveedores(cur_lab)
         variantes_f = variantes_proveedor(proveedor, inverso_f)
         marcadores_f = ", ".join(["%s"] * len(variantes_f))
+        if fuente_material == "DescriptionNormalizada":
+            cond_mat_f = "DescriptionNormalizada = %s"
+            params_mat_f = [material]
+        else:
+            cond_mat_f = "(Description = %s OR Materiales = %s)"
+            params_mat_f = [material, material]
         cur_op.execute(f"""
             SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
                    COUNT(*) AS registros,
@@ -5803,11 +5888,11 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
             FROM TiposDeMovimiento
             WHERE TiposDeMovimiento LIKE 'ING %%'
               AND Proveedor IN ({marcadores_f})
-              AND (Description = %s OR Materiales = %s)
+              AND {cond_mat_f}
               AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
             GROUP BY periodo
             ORDER BY periodo
-        """, tuple(variantes_f + [material, material, periodo]))
+        """, tuple(variantes_f + params_mat_f + [periodo]))
         hist = [
             {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
             for h in (cur_op.fetchall() or [])
@@ -5831,8 +5916,9 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
 
     senales["meses_con_actividad"] = datos["meses_con_actividad"]
     n = datos["meses_con_actividad"]
+    etiqueta_mat = "material normalizado" if es_normalizado else "material"
     resumen = (
-        f"{material} de {proveedor}: {_ficha_kg(datos['kg_actual'])} en {periodo} "
+        f"{material} ({etiqueta_mat}) de {proveedor}: {_ficha_kg(datos['kg_actual'])} en {periodo} "
         f"({datos['pct_dentro_proveedor']}% de los kilos del proveedor); "
     )
     resumen += (
@@ -5841,7 +5927,9 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
     )
 
     return {
-        "titulo": f"Perfil histórico proveedor+material: {proveedor} → {material}",
+        "titulo": (f"Perfil histórico proveedor+material normalizado: {proveedor} → {material}"
+                   if es_normalizado else
+                   f"Perfil histórico proveedor+material: {proveedor} → {material}"),
         "resumen": resumen,
         "datos": datos,
         "senales": senales,
@@ -5850,23 +5938,32 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
 
 def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
     """Ficha determinística: material a nivel global (todos los proveedores, meses cerrados).
-    mapa_alias canoniza los proveedores antes de agrupar/rankear."""
+    mapa_alias canoniza los proveedores antes de agrupar/rankear. La condición de
+    material respeta material_fuente de la tarea (crudo o normalizado, sin mezclar)."""
     material = tarea["entidad"]
     periodo = tarea["periodo"]
+    fuente_material = tarea.get("material_fuente") or "Description"
+    es_normalizado = fuente_material == "DescriptionNormalizada"
+    if es_normalizado:
+        cond_mat_g = "DescriptionNormalizada = %s"
+        params_mat_g = [material]
+    else:
+        cond_mat_g = "(Description = %s OR Materiales = %s)"
+        params_mat_g = [material, material]
     inicio_periodo = f"{periodo}-01"  # meses cerrados = anteriores al periodo de la tarea
 
-    cur_op.execute("""
+    cur_op.execute(f"""
         SELECT Proveedor,
                COUNT(*) AS registros,
                COALESCE(SUM(kilos), 0) AS kg
         FROM TiposDeMovimiento
         WHERE TiposDeMovimiento LIKE 'ING %%'
-          AND (Description = %s OR Materiales = %s)
+          AND {cond_mat_g}
           AND FechaHora < %s
           AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> ''
         GROUP BY Proveedor
         ORDER BY kg DESC
-    """, (material, material, inicio_periodo))
+    """, tuple(params_mat_g + [inicio_periodo]))
     _agr_mat = {}
     for p in (cur_op.fetchall() or []):
         canon = canonizar_proveedor(p["Proveedor"], mapa_alias)
@@ -5876,18 +5973,18 @@ def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
     provs = sorted(_agr_mat.values(), key=lambda x: -x["kg"])
     kg_total = sum(p["kg"] for p in provs)
 
-    cur_op.execute("""
+    cur_op.execute(f"""
         SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
                COUNT(*) AS registros,
                COALESCE(SUM(kilos), 0) AS kg
         FROM TiposDeMovimiento
         WHERE TiposDeMovimiento LIKE 'ING %%'
-          AND (Description = %s OR Materiales = %s)
+          AND {cond_mat_g}
           AND FechaHora < %s
         GROUP BY periodo
         ORDER BY periodo DESC
         LIMIT 12
-    """, (material, material, inicio_periodo))
+    """, tuple(params_mat_g + [inicio_periodo]))
     kg_por_mes = [
         {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
         for h in reversed(cur_op.fetchall() or [])
@@ -5897,6 +5994,7 @@ def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
     pct_dominante = round(dominante["kg"] / kg_total * 100, 2) if dominante and kg_total > 0 else 0
     datos = {
         "material": material,
+        "material_fuente": fuente_material,
         "periodo": periodo,
         "proveedores_historicos": provs[:10],
         "proveedores_distintos": len(provs),
@@ -5908,20 +6006,23 @@ def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
         "proveedores_distintos": len(provs),
         "monoproveedor": len(provs) == 1,
         "dominante_concentra_mas_50pct": pct_dominante > 50,
+        "material_normalizado": es_normalizado,
     }
 
+    etiqueta_mat = "material normalizado" if es_normalizado else "material"
     if not provs:
-        resumen = f"{material}: sin ingresos registrados en meses cerrados."
+        resumen = f"{material} ({etiqueta_mat}): sin ingresos registrados en meses cerrados."
     else:
         kg_12m = sum(h["kg"] for h in kg_por_mes)
         resumen = (
-            f"{material}: traído históricamente por {len(provs)} proveedores; "
+            f"{material} ({etiqueta_mat}): traído históricamente por {len(provs)} proveedores; "
             f"dominante {dominante['proveedor']} ({pct_dominante}% del kg histórico). "
             f"Últimos {len(kg_por_mes)} meses cerrados: {_ficha_kg(kg_12m)}."
         )
 
     return {
-        "titulo": f"Perfil global de material: {material}",
+        "titulo": (f"Perfil global de material normalizado: {material}"
+                   if es_normalizado else f"Perfil global de material: {material}"),
         "resumen": resumen,
         "datos": datos,
         "senales": senales,
@@ -5987,7 +6088,8 @@ def _propagar_dominantes_material(cur_lab, tarea, ficha):
         if pct >= 50:
             tareas_nuevas.append(
                 {"tipo_tarea": "perfil_proveedor_material_historico", "periodo": tarea["periodo"],
-                 "tipo_nodo": "proveedor_material", "entidad": material, "entidad_2": proveedor}
+                 "tipo_nodo": "proveedor_material", "entidad": material, "entidad_2": proveedor,
+                 "material_fuente": tarea.get("material_fuente") or "Description"}
             )
 
         nuevas = 0
@@ -6032,8 +6134,8 @@ def propagar_dominantes_materiales_existentes(forzar=False):
     try:
         cur_lab = conn_lab.cursor()
         cur_lab.execute("""
-            SELECT id, cola_id, tipo_nodo, entidad, entidad_2, periodo,
-                   prioridad_score, datos_json
+            SELECT id, cola_id, tipo_nodo, entidad, entidad_2, material_fuente,
+                   periodo, prioridad_score, datos_json
             FROM ia_fichas_operativas
             WHERE tipo_tarea = 'perfil_material_global'
             ORDER BY id DESC
@@ -6091,6 +6193,7 @@ def propagar_dominantes_materiales_existentes(forzar=False):
                 "tipo_nodo": f.get("tipo_nodo") or "material",
                 "entidad": material,
                 "entidad_2": f.get("entidad_2"),
+                "material_fuente": f.get("material_fuente") or "Description",
                 "periodo": f["periodo"],
                 "prioridad_score": float(f.get("prioridad_score") or 0),
                 "profundidad": profundidad,
@@ -6167,8 +6270,8 @@ def ejecutar_tarea_cola_curiosidad():
     try:
         cur_lab = conn_lab.cursor()
         cur_lab.execute("""
-            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
-                   origen, motivo, prioridad_score, profundidad
+            SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente,
+                   periodo, origen, motivo, prioridad_score, profundidad
             FROM ia_cola_curiosidad
             WHERE estado = 'pendiente'
               AND (cooldown_hasta IS NULL OR cooldown_hasta <= NOW())
@@ -6208,11 +6311,12 @@ def ejecutar_tarea_cola_curiosidad():
 
         cur_lab.execute("""
             INSERT INTO ia_fichas_operativas
-                (cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, periodo,
+                (cola_id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente, periodo,
                  titulo, resumen_deterministico, datos_json, senales_json, prioridad_score)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             tarea["id"], tipo, tarea["tipo_nodo"], tarea["entidad"], tarea["entidad_2"],
+            tarea.get("material_fuente") or "Description",
             tarea["periodo"], ficha["titulo"], ficha["resumen"],
             json.dumps(ficha.get("datos") or {}, ensure_ascii=False, default=str),
             json.dumps(ficha.get("senales") or {}, ensure_ascii=False, default=str),
@@ -12511,6 +12615,7 @@ function renderFichasOperativas(fo) {
     const meta = document.createElement("div");
     meta.style.cssText = "font-size:10px;color:#484f58;margin-bottom:4px;";
     const partes = [f.etiqueta || f.entidad || ""];
+    if (f.material_normalizado) partes.push("material normalizado");
     if (f.periodo) partes.push(f.periodo);
     if (f.creado_en) partes.push(f.creado_en);
     meta.textContent = partes.join(" · ");
