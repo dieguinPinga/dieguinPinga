@@ -3563,21 +3563,8 @@ def asegurar_tablas_cartografia(cur):
         cur.execute("ALTER TABLE ia_pendientes_estructurales ADD COLUMN IF NOT EXISTS cooldown_hasta DATETIME NULL")
     except Exception:
         pass
-    # Migración defensiva: pendientes que ya produjeron observación quedaban en
-    # estado='pendiente' y el dashboard los mostraba como abiertos. Idempotente.
     try:
-        cur.execute("""
-            UPDATE ia_pendientes_estructurales p
-            JOIN (
-                SELECT firma, MAX(creada_en) AS ultima
-                FROM ia_exploraciones_temas
-                GROUP BY firma
-            ) e ON e.firma = p.firma
-            JOIN ia_exploraciones_temas er ON er.firma = p.firma AND er.creada_en = e.ultima
-            SET p.estado = 'completada', p.cooldown_hasta = NULL
-            WHERE COALESCE(p.estado, 'pendiente') = 'pendiente'
-              AND er.resultado = 'observacion_guardada'
-        """)
+        cur.execute("ALTER TABLE ia_pendientes_estructurales ADD COLUMN IF NOT EXISTS ultimo_resultado VARCHAR(64) NULL")
     except Exception:
         pass
     cur.execute("""
@@ -3740,7 +3727,10 @@ def upsert_pendiente_estructural(cur_lab, firma, tema, tarea, prioridad, evidenc
         ON DUPLICATE KEY UPDATE
             tema=VALUES(tema), tarea=VALUES(tarea), prioridad=VALUES(prioridad),
             evidencia_json=VALUES(evidencia_json),
-            estado=CASE WHEN estado IN ('resuelto', 'descartado') THEN estado ELSE 'pendiente' END,
+            estado=CASE
+                WHEN estado IN ('completada','resuelta','resuelto','descartada','descartado') THEN estado
+                ELSE 'pendiente'
+            END,
             actualizado_en=CURRENT_TIMESTAMP
     """, (firma, tema, tarea, prioridad, json.dumps(evidencia or {}, ensure_ascii=False, default=str)))
 
@@ -3929,6 +3919,13 @@ def guardar_cartografia_base_si_corresponde(forzar=False):
         upsert_pendiente_estructural(cur_lab, "temporal:ingresos_hoy_parcial", "Ingresos de hoy parcial", "Interpretar ingresos de hoy como dato parcial porque el dia actual esta abierto.", 66, {"contexto_temporal": contexto_temporal})
         upsert_pendiente_estructural(cur_lab, "temporal:mes_actual_vs_anterior_parcial", "Mes actual vs mes anterior parcial", "Comparar mes actual abierto contra mes anterior cerrado aclarando que el mes actual es parcial.", 74, {"contexto_temporal": contexto_temporal})
 
+        # Higiene de estado tras los upserts: los pendientes con resultado útil
+        # histórico quedan completados (idempotente, no reabre nada)
+        try:
+            sincronizar_estado_pendientes_estructurales(cur_lab)
+        except Exception:
+            pass
+
         conn_lab.commit()
         cur_op.close(); conn_op.close(); cur_lab.close(); conn_lab.close()
         return {"ok": True, "tablas": len(tablas), "columnas": len(columnas), "tipos_movimiento": len(tipos_mov), "pendientes": 13}
@@ -3983,6 +3980,108 @@ def elegir_pendiente_estructural():
         return None
 
 
+# Resultados de exploración que cierran un pendiente estructural (útiles) y
+# los que lo dejan pendiente pero en cooldown (fallos / sin aporte)
+RESULTADOS_PENDIENTE_UTIL = ("observacion_guardada", "parse_parcial", "conclusion_guardada")
+RESULTADOS_PENDIENTE_COOLDOWN = ("parse_error", "ollama_error", "confianza_baja",
+                                 "sin_texto_util", "query_rechazada", "sin_novedad")
+
+
+def sincronizar_estado_pendientes_estructurales(cur=None):
+    """Higiene de estado en DB, idempotente: alinea ia_pendientes_estructurales
+    con su última exploración en ia_exploraciones_temas. No depende del filtro
+    del dashboard. Corre al arranque y en cada recálculo de derivadas.
+    Devuelve {"ok", "completadas", "en_cooldown"}."""
+    resultado = {"ok": False, "completadas": 0, "en_cooldown": 0}
+    conn = None
+    cur_propio = cur is None
+    try:
+        if cur_propio:
+            conn = get_ia_connection()
+            if not conn:
+                return resultado
+            cur = conn.cursor()
+            asegurar_tablas_cartografia(cur)
+
+        marc_util = ", ".join(["%s"] * len(RESULTADOS_PENDIENTE_UTIL))
+
+        # 1. Si EXISTE cualquier exploración útil histórica para la firma,
+        #    la pendiente queda completada con el útil más reciente como
+        #    ultimo_resultado. No mira solo el último intento: un parse_error
+        #    posterior no anula una observación ya guardada.
+        cur.execute(f"""
+            UPDATE ia_pendientes_estructurales p
+            SET p.estado = 'completada',
+                p.cooldown_hasta = NULL,
+                p.ultimo_resultado = (
+                    SELECT er.resultado
+                    FROM ia_exploraciones_temas er
+                    WHERE er.firma = p.firma AND er.resultado IN ({marc_util})
+                    ORDER BY er.creada_en DESC
+                    LIMIT 1
+                )
+            WHERE COALESCE(p.estado, 'pendiente') NOT IN
+                  ('completada', 'resuelta', 'resuelto', 'descartada', 'descartado')
+              AND EXISTS (
+                  SELECT 1 FROM ia_exploraciones_temas eu
+                  WHERE eu.firma = p.firma AND eu.resultado IN ({marc_util})
+              )
+        """, tuple(list(RESULTADOS_PENDIENTE_UTIL) * 2))
+        resultado["completadas"] = int(cur.rowcount or 0)
+
+        # 2. SOLO firmas sin ningún resultado útil histórico: auditar el último
+        #    resultado. Nunca toca completadas (no se reabren por fallos).
+        cur.execute(f"""
+            UPDATE ia_pendientes_estructurales p
+            JOIN (
+                SELECT firma, MAX(creada_en) AS ultima
+                FROM ia_exploraciones_temas
+                GROUP BY firma
+            ) e ON e.firma = p.firma
+            JOIN ia_exploraciones_temas er ON er.firma = p.firma AND er.creada_en = e.ultima
+            SET p.ultimo_resultado = er.resultado
+            WHERE COALESCE(p.estado, 'pendiente') = 'pendiente'
+              AND NOT EXISTS (
+                  SELECT 1 FROM ia_exploraciones_temas eu
+                  WHERE eu.firma = p.firma AND eu.resultado IN ({marc_util})
+              )
+              AND COALESCE(p.ultimo_resultado, '') <> COALESCE(er.resultado, '')
+        """, tuple(RESULTADOS_PENDIENTE_UTIL))
+
+        # 3. Último resultado = fallo (sin útil histórico) -> cooldown explícito
+        #    desde el último intento, sin cambiar el estado.
+        marc_cd = ", ".join(["%s"] * len(RESULTADOS_PENDIENTE_COOLDOWN))
+        cur.execute(f"""
+            UPDATE ia_pendientes_estructurales
+            SET cooldown_hasta = DATE_ADD(COALESCE(ultimo_intento, NOW()), INTERVAL %s HOUR)
+            WHERE COALESCE(estado, 'pendiente') = 'pendiente'
+              AND ultimo_resultado IN ({marc_cd})
+              AND cooldown_hasta IS NULL
+        """, tuple([AUTO_TEMA_COOLDOWN_HOURS] + list(RESULTADOS_PENDIENTE_COOLDOWN)))
+        resultado["en_cooldown"] = int(cur.rowcount or 0)
+
+        if cur_propio:
+            conn.commit()
+            cur.close()
+            conn.close()
+        resultado["ok"] = True
+        if resultado["completadas"] or resultado["en_cooldown"]:
+            add_reasoning_step(
+                "pendientes_estado_sincronizado",
+                (f"Higiene de pendientes estructurales: {resultado['completadas']} completados, "
+                 f"{resultado['en_cooldown']} con cooldown explícito."),
+                None
+            )
+    except Exception as e:
+        print(f"Error en sincronizar_estado_pendientes_estructurales: {e}", file=sys.stderr)
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+    return resultado
+
+
 def registrar_exploracion_tema(firma, tema, resultado, evidencia=None):
     conn = get_ia_connection()
     if not conn:
@@ -3994,28 +4093,33 @@ def registrar_exploracion_tema(firma, tema, resultado, evidencia=None):
             INSERT INTO ia_exploraciones_temas (firma, tema, resultado, evidencia_json)
             VALUES (%s, %s, %s, %s)
         """, (firma, tema, resultado, json.dumps(evidencia or {}, ensure_ascii=False, default=str)))
-        if resultado == "observacion_guardada":
-            # Observación útil guardada: el pendiente deja de estar abierto
+        if resultado in RESULTADOS_PENDIENTE_UTIL:
+            # Resultado útil (observación/conclusión guardada): pendiente cerrado
             cur.execute("""
                 UPDATE ia_pendientes_estructurales
-                SET ultimo_intento=CURRENT_TIMESTAMP, estado='completada', cooldown_hasta=NULL
+                SET ultimo_intento=CURRENT_TIMESTAMP, ultimo_resultado=%s,
+                    estado='completada', cooldown_hasta=NULL
                 WHERE firma=%s
-            """, (firma,))
-        elif resultado in ("parse_error", "ollama_error", "confianza_baja",
-                           "sin_texto_util", "query_rechazada", "sin_novedad", "parse_parcial"):
-            # Fallo/no-aporte: sigue pendiente pero en cooldown, no urgente
+            """, (resultado, firma))
+        elif resultado in RESULTADOS_PENDIENTE_COOLDOWN:
+            # Fallo/no-aporte: sigue pendiente pero en cooldown, no urgente.
+            # Una completada NO se reabre ni se pisa por un fallo posterior.
             cur.execute("""
                 UPDATE ia_pendientes_estructurales
-                SET ultimo_intento=CURRENT_TIMESTAMP,
+                SET ultimo_intento=CURRENT_TIMESTAMP, ultimo_resultado=%s,
                     cooldown_hasta=DATE_ADD(NOW(), INTERVAL %s HOUR)
                 WHERE firma=%s
-            """, (AUTO_TEMA_COOLDOWN_HOURS, firma))
+                  AND COALESCE(estado,'pendiente') NOT IN
+                      ('completada','resuelta','resuelto','descartada','descartado')
+            """, (resultado, AUTO_TEMA_COOLDOWN_HOURS, firma))
         else:
             cur.execute("""
                 UPDATE ia_pendientes_estructurales
-                SET ultimo_intento=CURRENT_TIMESTAMP
+                SET ultimo_intento=CURRENT_TIMESTAMP, ultimo_resultado=%s
                 WHERE firma=%s
-            """, (firma,))
+                  AND COALESCE(estado,'pendiente') NOT IN
+                      ('completada','resuelta','resuelto','descartada','descartado')
+            """, (resultado, firma))
         conn.commit(); cur.close(); conn.close()
         return {"ok": True}
     except Exception as e:
@@ -11043,6 +11147,11 @@ def api_ia_derivadas_recalcular():
         resultado["backfill_dominantes"] = propagar_dominantes_materiales_existentes()
     except Exception as e_bf:
         resultado["backfill_dominantes"] = {"ok": False, "errores": [str(e_bf)]}
+    # Higiene de estado de pendientes estructurales (idempotente)
+    try:
+        resultado["pendientes_sync"] = sincronizar_estado_pendientes_estructurales()
+    except Exception as e_ps:
+        resultado["pendientes_sync"] = {"ok": False, "error": str(e_ps)}
     status = 200 if resultado.get("ok") else 500
     return jsonify(resultado), status
 
@@ -13387,6 +13496,10 @@ def api_export():
 
 if __name__ == '__main__':
     print(f"Iniciando servidor en http://0.0.0.0:8080", file=sys.stderr)
+    try:
+        sincronizar_estado_pendientes_estructurales()
+    except Exception as _e_sync:
+        print(f"Sync de pendientes estructurales al arranque falló: {_e_sync}", file=sys.stderr)
     iniciar_autonomia_ia()
     notificar_telegram_inicio_async()
     app.run(host='0.0.0.0', port=8080, debug=False, use_reloader=False)
