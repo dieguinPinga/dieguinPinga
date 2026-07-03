@@ -4199,6 +4199,26 @@ def _ensure_tablas_derivadas(cur):
     """)
     # Tablas de normalidad (calculadas sólo sobre meses cerrados)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_resumen_mensual_description_normalizada (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            periodo VARCHAR(7) NOT NULL,
+            estado_periodo VARCHAR(16) NOT NULL,
+            criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
+            description_normalizada VARCHAR(255) NOT NULL,
+            registros_total_periodo INT NOT NULL DEFAULT 0,
+            registros_normalizados_periodo INT NOT NULL DEFAULT 0,
+            cobertura_pct_periodo DECIMAL(8,2) NOT NULL DEFAULT 0,
+            estado_confianza VARCHAR(16) NOT NULL DEFAULT 'debil' COMMENT 'fuerte >=90 | parcial 30-90 | debil <30 (no usar para conclusiones fuertes)',
+            registros INT NOT NULL DEFAULT 0,
+            kilos_total DECIMAL(16,2) NOT NULL DEFAULT 0,
+            pct_kilos_normalizados_periodo DECIMAL(8,2) NOT NULL DEFAULT 0,
+            primer_movimiento DATETIME NULL,
+            ultimo_movimiento DATETIME NULL,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_periodo_desc_norm (periodo, description_normalizada, criterio_version)
+        ) CHARACTER SET utf8mb4
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_normalidad_mensual_tipo_movimiento (
             id INT AUTO_INCREMENT PRIMARY KEY,
             criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
@@ -5312,6 +5332,64 @@ def leer_fichas_operativas(limite=10):
     return resultado
 
 
+def leer_materiales_normalizados_recientes(limite=10):
+    """Top materiales por DescriptionNormalizada del mes actual, con cobertura
+    visible. Determinístico, solo lectura de la derivada. Con estado_confianza
+    'debil' no debe usarse para conclusiones fuertes."""
+    resultado = {
+        "periodo": date.today().strftime("%Y-%m"),
+        "disponible": False,
+        "cobertura_pct": 0,
+        "estado_confianza": None,
+        "apto_para_conclusiones": False,
+        "registros_total_periodo": 0,
+        "registros_normalizados_periodo": 0,
+        "pct_kilos_normalizados": 0,
+        "top_materiales": [],
+    }
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT description_normalizada, registros, kilos_total,
+                   registros_total_periodo, registros_normalizados_periodo,
+                   cobertura_pct_periodo, estado_confianza,
+                   pct_kilos_normalizados_periodo, primer_movimiento, ultimo_movimiento
+            FROM ia_resumen_mensual_description_normalizada
+            WHERE periodo = %s AND criterio_version = %s
+            ORDER BY kilos_total DESC
+            LIMIT %s
+        """, (resultado["periodo"], DERIVADAS_VERSION, int(limite)))
+        filas = cur.fetchall() or []
+        cur.close()
+        conn.close()
+        if not filas:
+            return resultado
+        f0 = filas[0]
+        resultado.update({
+            "disponible": True,
+            "cobertura_pct": float(f0["cobertura_pct_periodo"] or 0),
+            "estado_confianza": f0["estado_confianza"],
+            "apto_para_conclusiones": f0["estado_confianza"] in ("fuerte", "parcial"),
+            "registros_total_periodo": int(f0["registros_total_periodo"] or 0),
+            "registros_normalizados_periodo": int(f0["registros_normalizados_periodo"] or 0),
+            "pct_kilos_normalizados": float(f0["pct_kilos_normalizados_periodo"] or 0),
+        })
+        for f in filas:
+            resultado["top_materiales"].append({
+                "material": f["description_normalizada"],
+                "registros": int(f["registros"] or 0),
+                "kilos_total": float(f["kilos_total"] or 0),
+                "primer_movimiento": str(f["primer_movimiento"]) if f["primer_movimiento"] else None,
+                "ultimo_movimiento": str(f["ultimo_movimiento"]) if f["ultimo_movimiento"] else None,
+            })
+    except Exception as e:
+        print(f"Error en leer_materiales_normalizados_recientes: {e}", file=sys.stderr)
+    return resultado
+
+
 def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
     """Matriz proveedores x meses para el dashboard, determinística y sin Ollama.
     Filas: proveedores descubiertos por ia_fichas_operativas / ia_cola_curiosidad,
@@ -6327,6 +6405,16 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         alias_prov, _inverso_prov = cargar_alias_proveedores(cur_lab)
         _limpiar_artefactos_alias(cur_lab, alias_prov)
 
+        # DescriptionNormalizada: dimensión nueva; puede no existir todavía
+        tiene_desc_norm = False
+        try:
+            cur_op.execute("SHOW COLUMNS FROM TiposDeMovimiento LIKE 'DescriptionNormalizada'")
+            tiene_desc_norm = cur_op.fetchone() is not None
+        except Exception:
+            tiene_desc_norm = False
+        resultado["description_normalizada_activa"] = tiene_desc_norm
+        resultado["filas_description_normalizada"] = 0
+
         periodos = _generar_periodos_desde_db(cur_op)
 
         for p in periodos:
@@ -6430,6 +6518,79 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                         actualizado_en = CURRENT_TIMESTAMP
                 """, (periodo, estado, DERIVADAS_VERSION, prov, acc["registros"], acc["kilos_total"]))
             resultado["filas_ingresos_proveedor"] += len(provs_canon)
+
+            # --- description_normalizada (dimensión nueva; NO se mezcla con Description vieja) ---
+            if tiene_desc_norm:
+                try:
+                    cur_op.execute("""
+                        SELECT COUNT(*) AS registros_total,
+                               COALESCE(SUM(kilos), 0) AS kilos_total_periodo,
+                               SUM(CASE WHEN DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> '' THEN 1 ELSE 0 END) AS registros_norm,
+                               COALESCE(SUM(CASE WHEN DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> '' THEN kilos ELSE 0 END), 0) AS kilos_norm
+                        FROM TiposDeMovimiento
+                        WHERE FechaHora >= %s AND FechaHora < %s
+                    """, (inicio, fin_excl))
+                    tot_dn = cur_op.fetchone() or {}
+                    registros_total_p = int(tot_dn.get("registros_total") or 0)
+                    registros_norm_p = int(tot_dn.get("registros_norm") or 0)
+                    kilos_total_p = float(tot_dn.get("kilos_total_periodo") or 0)
+                    kilos_norm_p = float(tot_dn.get("kilos_norm") or 0)
+                    cobertura_pct = round(registros_norm_p / registros_total_p * 100, 2) if registros_total_p > 0 else 0
+                    pct_kilos_norm = round(kilos_norm_p / kilos_total_p * 100, 2) if kilos_total_p > 0 else 0
+                    if cobertura_pct >= 90:
+                        estado_conf = "fuerte"
+                    elif cobertura_pct >= 30:
+                        estado_conf = "parcial"
+                    else:
+                        estado_conf = "debil"  # no usar para conclusiones fuertes
+
+                    cur_op.execute("""
+                        SELECT DescriptionNormalizada AS dn,
+                               COUNT(*) AS registros,
+                               COALESCE(SUM(kilos), 0) AS kilos_total,
+                               MIN(FechaHora) AS primer_movimiento,
+                               MAX(FechaHora) AS ultimo_movimiento
+                        FROM TiposDeMovimiento
+                        WHERE FechaHora >= %s AND FechaHora < %s
+                          AND DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> ''
+                        GROUP BY DescriptionNormalizada
+                    """, (inicio, fin_excl))
+                    rows_dn = cur_op.fetchall() or []
+                    cur_lab.execute(
+                        "DELETE FROM ia_resumen_mensual_description_normalizada WHERE periodo = %s AND criterio_version = %s",
+                        (periodo, DERIVADAS_VERSION)
+                    )
+                    for r in rows_dn:
+                        cur_lab.execute("""
+                            INSERT INTO ia_resumen_mensual_description_normalizada
+                                (periodo, estado_periodo, criterio_version, description_normalizada,
+                                 registros_total_periodo, registros_normalizados_periodo,
+                                 cobertura_pct_periodo, estado_confianza,
+                                 registros, kilos_total, pct_kilos_normalizados_periodo,
+                                 primer_movimiento, ultimo_movimiento)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON DUPLICATE KEY UPDATE
+                                estado_periodo = VALUES(estado_periodo),
+                                registros_total_periodo = VALUES(registros_total_periodo),
+                                registros_normalizados_periodo = VALUES(registros_normalizados_periodo),
+                                cobertura_pct_periodo = VALUES(cobertura_pct_periodo),
+                                estado_confianza = VALUES(estado_confianza),
+                                registros = VALUES(registros),
+                                kilos_total = VALUES(kilos_total),
+                                pct_kilos_normalizados_periodo = VALUES(pct_kilos_normalizados_periodo),
+                                primer_movimiento = VALUES(primer_movimiento),
+                                ultimo_movimiento = VALUES(ultimo_movimiento),
+                                actualizado_en = CURRENT_TIMESTAMP
+                        """, (
+                            periodo, estado, DERIVADAS_VERSION, r["dn"],
+                            registros_total_p, registros_norm_p,
+                            cobertura_pct, estado_conf,
+                            r["registros"], r["kilos_total"], pct_kilos_norm,
+                            r["primer_movimiento"], r["ultimo_movimiento"],
+                        ))
+                    resultado["filas_description_normalizada"] += len(rows_dn)
+                except Exception as e_dn:
+                    resultado["errores"].append(f"description_normalizada {periodo}: {e_dn}")
 
             # --- registro en ia_periodos_procesados ---
             cur_lab.execute("""
@@ -10272,6 +10433,7 @@ def get_ia_cerebro():
             "cola_curiosidad": leer_cola_curiosidad(),
             "fichas_operativas": leer_fichas_operativas(),
             "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
+            "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -10994,6 +11156,10 @@ def ia_dashboard():
   <!-- -- MAPA HISTORICO PROVEEDORES -- -->
   <div class="section-title" style="margin-top:20px;">Mapa histórico proveedores</div>
   <div id="mapaHistoricoProveedores" style="margin-bottom:16px;"></div>
+
+  <!-- -- MATERIALES NORMALIZADOS (mes actual) -- -->
+  <div class="section-title" style="margin-top:20px;">Materiales normalizados (mes actual)</div>
+  <div id="materialesNormalizados" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -11986,6 +12152,64 @@ function renderBiografiaProtagonistas(bio) {
   }
 }
 
+/* -- Materiales normalizados del mes (DescriptionNormalizada) -- */
+function renderMaterialesNormalizados(mn) {
+  const cont = document.getElementById("materialesNormalizados");
+  if (!cont) return;
+  cont.innerHTML = "";
+  if (!mn || !mn.disponible || !asArray(mn.top_materiales).length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin datos de DescriptionNormalizada todavía. Ejecutar recalcular derivadas.";
+    cont.appendChild(p);
+    return;
+  }
+
+  const CONF_COLOR = {fuerte: "#3fb950", parcial: "#d29922", debil: "#f85149"};
+  const conf = mn.estado_confianza || "debil";
+  const head = document.createElement("div");
+  head.style.cssText = "font-size:11px;color:#8b949e;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;";
+  const badge = document.createElement("span");
+  badge.textContent = "cobertura " + (mn.cobertura_pct != null ? Number(mn.cobertura_pct).toFixed(1) : "?") + "% · " + conf;
+  badge.style.cssText = "font-size:10px;padding:1px 8px;border-radius:3px;background:rgba(0,0,0,.3);color:" + (CONF_COLOR[conf] || "#8b949e") + ";";
+  head.appendChild(badge);
+  const detalle = document.createElement("span");
+  detalle.textContent = mn.registros_normalizados_periodo + "/" + mn.registros_total_periodo +
+    " registros normalizados · " + Number(mn.pct_kilos_normalizados || 0).toFixed(1) + "% de los kilos";
+  head.appendChild(detalle);
+  cont.appendChild(head);
+
+  if (conf === "debil") {
+    const warn = document.createElement("div");
+    warn.style.cssText = "font-size:10px;color:#f85149;margin-bottom:6px;";
+    warn.textContent = "Cobertura baja (<30%): no usar para conclusiones fuertes.";
+    cont.appendChild(warn);
+  }
+
+  const tabla = document.createElement("div");
+  tabla.style.cssText = "font-size:12px;";
+  asArray(mn.top_materiales).forEach((m, idx) => {
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:4px;" +
+      (idx % 2 === 0 ? "background:rgba(255,255,255,.04);" : "");
+    const nombre = document.createElement("span");
+    nombre.textContent = m.material || "?";
+    nombre.style.cssText = "flex:1;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    nombre.title = (m.material || "") + (m.ultimo_movimiento ? " · último: " + m.ultimo_movimiento : "");
+    const kg = document.createElement("span");
+    kg.textContent = Number(m.kilos_total || 0).toLocaleString("es-AR") + " kg";
+    kg.style.cssText = "color:#58a6ff;min-width:90px;text-align:right;font-weight:600;";
+    const regs = document.createElement("span");
+    regs.textContent = (m.registros || 0) + " reg";
+    regs.style.cssText = "color:#8b949e;min-width:56px;text-align:right;";
+    row.appendChild(nombre);
+    row.appendChild(kg);
+    row.appendChild(regs);
+    tabla.appendChild(row);
+  });
+  cont.appendChild(tabla);
+}
+
 /* -- Cola de curiosidad (contador simple) ------------------- */
 function renderColaCuriosidad(cc) {
   const el = document.getElementById("colaCuriosidad");
@@ -12595,6 +12819,7 @@ function renderCerebro(c) {
   renderColaCuriosidad(c.cola_curiosidad || null);
   renderFichasOperativas(c.fichas_operativas || null);
   renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
+  renderMaterialesNormalizados(c.materiales_normalizados_recientes || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
