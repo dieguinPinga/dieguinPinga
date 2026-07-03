@@ -66,6 +66,9 @@ FASE2_PROMPT_MAX_CHARS = int(os.environ.get("FASE2_PROMPT_MAX_CHARS", "2800"))
 FASE2_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("FASE2_OLLAMA_TIMEOUT_SECONDS", "120"))
 FASE2_OLLAMA_NUM_PREDICT = int(os.environ.get("FASE2_OLLAMA_NUM_PREDICT", "180"))
 PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "180"))
+# Tope duro para pendientes estructurales comunes: aunque el env diga 900,
+# un pendiente común nunca espera más que esto.
+PENDIENTE_TIMEOUT_MAX = int(os.environ.get("PENDIENTE_TIMEOUT_MAX", "180"))
 PENDIENTE_OLLAMA_NUM_PREDICT = int(os.environ.get("PENDIENTE_OLLAMA_NUM_PREDICT", "110"))
 AUTO_IA_LOCK = threading.Lock()
 AUTO_IA_LAST_RUN = None
@@ -6926,18 +6929,15 @@ def compactar_evidencia_estructural(valor, profundidad=0, clave=""):
 
 def mapa_estructural_prompt_compacto(pendiente):
     evidencia = compactar_evidencia_estructural(pendiente.get("evidencia") or {})
-    contexto_temporal = construir_contexto_temporal_operativo(persistir=True)
-    ev_txt = json.dumps(evidencia, ensure_ascii=False, default=str, separators=(",", ":"))[:1500]
-    prompt = f"""Rol: IA local de Ecotecnica. Tarea estructural: {shorten_text(pendiente.get('tarea'), 260)}
-Tema: {shorten_text(pendiente.get('tema'), 120)}
-{contexto_temporal_prompt_compacto(contexto_temporal)}
-
-FICHA DETERMINISTICA COMPACTA, no inventes fuera de esto:
-{ev_txt}
-
-Responde SOLO JSON compacto, sin markdown. Acciones permitidas: conclude o hypothesis. PROHIBIDO action=\"query\". No escribas SQL. No pidas nuevas consultas. Interpreta solo la ficha recibida. conclusion maximo 2 frases. confianza debe ser numero entre 0.55 y 0.75. Si falta evidencia, usa hypothesis con pregunta/limitacion; nunca query.
-{ACCIONES_ESTRUCTURALES_JSON_EJEMPLO}"""
-    return limitar_prompt(prompt, 2500)
+    ev_txt = json.dumps(evidencia, ensure_ascii=False, default=str, separators=(",", ":"))[:500]
+    prompt = (
+        f"IA local Ecotecnica. Tarea: {shorten_text(pendiente.get('tarea'), 160)}\n"
+        f"Tema: {shorten_text(pendiente.get('tema'), 80)}\n"
+        f"FICHA (no inventes fuera de esto):{ev_txt}\n"
+        'SOLO JSON sin markdown: {"action":"conclude","conclusion":"max 2 frases","confianza":0.55-0.75}. '
+        "Sin SQL ni action=query."
+    )
+    return limitar_prompt(prompt, 1000)
 
 def asegurar_memoria_explorador(cur):
     cur.execute("""
@@ -7485,7 +7485,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         for r in (cur_op.fetchall() or [])
     ]
 
-    # Últimos valores no nulos recientes
+    # Últimos valores no nulos recientes (máx 10 ejemplos totales: 7 + 3)
     cur_op.execute(f"""
         SELECT DATE_FORMAT(FechaHora, '%%Y-%%m-%%d') AS fecha,
                TiposDeMovimiento AS tipo,
@@ -7493,7 +7493,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         FROM TiposDeMovimiento
         WHERE {no_vacio}
         ORDER BY FechaHora DESC
-        LIMIT 12
+        LIMIT 7
     """)
     recientes = [
         {"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": shorten_text(r["valor"], 40)}
@@ -7518,7 +7518,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         if v in valores_recientes or any(d["valor"] == v for d in distintos):
             continue
         distintos.append({"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": v})
-        if len(distintos) >= 8:
+        if len(distintos) >= 3:
             break
     ficha["ejemplos_distintos_historicos"] = distintos
 
@@ -7586,6 +7586,27 @@ def _texto_similar(a, b, umbral=0.7):
     return len(ta & tb) / max(1, min(len(ta), len(tb))) >= umbral
 
 
+def _rescatar_conclusion_texto(raw):
+    """Parser tolerante: rescata conclusion/confianza de un JSON truncado o
+    casi válido (p.ej. cortado por num_predict). Devuelve dict o None."""
+    txt = str(raw or "")
+    m = re.search(r'"conclusion"\s*:\s*"((?:[^"\\]|\\.)*)', txt)
+    if not m:
+        return None
+    conclusion = m.group(1).replace('\\"', '"').replace("\\n", " ").strip()
+    # Si quedó cortada a mitad de frase, quedarse con la última oración completa
+    if len(conclusion) > 40 and "." in conclusion[:-1]:
+        conclusion = conclusion[:conclusion.rfind(".") + 1]
+    if len(conclusion) < 15:
+        return None
+    mc = re.search(r'"confianza"\s*:\s*([0-9]+(?:\.[0-9]+)?)', txt)
+    try:
+        confianza = float(mc.group(1)) if mc else 0.58
+    except Exception:
+        confianza = 0.58
+    return {"conclusion": conclusion, "confianza": max(0.55, min(confianza, 0.75))}
+
+
 def ejecutar_pendiente_estructural(cerebro):
     pendiente = elegir_pendiente_estructural()
     if not pendiente:
@@ -7632,27 +7653,49 @@ def ejecutar_pendiente_estructural(cerebro):
     else:
         prompt = mapa_estructural_prompt_compacto(pendiente)
         ficha_chars = len(json.dumps(compactar_evidencia_estructural(pendiente.get("evidencia") or {}), ensure_ascii=False, default=str))
+    # Máximo un pendiente estructural por cadena: la cadena autónoma corta
+    # después de este ciclo, sea cual sea el resultado.
+    cerebro["pendiente_estructural_ejecutado"] = True
+
+    # Tope duro de timeout para pendientes comunes, aunque el env diga 900
+    timeout_pend = min(PENDIENTE_OLLAMA_TIMEOUT_SECONDS, PENDIENTE_TIMEOUT_MAX)
     add_reasoning_step(
         "pendiente_prompt_preparado",
         f"Pendiente estructural listo: {tema}",
-        f"prompt_chars={len(prompt)}; ficha_chars={ficha_chars}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}; timeout={PENDIENTE_OLLAMA_TIMEOUT_SECONDS}"
+        f"prompt_chars={len(prompt)}; ficha_chars={ficha_chars}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}; timeout={timeout_pend}"
         + ("; ficha_compacta_columna" if ficha else "")
     )
-    modelo = llamar_ollama(prompt, timeout=PENDIENTE_OLLAMA_TIMEOUT_SECONDS, num_predict=PENDIENTE_OLLAMA_NUM_PREDICT)
+    modelo = llamar_ollama(prompt, timeout=timeout_pend, num_predict=PENDIENTE_OLLAMA_NUM_PREDICT)
     if not modelo.get("ok"):
         # El cooldown de tema (registrar_exploracion_tema) evita reintentos
         # inmediatos; la cola y el ciclo no se bloquean (la cola corre antes).
-        registrar_exploracion_tema(firma, tema, "ollama_error", {"error": modelo.get("error"), "timeout": PENDIENTE_OLLAMA_TIMEOUT_SECONDS})
-        add_reasoning_step("pendiente_error_ollama", f"Ollama no respondio pendiente estructural: {modelo.get('error')}", f"timeout={PENDIENTE_OLLAMA_TIMEOUT_SECONDS}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}")
+        registrar_exploracion_tema(firma, tema, "ollama_error", {"error": modelo.get("error"), "timeout": timeout_pend})
+        add_reasoning_step("pendiente_error_ollama", f"Ollama no respondio pendiente estructural: {modelo.get('error')}", f"timeout={timeout_pend}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}")
         cerebro["fase2_avance"] = False
         return cerebro
 
     parseado = extraer_json_modelo(modelo.get("texto"))
+    parse_parcial = False
     if not parseado.get("ok"):
-        registrar_exploracion_tema(firma, tema, "parse_error", {"raw": shorten_text(parseado.get("raw"), 500)})
-        add_reasoning_step("pendiente_error_parse", "Pendiente estructural sin JSON valido; no guardo conocimiento.", shorten_text(parseado.get("raw"), 220))
-        cerebro["fase2_avance"] = False
-        return cerebro
+        # Parse tolerante: JSON truncado/casi válido con conclusion reconocible
+        rescatado = _rescatar_conclusion_texto(parseado.get("raw") or modelo.get("texto"))
+        if rescatado:
+            parse_parcial = True
+            parseado = {"ok": True, "data": {
+                "action": "conclude",
+                "conclusion": rescatado["conclusion"],
+                "confianza": min(rescatado["confianza"], 0.62),
+            }}
+            add_reasoning_step(
+                "pendiente_parse_parcial",
+                f"{tema}: JSON inválido pero rescaté la conclusión; la guardo con confianza media.",
+                shorten_text(rescatado["conclusion"], 200)
+            )
+        else:
+            registrar_exploracion_tema(firma, tema, "parse_error", {"raw": shorten_text(parseado.get("raw"), 500)})
+            add_reasoning_step("pendiente_error_parse", "Pendiente estructural sin JSON valido; no guardo conocimiento.", shorten_text(parseado.get("raw"), 220))
+            cerebro["fase2_avance"] = False
+            return cerebro
 
     decision = normalizar_decision_explorador(parseado.get("data") or {})
     if (decision.get("action") or "").lower() == "query":
@@ -7723,6 +7766,8 @@ def ejecutar_pendiente_estructural(cerebro):
         add_reasoning_step("observacion_exploratoria_error", f"No pude persistir observacion estructural: {persistencia.get('error')}", None)
     cerebro = get_ia_cerebro() or cerebro
     cerebro["fase2_avance"] = bool(persistencia.get("ok"))
+    # get_ia_cerebro() devuelve un dict nuevo: re-marcar para el corte de cadena
+    cerebro["pendiente_estructural_ejecutado"] = True
     return cerebro
 
 MICROTAREAS_ENABLED = os.environ.get("MICROTAREAS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
@@ -9027,6 +9072,7 @@ def _ejecutar_ciclo_ia_impl(modo="manual"):
             "modo": modo,
             "avanzo_autonomamente": fase2_avance,
             "fase": "2_operativa",
+            "pendiente_estructural": bool(cerebro.get("pendiente_estructural_ejecutado")),
         }
         cerebro["razonamiento_reciente"] = IA_REASONING_LOG[:30]
         return cerebro
@@ -9202,6 +9248,15 @@ def ciclo_autonomo_worker():
                     resultado = ejecutar_ciclo_ia(modo=modo_cadena)
                     ciclo = (resultado or {}).get("ciclo") or {}
                     if ciclo.get("sin_pendientes"):
+                        break
+                    if ciclo.get("pendiente_estructural"):
+                        # Máximo un pendiente estructural (Ollama) por cadena:
+                        # cerrar acá y esperar el próximo intervalo/drain.
+                        add_reasoning_step(
+                            "autonomia",
+                            "Pendiente estructural ejecutado; cierro la cadena.",
+                            f"Cadena cortada en ciclo {chain_count}/{AUTO_IA_MAX_CHAIN_CYCLES}"
+                        )
                         break
                     if not ciclo.get("avanzo_autonomamente"):
                         break
