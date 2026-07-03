@@ -3554,10 +3554,32 @@ def asegurar_tablas_cartografia(cur):
             estado VARCHAR(64) DEFAULT 'pendiente',
             evidencia_json JSON NULL,
             ultimo_intento TIMESTAMP NULL,
+            cooldown_hasta DATETIME NULL,
             actualizado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY uk_firma (firma)
         ) CHARACTER SET utf8mb4
     """)
+    try:
+        cur.execute("ALTER TABLE ia_pendientes_estructurales ADD COLUMN IF NOT EXISTS cooldown_hasta DATETIME NULL")
+    except Exception:
+        pass
+    # Migración defensiva: pendientes que ya produjeron observación quedaban en
+    # estado='pendiente' y el dashboard los mostraba como abiertos. Idempotente.
+    try:
+        cur.execute("""
+            UPDATE ia_pendientes_estructurales p
+            JOIN (
+                SELECT firma, MAX(creada_en) AS ultima
+                FROM ia_exploraciones_temas
+                GROUP BY firma
+            ) e ON e.firma = p.firma
+            JOIN ia_exploraciones_temas er ON er.firma = p.firma AND er.creada_en = e.ultima
+            SET p.estado = 'completada', p.cooldown_hasta = NULL
+            WHERE COALESCE(p.estado, 'pendiente') = 'pendiente'
+              AND er.resultado = 'observacion_guardada'
+        """)
+    except Exception:
+        pass
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_relaciones_columnas (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -3937,6 +3959,7 @@ def elegir_pendiente_estructural():
             ) e ON e.firma = p.firma
             LEFT JOIN ia_exploraciones_temas er ON er.firma = p.firma AND er.creada_en = e.ultima
             WHERE COALESCE(p.estado, 'pendiente') = 'pendiente'
+              AND (p.cooldown_hasta IS NULL OR p.cooldown_hasta <= NOW())
               AND (
                   e.ultima IS NULL
                   OR (er.resultado = 'query_rechazada' AND e.ultima < %s)
@@ -3971,11 +3994,28 @@ def registrar_exploracion_tema(firma, tema, resultado, evidencia=None):
             INSERT INTO ia_exploraciones_temas (firma, tema, resultado, evidencia_json)
             VALUES (%s, %s, %s, %s)
         """, (firma, tema, resultado, json.dumps(evidencia or {}, ensure_ascii=False, default=str)))
-        cur.execute("""
-            UPDATE ia_pendientes_estructurales
-            SET ultimo_intento=CURRENT_TIMESTAMP
-            WHERE firma=%s
-        """, (firma,))
+        if resultado == "observacion_guardada":
+            # Observación útil guardada: el pendiente deja de estar abierto
+            cur.execute("""
+                UPDATE ia_pendientes_estructurales
+                SET ultimo_intento=CURRENT_TIMESTAMP, estado='completada', cooldown_hasta=NULL
+                WHERE firma=%s
+            """, (firma,))
+        elif resultado in ("parse_error", "ollama_error", "confianza_baja",
+                           "sin_texto_util", "query_rechazada", "sin_novedad", "parse_parcial"):
+            # Fallo/no-aporte: sigue pendiente pero en cooldown, no urgente
+            cur.execute("""
+                UPDATE ia_pendientes_estructurales
+                SET ultimo_intento=CURRENT_TIMESTAMP,
+                    cooldown_hasta=DATE_ADD(NOW(), INTERVAL %s HOUR)
+                WHERE firma=%s
+            """, (AUTO_TEMA_COOLDOWN_HOURS, firma))
+        else:
+            cur.execute("""
+                UPDATE ia_pendientes_estructurales
+                SET ultimo_intento=CURRENT_TIMESTAMP
+                WHERE firma=%s
+            """, (firma,))
         conn.commit(); cur.close(); conn.close()
         return {"ok": True}
     except Exception as e:
@@ -10627,14 +10667,13 @@ def get_ia_cerebro():
                     row["evidencia"] = None
                 mapa_estructural["co_presencias_fuertes"].append(row)
         if pendientes_estruct_cols:
-            metricas["pendientes_estructurales"] = scalar_count(cur, """
-                SELECT COUNT(*) AS total
-                FROM ia_pendientes_estructurales
-                WHERE COALESCE(estado,'pendiente')='pendiente'
-            """)
+            # Pendientes abiertos reales: excluir completados/resueltos/descartados
+            # y los que ya produjeron observación (históricos, no accionables)
             cur.execute("""
-                SELECT p.firma, p.tema, p.tarea, p.prioridad, p.estado, p.ultimo_intento, p.actualizado_en,
-                       er.resultado AS ultimo_resultado
+                SELECT p.firma, p.tema, p.tarea, p.prioridad, p.estado, p.ultimo_intento,
+                       p.cooldown_hasta, p.actualizado_en,
+                       er.resultado AS ultimo_resultado,
+                       (p.cooldown_hasta IS NOT NULL AND p.cooldown_hasta > NOW()) AS en_cooldown
                 FROM ia_pendientes_estructurales p
                 LEFT JOIN (
                     SELECT firma, MAX(creada_en) AS ultima
@@ -10642,12 +10681,23 @@ def get_ia_cerebro():
                     GROUP BY firma
                 ) e ON e.firma = p.firma
                 LEFT JOIN ia_exploraciones_temas er ON er.firma = p.firma AND er.creada_en = e.ultima
-                WHERE COALESCE(p.estado,'pendiente')='pendiente'
-                ORDER BY p.prioridad DESC, p.actualizado_en ASC
+                WHERE COALESCE(p.estado,'pendiente') NOT IN ('completada','resuelta','descartada')
+                  AND COALESCE(er.resultado,'') <> 'observacion_guardada'
+                ORDER BY en_cooldown ASC, p.prioridad DESC, p.actualizado_en ASC
                 LIMIT 30
             """)
             pendientes_estructurales_modelo = cur.fetchall() or []
-            mapa_estructural["pendientes"] = pendientes_estructurales_modelo[:8]
+            for _p in pendientes_estructurales_modelo:
+                _p["en_cooldown"] = bool(_p.get("en_cooldown"))
+                if _p.get("cooldown_hasta") is not None:
+                    _p["cooldown_hasta"] = str(_p["cooldown_hasta"])
+            metricas["pendientes_estructurales"] = len(pendientes_estructurales_modelo)
+            _accionables = [x for x in pendientes_estructurales_modelo if not x["en_cooldown"]]
+            _en_cooldown = [x for x in pendientes_estructurales_modelo if x["en_cooldown"]]
+            # Solo pendientes accionables como abiertos; los de cooldown aparte,
+            # con su cooldown_hasta visible y sin tratarse como urgentes
+            mapa_estructural["pendientes"] = _accionables[:8]
+            mapa_estructural["pendientes_en_cooldown"] = _en_cooldown[:8]
         conclusiones_autonomas_db = []
         observaciones_exploratorias_db = []
         if ia_auto_cols:
@@ -12022,7 +12072,11 @@ function renderMapaEstructural(c) {
   fillCompactList("mapaColumnasRaras", asArray(mapa.columnas_raras).slice(0, 6).map(x => compactLi(colPct(x), `${x.tipo_dato || ""} · distintos ${x.distinct_count ?? "-"}`)), "Sin rarezas perfiladas");
   fillCompactList("mapaTiposMovimiento", asArray(mapa.tipos_movimiento).slice(0, 6).map(x => compactLi(x.tipo_movimiento || "-", `${x.registros ?? "-"} mov · ${kg(x.suma_kilos)}`)), "Sin tipos perfilados");
   fillCompactList("mapaCoPresencias", asArray(mapa.co_presencias_fuertes).slice(0, 6).map(x => compactLi(`${x.columna_a || "-"} -> ${x.columna_b || "-"}`, `score ${x.interes_score ?? "-"} · conf ${x.confianza ?? "-"}`)), "Sin co-presencias calculadas");
-  fillCompactList("mapaPendientes", asArray(mapa.pendientes).slice(0, 6).map(x => compactLi(x.tema || x.firma || "-", `prioridad ${x.prioridad ?? "-"}`)), "Sin pendientes estructurales");
+  fillCompactList("mapaPendientes",
+    asArray(mapa.pendientes).slice(0, 6).map(x => compactLi(x.tema || x.firma || "-", `prioridad ${x.prioridad ?? "-"}`))
+      .concat(asArray(mapa.pendientes_en_cooldown).slice(0, 3).map(x =>
+        compactLi(x.tema || x.firma || "-", `en cooldown hasta ${(x.cooldown_hasta || "").slice(0, 16)}`))),
+    "Sin pendientes estructurales");
 }
 function renderMapaMental(c) {
   const m = metricasDe(c);
