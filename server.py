@@ -4335,6 +4335,18 @@ COLA_KG_MINIMO_DOMINANTE = float(os.environ.get("COLA_KG_MINIMO_DOMINANTE", "500
 # ingresos de cada mes cerrado, con tope de proveedores por mes.
 COBERTURA_PROVEEDORES_PCT = float(os.environ.get("COBERTURA_PROVEEDORES_PCT", "80"))
 COBERTURA_PROVEEDORES_MAX_POR_MES = int(os.environ.get("COBERTURA_PROVEEDORES_MAX_POR_MES", "20"))
+# Análisis económico/compras: solo tipos de ingreso (ING PESAJE INTERNO,
+# ING BAL PUBLICA, ING_VIRGEN, ING_ADITIVOS_E_INSUMOS y equivalentes).
+# PRODUCCION, Despacho_* y ERROR_REGISTRO quedan fuera de precio/monto comprado.
+COMPRAS_TIPOS_PREFIJO = os.environ.get("COMPRAS_TIPOS_PREFIJO", "ING")
+# ERROR_REGISTRO es un TiposDeMovimiento real (calidad operativa, no error del
+# sistema): se analiza aparte y alerta si supera este umbral de kg en el mes.
+ERROR_REGISTRO_KG_ALERTA = float(os.environ.get("ERROR_REGISTRO_KG_ALERTA", "1000"))
+
+
+def _tipo_es_comprable(tipo):
+    """True para tipos de movimiento de ingreso/compra (análisis económico)."""
+    return str(tipo or "").strip().upper().startswith(COMPRAS_TIPOS_PREFIJO.upper())
 
 
 def _ensure_tablas_derivadas(cur):
@@ -5726,6 +5738,12 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
         "top_proveedor_material": [],
         "top_monto_estimado": [],
         "alertas_deterministicas": [],
+        "calidad_error_registro": {
+            "kg_error_registro": 0,
+            "registros_error_registro": 0,
+            "materiales_afectados": [],
+            "ejemplos_repetidos": [],
+        },
     }
     try:
         conn = get_ia_connection()
@@ -5733,16 +5751,31 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
             return resultado
         cur = conn.cursor()
 
+        # Ranking económico: SOLO tipos comprables (ingresos); ERROR_REGISTRO,
+        # PRODUCCION y despachos no entran en compras/precios
         cur.execute("""
             SELECT tipo_movimiento, material_normalizado, registros, kilos_total,
                    precio_registros, precio_promedio, precio_ponderado_kg, monto_estimado,
                    cobertura_pct_periodo, estado_confianza
             FROM ia_resumen_mensual_material_normalizado_tipo
             WHERE periodo = %s AND criterio_version = %s
+              AND tipo_movimiento LIKE %s
+            ORDER BY kilos_total DESC
+            LIMIT %s
+        """, (periodo, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%", int(limite)))
+        mat_tipo = cur.fetchall() or []
+
+        # Calidad operativa: ERROR_REGISTRO por separado (tipo real de la planta;
+        # se muestra material afectado, sin inferir proveedor ni precio)
+        cur.execute("""
+            SELECT material_normalizado, registros, kilos_total
+            FROM ia_resumen_mensual_material_normalizado_tipo
+            WHERE periodo = %s AND criterio_version = %s
+              AND tipo_movimiento = 'ERROR_REGISTRO'
             ORDER BY kilos_total DESC
             LIMIT %s
         """, (periodo, DERIVADAS_VERSION, int(limite)))
-        mat_tipo = cur.fetchall() or []
+        err_reg = cur.fetchall() or []
 
         cur.execute("""
             SELECT proveedor, material_normalizado, tipo_movimiento, registros, kilos_total,
@@ -5775,7 +5808,69 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
         cur.close()
         conn.close()
 
+        # Bloque de calidad operativa: ERROR_REGISTRO separado del análisis económico
+        calidad = resultado["calidad_error_registro"]
+        for r in err_reg:
+            kg_e = float(r["kilos_total"] or 0)
+            calidad["kg_error_registro"] += kg_e
+            calidad["registros_error_registro"] += int(r["registros"] or 0)
+            calidad["materiales_afectados"].append({
+                "material": r["material_normalizado"],
+                "kilos_total": kg_e,
+                "registros": int(r["registros"] or 0),
+            })
+        calidad["kg_error_registro"] = round(calidad["kg_error_registro"], 2)
+
+        # Ejemplos repetidos (mismo FechaHora + kilos + DescriptionNormalizada)
+        try:
+            conn_op = get_db_connection()
+            if conn_op:
+                cur_op = conn_op.cursor()
+                cur_op.execute("""
+                    SELECT FechaHora, kilos, DescriptionNormalizada AS material,
+                           COUNT(*) AS repeticiones
+                    FROM TiposDeMovimiento
+                    WHERE TiposDeMovimiento = 'ERROR_REGISTRO'
+                      AND DATE_FORMAT(FechaHora, '%%Y-%%m') = %s
+                    GROUP BY FechaHora, kilos, DescriptionNormalizada
+                    HAVING COUNT(*) > 1
+                    ORDER BY repeticiones DESC, FechaHora DESC
+                    LIMIT 5
+                """, (periodo,))
+                for r in (cur_op.fetchall() or []):
+                    calidad["ejemplos_repetidos"].append({
+                        "fecha_hora": str(r["FechaHora"]) if r["FechaHora"] else None,
+                        "kilos": float(r["kilos"] or 0),
+                        "material": r["material"],
+                        "repeticiones": int(r["repeticiones"] or 0),
+                    })
+                cur_op.close()
+                conn_op.close()
+        except Exception:
+            pass
+
+        # Alertas de calidad operativa (kg primero; sin causa inferida)
+        alertas = resultado["alertas_deterministicas"]
+        if calidad["kg_error_registro"] >= ERROR_REGISTRO_KG_ALERTA:
+            mats_txt = ", ".join(m["material"] for m in calidad["materiales_afectados"][:3]) or "sin material normalizado"
+            alertas.append({
+                "tipo": "error_registro_kg",
+                "texto": (f"ERROR_REGISTRO: {int(calidad['kg_error_registro']):,} kg "
+                          f"({calidad['registros_error_registro']} registros) en {periodo}. "
+                          f"Materiales afectados: {mats_txt}."),
+            })
+        rep_max = max((e["repeticiones"] for e in calidad["ejemplos_repetidos"]), default=0)
+        if rep_max >= 3 or len(calidad["ejemplos_repetidos"]) >= 3:
+            e0 = calidad["ejemplos_repetidos"][0]
+            alertas.append({
+                "tipo": "error_registro_repetidos",
+                "texto": (f"ERROR_REGISTRO con registros repetidos: {len(calidad['ejemplos_repetidos'])} grupos "
+                          f"con misma FechaHora+kilos+material (máx {rep_max} repeticiones; "
+                          f"ej: {e0['material'] or '?'} {int(e0['kilos']):,} kg el {e0['fecha_hora']})."),
+            })
+
         if not mat_tipo:
+            resultado["disponible"] = bool(err_reg)
             return resultado
 
         def _f(v):
@@ -6924,6 +7019,12 @@ def _calcular_compras_material_normalizado(cur_op, cur_lab, periodo, estado, ini
     for r in filas_tipo_raw:
         kg_material_tipo[(r["tipo"], r["material"])] = float(r["kilos_total"] or 0)
         rt, rn, cob = _cobertura_de(r["tipo"])
+        # Precio/monto solo para tipos comprables: PRODUCCION, Despacho_* y
+        # ERROR_REGISTRO conservan kg/registros pero sin métricas económicas
+        if not _tipo_es_comprable(r["tipo"]):
+            r = dict(r, precio_registros=0, precio_promedio=None,
+                     precio_min=None, precio_max=None,
+                     monto_estimado=0, kilos_con_precio=0)
         kcp = float(r["kilos_con_precio"] or 0)
         monto = float(r["monto_estimado"] or 0)
         ponderado = round(monto / kcp, 4) if kcp > 0 else None
@@ -6963,6 +7064,8 @@ def _calcular_compras_material_normalizado(cur_op, cur_lab, periodo, estado, ini
     filas_tipo = len(filas_tipo_raw)
 
     # --- 2) proveedor canonizado x material_normalizado x tipo_movimiento ---
+    # Solo tipos comprables (ingresos): proveedor-material comprado no debe
+    # mezclar PRODUCCION, Despacho_* ni ERROR_REGISTRO.
     cur_op.execute(f"""
         SELECT TiposDeMovimiento AS tipo,
                Proveedor AS proveedor,
@@ -6971,10 +7074,11 @@ def _calcular_compras_material_normalizado(cur_op, cur_lab, periodo, estado, ini
         FROM TiposDeMovimiento
         WHERE FechaHora >= %s AND FechaHora < %s
           AND TiposDeMovimiento IS NOT NULL AND TiposDeMovimiento <> ''
+          AND TiposDeMovimiento LIKE %s
           AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> ''
           AND DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> ''
         GROUP BY tipo, proveedor, material
-    """, (inicio, fin_excl))
+    """, (inicio, fin_excl, f"{COMPRAS_TIPOS_PREFIJO}%"))
     agrupados = {}
     for r in (cur_op.fetchall() or []):
         canon = canonizar_proveedor(r["proveedor"], alias_prov)
@@ -13201,6 +13305,28 @@ function renderComprasMaterialesNormalizados(cm) {
     [Number(x.monto_estimado || 0).toLocaleString("es-AR"), "color:#d29922;min-width:110px;text-align:right;font-weight:600;"],
     ["pond " + fmtPrecio(x.precio_ponderado_kg), "color:#8b949e;min-width:80px;text-align:right;"],
   ]);
+
+  // Calidad operativa: ERROR_REGISTRO separado del análisis económico
+  const cal = cm.calidad_error_registro || {};
+  if ((cal.registros_error_registro || 0) > 0) {
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:10px;font-weight:600;color:#f85149;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;";
+    h.textContent = "Calidad operativa: ERROR_REGISTRO";
+    cont.appendChild(h);
+    const resumen = document.createElement("div");
+    resumen.style.cssText = "font-size:11px;color:#8b949e;margin-bottom:4px;";
+    resumen.textContent = fmtKg(cal.kg_error_registro) + " en " + cal.registros_error_registro +
+      " registros · materiales: " +
+      (asArray(cal.materiales_afectados).slice(0, 3).map(m => m.material + " (" + fmtKg(m.kilos_total) + ")").join(", ") || "sin material normalizado");
+    cont.appendChild(resumen);
+    asArray(cal.ejemplos_repetidos).slice(0, 3).forEach(e => {
+      const li = document.createElement("div");
+      li.style.cssText = "font-size:10px;color:#484f58;";
+      li.textContent = "repetido ×" + e.repeticiones + ": " + (e.material || "?") + " " +
+        fmtKg(e.kilos) + " · " + (e.fecha_hora || "");
+      cont.appendChild(li);
+    });
+  }
 }
 
 /* -- Cola de curiosidad (contador simple) ------------------- */
