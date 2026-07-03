@@ -1023,6 +1023,19 @@ def notificar_telegram_inicio_async():
     return t
 
 
+_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _nombre_mes_es(periodo):
+    """'2026-07' -> 'julio 2026'; devuelve el periodo tal cual si no parsea."""
+    try:
+        p = str(periodo)
+        return f"{_MESES_ES[int(p[5:7]) - 1]} {p[:4]}"
+    except Exception:
+        return str(periodo)
+
+
 def _bio_proveedor_frase(nombre_prov, bio, kg_mes=None, periodo=None):
     """Frase corta determinística sobre un proveedor, kg primero.
     bio: fila normalizada de ia_biografia_protagonistas o None."""
@@ -1039,17 +1052,26 @@ def _bio_proveedor_frase(nombre_prov, bio, kg_mes=None, periodo=None):
         "debil": "historial débil",
         "antecedente_unico": "un solo mes previo",
     }.get(bio.get("confiabilidad"), "historial débil")
-    return pre + f"historial {n} meses ({etiqueta}); promedio histórico {int(kg_prom):,} kg/mes"
+    return pre + f"historial unido: {n} meses activos ({etiqueta}); promedio histórico {int(kg_prom):,} kg/mes"
 
 
 def _mapa_alias_proveedores_liviano():
-    """Mapa de alias de proveedores con conexión propia; {} si no se puede leer."""
+    """Mapa de alias de proveedores con conexión propia; {} si no se puede leer.
+    Si la tabla no existe todavía (p.ej. antes del primer recálculo de
+    derivadas), la crea con su seed y reintenta."""
     try:
         conn = get_ia_connection()
         if not conn:
             return {}
         cur = conn.cursor()
         mapa, _ = cargar_alias_proveedores(cur)
+        if not mapa:
+            try:
+                _ensure_alias_proveedores(cur)
+                conn.commit()
+                mapa, _ = cargar_alias_proveedores(cur)
+            except Exception:
+                pass
         cur.close()
         conn.close()
         return mapa
@@ -1097,21 +1119,17 @@ def construir_mensaje_telegram_inteligente(tipo_microtarea, evidencia, cerebro):
     if not (es_ingresos or es_produccion):
         return None
 
-    if vs_esp is None:
-        estado_txt = ""
-    elif vs_esp >= 25:
-        estado_txt = " altos vs esperado"
-    elif vs_esp <= -25:
-        estado_txt = " bajos vs esperado"
-    else:
-        estado_txt = " en rango esperado"
-
+    # Encabezado kg-primero: los kilos absolutos lideran; vs esperado se omite
+    # (el % de participación y las proyecciones son datos secundarios).
     titulo = "📦 Ingresos" if es_ingresos else "🏭 Producción"
-    encabezado = f"{titulo} {periodo}{estado_txt}: {int(total_kg):,} kg"
-    if vs_esp is not None:
-        encabezado += f" ({vs_esp:+.1f}% vs esperado)"
+    encabezado = f"{titulo} {_nombre_mes_es(periodo)}: {int(total_kg):,} kg registrados"
+    extras = []
+    if str(evidencia.get("estado_periodo") or "") == "abierto":
+        extras.append("periodo abierto")
     if avance_pct is not None:
-        encabezado += f" | {avance_pct}% del mes"
+        extras.append(f"{avance_pct}% del mes")
+    if extras:
+        encabezado += " (" + ", ".join(extras) + ")"
 
     senales = []   # avisos prioritarios (⚠️), en orden de prioridad
     lineas = []    # contexto masticado
@@ -1136,9 +1154,9 @@ def construir_mensaje_telegram_inteligente(tipo_microtarea, evidencia, cerebro):
             pct = round(kg / total_kg * 100, 1) if total_kg > 0 else 0
             items.append({"proveedor": prov, "kg": kg, "pct": pct})
         if items:
-            # kg como magnitud principal; % solo como dato secundario
-            lineas.append("Explican: " + ", ".join(
-                f"{i['proveedor']} {int(i['kg']):,} kg ({i['pct']}%)" for i in items))
+            # kg como magnitud principal, sin % destacado
+            lineas.append("Principales kilos: " + "; ".join(
+                f"{i['proveedor']} {int(i['kg']):,} kg" for i in items))
 
         avance_frac = float(avance_pct or 100) / 100.0
         frases_bio = []
@@ -4354,6 +4372,11 @@ def _ensure_tablas_derivadas(cur):
             KEY idx_ficha_cola (cola_id)
         ) CHARACTER SET utf8mb4
     """)
+    _ensure_alias_proveedores(cur)
+
+
+def _ensure_alias_proveedores(cur):
+    """Crea ia_alias_proveedores con su seed si no existe (idempotente)."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_alias_proveedores (
             proveedor_raw VARCHAR(200) NOT NULL PRIMARY KEY,
