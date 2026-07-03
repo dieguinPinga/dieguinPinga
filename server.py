@@ -116,6 +116,18 @@ TELEGRAM_INTERESTING_REASONING_TYPES = {
     "explorador_periodo_confirmado",
     "explorador_periodo_error",
 }
+# Errores/no-conclusiones del explorador no van a Telegram salvo debug explícito
+TELEGRAM_DEBUG_EXPLORADOR = os.environ.get("TELEGRAM_DEBUG_EXPLORADOR", "0").strip().lower() in ("1", "true", "yes", "on")
+if not TELEGRAM_DEBUG_EXPLORADOR:
+    for _t in ("explorador_error_ollama", "explorador_sin_conclusion"):
+        TELEGRAM_REASONING_TYPES.discard(_t)
+        TELEGRAM_INTERESTING_REASONING_TYPES.discard(_t)
+# Dedupe de reportes operativos de microtareas y umbral de alerta kg-primero
+TELEGRAM_DEDUPE_KG_DELTA = float(os.environ.get("TELEGRAM_DEDUPE_KG_DELTA", "2000"))
+TELEGRAM_DEDUPE_PCT_DELTA = float(os.environ.get("TELEGRAM_DEDUPE_PCT_DELTA", "10"))
+TELEGRAM_ALERTA_KG_MINIMO = float(os.environ.get("TELEGRAM_ALERTA_KG_MINIMO", "2000"))
+# Explorador libre con prompt largo: apagado por defecto; trabajo determinístico primero
+EXPLORADOR_LIBRE_ENABLED = os.environ.get("EXPLORADOR_LIBRE_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 FASE2_FOCO_INDEX = 0  # Rota el ángulo de análisis en cada ciclo de fase 2
 
 # Configuración de base de datos
@@ -1011,27 +1023,38 @@ def notificar_telegram_inicio_async():
     return t
 
 
-def _bio_proveedor_frase(nombre_prov, bio, pct_mes=None):
-    """Frase corta determinística sobre el historial de un proveedor.
+def _bio_proveedor_frase(nombre_prov, bio, kg_mes=None, periodo=None):
+    """Frase corta determinística sobre un proveedor, kg primero.
     bio: fila normalizada de ia_biografia_protagonistas o None."""
+    pre = f"{nombre_prov}: "
+    if kg_mes is not None:
+        pre += f"{int(kg_mes):,} kg" + (f" en {periodo}" if periodo else "") + "; "
     if not bio or int(bio.get("meses_con_actividad") or 0) == 0:
-        return f"{nombre_prov} sin historial previo"
-    conf = bio.get("confiabilidad")
-    base = {
+        return pre + "sin historial unido todavía"
+    n = int(bio.get("meses_con_actividad") or 0)
+    kg_prom = float(bio.get("kg_promedio_meses_activos") or 0)
+    etiqueta = {
         "fuerte": "habitual fuerte",
         "media": "habitual",
         "debil": "historial débil",
         "antecedente_unico": "un solo mes previo",
-    }.get(conf, "historial débil")
-    frase = f"{nombre_prov} {base}"
-    pct_a = float(bio.get("pct_actual_contexto") or 0)
-    pct_p = float(bio.get("pct_promedio_meses_activos") or 0)
-    if pct_p > 0:
-        if pct_a >= pct_p * 1.5:
-            frase += f", muy por encima de su histórico ({pct_a:.1f}% vs {pct_p:.1f}% prom.)"
-        elif pct_a <= pct_p * 0.5:
-            frase += f", muy por debajo de su histórico ({pct_a:.1f}% vs {pct_p:.1f}% prom.)"
-    return frase
+    }.get(bio.get("confiabilidad"), "historial débil")
+    return pre + f"historial {n} meses ({etiqueta}); promedio histórico {int(kg_prom):,} kg/mes"
+
+
+def _mapa_alias_proveedores_liviano():
+    """Mapa de alias de proveedores con conexión propia; {} si no se puede leer."""
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return {}
+        cur = conn.cursor()
+        mapa, _ = cargar_alias_proveedores(cur)
+        cur.close()
+        conn.close()
+        return mapa
+    except Exception:
+        return {}
 
 
 def _maquina_es_habitual_normalidad(maquina):
@@ -1095,41 +1118,55 @@ def construir_mensaje_telegram_inteligente(tipo_microtarea, evidencia, cerebro):
 
     if es_ingresos:
         top = evidencia.get("top_proveedores") or []
+        alias_tg = _mapa_alias_proveedores_liviano()
         bios = {}
         for b in ((cerebro.get("biografias_protagonistas") or {}).get("proveedores") or []):
-            nombre_b = b.get("proveedor") or b.get("entidad")
+            nombre_b = canonizar_proveedor(b.get("proveedor") or b.get("entidad"), alias_tg)
             if nombre_b:
                 bios[nombre_b] = b
 
+        # Canonizar el top por alias y re-agrupar (Sandro mengar -> Sandro Melgar)
+        kg_por_canon = {}
+        for t in top:
+            prov = canonizar_proveedor(t.get("Proveedor"), alias_tg) or "?"
+            kg_por_canon[prov] = kg_por_canon.get(prov, 0.0) + float(t.get("kilos_total") or 0)
         items = []
-        for t in top[:3]:
-            prov = t.get("Proveedor") or "?"
-            kg = float(t.get("kilos_total") or 0)
+        for prov in sorted(kg_por_canon, key=lambda p: -kg_por_canon[p])[:3]:
+            kg = kg_por_canon[prov]
             pct = round(kg / total_kg * 100, 1) if total_kg > 0 else 0
             items.append({"proveedor": prov, "kg": kg, "pct": pct})
         if items:
-            lineas.append("Explican: " + ", ".join(f"{i['proveedor']} {i['pct']}%" for i in items))
+            # kg como magnitud principal; % solo como dato secundario
+            lineas.append("Explican: " + ", ".join(
+                f"{i['proveedor']} {int(i['kg']):,} kg ({i['pct']}%)" for i in items))
 
+        avance_frac = float(avance_pct or 100) / 100.0
         frases_bio = []
         for i in items:
             bio = bios.get(i["proveedor"])
-            # Señal prioritaria 1: protagonista sin historia con mucho kg
             sin_historia = (not bio) or int(bio.get("meses_con_actividad") or 0) == 0
-            if sin_historia and i["pct"] >= 15:
-                senal = f"⚠️ {i['proveedor']} sin historial previo concentra {i['pct']}% ({int(i['kg']):,} kg)"
+            # Señal prioritaria 1 (kg primero): volumen relevante sin historial unido
+            if sin_historia and i["kg"] >= TELEGRAM_ALERTA_KG_MINIMO:
+                senal = f"⚠️ {i['proveedor']}: {int(i['kg']):,} kg registrados; sin historial unido todavía"
                 if i is items[0]:
                     # Señal prioritaria 3: ranking inusual (líder del mes sin historia)
                     senal += " y lidera el mes"
                 senales.append(senal)
                 continue
-            # Señal prioritaria 2: cambio fuerte vs histórico
+            # Señal prioritaria 2: cambio fuerte vs histórico EN KG
+            # (comparado contra el ritmo esperado según el avance del mes)
             if bio:
-                pct_a = float(bio.get("pct_actual_contexto") or 0)
-                pct_p = float(bio.get("pct_promedio_meses_activos") or 0)
-                if pct_p > 0 and (pct_a >= pct_p * 1.5 or pct_a <= pct_p * 0.5):
-                    senales.append(f"⚠️ {_bio_proveedor_frase(i['proveedor'], bio)}")
+                kg_prom = float(bio.get("kg_promedio_meses_activos") or 0)
+                n_meses = int(bio.get("meses_con_actividad") or 0)
+                kg_ritmo = kg_prom * (avance_frac if avance_frac > 0 else 1)
+                if kg_ritmo > 0 and (i["kg"] >= kg_ritmo * 1.5 or i["kg"] <= kg_ritmo * 0.5):
+                    direccion = "muy por encima" if i["kg"] >= kg_ritmo * 1.5 else "muy por debajo"
+                    senales.append(
+                        f"⚠️ {i['proveedor']}: {int(i['kg']):,} kg en {periodo}; {direccion} de su "
+                        f"ritmo histórico (promedio {int(kg_prom):,} kg/mes en {n_meses} meses)"
+                    )
                     continue
-            frases_bio.append(_bio_proveedor_frase(i["proveedor"], bio))
+            frases_bio.append(_bio_proveedor_frase(i["proveedor"], bio, kg_mes=i["kg"], periodo=periodo))
         if frases_bio:
             lineas.append("; ".join(frases_bio))
 
@@ -1170,6 +1207,26 @@ def construir_mensaje_telegram_inteligente(tipo_microtarea, evidencia, cerebro):
     return "\n".join([encabezado] + senales + lineas)
 
 
+_TELEGRAM_REPORTES_PREVIOS = {}
+
+
+def _firma_reporte_operativo(nombre, periodo, evidencia, mensaje):
+    """Firma del reporte operativo para dedupe: tipo + periodo + top 3 de
+    proveedores/máquinas + diagnósticos principales (⚠️) sin números.
+    Devuelve (firma, total_kg)."""
+    ev = evidencia or {}
+    top = ev.get("top_proveedores") or ev.get("top_maquinas") or []
+    nombres_top = tuple(
+        str(t.get("Proveedor") or t.get("Maquina") or "?") for t in top[:3]
+    )
+    diagnosticos = tuple(sorted(
+        re.sub(r"[\d.,:%()+\-]", "", ln).strip()
+        for ln in str(mensaje or "").split("\n") if ln.startswith("⚠️")
+    ))
+    firma = (str(nombre), str(periodo), nombres_top, diagnosticos)
+    return firma, float(ev.get("total_kg") or 0)
+
+
 def notificar_telegram_microtarea(nombre, periodo, avance_pct, total_kg,
                                    vs_esperado_pct, confianza, conclusion_txt,
                                    evidencia=None, cerebro=None):
@@ -1195,6 +1252,23 @@ def notificar_telegram_microtarea(nombre, periodo, avance_pct, total_kg,
             "sin lectura accionable"
         )
         return
+
+    # Dedupe: no reenviar si el reporte es esencialmente igual al anterior
+    # (mismo top 3 y diagnósticos, y kilos sin cambio material). Cambios de
+    # avance_mes_pct / vs_esperado por paso del tiempo no cuentan como cambio.
+    firma, kg_reporte = _firma_reporte_operativo(nombre, periodo, evidencia, mensaje)
+    previo = _TELEGRAM_REPORTES_PREVIOS.get((nombre, periodo))
+    if previo and previo.get("firma") == firma:
+        delta_kg = abs(kg_reporte - float(previo.get("total_kg") or 0))
+        pct_delta = (delta_kg / previo["total_kg"] * 100) if previo.get("total_kg") else 100.0
+        if delta_kg < TELEGRAM_DEDUPE_KG_DELTA and pct_delta < TELEGRAM_DEDUPE_PCT_DELTA:
+            add_reasoning_step(
+                "telegram_dedupe_skip",
+                f"{nombre}: reporte equivalente al anterior; no reenvío a Telegram.",
+                f"periodo={periodo} delta_kg={delta_kg:,.0f} ({pct_delta:.1f}%); mismo top y diagnósticos"
+            )
+            return
+    _TELEGRAM_REPORTES_PREVIOS[(nombre, periodo)] = {"firma": firma, "total_kg": kg_reporte}
 
     def _enviar():
         try:
@@ -4280,6 +4354,82 @@ def _ensure_tablas_derivadas(cur):
             KEY idx_ficha_cola (cola_id)
         ) CHARACTER SET utf8mb4
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_alias_proveedores (
+            proveedor_raw VARCHAR(200) NOT NULL PRIMARY KEY,
+            proveedor_canonico VARCHAR(200) NOT NULL,
+            confianza DECIMAL(5,2) NOT NULL DEFAULT 1.0,
+            origen VARCHAR(40) NOT NULL DEFAULT 'manual',
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) CHARACTER SET utf8mb4
+    """)
+    # Seed inicial de alias conocidos (INSERT IGNORE = idempotente, editable a mano)
+    for _raw, _canon in [
+        ("Sandro mengar", "Sandro Melgar"),
+        ("Sandro", "Sandro Melgar"),
+        ("Sandro Melgar", "Sandro Melgar"),
+    ]:
+        try:
+            cur.execute("""
+                INSERT IGNORE INTO ia_alias_proveedores (proveedor_raw, proveedor_canonico, origen)
+                VALUES (%s, %s, 'seed')
+            """, (_raw, _canon))
+        except Exception:
+            pass
+
+
+def cargar_alias_proveedores(cur_lab):
+    """Devuelve (mapa, inverso) desde ia_alias_proveedores:
+    mapa {proveedor_raw_lower: proveedor_canonico} para canonizar;
+    inverso {canonico: [variantes crudas + canónico]} para queries IN."""
+    mapa, inverso = {}, {}
+    try:
+        cur_lab.execute("SELECT proveedor_raw, proveedor_canonico FROM ia_alias_proveedores")
+        for r in (cur_lab.fetchall() or []):
+            raw = str(r["proveedor_raw"] or "").strip()
+            canon = str(r["proveedor_canonico"] or "").strip()
+            if not raw or not canon:
+                continue
+            mapa[raw.lower()] = canon
+            inverso.setdefault(canon, set()).update([raw, canon])
+    except Exception:
+        pass
+    return mapa, {c: sorted(v) for c, v in inverso.items()}
+
+
+def canonizar_proveedor(nombre, mapa_alias):
+    """Nombre canónico de un proveedor según ia_alias_proveedores."""
+    if not nombre:
+        return nombre
+    limpio = str(nombre).strip()
+    return (mapa_alias or {}).get(limpio.lower(), limpio)
+
+
+def variantes_proveedor(canonico, inverso_alias):
+    """Todas las variantes crudas de un proveedor canónico (incluido él mismo)."""
+    return (inverso_alias or {}).get(canonico) or [canonico]
+
+
+def _limpiar_artefactos_alias(cur_lab, mapa_alias):
+    """Limpieza idempotente de artefactos derivados con nombres crudos que ya
+    tienen alias: biografías y protagonistas del nombre crudo (se regeneran con
+    el canónico en el mismo recálculo) y tareas pendientes de cola. Las fichas
+    viejas se conservan como evidencia."""
+    for raw_l, canon in (mapa_alias or {}).items():
+        if raw_l == canon.lower():
+            continue  # el canónico no se toca
+        try:
+            cur_lab.execute(
+                "DELETE FROM ia_biografia_protagonistas WHERE entidad = %s OR entidad_2 = %s",
+                (raw_l, raw_l))
+            cur_lab.execute(
+                "DELETE FROM ia_protagonistas_operativos WHERE entidad = %s OR entidad_2 = %s",
+                (raw_l, raw_l))
+            cur_lab.execute(
+                "DELETE FROM ia_cola_curiosidad WHERE estado = 'pendiente' AND (entidad = %s OR entidad_2 = %s)",
+                (raw_l, raw_l))
+        except Exception:
+            pass
 
 
 def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
@@ -4339,9 +4489,17 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
           AND TiposDeMovimiento LIKE 'ING %%'
           AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> ''
         GROUP BY Proveedor
-        ORDER BY kg DESC LIMIT 20
+        ORDER BY kg DESC LIMIT 40
     """, (inicio, fin_excl))
-    nivel1_provs = cur_op.fetchall() or []
+    # Canonizar por alias y re-agrupar antes de rankear
+    mapa_alias, inverso_alias = cargar_alias_proveedores(cur_lab)
+    _agr_n1 = {}
+    for r in (cur_op.fetchall() or []):
+        canon = canonizar_proveedor(r["entidad"], mapa_alias)
+        acc = _agr_n1.setdefault(canon, {"entidad": canon, "registros": 0, "kg": 0.0})
+        acc["registros"] += int(r["registros"] or 0)
+        acc["kg"] += float(r["kg"] or 0)
+    nivel1_provs = sorted(_agr_n1.values(), key=lambda x: -x["kg"])[:20]
 
     for r in nivel1_provs:
         kg = float(r["kg"] or 0)
@@ -4385,7 +4543,10 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
         ) or 0)
         origen_entidad_n2 = f"{proveedor} | {periodo} ingresos"
 
-        cur_op.execute("""
+        # Incluir todas las variantes crudas del proveedor canónico
+        variantes = variantes_proveedor(proveedor, inverso_alias)
+        marcadores_var = ", ".join(["%s"] * len(variantes))
+        cur_op.execute(f"""
             SELECT
               CASE
                 WHEN Description IS NOT NULL AND TRIM(Description) <> '' THEN Description
@@ -4400,14 +4561,14 @@ def calcular_protagonistas_operativos(cur_op, cur_lab, periodo, estado_periodo):
             FROM TiposDeMovimiento
             WHERE FechaHora >= %s AND FechaHora < %s
               AND TiposDeMovimiento LIKE 'ING %%'
-              AND Proveedor = %s
+              AND Proveedor IN ({marcadores_var})
               AND (
                 (Description IS NOT NULL AND TRIM(Description) <> '')
                 OR (Materiales IS NOT NULL AND TRIM(Materiales) <> '')
               )
             GROUP BY entidad
             ORDER BY kg DESC LIMIT 10
-        """, (inicio, fin_excl, proveedor))
+        """, tuple([inicio, fin_excl] + variantes))
         mats = cur_op.fetchall() or []
 
         for rm in mats:
@@ -4490,6 +4651,7 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
     Usa ia_resumen_mensual_ingresos_proveedor (meses cerrados) como fuente.
     No llama a Ollama."""
     filas = 0
+    _mapa_alias_bio, inverso_alias_bio = cargar_alias_proveedores(cur_lab)
 
     # ---------- Nivel 1: proveedores ----------
     # Protagonistas nivel 1 del periodo actual
@@ -4602,19 +4764,21 @@ def calcular_biografia_protagonistas(cur_op, cur_lab, periodo_actual):
 
         # Historial del material dentro del proveedor (meses cerrados desde sh_etp_v2_local)
         try:
-            cur_op.execute("""
+            variantes_b = variantes_proveedor(proveedor, inverso_alias_bio)
+            marcadores_b = ", ".join(["%s"] * len(variantes_b))
+            cur_op.execute(f"""
                 SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
                        COUNT(*) AS registros,
                        COALESCE(SUM(kilos), 0) AS kg,
                        COALESCE(SUM(SUM(kilos)) OVER (PARTITION BY DATE_FORMAT(FechaHora,'%%Y-%%m')), 0) AS kg_prov_mes
                 FROM TiposDeMovimiento
                 WHERE TiposDeMovimiento LIKE 'ING %%'
-                  AND Proveedor = %s
+                  AND Proveedor IN ({marcadores_b})
                   AND (Description = %s OR Materiales = %s)
                   AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
                 GROUP BY periodo
                 ORDER BY periodo
-            """, (proveedor, material, material, periodo_actual))
+            """, tuple(variantes_b + [material, material, periodo_actual]))
             hist_mat_raw = cur_op.fetchall() or []
         except Exception:
             hist_mat_raw = []
@@ -5155,6 +5319,9 @@ def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
         resultado["meses"] = meses
         meses_set = set(meses)
 
+        # Canonizar por alias: variantes crudas suman bajo el proveedor canónico
+        mapa_alias_m, _inv_m = cargar_alias_proveedores(cur)
+
         # 2. Resumen mensual de ingresos por proveedor para esos meses
         marcadores = ", ".join(["%s"] * len(meses))
         cur.execute(f"""
@@ -5163,16 +5330,18 @@ def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
             WHERE criterio_version = %s AND periodo IN ({marcadores})
         """, tuple([DERIVADAS_VERSION] + meses))
         kg_por_prov_mes = {}
-        kg_por_mes = {}
+        kg_mes_prov = {}
         for r in (cur.fetchall() or []):
-            prov, per, kg = r["Proveedor"], r["periodo"], float(r["kilos_total"] or 0)
+            prov = canonizar_proveedor(r["Proveedor"], mapa_alias_m)
+            per, kg = r["periodo"], float(r["kilos_total"] or 0)
             if not prov:
                 continue
-            kg_por_prov_mes[(prov, per)] = kg
-            kg_por_mes.setdefault(per, []).append((prov, kg))
+            kg_por_prov_mes[(prov, per)] = kg_por_prov_mes.get((prov, per), 0) + kg
+            kg_mes_prov.setdefault(per, {})
+            kg_mes_prov[per][prov] = kg_mes_prov[per].get(prov, 0) + kg
         rank_por_prov_mes = {}
-        for per, lista in kg_por_mes.items():
-            lista.sort(key=lambda x: (-x[1], x[0]))
+        for per, d in kg_mes_prov.items():
+            lista = sorted(d.items(), key=lambda x: (-x[1], x[0]))
             resultado["totales_mes"][per] = round(sum(kg for _, kg in lista), 2)
             for pos, (prov, _kg) in enumerate(lista, start=1):
                 rank_por_prov_mes[(prov, per)] = pos
@@ -5180,10 +5349,10 @@ def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
         # 3. Proveedores descubiertos por cola y fichas + indicadores
         def _prov_de(fila):
             if fila.get("tipo_nodo") == "proveedor_material":
-                return fila.get("entidad_2")
+                return canonizar_proveedor(fila.get("entidad_2"), mapa_alias_m)
             if fila.get("tipo_nodo") == "material":
                 return None
-            return fila.get("entidad")
+            return canonizar_proveedor(fila.get("entidad"), mapa_alias_m)
 
         descubiertos = {}
         pendientes_prov_mes = set()
@@ -5469,18 +5638,22 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
         })
     else:
         # Fallback: historia en meses cerrados desde la base operativa
-        cur_op.execute("""
+        # (incluye variantes crudas del proveedor canónico por alias)
+        _mapa_f, inverso_f = cargar_alias_proveedores(cur_lab)
+        variantes_f = variantes_proveedor(proveedor, inverso_f)
+        marcadores_f = ", ".join(["%s"] * len(variantes_f))
+        cur_op.execute(f"""
             SELECT DATE_FORMAT(FechaHora, '%%Y-%%m') AS periodo,
                    COUNT(*) AS registros,
                    COALESCE(SUM(kilos), 0) AS kg
             FROM TiposDeMovimiento
             WHERE TiposDeMovimiento LIKE 'ING %%'
-              AND Proveedor = %s
+              AND Proveedor IN ({marcadores_f})
               AND (Description = %s OR Materiales = %s)
               AND DATE_FORMAT(FechaHora, '%%Y-%%m') < %s
             GROUP BY periodo
             ORDER BY periodo
-        """, (proveedor, material, material, periodo))
+        """, tuple(variantes_f + [material, material, periodo]))
         hist = [
             {"periodo": h["periodo"], "kg": float(h["kg"] or 0), "registros": int(h["registros"] or 0)}
             for h in (cur_op.fetchall() or [])
@@ -5521,8 +5694,9 @@ def _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea):
     }
 
 
-def _ficha_perfil_material_global(cur_op, tarea):
-    """Ficha determinística: material a nivel global (todos los proveedores, meses cerrados)."""
+def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
+    """Ficha determinística: material a nivel global (todos los proveedores, meses cerrados).
+    mapa_alias canoniza los proveedores antes de agrupar/rankear."""
     material = tarea["entidad"]
     periodo = tarea["periodo"]
     inicio_periodo = f"{periodo}-01"  # meses cerrados = anteriores al periodo de la tarea
@@ -5539,10 +5713,13 @@ def _ficha_perfil_material_global(cur_op, tarea):
         GROUP BY Proveedor
         ORDER BY kg DESC
     """, (material, material, inicio_periodo))
-    provs = [
-        {"proveedor": p["Proveedor"], "kg": float(p["kg"] or 0), "registros": int(p["registros"] or 0)}
-        for p in (cur_op.fetchall() or [])
-    ]
+    _agr_mat = {}
+    for p in (cur_op.fetchall() or []):
+        canon = canonizar_proveedor(p["Proveedor"], mapa_alias)
+        acc = _agr_mat.setdefault(canon, {"proveedor": canon, "kg": 0.0, "registros": 0})
+        acc["kg"] += float(p["kg"] or 0)
+        acc["registros"] += int(p["registros"] or 0)
+    provs = sorted(_agr_mat.values(), key=lambda x: -x["kg"])
     kg_total = sum(p["kg"] for p in provs)
 
     cur_op.execute("""
@@ -5697,6 +5874,7 @@ def propagar_dominantes_materiales_existentes(forzar=False):
         return resultado
     conn_op = None
     cur_op = None
+    mapa_alias_bf = None
     try:
         cur_lab = conn_lab.cursor()
         cur_lab.execute("""
@@ -5730,8 +5908,11 @@ def propagar_dominantes_materiales_existentes(forzar=False):
                         if conn_op:
                             cur_op = conn_op.cursor()
                     if cur_op is not None:
+                        if mapa_alias_bf is None:
+                            mapa_alias_bf, _ = cargar_alias_proveedores(cur_lab)
                         ficha_recalc = _ficha_perfil_material_global(
-                            cur_op, {"entidad": material, "periodo": f["periodo"]}
+                            cur_op, {"entidad": material, "periodo": f["periodo"]},
+                            mapa_alias=mapa_alias_bf
                         )
                         datos = ficha_recalc.get("datos") or {}
                 except Exception as e_rec:
@@ -5866,7 +6047,8 @@ def ejecutar_tarea_cola_curiosidad():
         elif tipo == "perfil_proveedor_material_historico":
             ficha = _ficha_perfil_proveedor_material_historico(cur_op, cur_lab, tarea)
         elif tipo == "perfil_material_global":
-            ficha = _ficha_perfil_material_global(cur_op, tarea)
+            _mapa_alias_c, _ = cargar_alias_proveedores(cur_lab)
+            ficha = _ficha_perfil_material_global(cur_op, tarea, mapa_alias=_mapa_alias_c)
         else:
             raise ValueError(f"tipo_tarea sin constructor de ficha: {tipo}")
 
@@ -6114,6 +6296,11 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         _ensure_tablas_derivadas(cur_lab)
         conn_lab.commit()
 
+        # Alias de proveedores: canonizar SIEMPRE al recalcular, y limpiar
+        # artefactos derivados que quedaron con nombres crudos (idempotente)
+        alias_prov, _inverso_prov = cargar_alias_proveedores(cur_lab)
+        _limpiar_artefactos_alias(cur_lab, alias_prov)
+
         periodos = _generar_periodos_desde_db(cur_op)
 
         for p in periodos:
@@ -6193,11 +6380,19 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                 GROUP BY Proveedor
             """, (inicio, fin_excl))
             rows_prov = cur_op.fetchall() or []
+            # Canonizar por alias y re-agrupar: "Sandro mengar"/"Sandro" suman
+            # bajo "Sandro Melgar" en el resumen mensual
+            provs_canon = {}
+            for r in rows_prov:
+                canon = canonizar_proveedor(r["Proveedor"], alias_prov)
+                acc = provs_canon.setdefault(canon, {"registros": 0, "kilos_total": 0.0})
+                acc["registros"] += int(r["registros"] or 0)
+                acc["kilos_total"] += float(r["kilos_total"] or 0)
             cur_lab.execute(
                 "DELETE FROM ia_resumen_mensual_ingresos_proveedor WHERE periodo = %s AND criterio_version = %s",
                 (periodo, DERIVADAS_VERSION)
             )
-            for r in rows_prov:
+            for prov, acc in provs_canon.items():
                 cur_lab.execute("""
                     INSERT INTO ia_resumen_mensual_ingresos_proveedor
                         (periodo, estado_periodo, criterio_version, Proveedor, registros, kilos_total)
@@ -6207,8 +6402,8 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                         kilos_total = VALUES(kilos_total),
                         estado_periodo = VALUES(estado_periodo),
                         actualizado_en = CURRENT_TIMESTAMP
-                """, (periodo, estado, DERIVADAS_VERSION, r["Proveedor"], r["registros"], r["kilos_total"]))
-            resultado["filas_ingresos_proveedor"] += len(rows_prov)
+                """, (periodo, estado, DERIVADAS_VERSION, prov, acc["registros"], acc["kilos_total"]))
+            resultado["filas_ingresos_proveedor"] += len(provs_canon)
 
             # --- registro en ia_periodos_procesados ---
             cur_lab.execute("""
@@ -7997,7 +8192,18 @@ def ejecutar_fase2_ia(cerebro, modo_drain=False):
     if cerebro_pendiente is not None:
         return cerebro_pendiente
 
-    # 4. Explorador viejo
+    # 4. Explorador viejo: solo si está habilitado explícitamente. Sin trabajo
+    # determinístico útil, mejor quedarse quieto que gastar Ollama en prompts
+    # largos que terminan en timeout o explorador_sin_conclusion.
+    if not EXPLORADOR_LIBRE_ENABLED:
+        add_reasoning_step(
+            "ciclo_sin_trabajo_util",
+            "Sin microtareas, cola ni pendientes estructurales; ciclo en reposo.",
+            "Explorador libre deshabilitado (EXPLORADOR_LIBRE_ENABLED=0)."
+        )
+        cerebro["fase2_avance"] = False
+        return cerebro
+
     conocimientos_completos = []
     relaciones_interesantes = (cerebro.get("relaciones_interesantes") or [])[:5]
 
