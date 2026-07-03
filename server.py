@@ -66,9 +66,7 @@ FASE2_PROMPT_MAX_CHARS = int(os.environ.get("FASE2_PROMPT_MAX_CHARS", "2800"))
 FASE2_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("FASE2_OLLAMA_TIMEOUT_SECONDS", "120"))
 FASE2_OLLAMA_NUM_PREDICT = int(os.environ.get("FASE2_OLLAMA_NUM_PREDICT", "180"))
 PENDIENTE_OLLAMA_TIMEOUT_SECONDS = int(os.environ.get("PENDIENTE_OLLAMA_TIMEOUT_SECONDS", "180"))
-# Tope duro para pendientes estructurales comunes: aunque el env diga 900,
-# un pendiente común nunca espera más que esto.
-PENDIENTE_TIMEOUT_MAX = int(os.environ.get("PENDIENTE_TIMEOUT_MAX", "180"))
+PENDIENTE_OLLAMA_TIMEOUT_MAX_SECONDS = 180
 PENDIENTE_OLLAMA_NUM_PREDICT = int(os.environ.get("PENDIENTE_OLLAMA_NUM_PREDICT", "110"))
 AUTO_IA_LOCK = threading.Lock()
 AUTO_IA_LAST_RUN = None
@@ -552,6 +550,13 @@ def get_access_ips():
 
 
 def telegram_debe_enviar_razonamiento(tipo):
+    tipo = str(tipo or "")
+    if tipo.startswith("pendiente_") or tipo in (
+        "explorador_error_parse",
+        "explorador_error_ollama",
+        "microtarea_timeout_cooldown",
+    ):
+        return False
     if not TELEGRAM_NOTIFY_REASONING:
         return False
     if TELEGRAM_REASONING_MODE == "all":
@@ -1437,6 +1442,51 @@ def extraer_json_modelo(text):
     if start >= 0 and end < start:
         return {"ok": False, "data": None, "error": "json_incompleto_sin_llave_cierre", "raw": raw, "fragment": raw[start:]}
     return {"ok": False, "data": None, "error": f"sin_objeto_json: {full_error}", "raw": raw, "fragment": ""}
+
+
+def extraer_decision_parcial_estructural(text):
+    """Recupera una conclusion util cuando Ollama corta un JSON casi valido."""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    def _campo_texto(*nombres):
+        for nombre in nombres:
+            m = re.search(
+                rf'"{nombre}"\s*:\s*"(?P<v>(?:\\.|[^"\\])*)',
+                raw,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if m:
+                try:
+                    return m.group("v").encode("utf-8", "ignore").decode("unicode_escape", "ignore").strip()
+                except Exception:
+                    return m.group("v").strip()
+        return None
+
+    conclusion = _campo_texto("conclusion", "conclusion_principal", "interpretacion", "resumen", "hipotesis_nueva", "hipotesis")
+    if not conclusion:
+        # Fallback texto plano: usar la primera frase razonable si el modelo obedecio a medias.
+        limpio = re.sub(r"```.*?```", "", raw, flags=re.DOTALL)
+        limpio = re.sub(r'^\s*\{?\s*"?(action|conclusion|confianza|evidencia)"?\s*:?', "", limpio, flags=re.IGNORECASE).strip()
+        conclusion = shorten_text(limpio, 260) if len(limpio) >= 30 else None
+    if not conclusion:
+        return None
+
+    conf = None
+    m_conf = re.search(r'"confianza"\s*:\s*(?P<v>0(?:\.\d+)?|1(?:\.0+)?)', raw, flags=re.IGNORECASE)
+    if m_conf:
+        conf = confianza_float(m_conf.group("v"))
+    if conf is None:
+        conf = 0.58
+    conf = max(0.50, min(0.62, conf))
+    return {
+        "action": "conclude",
+        "conclusion": shorten_text(conclusion, 320),
+        "confianza": conf,
+        "parse_parcial": True,
+        "evidencia": "recuperado de JSON parcial del modelo",
+    }
 
 
 def texto_modelo_util_no_json(text):
@@ -4197,7 +4247,6 @@ def _ensure_tablas_derivadas(cur):
             UNIQUE KEY uk_periodo_proveedor (periodo, Proveedor, criterio_version)
         ) CHARACTER SET utf8mb4
     """)
-    # Tablas de normalidad (calculadas sólo sobre meses cerrados)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_resumen_mensual_description_normalizada (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -4218,6 +4267,7 @@ def _ensure_tablas_derivadas(cur):
             UNIQUE KEY uk_periodo_desc_norm (periodo, description_normalizada, criterio_version)
         ) CHARACTER SET utf8mb4
     """)
+    # Tablas de normalidad (calculadas sólo sobre meses cerrados)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_normalidad_mensual_tipo_movimiento (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -7053,52 +7103,63 @@ def intentar_capturar_verdad_periodo_de_resultado(query, resultado_sql, periodo_
 
 
 def compactar_evidencia_estructural(valor, profundidad=0, clave=""):
-    if profundidad > 4:
-        return shorten_text(valor, 160)
+    clave_l = str(clave or "").lower()
+    if "evidencia_json" in clave_l or "salida_json" in clave_l:
+        return None
+    if "co_presencia" in clave_l or "copresencia" in clave_l:
+        return "[omitido: co-presencia resumida fuera del prompt]"
+    if profundidad > 3:
+        return shorten_text(valor, 120)
     if isinstance(valor, list):
         limite = 5
-        clave_l = str(clave or "").lower()
         if "ejemplo" in clave_l:
-            limite = 3
-        elif "co_presencia" in clave_l:
-            limite = 5
+            limite = 10 if profundidad == 0 else 3
         elif "top" in clave_l:
             limite = 5
-        return [compactar_evidencia_estructural(x, profundidad + 1, clave) for x in valor[:limite]]
+        elif "histor" in clave_l:
+            limite = 1
+        return [
+            x for x in
+            (compactar_evidencia_estructural(x, profundidad + 1, clave) for x in valor[:limite])
+            if x is not None
+        ]
     if isinstance(valor, dict):
         items = list(valor.items())
-        clave_l = str(clave or "").lower()
-        if "co_presencia" in clave_l:
-            items = items[:5]
         compacto = {}
         for k, v in items:
             k_l = str(k).lower()
-            if k_l in ("evidencia_json", "salida_json"):
+            if k_l in ("evidencia_json", "salida_json") or "co_presencia" in k_l or "copresencia" in k_l:
                 continue
             if "ejemplo" in k_l and isinstance(v, list):
-                v = v[:3]
+                v = v[:10]
             elif ("top" in k_l or "frecuente" in k_l) and isinstance(v, list):
                 v = v[:5]
-            elif "co_presencia" in k_l and isinstance(v, dict):
-                v = dict(list(v.items())[:5])
-            compacto[k] = compactar_evidencia_estructural(v, profundidad + 1, k)
+            elif "histor" in k_l and isinstance(v, list):
+                v = v[:1]
+            cv = compactar_evidencia_estructural(v, profundidad + 1, k)
+            if cv is not None:
+                compacto[k] = cv
         return compacto
     if isinstance(valor, str):
-        return shorten_text(valor, 220)
+        return shorten_text(valor, 140)
     return valor
 
 
 def mapa_estructural_prompt_compacto(pendiente):
     evidencia = compactar_evidencia_estructural(pendiente.get("evidencia") or {})
-    ev_txt = json.dumps(evidencia, ensure_ascii=False, default=str, separators=(",", ":"))[:500]
-    prompt = (
-        f"IA local Ecotecnica. Tarea: {shorten_text(pendiente.get('tarea'), 160)}\n"
-        f"Tema: {shorten_text(pendiente.get('tema'), 80)}\n"
-        f"FICHA (no inventes fuera de esto):{ev_txt}\n"
-        'SOLO JSON sin markdown: {"action":"conclude","conclusion":"max 2 frases","confianza":0.55-0.75}. '
-        "Sin SQL ni action=query."
-    )
-    return limitar_prompt(prompt, 1000)
+    contexto_temporal = construir_contexto_temporal_operativo(persistir=True)
+    ev_txt = json.dumps(evidencia, ensure_ascii=False, default=str, separators=(",", ":"))[:520]
+    prompt = f"""Rol: IA local Ecotecnica. Lee UNA ficha estructural.
+Tarea: {shorten_text(pendiente.get('tarea'), 150)}
+Tema: {shorten_text(pendiente.get('tema'), 120)}
+Tiempo: {shorten_text(contexto_temporal_prompt_compacto(contexto_temporal), 120)}
+
+FICHA compacta, no inventes fuera de esto:
+{ev_txt}
+
+Salida: SOLO JSON una linea: {{"action":"conclude","conclusion":"max 2 frases","confianza":0.55}}.
+Permitido conclude/hypothesis. Prohibido query, SQL, markdown, listas largas."""
+    return limitar_prompt(prompt, 950)
 
 def asegurar_memoria_explorador(cur):
     cur.execute("""
@@ -7598,7 +7659,7 @@ def extraer_query_sql_desde_texto(text):
 
 def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
     """Ficha compacta y con foco reciente de una columna de TiposDeMovimiento
-    para pendientes estructurales. Máx ~20 ejemplos (12 recientes + hasta 8
+    para pendientes estructurales. Máx 10 ejemplos (8 recientes + hasta 2
     históricos solo si aportan valores distintos). Sin co-presencia ni
     evidencia gigante. Recency: 7d alta, 30d media, histórico como contexto."""
     if not re.match(r"^[A-Za-z0-9_]+$", str(columna or "")):
@@ -7646,7 +7707,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         for r in (cur_op.fetchall() or [])
     ]
 
-    # Últimos valores no nulos recientes (máx 10 ejemplos totales: 7 + 3)
+    # Últimos valores no nulos recientes
     cur_op.execute(f"""
         SELECT DATE_FORMAT(FechaHora, '%%Y-%%m-%%d') AS fecha,
                TiposDeMovimiento AS tipo,
@@ -7654,7 +7715,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         FROM TiposDeMovimiento
         WHERE {no_vacio}
         ORDER BY FechaHora DESC
-        LIMIT 7
+        LIMIT 8
     """)
     recientes = [
         {"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": shorten_text(r["valor"], 40)}
@@ -7679,7 +7740,7 @@ def construir_ficha_compacta_columna(cur_op, cur_lab, columna):
         if v in valores_recientes or any(d["valor"] == v for d in distintos):
             continue
         distintos.append({"fecha": r["fecha"], "tipo": shorten_text(r["tipo"], 30), "valor": v})
-        if len(distintos) >= 3:
+        if len(distintos) >= 2:
             break
     ficha["ejemplos_distintos_historicos"] = distintos
 
@@ -7747,27 +7808,6 @@ def _texto_similar(a, b, umbral=0.7):
     return len(ta & tb) / max(1, min(len(ta), len(tb))) >= umbral
 
 
-def _rescatar_conclusion_texto(raw):
-    """Parser tolerante: rescata conclusion/confianza de un JSON truncado o
-    casi válido (p.ej. cortado por num_predict). Devuelve dict o None."""
-    txt = str(raw or "")
-    m = re.search(r'"conclusion"\s*:\s*"((?:[^"\\]|\\.)*)', txt)
-    if not m:
-        return None
-    conclusion = m.group(1).replace('\\"', '"').replace("\\n", " ").strip()
-    # Si quedó cortada a mitad de frase, quedarse con la última oración completa
-    if len(conclusion) > 40 and "." in conclusion[:-1]:
-        conclusion = conclusion[:conclusion.rfind(".") + 1]
-    if len(conclusion) < 15:
-        return None
-    mc = re.search(r'"confianza"\s*:\s*([0-9]+(?:\.[0-9]+)?)', txt)
-    try:
-        confianza = float(mc.group(1)) if mc else 0.58
-    except Exception:
-        confianza = 0.58
-    return {"conclusion": conclusion, "confianza": max(0.55, min(confianza, 0.75))}
-
-
 def ejecutar_pendiente_estructural(cerebro):
     pendiente = elegir_pendiente_estructural()
     if not pendiente:
@@ -7808,61 +7848,50 @@ def ejecutar_pendiente_estructural(cerebro):
                 except Exception:
                     pass
 
+    timeout_pendiente = min(PENDIENTE_OLLAMA_TIMEOUT_SECONDS, PENDIENTE_OLLAMA_TIMEOUT_MAX_SECONDS)
+
     if ficha:
         prompt = prompt_pendiente_columna_compacto(columna, ficha)
         ficha_chars = len(json.dumps(ficha, ensure_ascii=False, default=str))
     else:
         prompt = mapa_estructural_prompt_compacto(pendiente)
         ficha_chars = len(json.dumps(compactar_evidencia_estructural(pendiente.get("evidencia") or {}), ensure_ascii=False, default=str))
-    # Máximo un pendiente estructural por cadena: la cadena autónoma corta
-    # después de este ciclo, sea cual sea el resultado.
-    cerebro["pendiente_estructural_ejecutado"] = True
-
-    # Tope duro de timeout para pendientes comunes, aunque el env diga 900
-    timeout_pend = min(PENDIENTE_OLLAMA_TIMEOUT_SECONDS, PENDIENTE_TIMEOUT_MAX)
     add_reasoning_step(
         "pendiente_prompt_preparado",
         f"Pendiente estructural listo: {tema}",
-        f"prompt_chars={len(prompt)}; ficha_chars={ficha_chars}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}; timeout={timeout_pend}"
+        f"prompt_chars={len(prompt)}; ficha_chars={ficha_chars}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}; timeout={timeout_pendiente}"
         + ("; ficha_compacta_columna" if ficha else "")
     )
-    modelo = llamar_ollama(prompt, timeout=timeout_pend, num_predict=PENDIENTE_OLLAMA_NUM_PREDICT)
+    modelo = llamar_ollama(prompt, timeout=timeout_pendiente, num_predict=PENDIENTE_OLLAMA_NUM_PREDICT)
     if not modelo.get("ok"):
         # El cooldown de tema (registrar_exploracion_tema) evita reintentos
         # inmediatos; la cola y el ciclo no se bloquean (la cola corre antes).
-        registrar_exploracion_tema(firma, tema, "ollama_error", {"error": modelo.get("error"), "timeout": timeout_pend})
-        add_reasoning_step("pendiente_error_ollama", f"Ollama no respondio pendiente estructural: {modelo.get('error')}", f"timeout={timeout_pend}; num_predict={PENDIENTE_OLLAMA_NUM_PREDICT}")
+        registrar_exploracion_tema(firma, tema, "ollama_error", {"error": modelo.get("error"), "timeout": timeout_pendiente, "cooldown": True})
+        add_reasoning_step("pendiente_timeout_cooldown", f"Ollama no respondio pendiente estructural: {modelo.get('error')}", f"timeout={timeout_pendiente}; cooldown activo; sigue intervalo normal")
         cerebro["fase2_avance"] = False
+        cerebro["fase2_detener_cadena"] = True
         return cerebro
 
     parseado = extraer_json_modelo(modelo.get("texto"))
-    parse_parcial = False
     if not parseado.get("ok"):
-        # Parse tolerante: JSON truncado/casi válido con conclusion reconocible
-        rescatado = _rescatar_conclusion_texto(parseado.get("raw") or modelo.get("texto"))
-        if rescatado:
-            parse_parcial = True
-            parseado = {"ok": True, "data": {
-                "action": "conclude",
-                "conclusion": rescatado["conclusion"],
-                "confianza": min(rescatado["confianza"], 0.62),
-            }}
-            add_reasoning_step(
-                "pendiente_parse_parcial",
-                f"{tema}: JSON inválido pero rescaté la conclusión; la guardo con confianza media.",
-                shorten_text(rescatado["conclusion"], 200)
-            )
+        parcial = extraer_decision_parcial_estructural(modelo.get("texto"))
+        if parcial:
+            registrar_exploracion_tema(firma, tema, "parse_parcial", {"raw": shorten_text(parseado.get("raw"), 500), "decision": parcial})
+            add_reasoning_step("pendiente_parse_parcial", "Recupere conclusion desde JSON parcial de pendiente estructural.", shorten_text(parcial.get("conclusion"), 220))
+            decision = parcial
         else:
             registrar_exploracion_tema(firma, tema, "parse_error", {"raw": shorten_text(parseado.get("raw"), 500)})
             add_reasoning_step("pendiente_error_parse", "Pendiente estructural sin JSON valido; no guardo conocimiento.", shorten_text(parseado.get("raw"), 220))
             cerebro["fase2_avance"] = False
+            cerebro["fase2_detener_cadena"] = True
             return cerebro
-
-    decision = normalizar_decision_explorador(parseado.get("data") or {})
+    else:
+        decision = normalizar_decision_explorador(parseado.get("data") or {})
     if (decision.get("action") or "").lower() == "query":
         registrar_exploracion_tema(firma, tema, "query_rechazada", {"decision": decision})
         add_reasoning_step("pendiente_query_rechazada", "Rechace action=query en pendiente estructural; no ejecuto SQL ni guardo conclusion.", shorten_text(decision.get("query"), 220))
         cerebro["fase2_avance"] = False
+        cerebro["fase2_detener_cadena"] = True
         return cerebro
     texto = primer_texto(
         decision.get("conclusion"), decision.get("conclusion_principal"), decision.get("conclusion_autonoma"),
@@ -7872,28 +7901,35 @@ def ejecutar_pendiente_estructural(cerebro):
         registrar_exploracion_tema(firma, tema, "sin_texto_util", {"decision": decision})
         add_reasoning_step("pendiente_sin_conclusion", "El pendiente estructural no produjo texto util.", shorten_text(json.dumps(decision, ensure_ascii=False, default=str), 220))
         cerebro["fase2_avance"] = False
+        cerebro["fase2_detener_cadena"] = True
         return cerebro
 
     conf = confianza_float(decision.get("confianza")) or 0.62
     conf = max(0.55, min(0.75, conf))
+    if decision.get("parse_parcial"):
+        conf = min(conf, 0.62)
     # Contenido útil casi todo antiguo: bajar confianza
     if ficha and ficha.get("solo_historico"):
         conf = min(conf, 0.60)
 
     # Guardar solo si aporta algo nuevo con confianza razonable
-    if conf < 0.60:
+    if conf < 0.60 and not decision.get("parse_parcial"):
         registrar_exploracion_tema(firma, tema, "confianza_baja", {"conclusion": shorten_text(texto, 300), "confianza": conf})
         add_reasoning_step("pendiente_sin_aporte", f"{tema}: confianza baja ({conf}); no guardo conclusión.", shorten_text(texto, 180))
         cerebro["fase2_avance"] = False
+        cerebro["fase2_detener_cadena"] = True
         return cerebro
     lectura_previa = (ficha or {}).get("lectura_backend_previa")
     if lectura_previa and _texto_similar(texto, lectura_previa):
         registrar_exploracion_tema(firma, tema, "sin_novedad", {"conclusion": shorten_text(texto, 300)})
         add_reasoning_step("pendiente_sin_aporte", f"{tema}: la conclusión repite la lectura previa; no la guardo.", shorten_text(texto, 180))
         cerebro["fase2_avance"] = False
+        cerebro["fase2_detener_cadena"] = True
         return cerebro
 
     senales = ["pendiente_estructural", "cartografia_deterministica"]
+    if decision.get("parse_parcial"):
+        senales.append("parse_parcial")
     if ficha:
         senales.append("ficha_compacta_columna")
         if ficha.get("aparicion_reciente"):
@@ -7927,17 +7963,16 @@ def ejecutar_pendiente_estructural(cerebro):
         add_reasoning_step("observacion_exploratoria_error", f"No pude persistir observacion estructural: {persistencia.get('error')}", None)
     cerebro = get_ia_cerebro() or cerebro
     cerebro["fase2_avance"] = bool(persistencia.get("ok"))
-    # get_ia_cerebro() devuelve un dict nuevo: re-marcar para el corte de cadena
-    cerebro["pendiente_estructural_ejecutado"] = True
+    cerebro["fase2_detener_cadena"] = True
     return cerebro
 
 MICROTAREAS_ENABLED = os.environ.get("MICROTAREAS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
 MICROTAREA_COOLDOWN_SEGUNDOS = int(os.environ.get("MICROTAREA_COOLDOWN_SEGUNDOS", "1200"))
 MICROTAREA_OLLAMA_TIMEOUT = int(os.environ.get("MICROTAREA_OLLAMA_TIMEOUT", "180"))
 MICROTAREA_OLLAMA_NUM_PREDICT = int(os.environ.get("MICROTAREA_OLLAMA_NUM_PREDICT", "120"))
-# Cooldown corto tras timeout de Ollama: no reintentar la misma microtarea
-# enseguida (clave en modo drain para no bloquear la cola con reintentos de 180s)
-MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS = int(os.environ.get("MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS", "1800"))
+# Cooldown largo tras timeout de Ollama: no reintentar la misma microtarea
+# enseguida (clave en modo drain para no bloquear la cola con reintentos de 180s).
+MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS = max(7200, int(os.environ.get("MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS", "7200")))
 
 
 def _ensure_microtareas_estado(cur):
@@ -7947,9 +7982,25 @@ def _ensure_microtareas_estado(cur):
             microtarea VARCHAR(80) NOT NULL,
             ultima_ok DATETIME NULL,
             ultimo_error DATETIME NULL,
+            ultima_firma_json JSON NULL,
+            ultimo_total_kg DECIMAL(16,2) NULL,
+            ultimo_diagnostico VARCHAR(160) NULL,
             UNIQUE KEY uk_microtarea (microtarea)
         ) CHARACTER SET utf8mb4
     """)
+    cols = get_table_columns(cur, "ia_microtareas_estado")
+    alters = []
+    if "ultima_firma_json" not in cols:
+        alters.append("ADD COLUMN ultima_firma_json JSON NULL")
+    if "ultimo_total_kg" not in cols:
+        alters.append("ADD COLUMN ultimo_total_kg DECIMAL(16,2) NULL")
+    if "ultimo_diagnostico" not in cols:
+        alters.append("ADD COLUMN ultimo_diagnostico VARCHAR(160) NULL")
+    for alter in alters:
+        try:
+            cur.execute(f"ALTER TABLE ia_microtareas_estado {alter}")
+        except Exception:
+            pass
 
 
 def _microtarea_en_cooldown(cur, nombre, cooldown_segundos):
@@ -7996,6 +8047,131 @@ def _microtarea_marcar_ok(cur, nombre):
         """, (nombre,))
     except Exception:
         pass
+
+
+def _microtarea_firma_actual(cur, nombre):
+    try:
+        cur.execute("""
+            SELECT ultima_firma_json, ultimo_total_kg, ultimo_diagnostico
+            FROM ia_microtareas_estado
+            WHERE microtarea = %s
+        """, (nombre,))
+        row = cur.fetchone() or {}
+        firma = row.get("ultima_firma_json")
+        if isinstance(firma, str):
+            try:
+                firma = json.loads(firma)
+            except Exception:
+                firma = None
+        row["ultima_firma"] = firma
+        return row
+    except Exception:
+        return {}
+
+
+def _kg_bucket(valor, paso=1000):
+    try:
+        v = float(valor or 0)
+    except Exception:
+        v = 0.0
+    if paso <= 0:
+        return round(v, 0)
+    return int(round(v / paso) * paso)
+
+
+def _pct_bucket(valor, paso=5):
+    if valor is None:
+        return None
+    try:
+        v = float(valor)
+    except Exception:
+        return None
+    return round(round(v / paso) * paso, 1)
+
+
+def _diagnostico_microtarea(vs_esperado_pct, confiabilidad):
+    conf = str(confiabilidad or "sin_base")
+    if vs_esperado_pct is None:
+        return f"sin esperado proporcional; normalidad {conf}"
+    try:
+        vs = float(vs_esperado_pct)
+    except Exception:
+        return f"sin esperado proporcional; normalidad {conf}"
+    if vs >= 25:
+        nivel = "por encima del esperado"
+    elif vs <= -25:
+        nivel = "por debajo del esperado"
+    else:
+        nivel = "en rango proporcional"
+    return f"{nivel}; normalidad {conf}"
+
+
+def _firma_microtarea_estado(nombre, periodo, total_kg, lider, top_items, esperado_kg, vs_esperado_pct, confiabilidad):
+    top = []
+    for item in (top_items or [])[:5]:
+        nombre_item = item.get("Maquina") or item.get("Proveedor") or "?"
+        top.append({
+            "nombre": str(nombre_item),
+            "kg": _kg_bucket(item.get("kilos_total"), 1000),
+        })
+    return {
+        "microtarea": nombre,
+        "periodo": str(periodo),
+        "total_kg": _kg_bucket(total_kg, 1000),
+        "lider": str(lider or ""),
+        "top": top,
+        "esperado_kg": _kg_bucket(esperado_kg, 1000),
+        "vs_esperado_pct": _pct_bucket(vs_esperado_pct, 5),
+        "confiabilidad": str(confiabilidad or ""),
+        "diagnostico": _diagnostico_microtarea(vs_esperado_pct, confiabilidad),
+    }
+
+
+def _microtarea_firma_equivalente(firma_a, firma_b):
+    if not isinstance(firma_a, dict) or not isinstance(firma_b, dict):
+        return False
+    claves = ("microtarea", "periodo", "total_kg", "lider", "esperado_kg", "vs_esperado_pct", "confiabilidad", "diagnostico")
+    if any(firma_a.get(k) != firma_b.get(k) for k in claves):
+        return False
+    top_a = [(x.get("nombre"), x.get("kg")) for x in (firma_a.get("top") or [])[:5]]
+    top_b = [(x.get("nombre"), x.get("kg")) for x in (firma_b.get("top") or [])[:5]]
+    return top_a == top_b
+
+
+def _microtarea_guardar_firma(cur, nombre, firma, total_kg=None):
+    try:
+        cur.execute("""
+            INSERT INTO ia_microtareas_estado (microtarea, ultima_ok, ultima_firma_json, ultimo_total_kg, ultimo_diagnostico)
+            VALUES (%s, NOW(), %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                ultima_ok = NOW(),
+                ultima_firma_json = VALUES(ultima_firma_json),
+                ultimo_total_kg = VALUES(ultimo_total_kg),
+                ultimo_diagnostico = VALUES(ultimo_diagnostico)
+        """, (
+            nombre,
+            json.dumps(firma or {}, ensure_ascii=False, default=str),
+            float(total_kg or 0),
+            shorten_text((firma or {}).get("diagnostico"), 150),
+        ))
+    except Exception:
+        pass
+
+
+def _conclusion_deterministica_microtarea(evidencia_doc):
+    periodo = evidencia_doc.get("periodo", "?")
+    avance = evidencia_doc.get("avance_mes_pct")
+    total_kg = float(evidencia_doc.get("total_kg") or 0)
+    vs_esp = evidencia_doc.get("actual_vs_esperado_pct")
+    confiab = evidencia_doc.get("confiabilidad_normalidad")
+    partes = [f"{periodo} abierto"]
+    if avance is not None:
+        partes[0] += f" ({avance}% del mes)"
+    partes.append(f"{int(total_kg):,} kg registrados")
+    if vs_esp is not None:
+        partes.append(f"{float(vs_esp):+.1f}% vs esperado proporcional")
+    partes.append(f"normalidad {confiab or 'sin_base'}")
+    return ". ".join(partes) + "."
 
 
 def extraer_conclusion_microtarea(decision, texto_raw, evidencia_doc=None):
@@ -8211,6 +8387,42 @@ def ejecutar_microtarea_estado_produccion_mes_actual(cerebro):
         ]
         ficha = "\n".join(ficha_lines)
 
+        evidencia_doc = {
+            "microtarea": nombre,
+            "periodo": periodo,
+            "estado_periodo": estado_periodo,
+            "ficha": ficha,
+            "total_kg": total_kg,
+            "total_registros": total_reg,
+            "avance_mes_pct": avance_pct,
+            "normal_kg": normal_kg,
+            "meses_base": meses_base,
+            "confiabilidad_normalidad": confiabilidad_norm,
+            "esperado_proporcional_kg": esperado_kg,
+            "actual_vs_esperado_pct": vs_esperado_pct,
+            "top_maquinas": [
+                {"Maquina": r["Maquina"], "kilos_total": float(r["kilos_total"] or 0), "registros": r["registros"]}
+                for r in top_maquinas[:5]
+            ],
+        }
+        lider_maquina = top_maquinas[0].get("Maquina") if top_maquinas else ""
+        firma_estado = _firma_microtarea_estado(
+            nombre, periodo, total_kg, lider_maquina, evidencia_doc["top_maquinas"],
+            esperado_kg, vs_esperado_pct, confiabilidad_norm
+        )
+        firma_previa = _microtarea_firma_actual(cur_lab, nombre).get("ultima_firma")
+        if _microtarea_firma_equivalente(firma_estado, firma_previa):
+            add_reasoning_step(
+                "microtarea_sin_novedad",
+                "estado_produccion_mes_actual sin cambios materiales; no consulto Ollama.",
+                f"periodo={periodo} total_bucket={firma_estado.get('total_kg')} lider={firma_estado.get('lider')} diagnostico={firma_estado.get('diagnostico')}"
+            )
+            _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
+            conn_lab.commit()
+            cur_lab.close()
+            conn_lab.close()
+            return None
+
         # Instrucción según confiabilidad
         if confiabilidad_norm in ("antecedente_unico", "debil"):
             _norm_instruccion = (
@@ -8247,40 +8459,47 @@ def ejecutar_microtarea_estado_produccion_mes_actual(cerebro):
         if not modelo.get("ok"):
             add_reasoning_step("microtarea_error", f"{nombre}: Ollama no respondió: {modelo.get('error')}", None)
             _microtarea_marcar_timeout(cur_lab, nombre)
+            fallback_txt = _conclusion_deterministica_microtarea(evidencia_doc)
+            if total_kg > 0:
+                _insert_conclusion_autonoma(cur_lab, {
+                    "columna": nombre,
+                    "conclusion": fallback_txt,
+                    "confianza": 0.55,
+                    "estado": "observacion_operativa_deterministica",
+                    "evidencia": evidencia_doc,
+                    "salida_json": {
+                        "tipo": "fallback_deterministico",
+                        "motivo": "ollama_timeout",
+                        "firma": firma_estado,
+                    },
+                })
+                _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
             conn_lab.commit()
             add_reasoning_step(
                 "microtarea_timeout_cooldown",
-                f"{nombre}: cooldown de {MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS // 60} min tras timeout de Ollama; no se reintenta en las próximas cadenas.",
-                None
+                f"{nombre}: cooldown tras timeout de Ollama.",
+                f"cooldown_horas={round(MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS / 3600, 1)}"
             )
+            if total_kg > 0:
+                add_reasoning_step(
+                    "observacion_guardada",
+                    f"{nombre}: fallback determinístico persistido",
+                    shorten_text(fallback_txt, 220)
+                )
+                notificar_telegram_microtarea(
+                    nombre, periodo, avance_pct, total_kg,
+                    vs_esperado_pct, 0.55, fallback_txt,
+                    evidencia=evidencia_doc, cerebro=cerebro
+                )
             cur_lab.close()
             conn_lab.close()
             cerebro["fase2_avance"] = False
-            return cerebro
+            return None
 
         parseado = extraer_json_modelo(modelo.get("texto"))
         decision = parseado.get("data") if parseado.get("ok") else None
         confianza = confianza_float((decision or {}).get("confianza")) or 0.60
 
-        # 7. Construir evidencia_doc primero para poder usarla como fallback de conclusión
-        evidencia_doc = {
-            "microtarea": nombre,
-            "periodo": periodo,
-            "estado_periodo": estado_periodo,
-            "ficha": ficha,
-            "total_kg": total_kg,
-            "total_registros": total_reg,
-            "avance_mes_pct": avance_pct,
-            "normal_kg": normal_kg,
-            "meses_base": meses_base,
-            "confiabilidad_normalidad": confiabilidad_norm,
-            "esperado_proporcional_kg": esperado_kg,
-            "actual_vs_esperado_pct": vs_esperado_pct,
-            "top_maquinas": [
-                {"Maquina": r["Maquina"], "kilos_total": float(r["kilos_total"] or 0), "registros": r["registros"]}
-                for r in top_maquinas[:5]
-            ],
-        }
         # Guardar sólo el texto de conclusión, nunca el JSON completo como string
         conclusion_txt = extraer_conclusion_microtarea(decision, modelo.get("texto"), evidencia_doc)
 
@@ -8305,7 +8524,7 @@ def ejecutar_microtarea_estado_produccion_mes_actual(cerebro):
             "evidencia": evidencia_doc,
             "salida_json": decision,
         })
-        _microtarea_marcar_ok(cur_lab, nombre)
+        _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
         conn_lab.commit()
 
         add_reasoning_step(
@@ -8435,6 +8654,43 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
         ]
         ficha = "\n".join(ficha_lines)
 
+        evidencia_doc = {
+            "microtarea": nombre,
+            "periodo": periodo,
+            "estado_periodo": estado_periodo,
+            "ficha": ficha,
+            "total_kg": total_kg,
+            "total_registros": total_reg,
+            "avance_mes_pct": avance_pct,
+            "normal_kg": normal_kg,
+            "meses_base": meses_base,
+            "confiabilidad_normalidad": confiabilidad_norm,
+            "esperado_proporcional_kg": esperado_kg,
+            "actual_vs_esperado_pct": vs_esperado_pct,
+            "top_proveedores": [
+                {"Proveedor": r["Proveedor"], "kilos_total": float(r["kilos_total"] or 0), "registros": r["registros"]}
+                for r in top_proveedores[:5]
+            ],
+            "fuente": "ia_resumen_mensual_ingresos_proveedor",
+        }
+        lider_proveedor = top_proveedores[0].get("Proveedor") if top_proveedores else ""
+        firma_estado = _firma_microtarea_estado(
+            nombre, periodo, total_kg, lider_proveedor, evidencia_doc["top_proveedores"],
+            esperado_kg, vs_esperado_pct, confiabilidad_norm
+        )
+        firma_previa = _microtarea_firma_actual(cur_lab, nombre).get("ultima_firma")
+        if _microtarea_firma_equivalente(firma_estado, firma_previa):
+            add_reasoning_step(
+                "microtarea_sin_novedad",
+                f"{nombre} sin cambios materiales; no consulto Ollama.",
+                f"periodo={periodo} total_bucket={firma_estado.get('total_kg')} lider={firma_estado.get('lider')} diagnostico={firma_estado.get('diagnostico')}"
+            )
+            _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
+            conn_lab.commit()
+            cur_lab.close()
+            conn_lab.close()
+            return None
+
         if confiabilidad_norm in ("antecedente_unico", "debil"):
             _norm_instruccion = (
                 "Si mencionás la normalidad, usá la expresión 'antecedente histórico limitado' "
@@ -8468,41 +8724,47 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
         if not modelo.get("ok"):
             add_reasoning_step("microtarea_error", f"{nombre}: Ollama no respondió: {modelo.get('error')}", None)
             _microtarea_marcar_timeout(cur_lab, nombre)
+            fallback_txt = _conclusion_deterministica_microtarea(evidencia_doc)
+            if total_kg > 0:
+                _insert_conclusion_autonoma(cur_lab, {
+                    "columna": nombre,
+                    "conclusion": fallback_txt,
+                    "confianza": 0.55,
+                    "estado": "observacion_operativa_deterministica",
+                    "evidencia": evidencia_doc,
+                    "salida_json": {
+                        "tipo": "fallback_deterministico",
+                        "motivo": "ollama_timeout",
+                        "firma": firma_estado,
+                    },
+                })
+                _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
             conn_lab.commit()
             add_reasoning_step(
                 "microtarea_timeout_cooldown",
-                f"{nombre}: cooldown de {MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS // 60} min tras timeout de Ollama; no se reintenta en las próximas cadenas.",
-                None
+                f"{nombre}: cooldown tras timeout de Ollama.",
+                f"cooldown_horas={round(MICROTAREA_TIMEOUT_COOLDOWN_SEGUNDOS / 3600, 1)}"
             )
+            if total_kg > 0:
+                add_reasoning_step(
+                    "observacion_guardada",
+                    f"{nombre}: fallback determinístico persistido",
+                    shorten_text(fallback_txt, 220)
+                )
+                notificar_telegram_microtarea(
+                    nombre, periodo, avance_pct, total_kg,
+                    vs_esperado_pct, 0.55, fallback_txt,
+                    evidencia=evidencia_doc, cerebro=cerebro
+                )
             cur_lab.close()
             conn_lab.close()
             cerebro["fase2_avance"] = False
-            return cerebro
+            return None
 
         parseado = extraer_json_modelo(modelo.get("texto"))
         decision = parseado.get("data") if parseado.get("ok") else None
         confianza = confianza_float((decision or {}).get("confianza")) or 0.70
 
-        # Construir evidencia_doc primero para poder usarla como fallback de conclusión
-        evidencia_doc = {
-            "microtarea": nombre,
-            "periodo": periodo,
-            "estado_periodo": estado_periodo,
-            "ficha": ficha,
-            "total_kg": total_kg,
-            "total_registros": total_reg,
-            "avance_mes_pct": avance_pct,
-            "normal_kg": normal_kg,
-            "meses_base": meses_base,
-            "confiabilidad_normalidad": confiabilidad_norm,
-            "esperado_proporcional_kg": esperado_kg,
-            "actual_vs_esperado_pct": vs_esperado_pct,
-            "top_proveedores": [
-                {"Proveedor": r["Proveedor"], "kilos_total": float(r["kilos_total"] or 0), "registros": r["registros"]}
-                for r in top_proveedores[:5]
-            ],
-            "fuente": "ia_resumen_mensual_ingresos_proveedor",
-        }
         # Guardar sólo el texto de conclusión, nunca el JSON completo como string
         conclusion_txt = extraer_conclusion_microtarea(decision, modelo.get("texto"), evidencia_doc)
 
@@ -8523,7 +8785,7 @@ def ejecutar_microtarea_estado_ingresos_mes_actual(cerebro):
             "evidencia": evidencia_doc,
             "salida_json": decision,
         })
-        _microtarea_marcar_ok(cur_lab, nombre)
+        _microtarea_guardar_firma(cur_lab, nombre, firma_estado, total_kg)
         conn_lab.commit()
 
         add_reasoning_step(
@@ -9229,11 +9491,12 @@ def _ejecutar_ciclo_ia_impl(modo="manual"):
         # Fase 2: análisis operativo cuando el esquema ya está comprendido
         cerebro = ejecutar_fase2_ia(cerebro, modo_drain=(modo == "autonomo_drain"))
         fase2_avance = bool(cerebro.get("fase2_avance"))
+        detener_cadena = bool(cerebro.get("fase2_detener_cadena"))
         cerebro["ciclo"] = {
             "modo": modo,
             "avanzo_autonomamente": fase2_avance,
             "fase": "2_operativa",
-            "pendiente_estructural": bool(cerebro.get("pendiente_estructural_ejecutado")),
+            "detener_cadena": detener_cadena,
         }
         cerebro["razonamiento_reciente"] = IA_REASONING_LOG[:30]
         return cerebro
@@ -9410,13 +9673,11 @@ def ciclo_autonomo_worker():
                     ciclo = (resultado or {}).get("ciclo") or {}
                     if ciclo.get("sin_pendientes"):
                         break
-                    if ciclo.get("pendiente_estructural"):
-                        # Máximo un pendiente estructural (Ollama) por cadena:
-                        # cerrar acá y esperar el próximo intervalo/drain.
+                    if ciclo.get("detener_cadena"):
                         add_reasoning_step(
-                            "autonomia",
-                            "Pendiente estructural ejecutado; cierro la cadena.",
-                            f"Cadena cortada en ciclo {chain_count}/{AUTO_IA_MAX_CHAIN_CYCLES}"
+                            "pendiente_cadena_cortada",
+                            "Corto la cadena tras una pendiente estructural.",
+                            "La siguiente pendiente esperara el intervalo normal."
                         )
                         break
                     if not ciclo.get("avanzo_autonomamente"):
