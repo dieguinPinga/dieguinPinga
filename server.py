@@ -4411,6 +4411,59 @@ def _ensure_tablas_derivadas(cur):
             UNIQUE KEY uk_periodo_desc_norm (periodo, description_normalizada, criterio_version)
         ) CHARACTER SET utf8mb4
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_resumen_mensual_material_normalizado_tipo (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            periodo VARCHAR(7) NOT NULL,
+            estado_periodo VARCHAR(16) NOT NULL,
+            criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
+            tipo_movimiento VARCHAR(120) NOT NULL,
+            material_normalizado VARCHAR(255) NOT NULL,
+            registros_total_periodo INT NOT NULL DEFAULT 0,
+            registros_normalizados_periodo INT NOT NULL DEFAULT 0,
+            cobertura_pct_periodo DECIMAL(8,2) NOT NULL DEFAULT 0,
+            estado_confianza VARCHAR(16) NOT NULL DEFAULT 'debil',
+            registros INT NOT NULL DEFAULT 0,
+            kilos_total DECIMAL(16,2) NOT NULL DEFAULT 0,
+            precio_registros INT NOT NULL DEFAULT 0,
+            precio_promedio DECIMAL(16,4) NULL,
+            precio_min DECIMAL(16,4) NULL,
+            precio_max DECIMAL(16,4) NULL,
+            precio_ponderado_kg DECIMAL(16,4) NULL COMMENT 'SUM(Precio*kilos)/SUM(kilos) con Precio>0 y kilos>0',
+            monto_estimado DECIMAL(18,2) NULL COMMENT 'SUM(Precio*kilos) con Precio>0 y kilos>0; sin moneda inferida',
+            primer_movimiento DATETIME NULL,
+            ultimo_movimiento DATETIME NULL,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_mat_norm_tipo (periodo, tipo_movimiento, material_normalizado, criterio_version)
+        ) CHARACTER SET utf8mb4
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_resumen_mensual_proveedor_material_normalizado (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            periodo VARCHAR(7) NOT NULL,
+            estado_periodo VARCHAR(16) NOT NULL,
+            criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
+            proveedor VARCHAR(200) NOT NULL COMMENT 'canonizado por ia_alias_proveedores',
+            material_normalizado VARCHAR(255) NOT NULL,
+            tipo_movimiento VARCHAR(120) NOT NULL,
+            registros INT NOT NULL DEFAULT 0,
+            kilos_total DECIMAL(16,2) NOT NULL DEFAULT 0,
+            precio_registros INT NOT NULL DEFAULT 0,
+            precio_promedio DECIMAL(16,4) NULL,
+            precio_min DECIMAL(16,4) NULL,
+            precio_max DECIMAL(16,4) NULL,
+            precio_ponderado_kg DECIMAL(16,4) NULL,
+            monto_estimado DECIMAL(18,2) NULL,
+            pct_kilos_del_material DECIMAL(8,2) NOT NULL DEFAULT 0,
+            pct_kilos_del_proveedor DECIMAL(8,2) NOT NULL DEFAULT 0,
+            cobertura_pct_periodo DECIMAL(8,2) NOT NULL DEFAULT 0,
+            estado_confianza VARCHAR(16) NOT NULL DEFAULT 'debil',
+            primer_movimiento DATETIME NULL,
+            ultimo_movimiento DATETIME NULL,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_prov_mat_norm (periodo, proveedor, material_normalizado, tipo_movimiento, criterio_version)
+        ) CHARACTER SET utf8mb4
+    """)
     # Tablas de normalidad (calculadas sólo sobre meses cerrados)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_normalidad_mensual_tipo_movimiento (
@@ -5659,6 +5712,133 @@ def leer_materiales_normalizados_recientes(limite=10):
     return resultado
 
 
+def leer_compras_materiales_normalizados_recientes(limite=8):
+    """Compras/precios por material normalizado del mes actual, con cobertura y
+    alertas determinísticas simples. Solo lectura; sin moneda ni causa inferidas."""
+    periodo = date.today().strftime("%Y-%m")
+    resultado = {
+        "periodo": periodo,
+        "disponible": False,
+        "cobertura_pct": 0,
+        "estado_confianza": None,
+        "apto_para_conclusiones": False,
+        "top_materiales_por_kg": [],
+        "top_proveedor_material": [],
+        "top_monto_estimado": [],
+        "alertas_deterministicas": [],
+    }
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT tipo_movimiento, material_normalizado, registros, kilos_total,
+                   precio_registros, precio_promedio, precio_ponderado_kg, monto_estimado,
+                   cobertura_pct_periodo, estado_confianza
+            FROM ia_resumen_mensual_material_normalizado_tipo
+            WHERE periodo = %s AND criterio_version = %s
+            ORDER BY kilos_total DESC
+            LIMIT %s
+        """, (periodo, DERIVADAS_VERSION, int(limite)))
+        mat_tipo = cur.fetchall() or []
+
+        cur.execute("""
+            SELECT proveedor, material_normalizado, tipo_movimiento, registros, kilos_total,
+                   precio_ponderado_kg, monto_estimado, pct_kilos_del_material,
+                   pct_kilos_del_proveedor, estado_confianza
+            FROM ia_resumen_mensual_proveedor_material_normalizado
+            WHERE periodo = %s AND criterio_version = %s
+            ORDER BY kilos_total DESC
+            LIMIT %s
+        """, (periodo, DERIVADAS_VERSION, int(limite)))
+        prov_mat = cur.fetchall() or []
+
+        cur.execute("""
+            SELECT proveedor, material_normalizado, tipo_movimiento, kilos_total,
+                   precio_ponderado_kg, monto_estimado
+            FROM ia_resumen_mensual_proveedor_material_normalizado
+            WHERE periodo = %s AND criterio_version = %s AND monto_estimado IS NOT NULL
+            ORDER BY monto_estimado DESC
+            LIMIT %s
+        """, (periodo, DERIVADAS_VERSION, int(limite)))
+        top_monto = cur.fetchall() or []
+
+        # Materiales con historial normalizado previo (para alerta 'sin historial')
+        cur.execute("""
+            SELECT DISTINCT material_normalizado
+            FROM ia_resumen_mensual_material_normalizado_tipo
+            WHERE periodo < %s AND criterio_version = %s
+        """, (periodo, DERIVADAS_VERSION))
+        con_historial = {r["material_normalizado"] for r in (cur.fetchall() or [])}
+        cur.close()
+        conn.close()
+
+        if not mat_tipo:
+            return resultado
+
+        def _f(v):
+            return float(v) if v is not None else None
+
+        resultado["disponible"] = True
+        resultado["cobertura_pct"] = _f(mat_tipo[0]["cobertura_pct_periodo"]) or 0
+        resultado["estado_confianza"] = mat_tipo[0]["estado_confianza"]
+        resultado["apto_para_conclusiones"] = mat_tipo[0]["estado_confianza"] in ("fuerte", "parcial")
+
+        for r in mat_tipo:
+            resultado["top_materiales_por_kg"].append({
+                "material": r["material_normalizado"], "tipo_movimiento": r["tipo_movimiento"],
+                "registros": int(r["registros"] or 0), "kilos_total": _f(r["kilos_total"]) or 0,
+                "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
+                "monto_estimado": _f(r["monto_estimado"]),
+                "estado_confianza": r["estado_confianza"],
+            })
+        for r in prov_mat:
+            resultado["top_proveedor_material"].append({
+                "proveedor": r["proveedor"], "material": r["material_normalizado"],
+                "tipo_movimiento": r["tipo_movimiento"],
+                "kilos_total": _f(r["kilos_total"]) or 0,
+                "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
+                "monto_estimado": _f(r["monto_estimado"]),
+                "pct_kilos_del_material": _f(r["pct_kilos_del_material"]) or 0,
+            })
+        for r in top_monto:
+            resultado["top_monto_estimado"].append({
+                "proveedor": r["proveedor"], "material": r["material_normalizado"],
+                "tipo_movimiento": r["tipo_movimiento"],
+                "kilos_total": _f(r["kilos_total"]) or 0,
+                "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
+                "monto_estimado": _f(r["monto_estimado"]) or 0,
+            })
+
+        # Alertas determinísticas simples (kg primero, sin causa inferida)
+        alertas = resultado["alertas_deterministicas"]
+        for m in resultado["top_materiales_por_kg"][:5]:
+            if m["kilos_total"] > 0 and not m["precio_ponderado_kg"]:
+                alertas.append({
+                    "tipo": "precio_ponderado_faltante",
+                    "texto": (f"{m['material']} ({m['tipo_movimiento']}): "
+                              f"{int(m['kilos_total']):,} kg sin precio ponderado (sin filas con Precio > 0)."),
+                })
+            if m["estado_confianza"] == "fuerte" and m["material"] not in con_historial:
+                alertas.append({
+                    "tipo": "material_fuerte_sin_historial",
+                    "texto": (f"{m['material']}: {int(m['kilos_total']):,} kg este mes; "
+                              "sin historial normalizado en meses previos."),
+                })
+        for pm in resultado["top_proveedor_material"][:5]:
+            if pm["pct_kilos_del_material"] >= 80 and pm["kilos_total"] >= 500:
+                alertas.append({
+                    "tipo": "proveedor_material_concentrado",
+                    "texto": (f"{pm['proveedor']} concentra {pm['pct_kilos_del_material']}% de "
+                              f"{pm['material']} ({int(pm['kilos_total']):,} kg en {pm['tipo_movimiento']})."),
+                })
+    except Exception as e:
+        print(f"Error en leer_compras_materiales_normalizados_recientes: {e}", file=sys.stderr)
+    return resultado
+
+
 def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
     """Matriz proveedores x meses para el dashboard, determinística y sin Ollama.
     Filas: proveedores descubiertos por ia_fichas_operativas / ia_cola_curiosidad,
@@ -6672,6 +6852,208 @@ def _recalcular_normalidad(cur_lab):
     """, (DERIVADAS_VERSION,))
 
 
+def _calcular_compras_material_normalizado(cur_op, cur_lab, periodo, estado, inicio, fin_excl, alias_prov):
+    """Derivadas determinísticas de compras/precios por material normalizado:
+    periodo -> tipo_movimiento -> proveedor canonizado -> DescriptionNormalizada.
+    Solo filas con DescriptionNormalizada cargada; no mezcla con Description
+    cruda; precios solo con Precio > 0; no infiere moneda ni causa.
+    Devuelve (filas_tipo, filas_prov)."""
+
+    def _conf(cob):
+        return "fuerte" if cob >= 90 else ("parcial" if cob >= 30 else "debil")
+
+    # Cobertura por periodo y por tipo_movimiento
+    cur_op.execute("""
+        SELECT TiposDeMovimiento AS tipo,
+               COUNT(*) AS registros_total,
+               SUM(CASE WHEN DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> '' THEN 1 ELSE 0 END) AS registros_norm
+        FROM TiposDeMovimiento
+        WHERE FechaHora >= %s AND FechaHora < %s
+          AND TiposDeMovimiento IS NOT NULL AND TiposDeMovimiento <> ''
+        GROUP BY TiposDeMovimiento
+    """, (inicio, fin_excl))
+    cobertura_tipo = {}
+    tot_reg, tot_norm = 0, 0
+    for r in (cur_op.fetchall() or []):
+        rt, rn = int(r["registros_total"] or 0), int(r["registros_norm"] or 0)
+        tot_reg += rt
+        tot_norm += rn
+        cobertura_tipo[r["tipo"]] = {
+            "registros_total": rt,
+            "registros_norm": rn,
+            "cobertura": round(rn / rt * 100, 2) if rt > 0 else 0,
+        }
+    cobertura_periodo = round(tot_norm / tot_reg * 100, 2) if tot_reg > 0 else 0
+
+    def _cobertura_de(tipo):
+        c = cobertura_tipo.get(tipo)
+        if c and c["registros_total"] > 0:
+            return c["registros_total"], c["registros_norm"], c["cobertura"]
+        return tot_reg, tot_norm, cobertura_periodo
+
+    _METRICAS_PRECIO = """
+               COUNT(*) AS registros,
+               COALESCE(SUM(kilos), 0) AS kilos_total,
+               SUM(CASE WHEN Precio IS NOT NULL AND Precio > 0 THEN 1 ELSE 0 END) AS precio_registros,
+               AVG(CASE WHEN Precio IS NOT NULL AND Precio > 0 THEN Precio END) AS precio_promedio,
+               MIN(CASE WHEN Precio IS NOT NULL AND Precio > 0 THEN Precio END) AS precio_min,
+               MAX(CASE WHEN Precio IS NOT NULL AND Precio > 0 THEN Precio END) AS precio_max,
+               COALESCE(SUM(CASE WHEN Precio IS NOT NULL AND Precio > 0 AND kilos > 0 THEN Precio * kilos ELSE 0 END), 0) AS monto_estimado,
+               COALESCE(SUM(CASE WHEN Precio IS NOT NULL AND Precio > 0 AND kilos > 0 THEN kilos ELSE 0 END), 0) AS kilos_con_precio,
+               MIN(FechaHora) AS primer_movimiento,
+               MAX(FechaHora) AS ultimo_movimiento
+    """
+
+    # --- 1) material_normalizado x tipo_movimiento ---
+    cur_op.execute(f"""
+        SELECT TiposDeMovimiento AS tipo,
+               DescriptionNormalizada AS material,
+               {_METRICAS_PRECIO}
+        FROM TiposDeMovimiento
+        WHERE FechaHora >= %s AND FechaHora < %s
+          AND TiposDeMovimiento IS NOT NULL AND TiposDeMovimiento <> ''
+          AND DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> ''
+        GROUP BY tipo, material
+    """, (inicio, fin_excl))
+    filas_tipo_raw = cur_op.fetchall() or []
+
+    cur_lab.execute(
+        "DELETE FROM ia_resumen_mensual_material_normalizado_tipo WHERE periodo = %s AND criterio_version = %s",
+        (periodo, DERIVADAS_VERSION))
+    kg_material_tipo = {}
+    for r in filas_tipo_raw:
+        kg_material_tipo[(r["tipo"], r["material"])] = float(r["kilos_total"] or 0)
+        rt, rn, cob = _cobertura_de(r["tipo"])
+        kcp = float(r["kilos_con_precio"] or 0)
+        monto = float(r["monto_estimado"] or 0)
+        ponderado = round(monto / kcp, 4) if kcp > 0 else None
+        cur_lab.execute("""
+            INSERT INTO ia_resumen_mensual_material_normalizado_tipo
+                (periodo, estado_periodo, criterio_version, tipo_movimiento, material_normalizado,
+                 registros_total_periodo, registros_normalizados_periodo, cobertura_pct_periodo,
+                 estado_confianza, registros, kilos_total, precio_registros,
+                 precio_promedio, precio_min, precio_max, precio_ponderado_kg, monto_estimado,
+                 primer_movimiento, ultimo_movimiento)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                estado_periodo = VALUES(estado_periodo),
+                registros_total_periodo = VALUES(registros_total_periodo),
+                registros_normalizados_periodo = VALUES(registros_normalizados_periodo),
+                cobertura_pct_periodo = VALUES(cobertura_pct_periodo),
+                estado_confianza = VALUES(estado_confianza),
+                registros = VALUES(registros),
+                kilos_total = VALUES(kilos_total),
+                precio_registros = VALUES(precio_registros),
+                precio_promedio = VALUES(precio_promedio),
+                precio_min = VALUES(precio_min),
+                precio_max = VALUES(precio_max),
+                precio_ponderado_kg = VALUES(precio_ponderado_kg),
+                monto_estimado = VALUES(monto_estimado),
+                primer_movimiento = VALUES(primer_movimiento),
+                ultimo_movimiento = VALUES(ultimo_movimiento),
+                actualizado_en = CURRENT_TIMESTAMP
+        """, (
+            periodo, estado, DERIVADAS_VERSION, r["tipo"], r["material"],
+            rt, rn, cob, _conf(cob),
+            r["registros"], r["kilos_total"], int(r["precio_registros"] or 0),
+            r["precio_promedio"], r["precio_min"], r["precio_max"],
+            ponderado, round(monto, 2) if monto > 0 else None,
+            r["primer_movimiento"], r["ultimo_movimiento"],
+        ))
+    filas_tipo = len(filas_tipo_raw)
+
+    # --- 2) proveedor canonizado x material_normalizado x tipo_movimiento ---
+    cur_op.execute(f"""
+        SELECT TiposDeMovimiento AS tipo,
+               Proveedor AS proveedor,
+               DescriptionNormalizada AS material,
+               {_METRICAS_PRECIO}
+        FROM TiposDeMovimiento
+        WHERE FechaHora >= %s AND FechaHora < %s
+          AND TiposDeMovimiento IS NOT NULL AND TiposDeMovimiento <> ''
+          AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> ''
+          AND DescriptionNormalizada IS NOT NULL AND TRIM(DescriptionNormalizada) <> ''
+        GROUP BY tipo, proveedor, material
+    """, (inicio, fin_excl))
+    agrupados = {}
+    for r in (cur_op.fetchall() or []):
+        canon = canonizar_proveedor(r["proveedor"], alias_prov)
+        clave = (r["tipo"], canon, r["material"])
+        acc = agrupados.setdefault(clave, {
+            "registros": 0, "kilos_total": 0.0, "precio_registros": 0,
+            "monto": 0.0, "kilos_con_precio": 0.0, "prom_num": 0.0,
+            "precio_min": None, "precio_max": None,
+            "primer_movimiento": None, "ultimo_movimiento": None,
+        })
+        acc["registros"] += int(r["registros"] or 0)
+        acc["kilos_total"] += float(r["kilos_total"] or 0)
+        pr = int(r["precio_registros"] or 0)
+        acc["precio_registros"] += pr
+        if pr and r["precio_promedio"] is not None:
+            acc["prom_num"] += float(r["precio_promedio"]) * pr
+        acc["monto"] += float(r["monto_estimado"] or 0)
+        acc["kilos_con_precio"] += float(r["kilos_con_precio"] or 0)
+        for k, fn in (("precio_min", min), ("precio_max", max)):
+            v = r[k]
+            if v is not None:
+                acc[k] = float(v) if acc[k] is None else fn(acc[k], float(v))
+        for k, fn in (("primer_movimiento", min), ("ultimo_movimiento", max)):
+            v = r[k]
+            if v is not None:
+                acc[k] = v if acc[k] is None else fn(acc[k], v)
+
+    kg_proveedor_tipo = {}
+    for (tipo, canon, _mat), acc in agrupados.items():
+        kg_proveedor_tipo[(tipo, canon)] = kg_proveedor_tipo.get((tipo, canon), 0.0) + acc["kilos_total"]
+
+    cur_lab.execute(
+        "DELETE FROM ia_resumen_mensual_proveedor_material_normalizado WHERE periodo = %s AND criterio_version = %s",
+        (periodo, DERIVADAS_VERSION))
+    for (tipo, canon, mat), acc in agrupados.items():
+        rt, rn, cob = _cobertura_de(tipo)
+        kg_mat = kg_material_tipo.get((tipo, mat), 0.0)
+        kg_prov = kg_proveedor_tipo.get((tipo, canon), 0.0)
+        ponderado = round(acc["monto"] / acc["kilos_con_precio"], 4) if acc["kilos_con_precio"] > 0 else None
+        promedio = round(acc["prom_num"] / acc["precio_registros"], 4) if acc["precio_registros"] > 0 else None
+        cur_lab.execute("""
+            INSERT INTO ia_resumen_mensual_proveedor_material_normalizado
+                (periodo, estado_periodo, criterio_version, proveedor, material_normalizado,
+                 tipo_movimiento, registros, kilos_total, precio_registros,
+                 precio_promedio, precio_min, precio_max, precio_ponderado_kg, monto_estimado,
+                 pct_kilos_del_material, pct_kilos_del_proveedor,
+                 cobertura_pct_periodo, estado_confianza, primer_movimiento, ultimo_movimiento)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                estado_periodo = VALUES(estado_periodo),
+                registros = VALUES(registros),
+                kilos_total = VALUES(kilos_total),
+                precio_registros = VALUES(precio_registros),
+                precio_promedio = VALUES(precio_promedio),
+                precio_min = VALUES(precio_min),
+                precio_max = VALUES(precio_max),
+                precio_ponderado_kg = VALUES(precio_ponderado_kg),
+                monto_estimado = VALUES(monto_estimado),
+                pct_kilos_del_material = VALUES(pct_kilos_del_material),
+                pct_kilos_del_proveedor = VALUES(pct_kilos_del_proveedor),
+                cobertura_pct_periodo = VALUES(cobertura_pct_periodo),
+                estado_confianza = VALUES(estado_confianza),
+                primer_movimiento = VALUES(primer_movimiento),
+                ultimo_movimiento = VALUES(ultimo_movimiento),
+                actualizado_en = CURRENT_TIMESTAMP
+        """, (
+            periodo, estado, DERIVADAS_VERSION, canon, mat, tipo,
+            acc["registros"], round(acc["kilos_total"], 2), acc["precio_registros"],
+            promedio, acc["precio_min"], acc["precio_max"],
+            ponderado, round(acc["monto"], 2) if acc["monto"] > 0 else None,
+            round(acc["kilos_total"] / kg_mat * 100, 2) if kg_mat > 0 else 0,
+            round(acc["kilos_total"] / kg_prov * 100, 2) if kg_prov > 0 else 0,
+            cob, _conf(cob),
+            acc["primer_movimiento"], acc["ultimo_movimiento"],
+        ))
+    filas_prov = len(agrupados)
+    return filas_tipo, filas_prov
+
+
 def guardar_tablas_derivadas_si_corresponde(forzar=False):
     """Calcula y persiste resúmenes mensuales SQL-puro en crowdbot_lab.
     Procesa desde el primer mes válido en TiposDeMovimiento (mín 2023-11)
@@ -6712,6 +7094,8 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
             tiene_desc_norm = False
         resultado["description_normalizada_activa"] = tiene_desc_norm
         resultado["filas_description_normalizada"] = 0
+        resultado["filas_material_normalizado_tipo"] = 0
+        resultado["filas_proveedor_material_normalizado"] = 0
 
         periodos = _generar_periodos_desde_db(cur_op)
 
@@ -6887,6 +7271,13 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                             r["primer_movimiento"], r["ultimo_movimiento"],
                         ))
                     resultado["filas_description_normalizada"] += len(rows_dn)
+
+                    # Compras/precios por material normalizado (tipo y proveedor)
+                    f_tipo, f_prov = _calcular_compras_material_normalizado(
+                        cur_op, cur_lab, periodo, estado, inicio, fin_excl, alias_prov
+                    )
+                    resultado["filas_material_normalizado_tipo"] += f_tipo
+                    resultado["filas_proveedor_material_normalizado"] += f_prov
                 except Exception as e_dn:
                     resultado["errores"].append(f"description_normalizada {periodo}: {e_dn}")
 
@@ -10953,6 +11344,7 @@ def get_ia_cerebro():
             "fichas_operativas": leer_fichas_operativas(),
             "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
             "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
+            "compras_materiales_normalizados_recientes": leer_compras_materiales_normalizados_recientes(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -11684,6 +12076,10 @@ def ia_dashboard():
   <!-- -- MATERIALES NORMALIZADOS (mes actual) -- -->
   <div class="section-title" style="margin-top:20px;">Materiales normalizados (mes actual)</div>
   <div id="materialesNormalizados" style="margin-bottom:16px;"></div>
+
+  <!-- -- COMPRAS / MATERIALES NORMALIZADOS -- -->
+  <div class="section-title" style="margin-top:20px;">Compras/materiales normalizados</div>
+  <div id="comprasMaterialesNormalizados" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -12738,6 +13134,75 @@ function renderMaterialesNormalizados(mn) {
   cont.appendChild(tabla);
 }
 
+/* -- Compras/materiales normalizados (kg, proveedor-material, precio ponderado) -- */
+function renderComprasMaterialesNormalizados(cm) {
+  const cont = document.getElementById("comprasMaterialesNormalizados");
+  if (!cont) return;
+  cont.innerHTML = "";
+  if (!cm || !cm.disponible) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin derivadas de compras normalizadas todavía. Ejecutar recalcular derivadas.";
+    cont.appendChild(p);
+    return;
+  }
+
+  const CONF_COLOR = {fuerte: "#3fb950", parcial: "#d29922", debil: "#f85149"};
+  const conf = cm.estado_confianza || "debil";
+  const head = document.createElement("div");
+  head.style.cssText = "font-size:11px;color:#8b949e;margin-bottom:6px;";
+  const badge = document.createElement("span");
+  badge.textContent = "cobertura " + Number(cm.cobertura_pct || 0).toFixed(1) + "% · " + conf;
+  badge.style.cssText = "font-size:10px;padding:1px 8px;border-radius:3px;background:rgba(0,0,0,.3);color:" + (CONF_COLOR[conf] || "#8b949e") + ";margin-right:8px;";
+  head.appendChild(badge);
+  cont.appendChild(head);
+
+  asArray(cm.alertas_deterministicas).slice(0, 4).forEach(a => {
+    const al = document.createElement("div");
+    al.style.cssText = "font-size:10px;color:#d29922;margin-bottom:3px;";
+    al.textContent = "⚠ " + (a.texto || "");
+    cont.appendChild(al);
+  });
+
+  function fmtKg(v) { return Number(v || 0).toLocaleString("es-AR") + " kg"; }
+  function fmtPrecio(v) { return v != null ? Number(v).toFixed(2) : "—"; }
+
+  function bloque(titulo, items, linea) {
+    if (!items.length) return;
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:10px;font-weight:600;color:#58a6ff;text-transform:uppercase;letter-spacing:.05em;margin:8px 0 4px;";
+    h.textContent = titulo;
+    cont.appendChild(h);
+    items.slice(0, 5).forEach((x, idx) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;font-size:11px;padding:3px 6px;border-radius:3px;" +
+        (idx % 2 === 0 ? "background:rgba(255,255,255,.04);" : "");
+      linea(x).forEach(([txt, css]) => {
+        const s = document.createElement("span");
+        s.textContent = txt;
+        s.style.cssText = css;
+        row.appendChild(s);
+      });
+      cont.appendChild(row);
+    });
+  }
+
+  bloque("Top materiales por kg", asArray(cm.top_materiales_por_kg), x => [
+    [x.material + " (" + (x.tipo_movimiento || "") + ")", "flex:1;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"],
+    [fmtKg(x.kilos_total), "color:#58a6ff;min-width:90px;text-align:right;font-weight:600;"],
+    ["pond " + fmtPrecio(x.precio_ponderado_kg), "color:#8b949e;min-width:80px;text-align:right;"],
+  ]);
+  bloque("Top proveedor-material", asArray(cm.top_proveedor_material), x => [
+    [x.proveedor + " → " + x.material, "flex:1;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"],
+    [fmtKg(x.kilos_total), "color:#58a6ff;min-width:90px;text-align:right;font-weight:600;"],
+    [Number(x.pct_kilos_del_material || 0).toFixed(0) + "% del mat.", "color:#8b949e;min-width:80px;text-align:right;"],
+  ]);
+  bloque("Top monto estimado", asArray(cm.top_monto_estimado), x => [
+    [x.proveedor + " → " + x.material, "flex:1;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"],
+    [Number(x.monto_estimado || 0).toLocaleString("es-AR"), "color:#d29922;min-width:110px;text-align:right;font-weight:600;"],
+    ["pond " + fmtPrecio(x.precio_ponderado_kg), "color:#8b949e;min-width:80px;text-align:right;"],
+  ]);
+}
+
 /* -- Cola de curiosidad (contador simple) ------------------- */
 function renderColaCuriosidad(cc) {
   const el = document.getElementById("colaCuriosidad");
@@ -13349,6 +13814,7 @@ function renderCerebro(c) {
   renderFichasOperativas(c.fichas_operativas || null);
   renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
   renderMaterialesNormalizados(c.materiales_normalizados_recientes || null);
+  renderComprasMaterialesNormalizados(c.compras_materiales_normalizados_recientes || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
