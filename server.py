@@ -5439,6 +5439,112 @@ def calcular_cola_proveedores_por_cobertura(cur_lab):
     return resultado
 
 
+def calcular_cola_compras_normalizadas(cur_lab, periodo_actual, max_items=20):
+    """Propagación determinística desde las derivadas de compras normalizadas
+    hacia ia_cola_curiosidad. Solo filas comprables (las derivadas ya filtran
+    ING PESAJE INTERNO / ING BAL PUBLICA / ING_VIRGEN / ING_ADITIVOS_E_INSUMOS
+    y equivalentes); ERROR_REGISTRO no participa. Prioriza por kilos y monto
+    estimado, no por porcentaje. Sin Ollama. Devuelve total encolado."""
+    encoladas = {"materiales": 0, "pares": 0, "precio": 0, "ranking": 0}
+    dedupe = 0
+
+    def _prioridad(kg, registros, monto):
+        # kg manda; el monto suma cuando existe; % no participa
+        return round(kg * 0.7 + registros * 5.0 + (monto or 0) * 0.001, 4)
+
+    # Top materiales comprables del periodo por kg (con monto como refuerzo)
+    cur_lab.execute("""
+        SELECT material_normalizado AS material,
+               SUM(kilos_total) AS kg,
+               SUM(registros) AS registros,
+               SUM(COALESCE(monto_estimado, 0)) AS monto,
+               SUM(precio_registros) AS precio_registros
+        FROM ia_resumen_mensual_material_normalizado_tipo
+        WHERE periodo = %s AND criterio_version = %s
+          AND tipo_movimiento LIKE %s
+        GROUP BY material_normalizado
+        ORDER BY kg DESC
+        LIMIT %s
+    """, (periodo_actual, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%", int(max_items)))
+    for m in (cur_lab.fetchall() or []):
+        material = m["material"]
+        if not material:
+            continue
+        kg = float(m["kg"] or 0)
+        monto = float(m["monto"] or 0)
+        prioridad = _prioridad(kg, int(m["registros"] or 0), monto)
+        base = {
+            "tipo_nodo": "material",
+            "entidad": material,
+            "entidad_2": None,
+            "material_fuente": "DescriptionNormalizada",
+            "periodo": periodo_actual,
+            "origen": "compras_normalizadas",
+            "prioridad_score": prioridad,
+            "profundidad": 1,
+        }
+        ins = _encolar_curiosidad(cur_lab, dict(
+            base, tipo_tarea="perfil_material_normalizado_historico",
+            motivo=f"Material comprable con {int(kg):,} kg en {periodo_actual}"))
+        encoladas["materiales"] += ins
+        dedupe += 1 - ins
+        ins = _encolar_curiosidad(cur_lab, dict(
+            base, tipo_tarea="ranking_proveedores_material_normalizado_mes",
+            motivo=f"Ranking de proveedores de {material} en {periodo_actual} ({int(kg):,} kg)"))
+        encoladas["ranking"] += ins
+        dedupe += 1 - ins
+        if int(m["precio_registros"] or 0) > 0 or monto > 0:
+            ins = _encolar_curiosidad(cur_lab, dict(
+                base, tipo_tarea="perfil_precio_material_normalizado",
+                motivo=f"Precio de {material}: monto estimado {int(monto):,} en {periodo_actual}"))
+            encoladas["precio"] += ins
+            dedupe += 1 - ins
+
+    # Top pares proveedor-material comprados del periodo (la tabla ya es solo comprables)
+    cur_lab.execute("""
+        SELECT proveedor, material_normalizado AS material,
+               SUM(kilos_total) AS kg,
+               SUM(registros) AS registros,
+               SUM(COALESCE(monto_estimado, 0)) AS monto
+        FROM ia_resumen_mensual_proveedor_material_normalizado
+        WHERE periodo = %s AND criterio_version = %s
+        GROUP BY proveedor, material_normalizado
+        ORDER BY kg DESC
+        LIMIT %s
+    """, (periodo_actual, DERIVADAS_VERSION, int(max_items)))
+    for pm in (cur_lab.fetchall() or []):
+        if not pm["proveedor"] or not pm["material"]:
+            continue
+        kg = float(pm["kg"] or 0)
+        monto = float(pm["monto"] or 0)
+        ins = _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_proveedor_material_normalizado_historico",
+            "tipo_nodo": "proveedor_material",
+            "entidad": pm["material"],
+            "entidad_2": pm["proveedor"],
+            "material_fuente": "DescriptionNormalizada",
+            "periodo": periodo_actual,
+            "origen": "compras_normalizadas",
+            "motivo": (f"{pm['proveedor']} compró {int(kg):,} kg de {pm['material']} "
+                       f"en {periodo_actual}" + (f" (monto est. {int(monto):,})" if monto > 0 else "")),
+            "prioridad_score": _prioridad(kg, int(pm["registros"] or 0), monto),
+            "profundidad": 1,
+        })
+        encoladas["pares"] += ins
+        dedupe += 1 - ins
+
+    total = sum(encoladas.values())
+    if total or dedupe:
+        add_reasoning_step(
+            "cola_curiosidad_compras_normalizadas",
+            f"Compras normalizadas: {total} tareas encoladas para {periodo_actual}.",
+            (f"origen=compras_normalizadas | materiales={encoladas['materiales']} "
+             f"ranking={encoladas['ranking']} precio={encoladas['precio']} "
+             f"pares={encoladas['pares']} dedupe={dedupe}")
+        )
+    return total
+
+
 def _normalizar_proveedor_material(r):
     """Agrega claves explícitas proveedor/material/etiqueta a una fila de
     ia_biografia_protagonistas o ia_protagonistas_operativos.
@@ -6506,6 +6612,169 @@ def _ficha_perfil_material_global(cur_op, tarea, mapa_alias=None):
     }
 
 
+def _ficha_material_normalizado_historico(cur_lab, tarea):
+    """Ficha determinística: historia mensual de un material normalizado comprable."""
+    material = tarea["entidad"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT periodo, SUM(kilos_total) AS kg, SUM(registros) AS registros,
+               SUM(COALESCE(monto_estimado, 0)) AS monto
+        FROM ia_resumen_mensual_material_normalizado_tipo
+        WHERE material_normalizado = %s AND criterio_version = %s
+          AND tipo_movimiento LIKE %s
+        GROUP BY periodo
+        ORDER BY periodo
+    """, (material, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%"))
+    hist = [{"periodo": r["periodo"], "kg": float(r["kg"] or 0),
+             "registros": int(r["registros"] or 0), "monto": float(r["monto"] or 0)}
+            for r in (cur_lab.fetchall() or [])]
+    actual = next((h for h in hist if h["periodo"] == periodo), None)
+    previos = [h for h in hist if h["periodo"] < periodo]
+    kg_actual = actual["kg"] if actual else 0
+    kg_prom = round(sum(h["kg"] for h in previos) / len(previos), 2) if previos else 0
+    datos = {
+        "material": material, "material_fuente": "DescriptionNormalizada", "periodo": periodo,
+        "kg_actual": kg_actual, "meses_previos": len(previos),
+        "kg_promedio_meses_previos": kg_prom, "historial_12m": hist[-12:],
+    }
+    senales = {"material_normalizado": True, "sin_historial_previo": not previos}
+    resumen = f"{material} (material normalizado): {_ficha_kg(kg_actual)} comprados en {periodo}; "
+    resumen += (f"historial {len(previos)} meses previos; promedio {_ficha_kg(kg_prom)}/mes."
+                if previos else "sin historial normalizado previo.")
+    return {"titulo": f"Perfil histórico de material normalizado: {material}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
+def _ficha_proveedor_material_normalizado_historico(cur_lab, tarea):
+    """Ficha determinística: compras de un proveedor para un material normalizado."""
+    material = tarea["entidad"]
+    proveedor = tarea["entidad_2"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT periodo, SUM(kilos_total) AS kg, SUM(registros) AS registros,
+               SUM(COALESCE(monto_estimado, 0)) AS monto
+        FROM ia_resumen_mensual_proveedor_material_normalizado
+        WHERE proveedor = %s AND material_normalizado = %s AND criterio_version = %s
+        GROUP BY periodo
+        ORDER BY periodo
+    """, (proveedor, material, DERIVADAS_VERSION))
+    hist = [{"periodo": r["periodo"], "kg": float(r["kg"] or 0),
+             "registros": int(r["registros"] or 0), "monto": float(r["monto"] or 0)}
+            for r in (cur_lab.fetchall() or [])]
+    actual = next((h for h in hist if h["periodo"] == periodo), None)
+    previos = [h for h in hist if h["periodo"] < periodo]
+    kg_actual = actual["kg"] if actual else 0
+    monto_actual = actual["monto"] if actual else 0
+    datos = {
+        "proveedor": proveedor, "material": material,
+        "material_fuente": "DescriptionNormalizada", "periodo": periodo,
+        "kg_actual": kg_actual, "monto_estimado_actual": monto_actual or None,
+        "meses_previos": len(previos), "historial_12m": hist[-12:],
+    }
+    senales = {"material_normalizado": True, "sin_historial_previo": not previos}
+    resumen = f"{proveedor} → {material} (normalizado): {_ficha_kg(kg_actual)} en {periodo}"
+    if monto_actual > 0:
+        resumen += f" (monto est. {monto_actual:,.0f})"
+    resumen += ("; " + (f"historial {len(previos)} meses previos." if previos
+                        else "sin historial normalizado previo."))
+    return {"titulo": f"Perfil proveedor+material normalizado: {proveedor} → {material}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
+def _ficha_precio_material_normalizado(cur_lab, tarea):
+    """Ficha determinística: evolución del precio ponderado de un material
+    normalizado comprable. Sin moneda ni causa inferidas."""
+    material = tarea["entidad"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT periodo,
+               SUM(COALESCE(monto_estimado, 0)) AS monto,
+               SUM(CASE WHEN precio_ponderado_kg IS NOT NULL AND precio_ponderado_kg > 0
+                        THEN COALESCE(monto_estimado, 0) / precio_ponderado_kg ELSE 0 END) AS kg_con_precio,
+               MIN(precio_min) AS precio_min,
+               MAX(precio_max) AS precio_max
+        FROM ia_resumen_mensual_material_normalizado_tipo
+        WHERE material_normalizado = %s AND criterio_version = %s
+          AND tipo_movimiento LIKE %s
+        GROUP BY periodo
+        ORDER BY periodo
+    """, (material, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%"))
+    hist = []
+    for r in (cur_lab.fetchall() or []):
+        monto = float(r["monto"] or 0)
+        kgp = float(r["kg_con_precio"] or 0)
+        hist.append({
+            "periodo": r["periodo"],
+            "monto": monto,
+            "precio_ponderado_kg": round(monto / kgp, 4) if kgp > 0 else None,
+            "precio_min": float(r["precio_min"]) if r["precio_min"] is not None else None,
+            "precio_max": float(r["precio_max"]) if r["precio_max"] is not None else None,
+        })
+    actual = next((h for h in hist if h["periodo"] == periodo), None)
+    previos = [h for h in hist if h["periodo"] < periodo and h["precio_ponderado_kg"]]
+    pond_actual = actual["precio_ponderado_kg"] if actual else None
+    pond_prom = round(sum(h["precio_ponderado_kg"] for h in previos) / len(previos), 4) if previos else None
+    datos = {
+        "material": material, "material_fuente": "DescriptionNormalizada", "periodo": periodo,
+        "precio_ponderado_actual": pond_actual,
+        "precio_ponderado_promedio_previo": pond_prom,
+        "meses_con_precio_previos": len(previos), "historial_12m": hist[-12:],
+    }
+    senales = {"material_normalizado": True, "sin_precio_actual": pond_actual is None}
+    if pond_actual is None:
+        resumen = f"{material} (normalizado): sin precio ponderado en {periodo} (sin filas con Precio > 0)."
+    else:
+        resumen = f"{material} (normalizado): precio ponderado {pond_actual} en {periodo}"
+        if pond_prom:
+            desvio = round((pond_actual - pond_prom) / pond_prom * 100, 1)
+            resumen += f"; promedio previo {pond_prom} ({desvio:+.1f}%) en {len(previos)} meses."
+            senales["desvio_pct_vs_previo"] = desvio
+        else:
+            resumen += "; sin meses previos con precio para comparar."
+    return {"titulo": f"Precio de material normalizado: {material}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
+def _ficha_ranking_proveedores_material_normalizado(cur_lab, tarea):
+    """Ficha determinística: ranking de proveedores de un material normalizado en el mes."""
+    material = tarea["entidad"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT proveedor, SUM(kilos_total) AS kg, SUM(registros) AS registros,
+               SUM(COALESCE(monto_estimado, 0)) AS monto
+        FROM ia_resumen_mensual_proveedor_material_normalizado
+        WHERE material_normalizado = %s AND periodo = %s AND criterio_version = %s
+        GROUP BY proveedor
+        ORDER BY kg DESC
+    """, (material, periodo, DERIVADAS_VERSION))
+    filas = [{"proveedor": r["proveedor"], "kg": float(r["kg"] or 0),
+              "registros": int(r["registros"] or 0), "monto": float(r["monto"] or 0)}
+             for r in (cur_lab.fetchall() or [])]
+    kg_total = sum(f["kg"] for f in filas)
+    for pos, f in enumerate(filas, start=1):
+        f["posicion"] = pos
+        f["pct_kg"] = round(f["kg"] / kg_total * 100, 2) if kg_total > 0 else 0
+    lider = filas[0] if filas else None
+    datos = {
+        "material": material, "material_fuente": "DescriptionNormalizada", "periodo": periodo,
+        "proveedores": filas[:10], "proveedores_distintos": len(filas),
+        "kg_total": round(kg_total, 2),
+    }
+    senales = {
+        "material_normalizado": True,
+        "monoproveedor": len(filas) == 1,
+        "lider_concentra_mas_80pct": bool(lider and lider["pct_kg"] >= 80),
+    }
+    if not filas:
+        resumen = f"{material} (normalizado): sin compras registradas en {periodo}."
+    else:
+        resumen = (f"{material} (normalizado) en {periodo}: {len(filas)} proveedores, "
+                   f"{_ficha_kg(kg_total)}. Líder: {lider['proveedor']} "
+                   f"{_ficha_kg(lider['kg'])} ({lider['pct_kg']}% del material).")
+    return {"titulo": f"Ranking proveedores de material normalizado {periodo}: {material}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
 def _propagar_dominantes_material(cur_lab, tarea, ficha):
     """Propagación determinística de la red de curiosidad: cuando una ficha
     perfil_material_global descubre proveedores dominantes históricos, encola
@@ -6783,6 +7052,14 @@ def ejecutar_tarea_cola_curiosidad():
         elif tipo == "perfil_material_global":
             _mapa_alias_c, _ = cargar_alias_proveedores(cur_lab)
             ficha = _ficha_perfil_material_global(cur_op, tarea, mapa_alias=_mapa_alias_c)
+        elif tipo == "perfil_material_normalizado_historico":
+            ficha = _ficha_material_normalizado_historico(cur_lab, tarea)
+        elif tipo == "perfil_proveedor_material_normalizado_historico":
+            ficha = _ficha_proveedor_material_normalizado_historico(cur_lab, tarea)
+        elif tipo == "perfil_precio_material_normalizado":
+            ficha = _ficha_precio_material_normalizado(cur_lab, tarea)
+        elif tipo == "ranking_proveedores_material_normalizado_mes":
+            ficha = _ficha_ranking_proveedores_material_normalizado(cur_lab, tarea)
         else:
             raise ValueError(f"tipo_tarea sin constructor de ficha: {tipo}")
 
@@ -7495,6 +7772,14 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         except Exception as e_cob:
             resultado["errores"].append(f"cola_cobertura: {e_cob}")
 
+        # Cola desde compras/materiales normalizados (solo si la dimensión existe)
+        filas_cola_compras = 0
+        if tiene_desc_norm:
+            try:
+                filas_cola_compras = calcular_cola_compras_normalizadas(cur_lab, periodo_actual)
+            except Exception as e_ccn:
+                resultado["errores"].append(f"cola_compras_normalizadas: {e_ccn}")
+
         conn_lab.commit()
         resultado["ok"] = True
         resultado["filas_protagonistas"] = filas_prot
@@ -7502,6 +7787,7 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         resultado["filas_cola_curiosidad"] = filas_cola
         resultado["filas_cola_cobertura"] = cobertura.get("encoladas", 0)
         resultado["cola_cobertura_dedupe"] = cobertura.get("dedupe", 0)
+        resultado["filas_cola_compras_normalizadas"] = filas_cola_compras
 
         add_reasoning_step(
             "tablas_derivadas",
