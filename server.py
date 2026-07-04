@@ -12166,6 +12166,17 @@ def api_ia_export():
         "razonamiento_reciente": cerebro.get("razonamiento_reciente", []),
         "autonomia": cerebro.get("autonomia", {}),
         "metricas_cerebro": cerebro.get("metricas", {}),
+        # Bloques operativos nuevos (protagonistas, cola, fichas, normalizados)
+        "tablas_derivadas": cerebro.get("tablas_derivadas", {}),
+        "protagonistas_operativos": cerebro.get("protagonistas_operativos", {}),
+        "biografias_protagonistas": cerebro.get("biografias_protagonistas", {}),
+        "cola_curiosidad": cerebro.get("cola_curiosidad", {}),
+        "fichas_operativas": cerebro.get("fichas_operativas", {}),
+        "mapa_historico_proveedores": cerebro.get("mapa_historico_proveedores", {}),
+        "materiales_normalizados_recientes": cerebro.get("materiales_normalizados_recientes", {}),
+        "compras_materiales_normalizados_recientes": cerebro.get("compras_materiales_normalizados_recientes", {}),
+        "calidad_error_registro": cerebro.get("calidad_error_registro", {}),
+        "meses_pintados": cerebro.get("meses_pintados", {}),
         "timestamp_generacion": generado_en,
     }
 
