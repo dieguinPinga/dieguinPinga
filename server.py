@@ -5881,6 +5881,89 @@ def leer_fichas_operativas(limite=10):
     return resultado
 
 
+def leer_composicion_operativa(max_por_tipo=12):
+    """Composición operativa del mes: fichas fractales de máquinas y operadores
+    (perfil_maquina_historico / perfil_operador_historico) del periodo más
+    reciente. Determinístico, solo lectura de ia_fichas_operativas."""
+    resultado = {"periodo": None, "avance_mes_pct": None, "maquinas": [], "operadores": []}
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT tipo_tarea, entidad, periodo, resumen_deterministico,
+                   datos_json, senales_json, creado_en
+            FROM ia_fichas_operativas
+            WHERE tipo_tarea IN ('perfil_maquina_historico','perfil_operador_historico')
+            ORDER BY creado_en DESC, id DESC
+            LIMIT 200
+        """)
+        filas = cur.fetchall() or []
+        cur.close()
+        conn.close()
+        if not filas:
+            return resultado
+
+        periodo = max(str(f.get("periodo") or "") for f in filas)
+        resultado["periodo"] = periodo or None
+        hoy = date.today()
+        if periodo == hoy.strftime("%Y-%m"):
+            import calendar as _cal
+            dias_mes = _cal.monthrange(hoy.year, hoy.month)[1]
+            resultado["avance_mes_pct"] = round(hoy.day / dias_mes * 100, 1)
+
+        vistos = set()
+        for f in filas:
+            if str(f.get("periodo") or "") != periodo:
+                continue
+            nombre = (f.get("entidad") or "").strip()
+            clave = (f.get("tipo_tarea"), nombre.lower())
+            if clave in vistos:
+                continue  # ya tenemos la ficha más nueva de esta entidad
+            vistos.add(clave)
+            try:
+                datos = json.loads(f.get("datos_json") or "{}") if isinstance(f.get("datos_json"), str) else (f.get("datos_json") or {})
+            except Exception:
+                datos = {}
+            try:
+                senales = json.loads(f.get("senales_json") or "{}") if isinstance(f.get("senales_json"), str) else (f.get("senales_json") or {})
+            except Exception:
+                senales = {}
+            kg_prom = float(datos.get("kg_promedio_meses_previos") or 0)
+            item = {
+                "nombre": nombre,
+                "kg_mes": round(float(datos.get("kg_actual") or 0), 1),
+                "meses_historial": int(datos.get("meses_previos") or 0),
+                "kg_promedio_historico": round(kg_prom, 1),
+                "historial_12m": datos.get("historial_12m") or [],
+                "senales": senales,
+                "resumen": f.get("resumen_deterministico") or "",
+                "creado_en": str(f.get("creado_en") or ""),
+            }
+            # Con mes en curso, el promedio histórico se prorratea por avance
+            # para no comparar un mes parcial contra meses completos.
+            if resultado["avance_mes_pct"] and kg_prom > 0:
+                esperado = kg_prom * resultado["avance_mes_pct"] / 100.0
+                item["kg_esperado_a_la_fecha"] = round(esperado, 1)
+                item["desvio_pct_vs_ritmo"] = round((item["kg_mes"] - esperado) / esperado * 100, 1)
+            if f.get("tipo_tarea") == "perfil_operador_historico":
+                item["tipos_principales"] = [
+                    {"tipo": t.get("tipo"), "kg": t.get("kg")}
+                    for t in (datos.get("tipos_principales") or [])[:3]
+                ]
+                destino = resultado["operadores"]
+            else:
+                destino = resultado["maquinas"]
+            if len(destino) < int(max_por_tipo):
+                destino.append(item)
+        resultado["maquinas"].sort(key=lambda x: -x["kg_mes"])
+        resultado["operadores"].sort(key=lambda x: -x["kg_mes"])
+    except Exception as e:
+        print(f"Error en leer_composicion_operativa: {e}", file=sys.stderr)
+    return resultado
+
+
 def leer_materiales_normalizados_recientes(limite=10):
     """Top materiales por DescriptionNormalizada del mes actual, con cobertura
     visible. Determinístico, solo lectura de la derivada. Con estado_confianza
@@ -12128,6 +12211,7 @@ def get_ia_cerebro():
             "biografias_protagonistas": leer_biografia_protagonistas(),
             "cola_curiosidad": leer_cola_curiosidad(),
             "fichas_operativas": leer_fichas_operativas(),
+            "composicion_operativa": leer_composicion_operativa(),
             "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
             "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
             "compras_materiales_normalizados_recientes": leer_compras_materiales_normalizados_recientes(),
@@ -12436,6 +12520,7 @@ def api_ia_export():
         "biografias_protagonistas": cerebro.get("biografias_protagonistas", {}),
         "cola_curiosidad": cerebro.get("cola_curiosidad", {}),
         "fichas_operativas": cerebro.get("fichas_operativas", {}),
+        "composicion_operativa": cerebro.get("composicion_operativa", {}),
         "mapa_historico_proveedores": cerebro.get("mapa_historico_proveedores", {}),
         "materiales_normalizados_recientes": cerebro.get("materiales_normalizados_recientes", {}),
         "compras_materiales_normalizados_recientes": cerebro.get("compras_materiales_normalizados_recientes", {}),
@@ -12877,6 +12962,10 @@ def ia_dashboard():
 
   <!-- -- COLA DE CURIOSIDAD (contador) -- -->
   <div id="colaCuriosidad" style="margin-bottom:16px;font-size:12px;color:#8b949e;"></div>
+
+  <!-- -- COMPOSICION OPERATIVA (fractal: maquinas y operadores del mes) -- -->
+  <div class="section-title" style="margin-top:20px;">Composición operativa del mes: máquinas y operadores</div>
+  <div id="composicionOperativa" style="margin-bottom:16px;"></div>
 
   <!-- -- FICHAS OPERATIVAS RECIENTES -- -->
   <div class="section-title" style="margin-top:20px;">Fichas operativas recientes</div>
@@ -14150,6 +14239,110 @@ function renderColaCuriosidad(cc) {
   el.textContent = "Cola de curiosidad: " + n + " pendientes.";
 }
 
+/* -- Composición operativa: fichas fractales de máquinas y operadores del mes -- */
+function renderComposicionOperativa(co) {
+  const cont = document.getElementById("composicionOperativa");
+  if (!cont) return;
+  cont.innerHTML = "";
+  const maquinas = co ? asArray(co.maquinas) : [];
+  const operadores = co ? asArray(co.operadores) : [];
+  if (!maquinas.length && !operadores.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin fichas de composición todavía. Se generan solas cuando la cola procesa máquinas y operadores del mes.";
+    cont.appendChild(p);
+    return;
+  }
+  function fmtKg(v) { return Number(v || 0).toLocaleString("es-AR", {maximumFractionDigits: 0}) + " kg"; }
+
+  const head = document.createElement("div");
+  head.style.cssText = "font-size:11px;color:#8b949e;margin-bottom:8px;";
+  let txt = "Periodo " + (co.periodo || "?");
+  if (co.avance_mes_pct != null) txt += " · mes en curso (" + co.avance_mes_pct + "% transcurrido); el desvío compara contra el ritmo esperado a la fecha, no contra el mes completo";
+  head.textContent = txt;
+  cont.appendChild(head);
+
+  function sparkline(hist) {
+    const barra = document.createElement("div");
+    barra.style.cssText = "display:flex;align-items:flex-end;gap:2px;height:26px;margin-top:6px;";
+    const kgMax = Math.max(1, ...hist.map(h => Number(h.kg) || 0));
+    hist.forEach((h, i) => {
+      const b = document.createElement("div");
+      const ultimo = i === hist.length - 1;
+      b.style.cssText = "flex:1;min-width:3px;border-radius:1px;height:" +
+        Math.max(2, Math.round((Number(h.kg) || 0) / kgMax * 26)) + "px;background:" +
+        (ultimo ? "#58a6ff" : "rgba(255,255,255,.18)") + ";";
+      b.title = h.periodo + ": " + fmtKg(h.kg);
+      barra.appendChild(b);
+    });
+    return barra;
+  }
+
+  function tarjeta(item, esMaquina) {
+    const card = document.createElement("div");
+    card.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;background:rgba(255,255,255,.03);";
+    const top = document.createElement("div");
+    top.style.cssText = "display:flex;align-items:center;gap:8px;";
+    const nom = document.createElement("span");
+    nom.textContent = item.nombre || "?";
+    nom.style.cssText = "font-weight:600;color:#e6edf3;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    nom.title = item.nombre || "";
+    top.appendChild(nom);
+    const nuevo = item.senales && (item.senales.maquina_nueva || item.senales.operador_nuevo);
+    if (nuevo) {
+      const tag = document.createElement("span");
+      tag.textContent = esMaquina ? "máquina nueva" : "operador nuevo";
+      tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#d29922;white-space:nowrap;";
+      top.appendChild(tag);
+    } else if (item.desvio_pct_vs_ritmo != null) {
+      const d = Number(item.desvio_pct_vs_ritmo);
+      const tag = document.createElement("span");
+      tag.textContent = (d >= 0 ? "+" : "") + d + "% vs ritmo";
+      tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);white-space:nowrap;color:" +
+        (d <= -30 ? "#f85149" : (d >= 30 ? "#3fb950" : "#8b949e")) + ";";
+      tag.title = "Esperado a la fecha: " + fmtKg(item.kg_esperado_a_la_fecha);
+      top.appendChild(tag);
+    }
+    const kg = document.createElement("span");
+    kg.textContent = fmtKg(item.kg_mes);
+    kg.style.cssText = "font-size:11px;color:#58a6ff;font-weight:600;white-space:nowrap;";
+    top.appendChild(kg);
+    card.appendChild(top);
+
+    const meta = document.createElement("div");
+    meta.style.cssText = "font-size:10px;color:#8b949e;margin-top:3px;";
+    const partes = [];
+    if (item.meses_historial) {
+      partes.push("historial " + item.meses_historial + " meses");
+      partes.push("promedio " + fmtKg(item.kg_promedio_historico) + "/mes");
+    } else {
+      partes.push("sin historial previo");
+    }
+    if (!esMaquina && asArray(item.tipos_principales).length) {
+      partes.push("trabaja en: " + asArray(item.tipos_principales).map(t => t.tipo).join(", "));
+    }
+    meta.textContent = partes.join(" · ");
+    card.appendChild(meta);
+
+    const hist = asArray(item.historial_12m);
+    if (hist.length > 1) card.appendChild(sparkline(hist));
+    return card;
+  }
+
+  function bloque(titulo, items, esMaquina) {
+    if (!items.length) return;
+    const h = document.createElement("div");
+    h.style.cssText = "font-size:11px;color:#c9d1d9;font-weight:600;margin:10px 0 6px;";
+    h.textContent = titulo + " (" + items.length + ")";
+    cont.appendChild(h);
+    const grid = document.createElement("div");
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;";
+    items.forEach(it => grid.appendChild(tarjeta(it, esMaquina)));
+    cont.appendChild(grid);
+  }
+  bloque("Máquinas del mes", maquinas, true);
+  bloque("Operadores del mes", operadores, false);
+}
+
 /* -- Fichas operativas recientes ---------------------------- */
 function renderFichasOperativas(fo) {
   const cont = document.getElementById("fichasOperativas");
@@ -14751,6 +14944,7 @@ function renderCerebro(c) {
   renderBiografiaProtagonistas(c.biografias_protagonistas || null);
   renderColaCuriosidad(c.cola_curiosidad || null);
   renderFichasOperativas(c.fichas_operativas || null);
+  renderComposicionOperativa(c.composicion_operativa || null);
   renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
   renderMaterialesNormalizados(c.materiales_normalizados_recientes || null);
   renderComprasMaterialesNormalizados(c.compras_materiales_normalizados_recientes || null);
