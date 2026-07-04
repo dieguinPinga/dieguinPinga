@@ -12140,6 +12140,18 @@ def api_ia_ciclo():
         AUTO_IA_LOCK.release()
 
 
+def _compactar_relaciones_export(items, limite=50):
+    """Versión liviana de relaciones para el snapshot: sin evidencia cruda."""
+    compactas = []
+    for r in (items or [])[:limite]:
+        if isinstance(r, dict):
+            compactas.append({k: v for k, v in r.items()
+                              if k not in ("evidencia", "evidencia_json", "salida_json")})
+        else:
+            compactas.append(r)
+    return compactas
+
+
 @app.route('/api/ia/export')
 def api_ia_export():
     estado = get_ia_estado()
@@ -12167,10 +12179,10 @@ def api_ia_export():
         "verificaciones_recientes": cerebro.get("verificaciones_recientes", []),
         "conocimiento_confirmado": cerebro.get("conocimiento_confirmado", []),
         "diccionario_columnas": cerebro.get("diccionario_columnas", []),
-        # Cartografía estructural: valor fijo, se exporta recortada (el snapshot
-        # completo pesaba ~1.9 MB y el 79% eran estas dos listas)
-        "relaciones_columnas": (cerebro.get("relaciones_columnas") or [])[:50],
-        "relaciones_interesantes": (cerebro.get("relaciones_interesantes") or [])[:50],
+        # Cartografía estructural: valor fijo, se exporta recortada y sin las
+        # evidencias crudas (~19 KB por item; lo útil pesa <1 KB)
+        "relaciones_columnas": _compactar_relaciones_export(cerebro.get("relaciones_columnas")),
+        "relaciones_interesantes": _compactar_relaciones_export(cerebro.get("relaciones_interesantes")),
         "mapa_estructural": cerebro.get("mapa_estructural", {}),
         "contexto_temporal": cerebro.get("contexto_temporal", {}),
         "modelo_estructural_inferido": cerebro.get("modelo_estructural_inferido", {}),
