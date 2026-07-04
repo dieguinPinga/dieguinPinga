@@ -5881,8 +5881,11 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
         resultado["estado_confianza"] = mat_tipo[0]["estado_confianza"]
         resultado["apto_para_conclusiones"] = mat_tipo[0]["estado_confianza"] in ("fuerte", "parcial")
 
+        # Cada item lleva material_normalizado (clave canónica) y material (alias
+        # para el dashboard); mismo valor en ambas.
         for r in mat_tipo:
             resultado["top_materiales_por_kg"].append({
+                "material_normalizado": r["material_normalizado"],
                 "material": r["material_normalizado"], "tipo_movimiento": r["tipo_movimiento"],
                 "registros": int(r["registros"] or 0), "kilos_total": _f(r["kilos_total"]) or 0,
                 "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
@@ -5891,7 +5894,9 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
             })
         for r in prov_mat:
             resultado["top_proveedor_material"].append({
-                "proveedor": r["proveedor"], "material": r["material_normalizado"],
+                "proveedor": r["proveedor"],
+                "material_normalizado": r["material_normalizado"],
+                "material": r["material_normalizado"],
                 "tipo_movimiento": r["tipo_movimiento"],
                 "kilos_total": _f(r["kilos_total"]) or 0,
                 "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
@@ -5900,7 +5905,9 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
             })
         for r in top_monto:
             resultado["top_monto_estimado"].append({
-                "proveedor": r["proveedor"], "material": r["material_normalizado"],
+                "proveedor": r["proveedor"],
+                "material_normalizado": r["material_normalizado"],
+                "material": r["material_normalizado"],
                 "tipo_movimiento": r["tipo_movimiento"],
                 "kilos_total": _f(r["kilos_total"]) or 0,
                 "precio_ponderado_kg": _f(r["precio_ponderado_kg"]),
@@ -5931,6 +5938,57 @@ def leer_compras_materiales_normalizados_recientes(limite=8):
                 })
     except Exception as e:
         print(f"Error en leer_compras_materiales_normalizados_recientes: {e}", file=sys.stderr)
+    return resultado
+
+
+def leer_calidad_error_registro(limite=8):
+    """Bloque de calidad de dato: ERROR_REGISTRO del mes actual, por material
+    normalizado y con conteo de filas sin proveedor. Solo lectura de la base
+    operativa; no infiere proveedor ni precio; fuera de rankings económicos."""
+    periodo = date.today().strftime("%Y-%m")
+    resultado = {
+        "periodo": periodo,
+        "registros": 0,
+        "kilos_total": 0,
+        "sin_proveedor": 0,
+        "top_materiales": [],
+    }
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT DescriptionNormalizada AS material_normalizado,
+                   COUNT(*) AS registros,
+                   COALESCE(SUM(kilos), 0) AS kilos,
+                   SUM(CASE WHEN Proveedor IS NULL OR TRIM(Proveedor) = '' THEN 1 ELSE 0 END) AS sin_proveedor
+            FROM TiposDeMovimiento
+            WHERE TiposDeMovimiento = 'ERROR_REGISTRO'
+              AND DATE_FORMAT(FechaHora, '%%Y-%%m') = %s
+            GROUP BY DescriptionNormalizada
+            ORDER BY kilos DESC
+        """, (periodo,))
+        filas = cur.fetchall() or []
+        cur.close()
+        conn.close()
+        for r in filas:
+            registros = int(r["registros"] or 0)
+            kilos = float(r["kilos"] or 0)
+            sin_prov = int(r["sin_proveedor"] or 0)
+            resultado["registros"] += registros
+            resultado["kilos_total"] += kilos
+            resultado["sin_proveedor"] += sin_prov
+            if len(resultado["top_materiales"]) < int(limite):
+                resultado["top_materiales"].append({
+                    "material_normalizado": r["material_normalizado"],
+                    "registros": registros,
+                    "kilos": round(kilos, 2),
+                    "sin_proveedor": sin_prov,
+                })
+        resultado["kilos_total"] = round(resultado["kilos_total"], 2)
+    except Exception as e:
+        print(f"Error en leer_calidad_error_registro: {e}", file=sys.stderr)
     return resultado
 
 
@@ -11449,6 +11507,7 @@ def get_ia_cerebro():
             "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
             "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
             "compras_materiales_normalizados_recientes": leer_compras_materiales_normalizados_recientes(),
+            "calidad_error_registro": leer_calidad_error_registro(),
             "timestamp": datetime.now().isoformat(),
         }
 
