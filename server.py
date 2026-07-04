@@ -6111,13 +6111,15 @@ def leer_calidad_error_registro(limite=8):
     return resultado
 
 
-MESES_PINTADOS_MAX = int(os.environ.get("MESES_PINTADOS_MAX", "12"))
+# 0 = todos los meses pintados (los datos pesan ~1.5 KB por mes)
+MESES_PINTADOS_MAX = int(os.environ.get("MESES_PINTADOS_MAX", "0"))
 
 
 def leer_meses_pintados(max_meses=None, max_tipos=8, max_materiales=3):
     """Vista por mes 'pintado' (con derivadas calculadas), de reciente a antiguo:
     tipos de movimiento del mes con kg/registros, y resumen de compras
-    normalizadas del mes si la dimensión existe. Determinístico, solo lectura."""
+    normalizadas del mes si la dimensión existe. Determinístico, solo lectura,
+    3 queries totales sin importar la cantidad de meses (0 = todos)."""
     if max_meses is None:
         max_meses = MESES_PINTADOS_MAX
     resultado = {"meses": []}
@@ -6131,64 +6133,79 @@ def leer_meses_pintados(max_meses=None, max_tipos=8, max_materiales=3):
             FROM ia_periodos_procesados
             WHERE criterio_version = %s
             ORDER BY periodo DESC
-            LIMIT %s
-        """, (DERIVADAS_VERSION, int(max_meses)))
+        """, (DERIVADAS_VERSION,))
         periodos = cur.fetchall() or []
+        if max_meses and int(max_meses) > 0:
+            periodos = periodos[:int(max_meses)]
+        periodos_set = {p["periodo"] for p in periodos}
+
+        # Tipos de movimiento de TODOS los meses en una sola query
+        tipos_por_mes = {}
+        cur.execute("""
+            SELECT periodo, TiposDeMovimiento AS tipo, registros, kilos_total
+            FROM ia_resumen_mensual_tipo_movimiento
+            WHERE criterio_version = %s
+            ORDER BY periodo DESC, kilos_total DESC
+        """, (DERIVADAS_VERSION,))
+        for t in (cur.fetchall() or []):
+            if t["periodo"] not in periodos_set:
+                continue
+            lista = tipos_por_mes.setdefault(t["periodo"], [])
+            if len(lista) >= int(max_tipos):
+                continue
+            lista.append({
+                "tipo": t["tipo"],
+                "kg": round(float(t["kilos_total"] or 0), 2),
+                "registros": int(t["registros"] or 0),
+                "comprable": _tipo_es_comprable(t["tipo"]),
+            })
+
+        # Compras normalizadas de TODOS los meses en una sola query
+        compras_por_mes = {}
+        try:
+            cur.execute("""
+                SELECT periodo, material_normalizado AS material,
+                       SUM(kilos_total) AS kg,
+                       SUM(COALESCE(monto_estimado, 0)) AS monto,
+                       MAX(cobertura_pct_periodo) AS cobertura
+                FROM ia_resumen_mensual_material_normalizado_tipo
+                WHERE criterio_version = %s
+                  AND tipo_movimiento LIKE %s
+                GROUP BY periodo, material_normalizado
+                ORDER BY periodo DESC, kg DESC
+            """, (DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%"))
+            for f in (cur.fetchall() or []):
+                if f["periodo"] not in periodos_set:
+                    continue
+                c = compras_por_mes.setdefault(f["periodo"], {"cobertura": 0.0, "materiales": []})
+                c["cobertura"] = max(c["cobertura"], float(f["cobertura"] or 0))
+                if len(c["materiales"]) < int(max_materiales):
+                    c["materiales"].append({
+                        "material": f["material"],
+                        "kg": round(float(f["kg"] or 0), 2),
+                        "monto_estimado": round(float(f["monto"] or 0), 2) or None,
+                    })
+        except Exception:
+            compras_por_mes = {}
+        cur.close()
+        conn.close()
 
         for p in periodos:
             periodo = p["periodo"]
-            cur.execute("""
-                SELECT TiposDeMovimiento AS tipo, registros, kilos_total
-                FROM ia_resumen_mensual_tipo_movimiento
-                WHERE periodo = %s AND criterio_version = %s
-                ORDER BY kilos_total DESC
-                LIMIT %s
-            """, (periodo, DERIVADAS_VERSION, int(max_tipos)))
-            tipos = []
-            kg_total = 0.0
-            for t in (cur.fetchall() or []):
-                kg = float(t["kilos_total"] or 0)
-                kg_total += kg
-                tipos.append({
-                    "tipo": t["tipo"],
-                    "kg": round(kg, 2),
-                    "registros": int(t["registros"] or 0),
-                    "comprable": _tipo_es_comprable(t["tipo"]),
-                })
+            tipos = tipos_por_mes.get(periodo, [])
+            kg_total = sum(t["kg"] for t in tipos)
             for t in tipos:
                 t["pct_kg"] = round(t["kg"] / kg_total * 100, 1) if kg_total > 0 else 0
-
-            # Compras normalizadas del mes (solo tipos comprables), si existen
             compras = None
-            try:
-                cur.execute("""
-                    SELECT material_normalizado AS material,
-                           SUM(kilos_total) AS kg,
-                           SUM(COALESCE(monto_estimado, 0)) AS monto,
-                           MAX(cobertura_pct_periodo) AS cobertura
-                    FROM ia_resumen_mensual_material_normalizado_tipo
-                    WHERE periodo = %s AND criterio_version = %s
-                      AND tipo_movimiento LIKE %s
-                    GROUP BY material_normalizado
-                    ORDER BY kg DESC
-                    LIMIT %s
-                """, (periodo, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%", int(max_materiales)))
-                filas_mat = cur.fetchall() or []
-                if filas_mat:
-                    cobertura = max(float(f["cobertura"] or 0) for f in filas_mat)
-                    compras = {
-                        "cobertura_pct": round(cobertura, 1),
-                        "estado_confianza": ("fuerte" if cobertura >= 90
-                                             else "parcial" if cobertura >= 30 else "debil"),
-                        "top_materiales": [{
-                            "material": f["material"],
-                            "kg": round(float(f["kg"] or 0), 2),
-                            "monto_estimado": round(float(f["monto"] or 0), 2) or None,
-                        } for f in filas_mat],
-                    }
-            except Exception:
-                compras = None
-
+            c = compras_por_mes.get(periodo)
+            if c and c["materiales"]:
+                cob = c["cobertura"]
+                compras = {
+                    "cobertura_pct": round(cob, 1),
+                    "estado_confianza": ("fuerte" if cob >= 90
+                                         else "parcial" if cob >= 30 else "debil"),
+                    "top_materiales": c["materiales"],
+                }
             resultado["meses"].append({
                 "periodo": periodo,
                 "nombre": _nombre_mes_es(periodo),
@@ -6197,8 +6214,6 @@ def leer_meses_pintados(max_meses=None, max_tipos=8, max_materiales=3):
                 "tipos": tipos,
                 "compras_normalizadas": compras,
             })
-        cur.close()
-        conn.close()
     except Exception as e:
         print(f"Error en leer_meses_pintados: {e}", file=sys.stderr)
     return resultado
