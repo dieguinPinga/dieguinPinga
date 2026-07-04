@@ -4404,6 +4404,20 @@ def _ensure_tablas_derivadas(cur):
         ) CHARACTER SET utf8mb4
     """)
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS ia_resumen_mensual_operador_tipo (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            periodo VARCHAR(7) NOT NULL,
+            estado_periodo VARCHAR(16) NOT NULL,
+            criterio_version VARCHAR(32) NOT NULL DEFAULT 'derivadas_v1',
+            tipo_movimiento VARCHAR(120) NOT NULL,
+            Operador VARCHAR(120) NOT NULL,
+            registros INT NOT NULL DEFAULT 0,
+            kilos_total DECIMAL(16,2) NOT NULL DEFAULT 0,
+            actualizado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_periodo_operador_tipo (periodo, tipo_movimiento, Operador, criterio_version)
+        ) CHARACTER SET utf8mb4
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS ia_resumen_mensual_description_normalizada (
             id INT AUTO_INCREMENT PRIMARY KEY,
             periodo VARCHAR(7) NOT NULL,
@@ -5545,6 +5559,83 @@ def calcular_cola_compras_normalizadas(cur_lab, periodo_actual, max_items=20):
     return total
 
 
+def calcular_cola_composicion_operativa(cur_lab, periodo_actual, max_items=15):
+    """Fractal de composición: de los tipos de movimiento del mes se desprenden
+    sus columnas importantes (máquinas en PRODUCCION, operadores en todos los
+    tipos) y las entidades top se encolan para ficharlas hacia atrás, igual que
+    proveedores/materiales. Determinístico, sin Ollama. Devuelve total encolado."""
+    encoladas = {"maquinas": 0, "operadores": 0}
+    dedupe = 0
+
+    def _prio(kg, registros):
+        return round(kg * 0.7 + registros * 5.0, 4)
+
+    # Máquinas importantes del mes (PRODUCCION)
+    cur_lab.execute("""
+        SELECT Maquina AS entidad, registros, kilos_total
+        FROM ia_resumen_mensual_produccion_maquina
+        WHERE periodo = %s AND criterio_version = %s
+        ORDER BY kilos_total DESC
+        LIMIT %s
+    """, (periodo_actual, DERIVADAS_VERSION, int(max_items)))
+    for r in (cur_lab.fetchall() or []):
+        if not r["entidad"]:
+            continue
+        kg = float(r["kilos_total"] or 0)
+        ins = _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_maquina_historico",
+            "tipo_nodo": "maquina",
+            "entidad": r["entidad"],
+            "entidad_2": None,
+            "periodo": periodo_actual,
+            "origen": "composicion_tipos",
+            "motivo": f"Máquina con {int(kg):,} kg de PRODUCCION en {periodo_actual}",
+            "prioridad_score": _prio(kg, int(r["registros"] or 0)),
+            "profundidad": 1,
+        })
+        encoladas["maquinas"] += ins
+        dedupe += 1 - ins
+
+    # Operadores importantes del mes (suma sobre todos los tipos donde operan)
+    cur_lab.execute("""
+        SELECT Operador AS entidad,
+               SUM(registros) AS registros,
+               SUM(kilos_total) AS kilos_total
+        FROM ia_resumen_mensual_operador_tipo
+        WHERE periodo = %s AND criterio_version = %s
+        GROUP BY Operador
+        ORDER BY kilos_total DESC
+        LIMIT %s
+    """, (periodo_actual, DERIVADAS_VERSION, int(max_items)))
+    for r in (cur_lab.fetchall() or []):
+        if not r["entidad"]:
+            continue
+        kg = float(r["kilos_total"] or 0)
+        ins = _encolar_curiosidad(cur_lab, {
+            "tipo_tarea": "perfil_operador_historico",
+            "tipo_nodo": "operador",
+            "entidad": r["entidad"],
+            "entidad_2": None,
+            "periodo": periodo_actual,
+            "origen": "composicion_tipos",
+            "motivo": f"Operador con {int(kg):,} kg movidos en {periodo_actual}",
+            "prioridad_score": _prio(kg, int(r["registros"] or 0)),
+            "profundidad": 1,
+        })
+        encoladas["operadores"] += ins
+        dedupe += 1 - ins
+
+    total = sum(encoladas.values())
+    if total or dedupe:
+        add_reasoning_step(
+            "cola_curiosidad_composicion_tipos",
+            f"Composición operativa: {total} tareas encoladas para {periodo_actual}.",
+            (f"origen=composicion_tipos | maquinas={encoladas['maquinas']} "
+             f"operadores={encoladas['operadores']} dedupe={dedupe}")
+        )
+    return total
+
+
 def _normalizar_proveedor_material(r):
     """Agrega claves explícitas proveedor/material/etiqueta a una fila de
     ia_biografia_protagonistas o ia_protagonistas_operativos.
@@ -5676,6 +5767,11 @@ def _normalizar_nodo_cola(r):
     elif r.get("tipo_nodo") == "material":
         r["material"] = r.get("entidad")
         r["proveedor"] = None
+        r["etiqueta"] = r.get("entidad") or "?"
+    elif r.get("tipo_nodo") in ("maquina", "operador"):
+        # Entidades de composición operativa: no son proveedores ni materiales
+        r["proveedor"] = None
+        r["material"] = None
         r["etiqueta"] = r.get("entidad") or "?"
     else:
         r["proveedor"] = r.get("entidad")
@@ -6283,7 +6379,7 @@ def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
         def _prov_de(fila):
             if fila.get("tipo_nodo") == "proveedor_material":
                 return canonizar_proveedor(fila.get("entidad_2"), mapa_alias_m)
-            if fila.get("tipo_nodo") == "material":
+            if fila.get("tipo_nodo") in ("material", "maquina", "operador"):
                 return None
             return canonizar_proveedor(fila.get("entidad"), mapa_alias_m)
 
@@ -6896,6 +6992,83 @@ def _ficha_ranking_proveedores_material_normalizado(cur_lab, tarea):
             "resumen": resumen, "datos": datos, "senales": senales}
 
 
+def _ficha_maquina_historico(cur_lab, tarea):
+    """Ficha determinística: historia mensual de una máquina en PRODUCCION."""
+    maquina = tarea["entidad"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT periodo, registros, kilos_total
+        FROM ia_resumen_mensual_produccion_maquina
+        WHERE Maquina = %s AND criterio_version = %s
+        ORDER BY periodo
+    """, (maquina, DERIVADAS_VERSION))
+    hist = [{"periodo": r["periodo"], "kg": float(r["kilos_total"] or 0),
+             "registros": int(r["registros"] or 0)} for r in (cur_lab.fetchall() or [])]
+    actual = next((h for h in hist if h["periodo"] == periodo), None)
+    previos = [h for h in hist if h["periodo"] < periodo]
+    kg_actual = actual["kg"] if actual else 0
+    kg_vals = [h["kg"] for h in previos]
+    kg_prom = round(sum(kg_vals) / len(kg_vals), 2) if kg_vals else 0
+    datos = {
+        "maquina": maquina, "periodo": periodo, "kg_actual": kg_actual,
+        "meses_previos": len(previos), "kg_promedio_meses_previos": kg_prom,
+        "kg_min_previo": round(min(kg_vals), 2) if kg_vals else 0,
+        "kg_max_previo": round(max(kg_vals), 2) if kg_vals else 0,
+        "historial_12m": hist[-12:],
+    }
+    senales = {"maquina_nueva": not previos}
+    if previos and kg_prom > 0:
+        senales["desvio_pct_vs_previo"] = round((kg_actual - kg_prom) / kg_prom * 100, 1)
+    resumen = f"{maquina}: {_ficha_kg(kg_actual)} de PRODUCCION en {periodo}; "
+    resumen += (f"historial {len(previos)} meses; promedio {_ficha_kg(kg_prom)}/mes "
+                f"(min {_ficha_kg(datos['kg_min_previo'])}, max {_ficha_kg(datos['kg_max_previo'])})."
+                if previos else "sin historial previo (máquina nueva o poco vista).")
+    return {"titulo": f"Perfil histórico de máquina: {maquina}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
+def _ficha_operador_historico(cur_lab, tarea):
+    """Ficha determinística: historia mensual de un operador y sus tipos de movimiento."""
+    operador = tarea["entidad"]
+    periodo = tarea["periodo"]
+    cur_lab.execute("""
+        SELECT periodo, SUM(registros) AS registros, SUM(kilos_total) AS kg
+        FROM ia_resumen_mensual_operador_tipo
+        WHERE Operador = %s AND criterio_version = %s
+        GROUP BY periodo
+        ORDER BY periodo
+    """, (operador, DERIVADAS_VERSION))
+    hist = [{"periodo": r["periodo"], "kg": float(r["kg"] or 0),
+             "registros": int(r["registros"] or 0)} for r in (cur_lab.fetchall() or [])]
+    cur_lab.execute("""
+        SELECT tipo_movimiento, SUM(registros) AS registros, SUM(kilos_total) AS kg
+        FROM ia_resumen_mensual_operador_tipo
+        WHERE Operador = %s AND criterio_version = %s
+        GROUP BY tipo_movimiento
+        ORDER BY kg DESC
+        LIMIT 3
+    """, (operador, DERIVADAS_VERSION))
+    tipos = [{"tipo": r["tipo_movimiento"], "kg": round(float(r["kg"] or 0), 2),
+              "registros": int(r["registros"] or 0)} for r in (cur_lab.fetchall() or [])]
+    actual = next((h for h in hist if h["periodo"] == periodo), None)
+    previos = [h for h in hist if h["periodo"] < periodo]
+    kg_actual = actual["kg"] if actual else 0
+    kg_prom = round(sum(h["kg"] for h in previos) / len(previos), 2) if previos else 0
+    datos = {
+        "operador": operador, "periodo": periodo, "kg_actual": kg_actual,
+        "meses_previos": len(previos), "kg_promedio_meses_previos": kg_prom,
+        "tipos_principales": tipos, "historial_12m": hist[-12:],
+    }
+    senales = {"operador_nuevo": not previos}
+    tipos_txt = ", ".join(t["tipo"] for t in tipos) or "sin tipos"
+    resumen = f"{operador}: {_ficha_kg(kg_actual)} movidos en {periodo}; "
+    resumen += (f"historial {len(previos)} meses; promedio {_ficha_kg(kg_prom)}/mes. "
+                if previos else "sin historial previo (operador nuevo). ")
+    resumen += f"Trabaja sobre todo en: {tipos_txt}."
+    return {"titulo": f"Perfil histórico de operador: {operador}",
+            "resumen": resumen, "datos": datos, "senales": senales}
+
+
 def _propagar_dominantes_material(cur_lab, tarea, ficha):
     """Propagación determinística de la red de curiosidad: cuando una ficha
     perfil_material_global descubre proveedores dominantes históricos, encola
@@ -7181,6 +7354,10 @@ def ejecutar_tarea_cola_curiosidad():
             ficha = _ficha_precio_material_normalizado(cur_lab, tarea)
         elif tipo == "ranking_proveedores_material_normalizado_mes":
             ficha = _ficha_ranking_proveedores_material_normalizado(cur_lab, tarea)
+        elif tipo == "perfil_maquina_historico":
+            ficha = _ficha_maquina_historico(cur_lab, tarea)
+        elif tipo == "perfil_operador_historico":
+            ficha = _ficha_operador_historico(cur_lab, tarea)
         else:
             raise ValueError(f"tipo_tarea sin constructor de ficha: {tipo}")
 
@@ -7761,6 +7938,38 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
                 """, (periodo, estado, DERIVADAS_VERSION, prov, acc["registros"], acc["kilos_total"]))
             resultado["filas_ingresos_proveedor"] += len(provs_canon)
 
+            # --- operador x tipo_movimiento (composición operativa) ---
+            try:
+                cur_op.execute("""
+                    SELECT TiposDeMovimiento AS tipo, Operador,
+                           COUNT(*) AS registros,
+                           COALESCE(SUM(kilos), 0) AS kilos_total
+                    FROM TiposDeMovimiento
+                    WHERE FechaHora >= %s AND FechaHora < %s
+                      AND TiposDeMovimiento IS NOT NULL AND TiposDeMovimiento <> ''
+                      AND Operador IS NOT NULL AND TRIM(Operador) <> ''
+                    GROUP BY tipo, Operador
+                """, (inicio, fin_excl))
+                rows_oper = cur_op.fetchall() or []
+                cur_lab.execute(
+                    "DELETE FROM ia_resumen_mensual_operador_tipo WHERE periodo = %s AND criterio_version = %s",
+                    (periodo, DERIVADAS_VERSION)
+                )
+                for r in rows_oper:
+                    cur_lab.execute("""
+                        INSERT INTO ia_resumen_mensual_operador_tipo
+                            (periodo, estado_periodo, criterio_version, tipo_movimiento, Operador, registros, kilos_total)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                            registros = VALUES(registros),
+                            kilos_total = VALUES(kilos_total),
+                            estado_periodo = VALUES(estado_periodo),
+                            actualizado_en = CURRENT_TIMESTAMP
+                    """, (periodo, estado, DERIVADAS_VERSION, r["tipo"], r["Operador"], r["registros"], r["kilos_total"]))
+                resultado["filas_operador_tipo"] = resultado.get("filas_operador_tipo", 0) + len(rows_oper)
+            except Exception as e_op:
+                resultado["errores"].append(f"operador_tipo {periodo}: {e_op}")
+
             # --- description_normalizada (dimensión nueva; NO se mezcla con Description vieja) ---
             if tiene_desc_norm:
                 try:
@@ -7901,6 +8110,13 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
             except Exception as e_ccn:
                 resultado["errores"].append(f"cola_compras_normalizadas: {e_ccn}")
 
+        # Cola fractal de composición: máquinas y operadores importantes del mes
+        filas_cola_composicion = 0
+        try:
+            filas_cola_composicion = calcular_cola_composicion_operativa(cur_lab, periodo_actual)
+        except Exception as e_comp:
+            resultado["errores"].append(f"cola_composicion: {e_comp}")
+
         conn_lab.commit()
         resultado["ok"] = True
         resultado["filas_protagonistas"] = filas_prot
@@ -7909,6 +8125,7 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
         resultado["filas_cola_cobertura"] = cobertura.get("encoladas", 0)
         resultado["cola_cobertura_dedupe"] = cobertura.get("dedupe", 0)
         resultado["filas_cola_compras_normalizadas"] = filas_cola_compras
+        resultado["filas_cola_composicion"] = filas_cola_composicion
 
         add_reasoning_step(
             "tablas_derivadas",
