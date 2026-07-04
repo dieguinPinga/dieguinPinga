@@ -5708,6 +5708,19 @@ def leer_cola_curiosidad(limite_top=10):
             for r in (cur.fetchall() or [])
         }
 
+        # Memoria de qué orígenes trabajaron, aunque la cola esté limpia
+        cur.execute("""
+            SELECT origen, COUNT(*) AS completadas
+            FROM ia_cola_curiosidad
+            WHERE estado = 'completada'
+            GROUP BY origen
+            ORDER BY completadas DESC
+        """)
+        resultado["completadas_por_origen"] = {
+            (r.get("origen") or "sin_origen"): int(r.get("completadas") or 0)
+            for r in (cur.fetchall() or [])
+        }
+
         cur.execute("""
             SELECT id, tipo_tarea, tipo_nodo, entidad, entidad_2, material_fuente,
                    periodo, origen, motivo,
@@ -12154,8 +12167,10 @@ def api_ia_export():
         "verificaciones_recientes": cerebro.get("verificaciones_recientes", []),
         "conocimiento_confirmado": cerebro.get("conocimiento_confirmado", []),
         "diccionario_columnas": cerebro.get("diccionario_columnas", []),
-        "relaciones_columnas": cerebro.get("relaciones_columnas", []),
-        "relaciones_interesantes": cerebro.get("relaciones_interesantes", []),
+        # Cartografía estructural: valor fijo, se exporta recortada (el snapshot
+        # completo pesaba ~1.9 MB y el 79% eran estas dos listas)
+        "relaciones_columnas": (cerebro.get("relaciones_columnas") or [])[:50],
+        "relaciones_interesantes": (cerebro.get("relaciones_interesantes") or [])[:50],
         "mapa_estructural": cerebro.get("mapa_estructural", {}),
         "contexto_temporal": cerebro.get("contexto_temporal", {}),
         "modelo_estructural_inferido": cerebro.get("modelo_estructural_inferido", {}),
