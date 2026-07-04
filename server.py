@@ -6098,6 +6098,94 @@ def leer_calidad_error_registro(limite=8):
     return resultado
 
 
+def leer_meses_pintados(max_meses=6, max_tipos=8, max_materiales=3):
+    """Vista por mes 'pintado' (con derivadas calculadas), de reciente a antiguo:
+    tipos de movimiento del mes con kg/registros, y resumen de compras
+    normalizadas del mes si la dimensión existe. Determinístico, solo lectura."""
+    resultado = {"meses": []}
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return resultado
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT periodo, estado_periodo
+            FROM ia_periodos_procesados
+            WHERE criterio_version = %s
+            ORDER BY periodo DESC
+            LIMIT %s
+        """, (DERIVADAS_VERSION, int(max_meses)))
+        periodos = cur.fetchall() or []
+
+        for p in periodos:
+            periodo = p["periodo"]
+            cur.execute("""
+                SELECT TiposDeMovimiento AS tipo, registros, kilos_total
+                FROM ia_resumen_mensual_tipo_movimiento
+                WHERE periodo = %s AND criterio_version = %s
+                ORDER BY kilos_total DESC
+                LIMIT %s
+            """, (periodo, DERIVADAS_VERSION, int(max_tipos)))
+            tipos = []
+            kg_total = 0.0
+            for t in (cur.fetchall() or []):
+                kg = float(t["kilos_total"] or 0)
+                kg_total += kg
+                tipos.append({
+                    "tipo": t["tipo"],
+                    "kg": round(kg, 2),
+                    "registros": int(t["registros"] or 0),
+                    "comprable": _tipo_es_comprable(t["tipo"]),
+                })
+            for t in tipos:
+                t["pct_kg"] = round(t["kg"] / kg_total * 100, 1) if kg_total > 0 else 0
+
+            # Compras normalizadas del mes (solo tipos comprables), si existen
+            compras = None
+            try:
+                cur.execute("""
+                    SELECT material_normalizado AS material,
+                           SUM(kilos_total) AS kg,
+                           SUM(COALESCE(monto_estimado, 0)) AS monto,
+                           MAX(cobertura_pct_periodo) AS cobertura
+                    FROM ia_resumen_mensual_material_normalizado_tipo
+                    WHERE periodo = %s AND criterio_version = %s
+                      AND tipo_movimiento LIKE %s
+                    GROUP BY material_normalizado
+                    ORDER BY kg DESC
+                    LIMIT %s
+                """, (periodo, DERIVADAS_VERSION, f"{COMPRAS_TIPOS_PREFIJO}%", int(max_materiales)))
+                filas_mat = cur.fetchall() or []
+                if filas_mat:
+                    cobertura = max(float(f["cobertura"] or 0) for f in filas_mat)
+                    compras = {
+                        "cobertura_pct": round(cobertura, 1),
+                        "estado_confianza": ("fuerte" if cobertura >= 90
+                                             else "parcial" if cobertura >= 30 else "debil"),
+                        "top_materiales": [{
+                            "material": f["material"],
+                            "kg": round(float(f["kg"] or 0), 2),
+                            "monto_estimado": round(float(f["monto"] or 0), 2) or None,
+                        } for f in filas_mat],
+                    }
+            except Exception:
+                compras = None
+
+            resultado["meses"].append({
+                "periodo": periodo,
+                "nombre": _nombre_mes_es(periodo),
+                "estado_periodo": p["estado_periodo"],
+                "kg_total": round(kg_total, 2),
+                "tipos": tipos,
+                "compras_normalizadas": compras,
+            })
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en leer_meses_pintados: {e}", file=sys.stderr)
+    return resultado
+
+
 def leer_mapa_historico_proveedores(max_proveedores=60, max_meses=33):
     """Matriz proveedores x meses para el dashboard, determinística y sin Ollama.
     Filas: proveedores descubiertos por ia_fichas_operativas / ia_cola_curiosidad,
@@ -11794,6 +11882,7 @@ def get_ia_cerebro():
             "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
             "compras_materiales_normalizados_recientes": leer_compras_materiales_normalizados_recientes(),
             "calidad_error_registro": leer_calidad_error_registro(),
+            "meses_pintados": leer_meses_pintados(),
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -12529,6 +12618,10 @@ def ia_dashboard():
   <!-- -- COMPRAS / MATERIALES NORMALIZADOS -- -->
   <div class="section-title" style="margin-top:20px;">Compras/materiales normalizados</div>
   <div id="comprasMaterialesNormalizados" style="margin-bottom:16px;"></div>
+
+  <!-- -- MESES PINTADOS (tipos de movimiento por mes) -- -->
+  <div class="section-title" style="margin-top:20px;">Meses pintados: tipos de movimiento por mes</div>
+  <div id="mesesPintados" style="margin-bottom:16px;"></div>
 
   <!-- -- ULTIMAS OBSERVACIONES UTILES (microtareas) -- -->
   <div class="section-title" style="margin-top:28px;">Últimas observaciones útiles</div>
@@ -13674,6 +13767,106 @@ function renderComprasMaterialesNormalizados(cm) {
   }
 }
 
+/* -- Meses pintados: cada mes con derivadas, sus tipos de movimiento y compras -- */
+function renderMesesPintados(mp) {
+  const cont = document.getElementById("mesesPintados");
+  if (!cont) return;
+  cont.innerHTML = "";
+  const meses = mp ? asArray(mp.meses) : [];
+  if (!meses.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin meses pintados todavía. Ejecutar recalcular derivadas.";
+    cont.appendChild(p);
+    return;
+  }
+
+  function colorTipo(tipo, comprable) {
+    const t = String(tipo || "").toUpperCase();
+    if (t === "ERROR_REGISTRO") return "#f85149";
+    if (comprable) return "#3fb950";
+    if (t.startsWith("DESPACHO")) return "#58a6ff";
+    if (t === "PRODUCCION") return "#bc8cff";
+    return "#8b949e";
+  }
+  function fmtKg(v) { return Number(v || 0).toLocaleString("es-AR") + " kg"; }
+  const CONF_COLOR = {fuerte: "#3fb950", parcial: "#d29922", debil: "#f85149"};
+
+  const grid = document.createElement("div");
+  grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;";
+  cont.appendChild(grid);
+
+  meses.forEach(mes => {
+    const card = document.createElement("div");
+    card.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;background:rgba(255,255,255,.03);";
+
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:8px;";
+    const nombre = document.createElement("span");
+    nombre.textContent = mes.nombre || mes.periodo;
+    nombre.style.cssText = "font-weight:600;color:#e6edf3;font-size:12px;flex:1;text-transform:capitalize;";
+    const badgeEstado = document.createElement("span");
+    badgeEstado.textContent = mes.estado_periodo || "";
+    badgeEstado.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:" +
+      (mes.estado_periodo === "abierto" ? "#d29922" : "#8b949e") + ";";
+    const kgTot = document.createElement("span");
+    kgTot.textContent = fmtKg(mes.kg_total);
+    kgTot.style.cssText = "font-size:11px;color:#58a6ff;font-weight:600;";
+    head.appendChild(nombre); head.appendChild(badgeEstado); head.appendChild(kgTot);
+    card.appendChild(head);
+
+    const kgMax = Math.max(1, ...asArray(mes.tipos).map(t => Number(t.kg) || 0));
+    asArray(mes.tipos).forEach(t => {
+      const row = document.createElement("div");
+      row.style.cssText = "margin-bottom:4px;";
+      const linea = document.createElement("div");
+      linea.style.cssText = "display:flex;gap:8px;font-size:10px;align-items:baseline;";
+      const nom = document.createElement("span");
+      nom.textContent = t.tipo;
+      nom.style.cssText = "flex:1;color:#c9d1d9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      nom.title = t.tipo + " · " + (t.registros || 0) + " registros";
+      const kg = document.createElement("span");
+      kg.textContent = fmtKg(t.kg) + " (" + (t.pct_kg ?? 0) + "%)";
+      kg.style.cssText = "color:#8b949e;white-space:nowrap;";
+      linea.appendChild(nom); linea.appendChild(kg);
+      row.appendChild(linea);
+      const barra = document.createElement("div");
+      barra.style.cssText = "height:4px;border-radius:2px;background:rgba(255,255,255,.06);overflow:hidden;";
+      const fill = document.createElement("div");
+      fill.style.cssText = "height:100%;width:" + Math.max(2, Math.round((Number(t.kg) || 0) / kgMax * 100)) +
+        "%;background:" + colorTipo(t.tipo, t.comprable) + ";opacity:.8;";
+      barra.appendChild(fill);
+      row.appendChild(barra);
+      card.appendChild(row);
+    });
+
+    const cn = mes.compras_normalizadas;
+    if (cn) {
+      const sub = document.createElement("div");
+      sub.style.cssText = "margin-top:8px;border-top:1px solid rgba(255,255,255,.06);padding-top:6px;";
+      const h = document.createElement("div");
+      h.style.cssText = "font-size:10px;color:#8b949e;margin-bottom:3px;";
+      const conf = cn.estado_confianza || "debil";
+      h.innerHTML = "compras normalizadas · <span style='color:" + (CONF_COLOR[conf] || "#8b949e") + ";'>cobertura " +
+        (cn.cobertura_pct ?? 0) + "% (" + conf + ")</span>";
+      sub.appendChild(h);
+      asArray(cn.top_materiales).forEach(m => {
+        const li = document.createElement("div");
+        li.style.cssText = "display:flex;gap:8px;font-size:10px;color:#c9d1d9;";
+        const nm = document.createElement("span");
+        nm.textContent = m.material || "?";
+        nm.style.cssText = "flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+        const kg2 = document.createElement("span");
+        kg2.textContent = fmtKg(m.kg) + (m.monto_estimado ? " · $est " + Number(m.monto_estimado).toLocaleString("es-AR") : "");
+        kg2.style.cssText = "color:#8b949e;white-space:nowrap;";
+        li.appendChild(nm); li.appendChild(kg2);
+        sub.appendChild(li);
+      });
+      card.appendChild(sub);
+    }
+    grid.appendChild(card);
+  });
+}
+
 /* -- Cola de curiosidad (contador simple) ------------------- */
 function renderColaCuriosidad(cc) {
   const el = document.getElementById("colaCuriosidad");
@@ -14286,6 +14479,7 @@ function renderCerebro(c) {
   renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
   renderMaterialesNormalizados(c.materiales_normalizados_recientes || null);
   renderComprasMaterialesNormalizados(c.compras_materiales_normalizados_recientes || null);
+  renderMesesPintados(c.meses_pintados || null);
   renderUltimasObservacionesUtiles(c.conclusiones_autonomas || []);
   renderRazonamientoAgrupado(c.razonamiento_reciente || []);
   renderConclusionesAutonomas(c.conclusiones_autonomas || []);
