@@ -6111,10 +6111,15 @@ def leer_calidad_error_registro(limite=8):
     return resultado
 
 
-def leer_meses_pintados(max_meses=6, max_tipos=8, max_materiales=3):
+MESES_PINTADOS_MAX = int(os.environ.get("MESES_PINTADOS_MAX", "12"))
+
+
+def leer_meses_pintados(max_meses=None, max_tipos=8, max_materiales=3):
     """Vista por mes 'pintado' (con derivadas calculadas), de reciente a antiguo:
     tipos de movimiento del mes con kg/registros, y resumen de compras
     normalizadas del mes si la dimensión existe. Determinístico, solo lectura."""
+    if max_meses is None:
+        max_meses = MESES_PINTADOS_MAX
     resultado = {"meses": []}
     try:
         conn = get_ia_connection()
