@@ -12543,6 +12543,73 @@ def api_ia_cola_propagar_dominantes():
     return jsonify(resultado), status
 
 
+# Tareas cuyas fichas dependen de derivadas normalizadas: si la cobertura
+# histórica creció (p.ej. backfill del normalizador), conviene reficharlas.
+REFICHAR_TIPOS_DEFAULT = (
+    "perfil_material_normalizado_historico",
+    "perfil_proveedor_material_normalizado_historico",
+    "perfil_precio_material_normalizado",
+)
+
+
+def refichar_cola_curiosidad(tipos=None, periodo=None):
+    """Reabre tareas completadas de la cola para regenerar sus fichas con los
+    datos actuales (p.ej. tras completar la normalización histórica). No borra
+    nada: las fichas viejas quedan como historial y las vistas toman siempre
+    la más reciente por entidad. Determinístico."""
+    tipos = [str(t) for t in (tipos or REFICHAR_TIPOS_DEFAULT) if t]
+    periodo = periodo or date.today().strftime("%Y-%m")
+    resultado = {"ok": False, "periodo": periodo, "tipos": tipos, "reabiertas": 0}
+    if not tipos:
+        resultado["error"] = "sin tipos de tarea"
+        return resultado
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            resultado["error"] = "sin conexión a crowdbot_lab"
+            return resultado
+        cur = conn.cursor()
+        marcas = ", ".join(["%s"] * len(tipos))
+        cur.execute(f"""
+            UPDATE ia_cola_curiosidad
+            SET estado = 'pendiente', resultado_resumen = NULL, cooldown_hasta = NULL
+            WHERE periodo = %s AND estado = 'completada'
+              AND tipo_tarea IN ({marcas})
+        """, [periodo] + tipos)
+        resultado["reabiertas"] = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        resultado["ok"] = True
+        if resultado["reabiertas"]:
+            add_reasoning_step(
+                "cola_curiosidad_refichar",
+                f"Refichado: reabro {resultado['reabiertas']} tareas de {periodo} para regenerar fichas con datos actuales.",
+                f"tipos={', '.join(tipos)}"
+            )
+    except Exception as e:
+        resultado["error"] = str(e)
+        print(f"Error en refichar_cola_curiosidad: {e}", file=sys.stderr)
+    return resultado
+
+
+@app.route('/api/ia/cola/refichar', methods=['POST'])
+def api_ia_cola_refichar():
+    """Reabre tareas completadas (por defecto las de materiales normalizados
+    del mes actual) para que el drain regenere sus fichas con la historia
+    completa. Body opcional: {"tipos": [...], "periodo": "YYYY-MM"}."""
+    tipos, periodo = None, None
+    try:
+        data = request.get_json(silent=True) or {}
+        tipos = data.get("tipos")
+        periodo = data.get("periodo")
+    except Exception:
+        pass
+    resultado = refichar_cola_curiosidad(tipos=tipos, periodo=periodo)
+    status = 200 if resultado.get("ok") else 500
+    return jsonify(resultado), status
+
+
 @app.route('/api/ia/telegram_test', methods=['POST'])
 def api_ia_telegram_test():
     resultado = enviar_telegram(
@@ -14390,24 +14457,32 @@ function renderComposicionOperativa(co) {
     const card = document.createElement("div");
     card.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;background:rgba(255,255,255,.03);";
     const top = document.createElement("div");
-    top.style.cssText = "display:flex;align-items:center;gap:8px;";
+    top.style.cssText = "display:flex;align-items:baseline;gap:8px;";
     const nom = document.createElement("span");
     nom.textContent = item.nombre || "?";
-    nom.style.cssText = "font-weight:600;color:#e6edf3;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    nom.style.cssText = "font-weight:600;color:#e6edf3;font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     nom.title = item.nombre || "";
     top.appendChild(nom);
+    const kg = document.createElement("span");
+    kg.textContent = fmtKg(item.kg_mes);
+    kg.style.cssText = "font-size:11px;color:#58a6ff;font-weight:600;white-space:nowrap;";
+    top.appendChild(kg);
+    card.appendChild(top);
+
+    const tags = document.createElement("div");
+    tags.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:3px;";
     if (item.material_normalizado) {
       const tagN = document.createElement("span");
       tagN.textContent = "normalizado";
       tagN.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#3fb950;white-space:nowrap;";
-      top.appendChild(tagN);
+      tags.appendChild(tagN);
     }
     const nuevo = item.senales && (item.senales.maquina_nueva || item.senales.operador_nuevo || item.senales.sin_historial_previo);
     if (nuevo) {
       const tag = document.createElement("span");
       tag.textContent = clase === "maquina" ? "máquina nueva" : (clase === "operador" ? "operador nuevo" : "sin historial");
       tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#d29922;white-space:nowrap;";
-      top.appendChild(tag);
+      tags.appendChild(tag);
     } else if (item.desvio_pct_vs_ritmo != null) {
       const d = Number(item.desvio_pct_vs_ritmo);
       const tag = document.createElement("span");
@@ -14415,13 +14490,9 @@ function renderComposicionOperativa(co) {
       tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);white-space:nowrap;color:" +
         (d <= -30 ? "#f85149" : (d >= 30 ? "#3fb950" : "#8b949e")) + ";";
       tag.title = "Esperado a la fecha: " + fmtKg(item.kg_esperado_a_la_fecha);
-      top.appendChild(tag);
+      tags.appendChild(tag);
     }
-    const kg = document.createElement("span");
-    kg.textContent = fmtKg(item.kg_mes);
-    kg.style.cssText = "font-size:11px;color:#58a6ff;font-weight:600;white-space:nowrap;";
-    top.appendChild(kg);
-    card.appendChild(top);
+    if (tags.childNodes.length) card.appendChild(tags);
 
     const meta = document.createElement("div");
     meta.style.cssText = "font-size:10px;color:#8b949e;margin-top:3px;";
