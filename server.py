@@ -33,6 +33,12 @@ AUTO_IA_INTERVAL_SECONDS = int(os.environ.get("AUTO_IA_INTERVAL_SECONDS", "300")
 AUTO_COLA_DRAIN_SLEEP_SECONDS = int(os.environ.get("AUTO_COLA_DRAIN_SLEEP_SECONDS", "5"))
 AUTO_COLA_DRAIN_MAX_CADENAS = int(os.environ.get("AUTO_COLA_DRAIN_MAX_CADENAS", "20"))
 AUTO_COLA_DRAIN_MAX_MINUTES = int(os.environ.get("AUTO_COLA_DRAIN_MAX_MINUTES", "60"))
+# Recalculo automatico de derivadas: al inicio de cada cadena del worker se
+# compara una firma barata de la tabla operativa (registros nuevos o
+# normalizados); si cambio y paso el intervalo minimo, se repintan las
+# derivadas (mismo efecto que POST /api/ia/derivadas/recalcular).
+DERIVADAS_AUTO_ENABLED = os.environ.get("DERIVADAS_AUTO_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+DERIVADAS_AUTO_MIN_MINUTES = float(os.environ.get("DERIVADAS_AUTO_MIN_MINUTES", "30"))
 AUTO_IA_CHAIN_DELAY_SECONDS = 5
 AUTO_IA_MAX_CHAIN_CYCLES = 10
 AUTO_IA_MIN_CONFIDENCE = 0.55
@@ -8249,6 +8255,80 @@ def guardar_tablas_derivadas_si_corresponde(forzar=False):
     return resultado
 
 
+_DERIVADAS_AUTO_ESTADO = {"firma": None, "ultimo_recalculo_ts": 0.0}
+
+
+def _firma_tabla_operativa():
+    """Firma barata de TiposDeMovimiento para detectar novedad: cantidad de
+    registros, id máximo y cuántos tienen DescriptionNormalizada."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT COUNT(*) AS n,
+                       COALESCE(MAX(idTiposDeMovimiento), 0) AS max_id,
+                       SUM(CASE WHEN DescriptionNormalizada IS NOT NULL
+                                 AND TRIM(DescriptionNormalizada) <> '' THEN 1 ELSE 0 END) AS n_norm
+                FROM TiposDeMovimiento
+            """)
+        except Exception:
+            # Instalaciones sin la columna DescriptionNormalizada
+            cur.execute("""
+                SELECT COUNT(*) AS n,
+                       COALESCE(MAX(idTiposDeMovimiento), 0) AS max_id,
+                       0 AS n_norm
+                FROM TiposDeMovimiento
+            """)
+        f = cur.fetchone() or {}
+        cur.close()
+        return (int(f.get("n") or 0), int(f.get("max_id") or 0), int(f.get("n_norm") or 0))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def derivadas_auto_recalcular_si_hay_novedad():
+    """Avisador de registros nuevos: si la firma de la tabla operativa cambió
+    (registro nuevo o normalizado) y pasó el intervalo mínimo, repinta las
+    derivadas igual que POST /api/ia/derivadas/recalcular. Determinístico."""
+    if not DERIVADAS_AUTO_ENABLED:
+        return False
+    ahora = time.time()
+    if ahora - _DERIVADAS_AUTO_ESTADO["ultimo_recalculo_ts"] < DERIVADAS_AUTO_MIN_MINUTES * 60:
+        return False
+    try:
+        firma = _firma_tabla_operativa()
+    except Exception as e:
+        print(f"Error en firma tabla operativa: {e}", file=sys.stderr)
+        return False
+    if firma is None:
+        return False
+    primera_vez = _DERIVADAS_AUTO_ESTADO["firma"] is None
+    if not primera_vez and firma == _DERIVADAS_AUTO_ESTADO["firma"]:
+        return False
+    _DERIVADAS_AUTO_ESTADO["firma"] = firma
+    _DERIVADAS_AUTO_ESTADO["ultimo_recalculo_ts"] = ahora
+    add_reasoning_step(
+        "derivadas_auto_recalculo",
+        ("Arranque: repinto las derivadas para partir de datos frescos."
+         if primera_vez else
+         "Hay registros nuevos o normalizados en la tabla operativa; repinto las derivadas."),
+        (f"registros={firma[0]} max_id={firma[1]} normalizados={firma[2]} | "
+         f"minimo {DERIVADAS_AUTO_MIN_MINUTES:g} min entre recalculos")
+    )
+    resultado = guardar_tablas_derivadas_si_corresponde(forzar=True)
+    try:
+        propagar_dominantes_materiales_existentes()
+    except Exception as e:
+        print(f"Error en backfill dominantes tras recalculo auto: {e}", file=sys.stderr)
+    return bool(resultado.get("ok"))
+
+
 def leer_tablas_derivadas_resumen():
     """Lee un resumen liviano de las tablas derivadas para /api/ia/cerebro."""
     resumen = {
@@ -10860,6 +10940,15 @@ def estado_autonomia_ia():
         "ultimo_fin": AUTO_IA_LAST_FINISH,
         "ultimo_resultado": AUTO_IA_LAST_RESULT,
         "ultimo_error": AUTO_IA_LAST_ERROR,
+        "derivadas_auto": {
+            "activo": DERIVADAS_AUTO_ENABLED,
+            "minimo_minutos": DERIVADAS_AUTO_MIN_MINUTES,
+            "ultimo_recalculo": (
+                datetime.fromtimestamp(_DERIVADAS_AUTO_ESTADO["ultimo_recalculo_ts"]).isoformat()
+                if _DERIVADAS_AUTO_ESTADO["ultimo_recalculo_ts"] else None
+            ),
+            "firma_operativa": _DERIVADAS_AUTO_ESTADO["firma"],
+        },
         "telegram": {
             "configurado": telegram_configurado(),
             "chat_id_configurado": bool(TELEGRAM_CHAT_ID),
@@ -11180,6 +11269,12 @@ def ciclo_autonomo_worker():
     while AUTO_IA_ENABLED:
         if AUTO_IA_LOCK.acquire(blocking=False):
             try:
+                # Antes de la cadena: repintar derivadas si entraron registros
+                # nuevos (con piso de DERIVADAS_AUTO_MIN_MINUTES entre corridas)
+                try:
+                    derivadas_auto_recalcular_si_hay_novedad()
+                except Exception as e_da:
+                    print(f"Error en recalculo automatico de derivadas: {e_da}", file=sys.stderr)
                 chain_count = 0
                 while AUTO_IA_ENABLED and chain_count < AUTO_IA_MAX_CHAIN_CYCLES:
                     chain_count += 1
