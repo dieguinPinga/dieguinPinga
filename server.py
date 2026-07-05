@@ -5983,6 +5983,196 @@ def leer_composicion_operativa(max_por_tipo=12):
     return resultado
 
 
+def leer_feed_operativo_reciente(limite=80):
+    """Feed operativo determinístico: mezcla eventos de compras por material
+    normalizado, proveedor→material, calidad (ERROR_REGISTRO), precio faltante,
+    protagonistas y fichas/cola recientes. Ordena lo nuevo primero (por día) y
+    dentro de cada día prioridad kg-first. Sin Ollama."""
+    items = []
+
+    def _evt(tipo, titulo, detalle, ts=None, periodo=None, proveedor=None,
+             material=None, kg=0, monto=None, precio_pond=None, registros=0):
+        kg = round(float(kg or 0), 2)
+        monto = round(float(monto), 2) if monto else None
+        prioridad = round(kg * 0.7 + (monto or 0) * 0.001 + registros * 5.0, 4)
+        items.append({
+            "ts": str(ts) if ts else None,
+            "periodo": periodo,
+            "tipo": tipo,
+            "titulo": titulo,
+            "detalle": detalle,
+            "proveedor": proveedor,
+            "material_normalizado": material,
+            "kg": kg,
+            "monto": monto,
+            "precio_pond": round(float(precio_pond), 4) if precio_pond else None,
+            "prioridad": prioridad,
+        })
+
+    def _kg_txt(v):
+        return f"{float(v or 0):,.0f} kg".replace(",", ".")
+
+    try:
+        conn = get_ia_connection()
+        if not conn:
+            return {"items": [], "total": 0}
+        cur = conn.cursor()
+
+        # Últimos 2 periodos con datos normalizados
+        cur.execute("""
+            SELECT DISTINCT periodo FROM ia_resumen_mensual_material_normalizado_tipo
+            WHERE criterio_version = %s ORDER BY periodo DESC LIMIT 2
+        """, (DERIVADAS_VERSION,))
+        periodos_recientes = [r["periodo"] for r in (cur.fetchall() or [])]
+
+        if periodos_recientes:
+            marcas = ", ".join(["%s"] * len(periodos_recientes))
+
+            # 1) Compras por material normalizado (solo comprables), kg-first
+            cur.execute(f"""
+                SELECT periodo, material_normalizado, tipo_movimiento,
+                       SUM(registros) AS registros, SUM(kilos_total) AS kg,
+                       SUM(COALESCE(monto_estimado, 0)) AS monto,
+                       MAX(precio_ponderado_kg) AS precio_pond,
+                       MAX(ultimo_movimiento) AS ultimo_movimiento
+                FROM ia_resumen_mensual_material_normalizado_tipo
+                WHERE criterio_version = %s AND periodo IN ({marcas})
+                  AND tipo_movimiento LIKE %s
+                GROUP BY periodo, material_normalizado, tipo_movimiento
+                ORDER BY periodo DESC, kg DESC
+                LIMIT 25
+            """, [DERIVADAS_VERSION] + periodos_recientes + [f"{COMPRAS_TIPOS_PREFIJO}%"])
+            for r in (cur.fetchall() or []):
+                kg = float(r["kg"] or 0)
+                monto = float(r["monto"] or 0)
+                detalle = f"{_kg_txt(kg)} vía {r['tipo_movimiento']} en {r['periodo']}"
+                if monto > 0:
+                    detalle += f" · $est {monto:,.0f}".replace(",", ".")
+                _evt("compra_material", f"Compra: {r['material_normalizado']}", detalle,
+                     ts=r["ultimo_movimiento"], periodo=r["periodo"],
+                     material=r["material_normalizado"], kg=kg,
+                     monto=monto, precio_pond=r["precio_pond"],
+                     registros=int(r["registros"] or 0))
+                # 4) Precio faltante: compra con volumen y sin ningún precio
+                if kg >= 500 and monto <= 0:
+                    _evt("precio_faltante", f"Sin precio: {r['material_normalizado']}",
+                         f"{_kg_txt(kg)} comprados en {r['periodo']} sin precio registrado",
+                         ts=r["ultimo_movimiento"], periodo=r["periodo"],
+                         material=r["material_normalizado"], kg=kg,
+                         registros=int(r["registros"] or 0))
+
+            # 2) Proveedor → material normalizado
+            cur.execute(f"""
+                SELECT periodo, proveedor, material_normalizado,
+                       SUM(registros) AS registros, SUM(kilos_total) AS kg,
+                       SUM(COALESCE(monto_estimado, 0)) AS monto,
+                       MAX(precio_ponderado_kg) AS precio_pond,
+                       MAX(pct_kilos_del_material) AS pct_material,
+                       MAX(ultimo_movimiento) AS ultimo_movimiento
+                FROM ia_resumen_mensual_proveedor_material_normalizado
+                WHERE criterio_version = %s AND periodo IN ({marcas})
+                  AND tipo_movimiento LIKE %s
+                GROUP BY periodo, proveedor, material_normalizado
+                ORDER BY periodo DESC, kg DESC
+                LIMIT 20
+            """, [DERIVADAS_VERSION] + periodos_recientes + [f"{COMPRAS_TIPOS_PREFIJO}%"])
+            for r in (cur.fetchall() or []):
+                kg = float(r["kg"] or 0)
+                monto = float(r["monto"] or 0)
+                pct = float(r["pct_material"] or 0)
+                detalle = f"{_kg_txt(kg)} en {r['periodo']}"
+                if pct > 0:
+                    detalle += f" ({pct:.0f}% del material)"
+                if monto > 0:
+                    detalle += f" · $est {monto:,.0f}".replace(",", ".")
+                _evt("proveedor_material",
+                     f"{r['proveedor']} → {r['material_normalizado']}", detalle,
+                     ts=r["ultimo_movimiento"], periodo=r["periodo"],
+                     proveedor=r["proveedor"], material=r["material_normalizado"],
+                     kg=kg, monto=monto, precio_pond=r["precio_pond"],
+                     registros=int(r["registros"] or 0))
+
+        # 6) Fichas operativas recientes (últimos 7 días)
+        cur.execute("""
+            SELECT titulo, resumen_deterministico, entidad, entidad_2, tipo_nodo,
+                   periodo, creado_en
+            FROM ia_fichas_operativas
+            WHERE creado_en >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+            ORDER BY creado_en DESC, id DESC
+            LIMIT 15
+        """)
+        for r in (cur.fetchall() or []):
+            prov = r["entidad_2"] if r["tipo_nodo"] in ("proveedor_material",) else (
+                r["entidad"] if r["tipo_nodo"] == "proveedor" else None)
+            mat = r["entidad"] if r["tipo_nodo"] in ("material", "proveedor_material") else None
+            _evt("ficha", r["titulo"] or "Ficha operativa",
+                 r["resumen_deterministico"] or "", ts=r["creado_en"],
+                 periodo=r["periodo"], proveedor=prov, material=mat)
+
+        # 7) Cola: curiosidades encoladas recientes aún pendientes (novedad)
+        cur.execute("""
+            SELECT tipo_tarea, entidad, entidad_2, periodo, motivo,
+                   prioridad_score, creado_en
+            FROM ia_cola_curiosidad
+            WHERE estado = 'pendiente'
+              AND creado_en >= DATE_SUB(NOW(), INTERVAL 2 DAY)
+            ORDER BY prioridad_score DESC
+            LIMIT 10
+        """)
+        for r in (cur.fetchall() or []):
+            _evt("cola", f"Curiosidad encolada: {r['entidad']}",
+                 r["motivo"] or r["tipo_tarea"], ts=r["creado_en"],
+                 periodo=r["periodo"])
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"Error en leer_feed_operativo_reciente (lab): {e}", file=sys.stderr)
+
+    # 3) Calidad: ERROR_REGISTRO del mes actual
+    try:
+        calidad = leer_calidad_error_registro(limite=3)
+        if float(calidad.get("kilos_total") or 0) > 0:
+            _evt("calidad",
+                 f"ERROR_REGISTRO: {_kg_txt(calidad['kilos_total'])} en {calidad['periodo']}",
+                 (f"{calidad['registros']} registros marcados como error"
+                  + (f"; {calidad['sin_proveedor']} sin proveedor" if calidad.get("sin_proveedor") else "")),
+                 periodo=calidad["periodo"], kg=calidad["kilos_total"],
+                 registros=int(calidad.get("registros") or 0))
+            for m in (calidad.get("top_materiales") or []):
+                _evt("calidad",
+                     f"ERROR_REGISTRO: {m.get('material_normalizado') or 'sin descripción'}",
+                     f"{_kg_txt(m.get('kilos'))} en {m.get('registros')} registros",
+                     periodo=calidad["periodo"], material=m.get("material_normalizado"),
+                     kg=m.get("kilos"), registros=int(m.get("registros") or 0))
+    except Exception as e:
+        print(f"Error en feed calidad: {e}", file=sys.stderr)
+
+    # 5) Protagonistas operativos (nivel 1)
+    try:
+        prot = leer_protagonistas_operativos()
+        for r in (prot.get("nivel1") or [])[:8]:
+            etiqueta = r.get("etiqueta") or r.get("entidad") or "?"
+            kg = float(r.get("kg_entidad") or 0)
+            pct = float(r.get("pct_del_contexto") or 0)
+            _evt("protagonista", f"Protagonista: {etiqueta}",
+                 f"{_kg_txt(kg)} en {r.get('periodo')}" + (f" ({pct:.0f}% del contexto)" if pct else ""),
+                 ts=r.get("actualizado_en"), periodo=r.get("periodo"),
+                 proveedor=r.get("proveedor"), material=r.get("material"),
+                 kg=kg, registros=int(r.get("registros") or 0))
+    except Exception as e:
+        print(f"Error en feed protagonistas: {e}", file=sys.stderr)
+
+    # Orden: lo nuevo primero (día del ts, o periodo si no hay ts);
+    # dentro del mismo día, prioridad kg-first.
+    def _clave(it):
+        dia = (it["ts"] or "")[:10] or f"{it['periodo'] or '0000-00'}-01"
+        return (dia, it["prioridad"])
+
+    items.sort(key=_clave, reverse=True)
+    items = items[:int(limite)]
+    return {"items": items, "total": len(items)}
+
+
 def leer_materiales_normalizados_recientes(limite=10):
     """Top materiales por DescriptionNormalizada del mes actual, con cobertura
     visible. Determinístico, solo lectura de la derivada. Con estado_confianza
@@ -12320,6 +12510,7 @@ def get_ia_cerebro():
             "cola_curiosidad": leer_cola_curiosidad(),
             "fichas_operativas": leer_fichas_operativas(),
             "composicion_operativa": leer_composicion_operativa(),
+            "feed_operativo_reciente": leer_feed_operativo_reciente(),
             "mapa_historico_proveedores": leer_mapa_historico_proveedores(),
             "materiales_normalizados_recientes": leer_materiales_normalizados_recientes(),
             "compras_materiales_normalizados_recientes": leer_compras_materiales_normalizados_recientes(),
@@ -12696,6 +12887,7 @@ def api_ia_export():
         "cola_curiosidad": cerebro.get("cola_curiosidad", {}),
         "fichas_operativas": cerebro.get("fichas_operativas", {}),
         "composicion_operativa": cerebro.get("composicion_operativa", {}),
+        "feed_operativo_reciente": cerebro.get("feed_operativo_reciente", {}),
         "mapa_historico_proveedores": cerebro.get("mapa_historico_proveedores", {}),
         "materiales_normalizados_recientes": cerebro.get("materiales_normalizados_recientes", {}),
         "compras_materiales_normalizados_recientes": cerebro.get("compras_materiales_normalizados_recientes", {}),
@@ -13137,6 +13329,10 @@ def ia_dashboard():
 
   <!-- -- COLA DE CURIOSIDAD (contador) -- -->
   <div id="colaCuriosidad" style="margin-bottom:16px;font-size:12px;color:#8b949e;"></div>
+
+  <!-- -- FEED OPERATIVO RECIENTE -- -->
+  <div class="section-title" style="margin-top:20px;">Feed operativo reciente</div>
+  <div id="feedOperativo" style="margin-bottom:16px;"></div>
 
   <!-- -- COMPOSICION OPERATIVA (fractal: maquinas y operadores del mes) -- -->
   <div class="section-title" style="margin-top:20px;">Composición operativa del mes: máquinas y operadores</div>
@@ -14414,6 +14610,93 @@ function renderColaCuriosidad(cc) {
   el.textContent = "Cola de curiosidad: " + n + " pendientes.";
 }
 
+/* -- Feed operativo reciente: eventos mezclados, lo nuevo primero ---------- */
+function renderFeedOperativo(fe) {
+  const cont = document.getElementById("feedOperativo");
+  if (!cont) return;
+  cont.innerHTML = "";
+  const items = fe ? asArray(fe.items) : [];
+  if (!items.length) {
+    const p = document.createElement("p"); p.className = "empty";
+    p.textContent = "Sin eventos operativos todavía. Se llena solo con las derivadas y la cola.";
+    cont.appendChild(p);
+    return;
+  }
+  const TIPO_ESTILO = {
+    compra_material:    {color: "#3fb950", etiqueta: "compra"},
+    proveedor_material: {color: "#58a6ff", etiqueta: "proveedor"},
+    calidad:            {color: "#f85149", etiqueta: "calidad"},
+    precio_faltante:    {color: "#d29922", etiqueta: "sin precio"},
+    protagonista:       {color: "#bc8cff", etiqueta: "protagonista"},
+    ficha:              {color: "#8b949e", etiqueta: "ficha"},
+    cola:               {color: "#39c5cf", etiqueta: "cola"},
+  };
+  function fmtKg(v) { return Number(v || 0).toLocaleString("es-AR", {maximumFractionDigits: 0}) + " kg"; }
+
+  const lista = document.createElement("div");
+  lista.style.cssText = "max-height:420px;overflow-y:auto;border:1px solid rgba(255,255,255,.08);border-radius:6px;background:rgba(255,255,255,.02);";
+  cont.appendChild(lista);
+
+  items.forEach(it => {
+    const est = TIPO_ESTILO[it.tipo] || {color: "#8b949e", etiqueta: it.tipo || "?"};
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:10px;align-items:flex-start;padding:7px 12px;border-bottom:1px solid rgba(255,255,255,.05);";
+
+    const tag = document.createElement("span");
+    tag.textContent = est.etiqueta;
+    tag.style.cssText = "font-size:9px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.35);white-space:nowrap;margin-top:2px;min-width:70px;text-align:center;color:" + est.color + ";";
+    row.appendChild(tag);
+
+    const cuerpo = document.createElement("div");
+    cuerpo.style.cssText = "flex:1;min-width:0;";
+    const tit = document.createElement("div");
+    tit.textContent = it.titulo || "?";
+    tit.title = it.titulo || "";
+    tit.style.cssText = "font-size:11px;font-weight:600;color:#e6edf3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    cuerpo.appendChild(tit);
+    if (it.detalle) {
+      const det = document.createElement("div");
+      det.textContent = it.detalle;
+      det.style.cssText = "font-size:10px;color:#8b949e;";
+      cuerpo.appendChild(det);
+    }
+    const metaPartes = [];
+    if (it.proveedor) metaPartes.push(it.proveedor);
+    if (it.material_normalizado) metaPartes.push(it.material_normalizado);
+    if (it.ts) metaPartes.push(String(it.ts).slice(0, 16));
+    else if (it.periodo) metaPartes.push(it.periodo);
+    if (metaPartes.length) {
+      const meta = document.createElement("div");
+      meta.textContent = metaPartes.join(" · ");
+      meta.style.cssText = "font-size:9px;color:#484f58;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      cuerpo.appendChild(meta);
+    }
+    row.appendChild(cuerpo);
+
+    const der = document.createElement("div");
+    der.style.cssText = "text-align:right;white-space:nowrap;";
+    if (it.kg) {
+      const kg = document.createElement("div");
+      kg.textContent = fmtKg(it.kg);
+      kg.style.cssText = "font-size:11px;font-weight:600;color:#58a6ff;";
+      der.appendChild(kg);
+    }
+    if (it.monto) {
+      const mo = document.createElement("div");
+      mo.textContent = "$est " + Number(it.monto).toLocaleString("es-AR", {maximumFractionDigits: 0});
+      mo.style.cssText = "font-size:9px;color:#8b949e;";
+      der.appendChild(mo);
+    }
+    if (der.childNodes.length) row.appendChild(der);
+    lista.appendChild(row);
+  });
+
+  const pie = document.createElement("div");
+  pie.style.cssText = "font-size:10px;color:#484f58;margin-top:4px;";
+  pie.textContent = items.length + " eventos · lo nuevo primero, kg primero dentro del día";
+  cont.appendChild(pie);
+}
+
 /* -- Composición operativa: fichas fractales de máquinas y operadores del mes -- */
 function renderComposicionOperativa(co) {
   const cont = document.getElementById("composicionOperativa");
@@ -15135,6 +15418,7 @@ function renderCerebro(c) {
   renderColaCuriosidad(c.cola_curiosidad || null);
   renderFichasOperativas(c.fichas_operativas || null);
   renderComposicionOperativa(c.composicion_operativa || null);
+  renderFeedOperativo(c.feed_operativo_reciente || null);
   renderMapaHistoricoProveedores(c.mapa_historico_proveedores || null);
   renderMaterialesNormalizados(c.materiales_normalizados_recientes || null);
   renderComprasMaterialesNormalizados(c.compras_materiales_normalizados_recientes || null);
