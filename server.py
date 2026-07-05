@@ -5882,10 +5882,12 @@ def leer_fichas_operativas(limite=10):
 
 
 def leer_composicion_operativa(max_por_tipo=12):
-    """Composición operativa del mes: fichas fractales de máquinas y operadores
-    (perfil_maquina_historico / perfil_operador_historico) del periodo más
-    reciente. Determinístico, solo lectura de ia_fichas_operativas."""
-    resultado = {"periodo": None, "avance_mes_pct": None, "maquinas": [], "operadores": []}
+    """Composición operativa del mes: fichas fractales de máquinas, operadores
+    y materiales normalizados comprados (perfil_maquina_historico /
+    perfil_operador_historico / perfil_material_normalizado_historico) del
+    periodo más reciente. Determinístico, solo lectura de ia_fichas_operativas."""
+    resultado = {"periodo": None, "avance_mes_pct": None,
+                 "maquinas": [], "operadores": [], "materiales_normalizados": []}
     try:
         conn = get_ia_connection()
         if not conn:
@@ -5895,9 +5897,10 @@ def leer_composicion_operativa(max_por_tipo=12):
             SELECT tipo_tarea, entidad, periodo, resumen_deterministico,
                    datos_json, senales_json, creado_en
             FROM ia_fichas_operativas
-            WHERE tipo_tarea IN ('perfil_maquina_historico','perfil_operador_historico')
+            WHERE tipo_tarea IN ('perfil_maquina_historico','perfil_operador_historico',
+                                 'perfil_material_normalizado_historico')
             ORDER BY creado_en DESC, id DESC
-            LIMIT 200
+            LIMIT 300
         """)
         filas = cur.fetchall() or []
         cur.close()
@@ -5947,18 +5950,28 @@ def leer_composicion_operativa(max_por_tipo=12):
                 esperado = kg_prom * resultado["avance_mes_pct"] / 100.0
                 item["kg_esperado_a_la_fecha"] = round(esperado, 1)
                 item["desvio_pct_vs_ritmo"] = round((item["kg_mes"] - esperado) / esperado * 100, 1)
-            if f.get("tipo_tarea") == "perfil_operador_historico":
+            tipo_tarea = f.get("tipo_tarea")
+            if tipo_tarea == "perfil_operador_historico":
                 item["tipos_principales"] = [
                     {"tipo": t.get("tipo"), "kg": t.get("kg")}
                     for t in (datos.get("tipos_principales") or [])[:3]
                 ]
                 destino = resultado["operadores"]
+            elif tipo_tarea == "perfil_material_normalizado_historico":
+                item["material_normalizado"] = True
+                actual_hist = next((h for h in item["historial_12m"]
+                                    if str(h.get("periodo")) == periodo), None)
+                monto = float((actual_hist or {}).get("monto") or 0)
+                if monto > 0:
+                    item["monto_estimado_mes"] = round(monto, 2)
+                destino = resultado["materiales_normalizados"]
             else:
                 destino = resultado["maquinas"]
             if len(destino) < int(max_por_tipo):
                 destino.append(item)
         resultado["maquinas"].sort(key=lambda x: -x["kg_mes"])
         resultado["operadores"].sort(key=lambda x: -x["kg_mes"])
+        resultado["materiales_normalizados"].sort(key=lambda x: -x["kg_mes"])
     except Exception as e:
         print(f"Error en leer_composicion_operativa: {e}", file=sys.stderr)
     return resultado
@@ -14246,9 +14259,10 @@ function renderComposicionOperativa(co) {
   cont.innerHTML = "";
   const maquinas = co ? asArray(co.maquinas) : [];
   const operadores = co ? asArray(co.operadores) : [];
-  if (!maquinas.length && !operadores.length) {
+  const materiales = co ? asArray(co.materiales_normalizados) : [];
+  if (!maquinas.length && !operadores.length && !materiales.length) {
     const p = document.createElement("p"); p.className = "empty";
-    p.textContent = "Sin fichas de composición todavía. Se generan solas cuando la cola procesa máquinas y operadores del mes.";
+    p.textContent = "Sin fichas de composición todavía. Se generan solas cuando la cola procesa máquinas, operadores y materiales del mes.";
     cont.appendChild(p);
     return;
   }
@@ -14277,7 +14291,7 @@ function renderComposicionOperativa(co) {
     return barra;
   }
 
-  function tarjeta(item, esMaquina) {
+  function tarjeta(item, clase) {
     const card = document.createElement("div");
     card.style.cssText = "border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:10px 12px;background:rgba(255,255,255,.03);";
     const top = document.createElement("div");
@@ -14287,10 +14301,16 @@ function renderComposicionOperativa(co) {
     nom.style.cssText = "font-weight:600;color:#e6edf3;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     nom.title = item.nombre || "";
     top.appendChild(nom);
-    const nuevo = item.senales && (item.senales.maquina_nueva || item.senales.operador_nuevo);
+    if (item.material_normalizado) {
+      const tagN = document.createElement("span");
+      tagN.textContent = "normalizado";
+      tagN.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#3fb950;white-space:nowrap;";
+      top.appendChild(tagN);
+    }
+    const nuevo = item.senales && (item.senales.maquina_nueva || item.senales.operador_nuevo || item.senales.sin_historial_previo);
     if (nuevo) {
       const tag = document.createElement("span");
-      tag.textContent = esMaquina ? "máquina nueva" : "operador nuevo";
+      tag.textContent = clase === "maquina" ? "máquina nueva" : (clase === "operador" ? "operador nuevo" : "sin historial");
       tag.style.cssText = "font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(0,0,0,.3);color:#d29922;white-space:nowrap;";
       top.appendChild(tag);
     } else if (item.desvio_pct_vs_ritmo != null) {
@@ -14317,8 +14337,11 @@ function renderComposicionOperativa(co) {
     } else {
       partes.push("sin historial previo");
     }
-    if (!esMaquina && asArray(item.tipos_principales).length) {
+    if (clase === "operador" && asArray(item.tipos_principales).length) {
       partes.push("trabaja en: " + asArray(item.tipos_principales).map(t => t.tipo).join(", "));
+    }
+    if (item.monto_estimado_mes != null) {
+      partes.push("$est " + Number(item.monto_estimado_mes).toLocaleString("es-AR", {maximumFractionDigits: 0}) + " en el mes");
     }
     meta.textContent = partes.join(" · ");
     card.appendChild(meta);
@@ -14328,7 +14351,7 @@ function renderComposicionOperativa(co) {
     return card;
   }
 
-  function bloque(titulo, items, esMaquina) {
+  function bloque(titulo, items, clase) {
     if (!items.length) return;
     const h = document.createElement("div");
     h.style.cssText = "font-size:11px;color:#c9d1d9;font-weight:600;margin:10px 0 6px;";
@@ -14336,11 +14359,12 @@ function renderComposicionOperativa(co) {
     cont.appendChild(h);
     const grid = document.createElement("div");
     grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;";
-    items.forEach(it => grid.appendChild(tarjeta(it, esMaquina)));
+    items.forEach(it => grid.appendChild(tarjeta(it, clase)));
     cont.appendChild(grid);
   }
-  bloque("Máquinas del mes", maquinas, true);
-  bloque("Operadores del mes", operadores, false);
+  bloque("Máquinas del mes", maquinas, "maquina");
+  bloque("Operadores del mes", operadores, "operador");
+  bloque("Materiales comprados del mes (normalizados)", materiales, "material");
 }
 
 /* -- Fichas operativas recientes ---------------------------- */
