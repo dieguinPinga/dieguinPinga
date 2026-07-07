@@ -1,0 +1,523 @@
+<!--
+  ===================================================================
+  TABLERO CAVERNICOLA v2  ·  UI TEMPLATE (Node-RED dashboard)
+  -------------------------------------------------------------------
+  Pegar TODO este contenido dentro del nodo ui_template
+  "Tablero Cavernicola v2".
+  Ancho recomendado del nodo y del grupo: 42  (alto: 30+).
+  No cambia ninguna accion send({...}) ni el nodo funcion:
+  solo mejora tortas, tarjetas, semaforo stock vs minimo y layout.
+  ===================================================================
+-->
+<style>
+.cav2{
+  --bg:#0b1120; --panel:#0f1a2e; --panel2:#0b1526; --line:rgba(148,163,184,.18);
+  --line2:rgba(148,163,184,.28); --txt:#e5edf7; --muted:#93a4bd; --muted2:#64748b;
+  --blue:#38bdf8; --cyan:#67e8f9; --green:#34d399; --yellow:#f59e0b; --red:#f87171;
+  --violet:#a78bfa; --verde:#22c55e; --amarillo:#f59e0b; --rojo:#ef4444; --azul:#38bdf8; --gris:#64748b;
+  font-family:'Segoe UI',Roboto,Arial,sans-serif;background:linear-gradient(180deg,#0b1120,#0d1526);
+  color:var(--txt);padding:16px;border-radius:12px;border:1px solid var(--line);
+}
+.cav2 *{box-sizing:border-box}
+
+/* ===== HEADER ===== */
+.cav2-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;
+  border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px;flex-wrap:wrap}
+.cav2-title{font-size:26px;font-weight:900;letter-spacing:.2px;
+  background:linear-gradient(90deg,#67e8f9,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+.cav2-sub{font-size:12.5px;color:var(--muted);margin-top:4px;max-width:640px;line-height:1.4}
+.head-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.cav2-pill{border:1px solid rgba(103,232,249,.35);border-radius:999px;padding:6px 14px;
+  color:#a5f3fc;font-size:13px;font-weight:800;background:rgba(103,232,249,.08)}
+.top-actions{display:flex;flex-wrap:wrap;gap:7px;justify-content:flex-end}
+.top-actions button{height:32px;padding:0 12px;border-radius:8px;border:1px solid rgba(56,189,248,.32);
+  background:rgba(56,189,248,.10);color:#7dd3fc;font-weight:800;font-size:12px;cursor:pointer;transition:.15s}
+.top-actions button:hover{background:rgba(56,189,248,.20);transform:translateY(-1px)}
+.top-actions .save{border-color:rgba(52,211,153,.42);background:rgba(52,211,153,.12);color:#86efac}
+.top-actions .download{border-color:rgba(167,139,250,.42);background:rgba(167,139,250,.12);color:#c4b5fd}
+
+.notice{margin-bottom:14px;padding:10px 14px;border-radius:8px;background:rgba(52,211,153,.10);
+  border:1px solid rgba(52,211,153,.25);color:#86efac;font-size:12.5px;font-weight:600}
+
+/* ===== KPIs ===== */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.kpi{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+.kpi.k-blue::before{background:var(--blue)}.kpi.k-green::before{background:var(--green)}
+.kpi.k-violet::before{background:var(--violet)}.kpi.k-red::before{background:var(--red)}
+.kpi .label{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:800}
+.kpi .val{font-size:28px;font-weight:900;margin-top:6px;line-height:1}
+.blue{color:var(--blue)}.green{color:var(--green)}.yellow{color:var(--yellow)}.red{color:var(--red)}.violet{color:var(--violet)}
+
+/* ===== SECTIONS ===== */
+.section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.section-title{display:flex;align-items:center;gap:8px;font-size:13.5px;text-transform:uppercase;
+  letter-spacing:.5px;color:#93c5fd;font-weight:900;margin-bottom:12px}
+.section-title::before{content:"";width:8px;height:8px;border-radius:2px;background:#93c5fd}
+
+/* ===== SEMAFORO LEGEND ===== */
+.sem-legend{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 12px;font-size:11px;color:var(--muted)}
+.sem-legend span{display:inline-flex;align-items:center;gap:6px;font-weight:700}
+.sem-dot{width:11px;height:11px;border-radius:50%;box-shadow:0 0 8px currentColor}
+.sem-dot.verde{background:var(--verde);color:var(--verde)}
+.sem-dot.amarillo{background:var(--amarillo);color:var(--amarillo)}
+.sem-dot.rojo{background:var(--rojo);color:var(--rojo)}
+.sem-dot.azul{background:var(--azul);color:var(--azul)}
+.sem-dot.gris{background:var(--gris);color:var(--gris)}
+
+/* ===== PANELES / SECTORES ===== */
+.add-rama{height:34px;padding:0 16px;border-radius:8px;border:1px solid rgba(52,211,153,.45);
+  background:rgba(52,211,153,.12);color:#86efac;font-weight:800;cursor:pointer;margin-bottom:14px;font-size:13px}
+.add-rama:hover{background:rgba(52,211,153,.22)}
+.panel-grid{column-count:4;column-gap:16px}
+.sector{background:linear-gradient(180deg,var(--panel2),#0a1322);border:1px solid var(--line2);
+  border-radius:12px;padding:14px;break-inside:avoid;margin:0 0 16px;display:inline-block;width:100%;
+  position:relative;overflow:hidden}
+.sector::before{content:"";position:absolute;left:0;right:0;top:0;height:4px}
+.sector.limbo::before{background:linear-gradient(90deg,#f87171,#fb923c)}
+.sector.plan::before{background:linear-gradient(90deg,#34d399,#22d3ee)}
+.sector.control::before{background:linear-gradient(90deg,#a78bfa,#818cf8)}
+.sector-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;margin:6px 0 12px}
+.sector-name-edit{width:100%;min-width:0;background:transparent;border:1px solid transparent;border-radius:6px;
+  color:var(--txt);font-size:19px;font-weight:900;padding:3px 5px;margin:-3px -5px}
+.sector-name-edit:focus{background:#0d1728;border-color:rgba(56,189,248,.45);outline:none}
+.sector-name-save{height:22px;border-radius:5px;border:1px solid rgba(56,189,248,.3);
+  background:rgba(56,189,248,.08);color:#7dd3fc;font-size:10px;font-weight:800;cursor:pointer;margin-top:5px;padding:0 8px}
+.sector-id{display:inline-block;font-size:10px;border:1px solid var(--line2);border-radius:999px;
+  padding:3px 9px;color:var(--muted);margin-top:6px;font-weight:700}
+.sector-total{text-align:right;white-space:nowrap}
+.sector-total .num{font-size:24px;font-weight:900;color:var(--cyan);line-height:1}
+.sector-total .unit{font-size:12px;color:var(--muted);font-weight:700}
+.sector-health{display:inline-block;margin-top:6px;font-size:10px;font-weight:800;border-radius:999px;padding:3px 8px}
+.sector-health.ok{color:#86efac;background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.3)}
+.sector-health.def{color:#fca5a5;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.3)}
+
+/* ===== DONUT ===== */
+.pie-box{display:grid;grid-template-columns:104px 1fr;gap:14px;align-items:center;
+  border:1px solid var(--line);border-radius:10px;padding:12px;margin:6px 0 12px;background:rgba(8,14,26,.55)}
+.donut-wrap{position:relative;width:104px;height:104px}
+.donut{width:104px;height:104px;border-radius:50%;
+  -webkit-mask:radial-gradient(closest-side,transparent 61%,#000 62%);
+  mask:radial-gradient(closest-side,transparent 61%,#000 62%)}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+.donut-center .dc-num{font-size:19px;font-weight:900;color:var(--txt);line-height:1}
+.donut-center .dc-unit{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
+.pie-legend{display:grid;gap:6px}
+.pie-line{display:grid;grid-template-columns:12px 1fr auto;gap:8px;align-items:center;font-size:11.5px;color:#cbd5e1}
+.pie-dot{width:11px;height:11px;border-radius:3px}
+.pie-line b{font-weight:800;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pie-line .pct{color:var(--cyan);font-weight:900}
+
+/* ===== SUBGROUP ===== */
+.sector-empty{font-size:11.5px;color:var(--muted2);padding:6px 0}
+.subgroup{background:rgba(8,14,26,.75);border:1px solid var(--line);border-left:4px solid var(--gris);
+  border-radius:9px;padding:12px;margin-top:12px}
+.subgroup.verde{border-left-color:var(--verde)}
+.subgroup.amarillo{border-left-color:var(--amarillo)}
+.subgroup.rojo{border-left-color:var(--rojo)}
+.subgroup.gris{border-left-color:var(--gris)}
+.subgroup-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;
+  border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:9px}
+.subgroup-id{font-size:9.5px;color:#c4b5fd;font-weight:800;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+.subgroup-title{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:900;color:#f5f3ff;line-height:1.1}
+.subgroup-total{text-align:right;font-size:19px;font-weight:900;color:var(--cyan);white-space:nowrap;line-height:1}
+.subgroup-total small{display:block;color:var(--muted);font-size:9px;text-transform:uppercase;margin-top:2px;font-weight:700}
+
+/* medidor stock vs minimo */
+.stock-meter{margin:8px 0 9px}
+.stock-meter-top{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.stock-meter-top b{display:block;color:var(--txt);font-size:14px;text-transform:none;margin-top:2px;font-weight:800}
+.stock-meter-top .faltante b{color:var(--red)}
+.meter-bar{position:relative;height:14px;background:#16233a;border-radius:999px;overflow:hidden;margin-top:7px;border:1px solid var(--line)}
+.meter-fill{height:100%;border-radius:999px;transition:width .3s}
+.meter-fill.verde{background:linear-gradient(90deg,#16a34a,#22c55e)}
+.meter-fill.amarillo{background:linear-gradient(90deg,#d97706,#f59e0b)}
+.meter-fill.rojo{background:linear-gradient(90deg,#dc2626,#f87171)}
+.meter-fill.gris{background:linear-gradient(90deg,#475569,#64748b)}
+.meter-min{position:absolute;top:-2px;bottom:-2px;width:2px;background:#e2e8f0;opacity:.55}
+.subgroup-empty{font-size:10px;color:var(--muted2);margin-top:5px}
+
+/* materiales */
+.sector-item{border-top:1px solid rgba(148,163,184,.10);padding:8px 0;font-size:11.5px}
+.mat-top{display:flex;align-items:center;gap:7px}
+.mat-name{font-weight:800;flex:1;min-width:0}
+.mat-badge{font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:.3px;border-radius:5px;padding:2px 6px;white-space:nowrap}
+.mat-badge.verde{color:#bbf7d0;background:rgba(34,197,94,.16);border:1px solid rgba(34,197,94,.35)}
+.mat-badge.amarillo{color:#fde68a;background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.35)}
+.mat-badge.rojo{color:#fecaca;background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.4)}
+.mat-badge.azul{color:#bae6fd;background:rgba(56,189,248,.16);border:1px solid rgba(56,189,248,.35)}
+.mat-badge.gris{color:#cbd5e1;background:rgba(100,116,139,.16);border:1px solid rgba(100,116,139,.35)}
+.mat-meta{color:var(--muted);margin-top:3px;font-size:10.5px;line-height:1.4}
+.mat-obs{color:#fbbf24;font-style:italic;margin-top:2px;font-size:10.5px}
+.move-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:7px}
+.rama-move,.sub-move{display:flex;gap:5px;align-items:center}
+.rama-move button,.sub-move button{height:22px;min-width:26px;border-radius:5px;font-size:10px;font-weight:900;cursor:pointer;padding:0 6px}
+.rama-move button{border:1px solid rgba(56,189,248,.38);background:rgba(56,189,248,.10);color:#7dd3fc}
+.sub-move button{border:1px solid rgba(167,139,250,.4);background:rgba(167,139,250,.10);color:#c4b5fd}
+.rama-move span,.sub-move span{font-size:12px;font-weight:900;min-width:14px;text-align:center}
+.rama-move span{color:#7dd3fc}.sub-move span{color:#c4b5fd}
+
+.sub-actions{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:11px 0 8px;
+  border-top:1px solid var(--line);padding-top:9px}
+.sub-actions .lbl{font-size:11px;color:var(--muted);font-weight:700}
+.sub-actions button{height:26px;border-radius:6px;border:1px solid rgba(52,211,153,.45);
+  background:rgba(52,211,153,.12);color:#86efac;font-size:11px;font-weight:800;cursor:pointer;padding:0 10px}
+.sub-edit{display:grid;grid-template-columns:30px 1fr auto;gap:6px;align-items:center;margin:5px 0}
+.sub-edit span{font-size:10px;color:#93c5fd;font-weight:900;text-align:center}
+.sub-edit input{min-width:0;background:#0d1728;border:1px solid var(--line2);border-radius:5px;color:var(--txt);height:26px;padding:0 8px;font-size:11.5px}
+.sub-edit button{height:26px;border-radius:5px;border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.10);color:#7dd3fc;font-size:10px;font-weight:800;cursor:pointer;padding:0 9px}
+
+/* ===== CARDS (plan / bandas / controles) ===== */
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px}
+.card.ok{border-color:rgba(52,211,153,.35)}.card.mirar{border-color:rgba(245,158,11,.35)}
+.card.comprar,.card.urgente{border-color:rgba(248,113,113,.42)}.card.frenar{border-color:rgba(245,158,11,.55)}
+.card.critico{box-shadow:inset 3px 0 0 var(--rojo)}.card.justo{box-shadow:inset 3px 0 0 var(--amarillo)}
+.card-head{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.name{font-size:16px;font-weight:900}
+.state{font-size:10px;text-transform:uppercase;border-radius:999px;border:1px solid var(--line2);padding:3px 9px;color:#cbd5e1;font-weight:800}
+.bar{height:13px;background:#16233a;border-radius:999px;overflow:hidden;margin:11px 0;border:1px solid var(--line)}
+.fill{height:100%;background:linear-gradient(90deg,#16a34a,#34d399)}
+.fill.warn{background:linear-gradient(90deg,#d97706,#f59e0b)}
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:12.5px}
+.nums span{font-weight:800}.nums b{display:block;color:var(--muted);font-size:9.5px;text-transform:uppercase;font-weight:700;margin-bottom:1px}
+.crit{font-size:11px;color:var(--muted);margin-top:9px;line-height:1.4}
+.stock-lines{margin-top:9px;border-top:1px solid var(--line);padding-top:8px}
+.stock-line{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:11px;padding:4px 0}
+.stock-line b{color:var(--txt)}.stock-line small{display:block;color:var(--muted2);font-size:9.5px;margin-top:1px}
+.stock-line .sl-val{font-weight:900;text-align:right}
+.stock-line.critico .sl-val{color:var(--red)}.stock-line.justo .sl-val{color:var(--yellow)}
+.stock-line.ok .sl-val{color:var(--green)}.stock-line.alto .sl-val{color:var(--blue)}
+.band-controls{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin-top:5px}
+.band-controls button{height:22px;border-radius:5px;border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.10);color:#7dd3fc;font-size:10px;font-weight:900;cursor:pointer;padding:0 6px}
+.band-controls .maxbtn{border-color:rgba(167,139,250,.4);background:rgba(167,139,250,.10);color:#c4b5fd}
+.btns{display:flex;gap:8px;margin-top:11px}
+.btn{border:1px solid rgba(56,189,248,.35);background:rgba(56,189,248,.10);color:#7dd3fc;border-radius:7px;height:30px;padding:0 12px;font-weight:900;cursor:pointer}
+.btn.save{border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.12);color:#86efac}
+.btn.reset{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.12);color:#fbbf24}
+
+/* ===== TAREAS / FUENTES ===== */
+.task{display:grid;grid-template-columns:80px 1fr 100px;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);align-items:center}
+.task:last-child{border-bottom:0}
+.prio{font-size:10px;color:var(--muted);text-transform:uppercase;font-weight:800}
+.task-main{font-weight:900}.task-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.task-tn{text-align:right;font-weight:900;color:var(--red);font-size:15px}
+.sources{display:flex;flex-wrap:wrap;gap:8px}
+.sources span{border:1px solid var(--line2);border-radius:999px;padding:5px 12px;font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:700}
+.sources .on{color:#86efac;border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08)}
+
+@media(max-width:1500px){.panel-grid{column-count:3}}
+@media(max-width:1100px){.panel-grid{column-count:2}.kpis{grid-template-columns:repeat(2,1fr)}.grid3{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.cav2-head{display:block}.head-right{align-items:flex-start;margin-top:10px}
+  .kpis,.grid3{grid-template-columns:1fr}.panel-grid{column-count:1}.task{grid-template-columns:1fr}.task-tn{text-align:left}}
+</style>
+
+<div class="cav2" ng-if="msg && msg.payload">
+  <!-- HEADER -->
+  <div class="cav2-head">
+    <div>
+      <div class="cav2-title">Cavernicola v2</div>
+      <div class="cav2-sub">Plan principal por producto terminado + bandas configurables por material de stock. Semaforo stock vs minimo por subrama y material.</div>
+    </div>
+    <div class="head-right">
+      <div class="cav2-pill">📅 {{msg.payload.mesKey}}</div>
+      <div class="top-actions">
+        <button ng-click="send({payload:{accion:'mesAnterior'}})">◀ mes</button>
+        <button ng-click="send({payload:{accion:'mesSiguiente'}})">mes ▶</button>
+        <button ng-click="send({payload:{accion:'ajustarObjetivoTotal',deltaTn:-10}})">meta −10</button>
+        <button ng-click="send({payload:{accion:'ajustarObjetivoTotal',deltaTn:10}})">meta +10</button>
+        <button class="save" ng-click="send({payload:{accion:'guardarCriterio'}})">💾 guardar JSON</button>
+        <button class="download" ng-click="downloadCavernicolaJson()">⬇ descargar JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="notice" ng-if="msg.payload.aviso">✓ {{msg.payload.aviso}}</div>
+
+  <!-- KPIs -->
+  <div class="kpis">
+    <div class="kpi k-blue"><div class="label">Plan mensual</div><div class="val blue">{{msg.payload.meta.objetivoTotalTn | number:1}} tn</div></div>
+    <div class="kpi k-green"><div class="label">Ingresado</div><div class="val green">{{msg.payload.meta.realTotalTn | number:1}} tn</div></div>
+    <div class="kpi k-violet"><div class="label">Agenda</div><div class="val violet">{{msg.payload.meta.agendaTotalTn | number:1}} tn</div></div>
+    <div class="kpi k-red"><div class="label">Falta plan</div><div class="val red">{{msg.payload.meta.faltanteTotalTn | number:1}} tn</div></div>
+  </div>
+
+  <!-- PANELES POR SECTOR -->
+  <div class="section">
+    <div class="section-title">Paneles por producto terminado / sector</div>
+    <div class="sem-legend">
+      <span><i class="sem-dot verde"></i>OK (stock ≥ minimo)</span>
+      <span><i class="sem-dot amarillo"></i>Justo (80–99%)</span>
+      <span><i class="sem-dot rojo"></i>Critico (&lt; 80%)</span>
+      <span><i class="sem-dot azul"></i>Alto (sobre maximo)</span>
+      <span><i class="sem-dot gris"></i>Sin minimo</span>
+    </div>
+    <button class="add-rama" ng-click="send({payload:{accion:'agregarProducto'}})">+ crear tarjeta / rama</button>
+    <div class="panel-grid">
+      <div class="sector {{p.tipo}}" ng-repeat="p in msg.payload.stockPaneles track by p.id">
+        <div class="sector-head">
+          <div style="flex:1;min-width:0">
+            <input class="sector-name-edit" ng-model="p.nombre" placeholder="Nombre del producto">
+            <button class="sector-name-save" ng-click="send({payload:{accion:'renombrarProducto',id:p.id,nombre:p.nombre}})">guardar nombre</button>
+            <div class="sector-id">ID {{p.id}} · {{p.materiales.length}} materiales</div>
+          </div>
+          <div class="sector-total">
+            <div><span class="num">{{p.totalTn | number:1}}</span> <span class="unit">tn</span></div>
+            <div class="sector-health" ng-class="p.deficitTn>0?'def':'ok'">{{p.deficitTn>0 ? ('falta '+(p.deficitTn|number:1)+' tn') : 'cubierto'}}</div>
+          </div>
+        </div>
+
+        <!-- DONUT -->
+        <div class="pie-box" ng-if="p.subramas && p.subramas.length && p.totalTn>0">
+          <div class="donut-wrap">
+            <div class="donut" ng-style="{background:p.pieGradient}"></div>
+            <div class="donut-center"><div class="dc-num">{{p.totalTn | number:1}}</div><div class="dc-unit">tn total</div></div>
+          </div>
+          <div class="pie-legend">
+            <div class="pie-line" ng-repeat="s in p.subramas | limitTo:6 track by s.id">
+              <i class="pie-dot" ng-style="{background:s.color}"></i>
+              <b>{{s.nombre}}</b>
+              <span class="pct">{{s.pct | number:1}}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sector-empty" ng-if="!p.materiales.length">Sin materiales asignados.</div>
+
+        <!-- SUBRAMAS -->
+        <div class="subgroup {{semSub(s)}}" ng-repeat="s in p.subramas track by s.id">
+          <div class="subgroup-head">
+            <div>
+              <div class="subgroup-id">Subrama {{s.id}}</div>
+              <div class="subgroup-title"><i class="sem-dot" ng-class="semSub(s)"></i>{{s.nombre}}</div>
+            </div>
+            <div class="subgroup-total">{{s.totalTn | number:1}} tn<small>{{s.materiales.length}} materiales</small></div>
+          </div>
+          <div class="stock-meter">
+            <div class="stock-meter-top">
+              <span>stock<b>{{s.totalTn | number:1}} tn</b></span>
+              <span>minimo<b>{{s.minimoTn | number:1}} tn</b></span>
+              <span class="faltante">faltante<b>{{s.deficitTn | number:1}} tn</b></span>
+            </div>
+            <div class="meter-bar">
+              <div class="meter-fill" ng-class="semSub(s)" ng-style="{width:(s.cobertura*100)+'%'}"></div>
+              <div class="meter-min" style="left:100%"></div>
+            </div>
+          </div>
+          <div class="subgroup-empty" ng-if="!s.materiales.length">Sin materiales en esta subrama.</div>
+
+          <!-- MATERIALES -->
+          <div class="sector-item" ng-repeat="m in s.materiales | limitTo:40 track by m.material">
+            <div class="mat-top">
+              <span class="mat-name">{{m.material}}</span>
+              <span class="mat-badge" ng-class="semMat(m)">{{semLabel(m)}}</span>
+            </div>
+            <div class="mat-meta">stock {{m.stockTn | number:1}} tn · min {{m.minimoTn | number:1}} · max {{m.maximoTn | number:1}} · {{m.familia}}</div>
+            <div class="mat-obs" ng-if="m.obs">✎ {{m.obs}}</div>
+            <div class="move-row">
+              <div class="rama-move">
+                <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:-1}})">rama −</button>
+                <span>{{m.productoId}}</span>
+                <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:1}})">+</button>
+              </div>
+              <div class="sub-move">
+                <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:-1}})">sub −</button>
+                <span>{{m.subramaId}}</span>
+                <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:1}})">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- config subramas -->
+        <div class="sub-actions">
+          <span class="lbl">Configurar subramas</span>
+          <button ng-click="send({payload:{accion:'agregarSubrama',productoId:p.id}})">+ subrama</button>
+        </div>
+        <div class="sub-edit" ng-repeat="s in p.subramas track by s.id">
+          <span>{{s.id}}</span>
+          <input ng-model="s.nombre" placeholder="Nombre subrama">
+          <button ng-click="send({payload:{accion:'renombrarSubrama',productoId:p.id,subId:s.id,nombre:s.nombre}})">guardar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PLAN 200 -->
+  <div class="section">
+    <div class="section-title">Plan principal 200 tn por producto terminado</div>
+    <div class="grid3">
+      <div class="card {{p.estado}} {{p.stockEstado}}" ng-repeat="p in msg.payload.plan track by p.key">
+        <div class="card-head"><div class="name">{{p.nombre}}</div><div class="state">{{p.estado}}</div></div>
+        <div class="bar"><div class="fill" ng-class="{warn:p.estado==='mirar'}" ng-style="{width:(p.avance*100)+'%'}"></div></div>
+        <div class="nums">
+          <span><b>Objetivo</b>{{p.objetivoTn | number:1}}</span>
+          <span><b>Real+agenda</b>{{p.cubiertoTn | number:1}}</span>
+          <span><b>Falta</b>{{p.faltanteTn | number:1}}</span>
+          <span><b>Stock</b>{{p.stockTn | number:1}}</span>
+        </div>
+        <div class="crit">Familias operativas incluidas: {{p.familias.join(', ')}}.</div>
+        <div class="stock-lines" ng-if="p.componentesStock && p.componentesStock.length">
+          <div class="stock-line {{c.estado}}" ng-repeat="c in p.componentesStock track by c.familia">
+            <b>{{c.material || c.familia}}<small>{{c.familia}} · min {{c.minimoTn | number:1}} · max {{c.maximoTn | number:1}} · stock {{c.stockTn | number:1}} tn</small></b>
+            <div>
+              <span class="sl-val" ng-if="c.estado==='critico'">faltan {{c.deficitTn | number:1}}</span>
+              <span class="sl-val" ng-if="c.estado==='justo'">justo</span>
+              <span class="sl-val" ng-if="c.estado==='ok'">ok</span>
+              <span class="sl-val" ng-if="c.estado==='alto'">alto {{c.excesoTn | number:1}}</span>
+              <span class="sl-val" ng-if="c.estado==='sin_minimo'">sin min</span>
+              <div class="band-controls" ng-if="c.material">
+                <button ng-click="send({payload:{accion:'ajustarBanda',material:c.material,campo:'minimoTn',deltaTn:-10,producto:p.key,familia:c.familia}})">min −10</button>
+                <button ng-click="send({payload:{accion:'ajustarBanda',material:c.material,campo:'minimoTn',deltaTn:10,producto:p.key,familia:c.familia}})">min +10</button>
+                <button class="maxbtn" ng-click="send({payload:{accion:'ajustarBanda',material:c.material,campo:'maximoTn',deltaTn:-10,producto:p.key,familia:c.familia}})">max −10</button>
+                <button class="maxbtn" ng-click="send({payload:{accion:'ajustarBanda',material:c.material,campo:'maximoTn',deltaTn:10,producto:p.key,familia:c.familia}})">max +10</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="crit">{{p.criterio}} <span ng-if="p.foco">Foco: {{p.foco}}.</span></div>
+        <div class="btns">
+          <button class="btn" ng-click="send({payload:{accion:'ajustarObjetivo',key:p.key,deltaTn:-10}})">−10</button>
+          <button class="btn" ng-click="send({payload:{accion:'ajustarObjetivo',key:p.key,deltaTn:10}})">+10</button>
+        </div>
+      </div>
+    </div>
+    <div class="btns">
+      <button class="btn save" ng-click="send({payload:{accion:'guardarCriterio'}})">Guardar criterio v2</button>
+      <button class="btn reset" ng-click="send({payload:{accion:'resetCriterio'}})">Restaurar criterio base</button>
+    </div>
+  </div>
+
+  <!-- BANDAS -->
+  <div class="section">
+    <div class="section-title">Bandas criticas de stock</div>
+    <div class="grid3">
+      <div class="card {{b.estado}}" ng-repeat="b in msg.payload.bandas track by b.key">
+        <div class="card-head"><div class="name">{{b.nombre}}</div><div class="state">{{b.estado}}</div></div>
+        <div class="nums">
+          <span><b>Disponible</b>{{b.disponibleTn | number:1}}</span>
+          <span><b>Banda</b>{{b.minimoTn | number:1}}-{{b.maximoTn | number:1}}</span>
+          <span><b>Sugerido</b>{{b.sugeridoTn | number:1}}</span>
+        </div>
+        <div class="crit">{{b.accion}}. {{b.criterio}}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROLES -->
+  <div class="section" ng-if="msg.payload.controles && msg.payload.controles.length">
+    <div class="section-title">Bolsas de control fuera del plan 200</div>
+    <div class="grid3">
+      <div class="card {{c.estado}}" ng-repeat="c in msg.payload.controles track by c.key">
+        <div class="card-head"><div class="name">{{c.nombre}}</div><div class="state">{{c.estado}}</div></div>
+        <div class="nums">
+          <span><b>Stock</b>{{c.stockTn | number:1}}</span>
+          <span><b>Min ref.</b>{{c.minimoTn | number:1}}</span>
+          <span><b>Deficit</b>{{c.deficitTn | number:1}}</span>
+        </div>
+        <div class="stock-lines" ng-if="c.componentes && c.componentes.length">
+          <div class="stock-line {{m.estado}}" ng-repeat="m in c.componentes | limitTo:6 track by m.material">
+            <b>{{m.material}}<small>{{m.familia}} · min {{m.minimoTn | number:1}} · max {{m.maximoTn | number:1}} · stock {{m.stockTn | number:1}} tn</small></b>
+            <div>
+              <span class="sl-val" ng-if="m.estado==='critico'">faltan {{m.deficitTn | number:1}}</span>
+              <span class="sl-val" ng-if="m.estado==='ok'">ok</span>
+              <span class="sl-val" ng-if="m.estado==='alto'">alto {{m.excesoTn | number:1}}</span>
+              <span class="sl-val" ng-if="m.estado==='sin_minimo'">sin min</span>
+              <div class="band-controls">
+                <button ng-click="send({payload:{accion:'ajustarBanda',material:m.material,campo:'minimoTn',deltaTn:-10,producto:c.key,familia:m.familia}})">min −10</button>
+                <button ng-click="send({payload:{accion:'ajustarBanda',material:m.material,campo:'minimoTn',deltaTn:10,producto:c.key,familia:m.familia}})">min +10</button>
+                <button class="maxbtn" ng-click="send({payload:{accion:'ajustarBanda',material:m.material,campo:'maximoTn',deltaTn:-10,producto:c.key,familia:m.familia}})">max −10</button>
+                <button class="maxbtn" ng-click="send({payload:{accion:'ajustarBanda',material:m.material,campo:'maximoTn',deltaTn:10,producto:c.key,familia:m.familia}})">max +10</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="crit">{{c.criterio}}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAREAS -->
+  <div class="section">
+    <div class="section-title">Que llamar hoy</div>
+    <div class="task" ng-repeat="t in msg.payload.tareas track by $index">
+      <div class="prio">P{{t.prioridad}} · {{t.tipo}}</div>
+      <div><div class="task-main">{{t.titulo}}: {{t.accion}}</div><div class="task-sub">{{t.motivo}}</div></div>
+      <div class="task-tn">{{t.tn | number:1}} tn</div>
+    </div>
+    <div class="crit" ng-if="!msg.payload.tareas.length">No hay tareas de compra segun el criterio actual.</div>
+  </div>
+
+  <!-- REVISAR -->
+  <div class="section" ng-if="msg.payload.stockRevisar && msg.payload.stockRevisar.length">
+    <div class="section-title">Materiales de stock para mapear</div>
+    <div class="task" ng-repeat="m in msg.payload.stockRevisar | limitTo:12 track by $index">
+      <div class="prio">REVISAR</div>
+      <div><div class="task-main">{{m.material}}</div><div class="task-sub">familia detectada: {{m.familia}} · minimo {{m.minimoTn | number:1}} tn · stock {{m.stockTn | number:1}} tn</div></div>
+      <div class="task-tn">{{m.stockTn | number:1}} tn</div>
+    </div>
+  </div>
+
+  <!-- FUENTES -->
+  <div class="section">
+    <div class="section-title">Fuentes conectadas</div>
+    <div class="sources">
+      <span ng-class="{on:msg.payload.meta.fuentes.criterio}">criterio</span>
+      <span ng-class="{on:msg.payload.meta.fuentes.reales}">reales</span>
+      <span ng-class="{on:msg.payload.meta.fuentes.stock}">stock</span>
+      <span ng-class="{on:msg.payload.meta.fuentes.agenda}">agenda</span>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(scope){
+  // Semaforo por SUBRAMA (stock vs minimo)
+  scope.semSub = function(s){
+    if(!s || !(s.minimoTn > 0)) return 'gris';
+    var c = (typeof s.cobertura === 'number') ? s.cobertura : (s.minimoTn>0 ? s.totalTn/s.minimoTn : 1);
+    if(c >= 1) return 'verde';
+    if(c >= 0.8) return 'amarillo';
+    return 'rojo';
+  };
+  // Semaforo por MATERIAL (usa estado calculado en el nodo funcion)
+  scope.semMat = function(m){
+    if(!m) return 'gris';
+    if(m.estado === 'critico') return 'rojo';
+    if(m.estado === 'alto') return 'azul';
+    if(m.estado === 'ok') return 'verde';
+    return 'gris';
+  };
+  scope.semLabel = function(m){
+    if(!m) return '';
+    if(m.estado === 'critico') return 'falta ' + (Math.round((m.deficitTn||0)*10)/10);
+    if(m.estado === 'alto') return 'alto';
+    if(m.estado === 'ok') return 'ok';
+    return 'sin min';
+  };
+
+  // Descarga JSON (igual que original)
+  scope.downloadCavernicolaJson = function(){
+    var data = angular.copy(scope.msg && scope.msg.payload ? scope.msg.payload : {});
+    var criterio = angular.copy(data.criterio || {});
+    var out = {
+      version: 2,
+      tipo: "cavernicola_v2_criterio_export",
+      generadoEn: new Date().toISOString(),
+      mesKey: data.mesKey || criterio.mesKey || "",
+      criterio: criterio,
+      stockMapeo: angular.copy(data.stockMapeo || []),
+      stockPaneles: angular.copy(data.stockPaneles || []),
+      productosTerminados: angular.copy(data.productosTerminados || []),
+      resumen: angular.copy(data.meta || {})
+    };
+    var blob = new Blob([JSON.stringify(out, null, 2)], {type: "application/json;charset=utf-8"});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = "cavernicola_v2_" + (out.mesKey || "criterio") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  };
+})(scope);
+</script>
