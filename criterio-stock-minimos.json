@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "tipo": "criterio_stock_minimos",
+  "nota": "Master de minimos/maximos por material. Se va armando por listas. Lista 1 = PE (stretch + cajon/ADI + rotomoldeo).",
+  "listas": [
+    {
+      "id": 1,
+      "nombre": "PE - Stretch / Cajon / Rotomoldeo",
+      "materiales": [
+        { "familia": "PE", "material": "stretch",    "color": "caramelo_tutty", "min_tn": 40, "max_tn": 60, "stockMatch": "STRECH CARAMELO",  "familiaOperativa": "STRETCH",    "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "stretch",    "color": "natural",        "min_tn": 15, "max_tn": 30, "stockMatch": "STRECH NATURAL",   "familiaOperativa": "STRETCH",    "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "cajon",      "color": "tutty_s_negro",  "min_tn": 40, "max_tn": 60, "stockMatch": "ADI TUTY",         "familiaOperativa": "ADI",        "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "cajon",      "color": "celeste",        "min_tn": 40, "max_tn": 60, "stockMatch": "ADI CELESTE",      "familiaOperativa": "ADI",        "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "cajon",      "color": "negro_tutty",    "min_tn": 30, "max_tn": 50, "stockMatch": "ADI PARA NEGRO",   "familiaOperativa": "ADI",        "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "cajon",      "color": "natural",        "min_tn": 30, "max_tn": 40, "stockMatch": "ADI NATURAL",      "familiaOperativa": "ADI",        "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "cajon",      "color": "rojo",           "min_tn": 20, "max_tn": 40, "stockMatch": "ADI ROJO",         "familiaOperativa": "ADI",        "productoCompra": "PEMD" },
+        { "familia": "PE", "material": "rotomoldeo", "color": "tutty",          "min_tn": 20, "max_tn": 60, "stockMatch": "ROTOMOLDEO TUTY",  "familiaOperativa": "ROTOMOLDEO", "productoCompra": "ROTOMOLDEO" },
+        { "familia": "PE", "material": "rotomoldeo", "color": "colores",        "min_tn": 20, "max_tn": 60, "stockMatch": "ROTOMOLDEO",       "familiaOperativa": "ROTOMOLDEO", "productoCompra": "ROTOMOLDEO" },
+        { "familia": "PE", "material": "rotomoldeo", "color": "natural",        "min_tn": 20, "max_tn": 60, "stockMatch": "ROTOMOLDEO NATURAL","familiaOperativa": "ROTOMOLDEO", "productoCompra": "ROTOMOLDEO" }
+      ]
+    }
+  ]
+}
