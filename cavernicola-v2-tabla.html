@@ -1,0 +1,179 @@
+<!--
+  ===================================================================
+  TABLA STOCK vs MINIMO  ·  Cavernicola v2  (vista planilla, sobria)
+  Se alimenta del MISMO msg.payload que las tarjetas (stockMapeo).
+  Conectar la salida del nodo funcion "Cavernicola v2 - criterio simple"
+  a este nodo ui_template.
+  Nota: todo el estado de filtros va en el objeto scope.tf (con punto)
+  para que ng-if / scope hijo no rompa los ng-model.
+  ===================================================================
+-->
+<style>
+.tbl2{--bg:#0f172a;--panel:#131c2e;--head:#1b2740;--txt:#e2e8f0;--muted:#94a3b8;--muted2:#64748b;
+  --line:#26324a;--accent:#38bdf8;--danger:#f87171;--ok:#34d399;--alto:#38bdf8;--gris:#64748b;
+  font-family:'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);
+  padding:14px;border-radius:10px;border:1px solid var(--line);font-size:13px}
+.tbl2 *{box-sizing:border-box}
+.tbl2-head{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.tbl2-title{font-size:19px;font-weight:800;letter-spacing:.2px}
+.tbl2-title small{display:block;font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
+.tbl2-mes{font-size:12px;color:#a5f3fc;border:1px solid rgba(56,189,248,.3);border-radius:999px;
+  padding:5px 12px;font-weight:700;background:rgba(56,189,248,.07)}
+
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.toolbar input[type=text],.toolbar select{height:32px;background:#0d1728;border:1px solid var(--line);
+  border-radius:7px;color:var(--txt);font-size:13px;padding:0 10px;outline:none}
+.toolbar input[type=text]{min-width:210px;flex:1;max-width:340px}
+.toolbar input:focus,.toolbar select:focus{border-color:rgba(56,189,248,.55)}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;
+  border:1px solid var(--line);border-radius:7px;height:32px;padding:0 12px;user-select:none}
+.chk input{width:15px;height:15px;accent-color:var(--danger);cursor:pointer}
+.count{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap}
+.count b{color:var(--txt);font-weight:800}
+.count .rd{color:var(--danger)}
+
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px}
+table.grid{width:100%;border-collapse:collapse;min-width:720px}
+.grid thead th{position:sticky;top:0;background:var(--head);color:var(--muted);text-transform:uppercase;
+  font-size:11px;letter-spacing:.5px;font-weight:800;text-align:left;padding:9px 11px;white-space:nowrap;
+  cursor:pointer;border-bottom:1px solid var(--line);z-index:1}
+.grid thead th.num{text-align:right}
+.grid thead th:hover{color:var(--txt)}
+.grid thead th .arr{color:var(--accent);margin-left:3px;font-size:10px}
+.grid tbody td{padding:8px 11px;border-bottom:1px solid rgba(38,50,74,.6);font-size:13px;vertical-align:middle}
+.grid tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+.grid tbody tr:hover td{background:rgba(56,189,248,.06)}
+.c-mat{font-weight:800;white-space:nowrap}
+.c-obs{display:block;font-size:11px;color:var(--muted2);font-style:italic;font-weight:400;margin-top:1px}
+.c-rama,.c-sub{color:var(--muted);white-space:nowrap}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.n-strong{font-weight:800}
+.n-falta{color:var(--danger);font-weight:800}
+.n-zero{color:var(--muted2)}
+.est{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:800;white-space:nowrap}
+.est .dot{width:9px;height:9px;border-radius:50%}
+.est.rojo{color:#fca5a5}.est.rojo .dot{background:var(--danger)}
+.est.verde{color:#86efac}.est.verde .dot{background:var(--ok)}
+.est.azul{color:#7dd3fc}.est.azul .dot{background:var(--alto)}
+.est.gris{color:#94a3b8}.est.gris .dot{background:var(--gris)}
+.grid tfoot td{padding:10px 11px;border-top:2px solid var(--line);background:var(--head);
+  font-weight:800;font-size:13px}
+.grid tfoot .lbl{color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.5px}
+.empty{padding:26px;text-align:center;color:var(--muted2);font-size:13px}
+</style>
+
+<div class="tbl2" ng-if="msg && msg.payload">
+  <div class="tbl2-head">
+    <div class="tbl2-title">Stock vs mínimo — por material
+      <small>Planilla derivada del criterio. Ordená tocando el encabezado; filtrá arriba.</small>
+    </div>
+    <div class="tbl2-mes">📅 {{msg.payload.mesKey}}</div>
+  </div>
+
+  <div class="toolbar">
+    <input type="text" ng-model="tf.q" placeholder="🔍 Buscar material, rama, familia, obs...">
+    <select ng-model="tf.ramaF" ng-options="pt.id as pt.nombre for pt in msg.payload.productosTerminados">
+      <option value="">Todas las ramas</option>
+    </select>
+    <label class="chk"><input type="checkbox" ng-model="tf.soloFalt"> Solo faltantes</label>
+    <span class="count"><b>{{tablaRows().length}}</b> materiales · stock <b>{{tablaTot('stockTn') | number:1}}</b> tn · falta <b class="rd">{{tablaTot('deficitTn') | number:1}}</b> tn</span>
+  </div>
+
+  <div class="tbl-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th ng-click="tsetSort('productoNombre')">Rama <span class="arr" ng-if="tf.sortCol=='productoNombre'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th ng-click="tsetSort('subramaNombre')">Subrama <span class="arr" ng-if="tf.sortCol=='subramaNombre'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th ng-click="tsetSort('material')">Material <span class="arr" ng-if="tf.sortCol=='material'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th class="num" ng-click="tsetSort('stockTn')">Stock <span class="arr" ng-if="tf.sortCol=='stockTn'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th class="num" ng-click="tsetSort('minimoTn')">Mín <span class="arr" ng-if="tf.sortCol=='minimoTn'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th class="num" ng-click="tsetSort('maximoTn')">Máx <span class="arr" ng-if="tf.sortCol=='maximoTn'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th class="num" ng-click="tsetSort('deficitTn')">Falta <span class="arr" ng-if="tf.sortCol=='deficitTn'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+          <th ng-click="tsetSort('estado')">Estado <span class="arr" ng-if="tf.sortCol=='estado'">{{tf.sortDir>0?'▲':'▼'}}</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="m in tablaRows() track by (m.productoId + '|' + m.subramaId + '|' + m.material)">
+          <td class="c-rama">{{m.productoId}} · {{m.productoNombre}}</td>
+          <td class="c-sub">{{m.subramaNombre}}</td>
+          <td><span class="c-mat">{{m.material}}</span><span class="c-obs" ng-if="m.obs">{{m.obs}}</span></td>
+          <td class="num n-strong">{{m.stockTn | number:1}}</td>
+          <td class="num" ng-class="{'n-zero':!(m.minimoTn>0)}">{{m.minimoTn | number:1}}</td>
+          <td class="num" ng-class="{'n-zero':!(m.maximoTn>0)}">{{m.maximoTn | number:1}}</td>
+          <td class="num" ng-class="m.deficitTn>0?'n-falta':'n-zero'">{{m.deficitTn>0 ? (m.deficitTn | number:1) : '—'}}</td>
+          <td><span class="est" ng-class="tEstCls(m)"><i class="dot"></i>{{tEstTxt(m)}}</span></td>
+        </tr>
+        <tr ng-if="!tablaRows().length"><td colspan="8" class="empty">No hay materiales para este filtro.</td></tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td class="lbl" colspan="3">Totales ({{tablaRows().length}} materiales)</td>
+          <td class="num">{{tablaTot('stockTn') | number:1}}</td>
+          <td class="num">{{tablaTot('minimoTn') | number:1}}</td>
+          <td class="num">{{tablaTot('maximoTn') | number:1}}</td>
+          <td class="num n-falta">{{tablaTot('deficitTn') | number:1}}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+</div>
+
+<script>
+(function(scope){
+  // Estado de filtros/orden en UN objeto (con punto) para sobrevivir al scope hijo de ng-if
+  scope.tf = { q:'', ramaF:'', soloFalt:false, sortCol:'deficitTn', sortDir:-1 };
+
+  scope.tsetSort = function(col){
+    var tf = scope.tf;
+    if(tf.sortCol === col){ tf.sortDir = -tf.sortDir; }
+    else { tf.sortCol = col; tf.sortDir = (col==='material'||col==='productoNombre'||col==='subramaNombre'||col==='estado') ? 1 : -1; }
+  };
+
+  scope.tablaRows = function(){
+    var tf = scope.tf;
+    var rows = (scope.msg && scope.msg.payload && scope.msg.payload.stockMapeo) ? scope.msg.payload.stockMapeo : [];
+    var q = (tf.q || '').toString().toLowerCase().trim();
+    var out = rows.filter(function(m){
+      if(tf.soloFalt && !(m.deficitTn > 0)) return false;
+      if(tf.ramaF !== '' && tf.ramaF != null && Number(m.productoId) !== Number(tf.ramaF)) return false;
+      if(q){
+        var hay = ((m.material||'')+' '+(m.productoNombre||'')+' '+(m.subramaNombre||'')+' '+(m.familia||'')+' '+(m.obs||'')).toLowerCase();
+        if(hay.indexOf(q) < 0) return false;
+      }
+      return true;
+    });
+    var c = tf.sortCol, d = tf.sortDir;
+    out = out.slice().sort(function(a,b){
+      var va = a[c], vb = b[c];
+      if(typeof va === 'string' || typeof vb === 'string'){
+        va = (va==null?'':va).toString().toLowerCase(); vb = (vb==null?'':vb).toString().toLowerCase();
+        return va < vb ? -d : (va > vb ? d : 0);
+      }
+      return ((Number(va)||0) - (Number(vb)||0)) * d;
+    });
+    return out;
+  };
+
+  scope.tablaTot = function(campo){
+    return scope.tablaRows().reduce(function(s,m){ return s + (Number(m[campo])||0); }, 0);
+  };
+
+  scope.tEstTxt = function(m){
+    if(!m) return '';
+    if(m.estado === 'critico') return 'FALTA';
+    if(m.estado === 'alto') return 'ALTO';
+    if(m.estado === 'ok') return 'OK';
+    return 'SIN MÍN';
+  };
+  scope.tEstCls = function(m){
+    if(!m) return 'gris';
+    if(m.estado === 'critico') return 'rojo';
+    if(m.estado === 'alto') return 'azul';
+    if(m.estado === 'ok') return 'verde';
+    return 'gris';
+  };
+})(scope);
+</script>
