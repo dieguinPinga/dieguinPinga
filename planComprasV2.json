@@ -1,0 +1,495 @@
+{
+  "version": 2,
+  "tipo": "cavernicola_plan_compras_v2",
+  "actualizado": "2026-07-08T00:24:52.783Z",
+  "mesKey": "2026-07",
+  "objetivoTotalTn": 0,
+  "planFamilias": [
+    {
+      "key": "PEMD",
+      "nombre": "PEMD / Cajon",
+      "objetivoTn": 100,
+      "familias": [
+        "ADI",
+        "STRETCH"
+      ],
+      "criterio": "Comprar por plan mensual. El stock se interpreta desde los materiales reales del archivo."
+    },
+    {
+      "key": "PP_COPO",
+      "nombre": "PP Copo / Baldes-Bazar-Sillas",
+      "objetivoTn": 50,
+      "familias": [
+        "PP Copo",
+        "BALDE",
+        "TAPITA",
+        "TAPON",
+        "NEGRO",
+        "PP"
+      ],
+      "foco": "Baldes / PP Copo negro",
+      "criterio": "Comprar por plan mensual. El stock puede venir como BALDE, TAPITA, TAPON, NEGRO o PP."
+    },
+    {
+      "key": "PP_HOMO",
+      "nombre": "PP Homo",
+      "objetivoTn": 50,
+      "familias": [
+        "PP Homo"
+      ],
+      "criterio": "Comprar por plan mensual."
+    }
+  ],
+  "materialMap": {},
+  "productosTerminados": [
+    {
+      "id": 0,
+      "key": "LIMBO",
+      "nombre": "FRUTA",
+      "tipo": "limbo"
+    },
+    {
+      "id": 1,
+      "key": "PEMD",
+      "nombre": "PEMD",
+      "tipo": "plan"
+    },
+    {
+      "id": 2,
+      "key": "PP_COPO",
+      "nombre": "PEMD IF BAJO",
+      "tipo": "plan"
+    },
+    {
+      "id": 3,
+      "key": "PP_HOMO",
+      "nombre": "PP COPO",
+      "tipo": "plan"
+    },
+    {
+      "id": 4,
+      "key": "SOPLADO_TUTTY",
+      "nombre": "Soplado",
+      "tipo": "control"
+    },
+    {
+      "id": 5,
+      "key": "SOPLADO_OTROS",
+      "nombre": "PP HOMO NEGRO",
+      "tipo": "control"
+    },
+    {
+      "id": 6,
+      "key": "ROTOMOLDEO",
+      "nombre": "MEZCLA",
+      "tipo": "control"
+    },
+    {
+      "id": 7,
+      "key": "FUERA_PLAN",
+      "nombre": "Fuera del plan / control",
+      "tipo": "control"
+    },
+    {
+      "id": 8,
+      "key": "RAMA_8",
+      "tipo": "control",
+      "nombre": "Nueva rama 8"
+    },
+    {
+      "id": 9,
+      "key": "RAMA_9",
+      "tipo": "control",
+      "nombre": "Nueva rama 9"
+    },
+    {
+      "id": 10,
+      "key": "RAMA_10",
+      "tipo": "control",
+      "nombre": "Nueva rama 10"
+    },
+    {
+      "id": 11,
+      "key": "RAMA_11",
+      "tipo": "control",
+      "nombre": "Nueva rama 11"
+    }
+  ],
+  "asignacionesMaterial": {
+    "ADI TUTY": 1,
+    "ADI CELESTE": 1,
+    "STRECH CARAMELO": 1,
+    "BATERIA": 3,
+    "ADI NATURAL": 1,
+    "STRECH NATURAL": 1,
+    "SOPLADO TUTTY S/N": 4,
+    "BAZAR TUTY": 5,
+    "BAZAR AZUL": 3,
+    "SOPLADO AMARILLO": 4,
+    "ROTOMOLDEO NATURAL COMUN": 1,
+    "TAPITA POLIETILENO ALTA AZUL": 1,
+    "FILM DE BAJA AGRUMADO": 1,
+    "ROTOMOLDEO AZUL MFI BAJO": 2,
+    "ROTOMOLDEO NATURAL MFI BAJO": 2,
+    "SILLA TUTY": 5,
+    "SOPLADO CARAMELO": 4,
+    "SOPLADO BLANCO": 4,
+    "ADI AMARILLO": 1,
+    "ROTOMOLDEO": 1,
+    "TAPON SIN CLASIFICAR": 1,
+    "ROTOMOLDEO VERDE MFI BAJO": 2,
+    "ADI PARA NEGRO": 1,
+    "ROTOMOLDEO NEGRO": 1,
+    "SOPLADO NEGRO": 4,
+    "SILLA BLANCA": 5,
+    "ROTOMOLDEO NEGRO MFI BAJO": 2,
+    "BAZAR VERDE": 3,
+    "SOPLADO AZUL": 4,
+    "ADI ROJO": 1,
+    "BALDE BLANCO": 3,
+    "NEGRO MEZCLA": 6,
+    "TAPITA POLIETILENO ALTA NEGRO": 1,
+    "BAZAR ROJO": 3,
+    "ADI VERDE OSCURO": 1,
+    "STRECH TUTTY": 1,
+    "ROTOMOLDEO ROJO": 1,
+    "STRECH PELLETIZADO": 1,
+    "GRIS": 4,
+    "BAZAR CON CARGA": 0,
+    "TAPA BAJA DENSIDAD TUTTY": 2,
+    "TAPON CLASIFICADO": 1
+  },
+  "bandasMaterial": [
+    {
+      "material": "BATERIA",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "BATERIA",
+      "minimoTn": 20,
+      "maximoTn": 40
+    },
+    {
+      "material": "BAZAR TUTY",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "BAZAR",
+      "minimoTn": 20,
+      "maximoTn": 40
+    },
+    {
+      "material": "BAZAR ROJO",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "BAZAR",
+      "minimoTn": 10,
+      "maximoTn": 30
+    },
+    {
+      "material": "BAZAR VERDE",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "BAZAR",
+      "minimoTn": 10,
+      "maximoTn": 30
+    },
+    {
+      "material": "BALDE BLANCO",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "BALDE",
+      "minimoTn": 20,
+      "maximoTn": 50
+    },
+    {
+      "material": "SILLA BLANCA",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "SILLA",
+      "minimoTn": 20,
+      "maximoTn": 50
+    },
+    {
+      "material": "SILLA TUTY",
+      "productoCompra": "PP_COPO",
+      "familiaOperativa": "SILLA",
+      "minimoTn": 0,
+      "maximoTn": 10
+    },
+    {
+      "material": "SOPLADO TUTTY S/N",
+      "productoCompra": "SOPLADO_TUTTY",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "SOPLADO TUTTY SIN NEGRO",
+      "productoCompra": "SOPLADO_TUTTY",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "SOPLADO TUTTY C/NEGRO",
+      "productoCompra": "SOPLADO_TUTTY",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 20,
+      "maximoTn": 30
+    },
+    {
+      "material": "SOPLADO TUTTY CON NEGRO",
+      "productoCompra": "SOPLADO_TUTTY",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 20,
+      "maximoTn": 30
+    },
+    {
+      "material": "SOPLADO BLANCO",
+      "productoCompra": "SOPLADO_OTROS",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "SOPLADO CARAMELO",
+      "productoCompra": "SOPLADO_OTROS",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "SOPLADO AZUL",
+      "productoCompra": "SOPLADO_OTROS",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "SOPLADO AMARILLO",
+      "productoCompra": "SOPLADO_OTROS",
+      "familiaOperativa": "SOPLADO",
+      "minimoTn": 10,
+      "maximoTn": 20
+    },
+    {
+      "material": "STRECH CARAMELO",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "STRETCH",
+      "minimoTn": 40,
+      "maximoTn": 60
+    },
+    {
+      "material": "STRECH TUTTY",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "STRETCH",
+      "minimoTn": 40,
+      "maximoTn": 60
+    },
+    {
+      "material": "STRECH NATURAL",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "STRETCH",
+      "minimoTn": 15,
+      "maximoTn": 30
+    },
+    {
+      "material": "ADI TUTY",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "ADI",
+      "minimoTn": 40,
+      "maximoTn": 60
+    },
+    {
+      "material": "ADI CELESTE",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "ADI",
+      "minimoTn": 40,
+      "maximoTn": 60
+    },
+    {
+      "material": "ADI PARA NEGRO",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "ADI",
+      "minimoTn": 30,
+      "maximoTn": 50
+    },
+    {
+      "material": "ADI NATURAL",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "ADI",
+      "minimoTn": 30,
+      "maximoTn": 40
+    },
+    {
+      "material": "ADI ROJO",
+      "productoCompra": "PEMD",
+      "familiaOperativa": "ADI",
+      "minimoTn": 20,
+      "maximoTn": 40
+    },
+    {
+      "material": "ROTOMOLDEO",
+      "productoCompra": "ROTOMOLDEO",
+      "familiaOperativa": "ROTOMOLDEO",
+      "minimoTn": 20,
+      "maximoTn": 60
+    },
+    {
+      "material": "ROTOMOLDEO TUTY",
+      "productoCompra": "ROTOMOLDEO",
+      "familiaOperativa": "ROTOMOLDEO",
+      "minimoTn": 20,
+      "maximoTn": 60
+    },
+    {
+      "material": "ROTOMOLDEO NATURAL",
+      "productoCompra": "ROTOMOLDEO",
+      "familiaOperativa": "ROTOMOLDEO",
+      "minimoTn": 20,
+      "maximoTn": 60
+    }
+  ],
+  "controlStock": [
+    {
+      "key": "SOPLADO_OTROS",
+      "nombre": "Soplado otros",
+      "criterio": "Control: no entra en el plan 200 ni en la banda Soplado Tutti. Revisar antes de comprar."
+    },
+    {
+      "key": "ROTOMOLDEO",
+      "nombre": "Rotomoldeo",
+      "criterio": "Control: queda fuera del plan 200 salvo decision puntual."
+    }
+  ],
+  "bandasStock": [
+    {
+      "key": "SOPLADO_TUTTY",
+      "nombre": "Soplado Tutti",
+      "familia": "SOPLADO",
+      "colores": [
+        "TUTTY",
+        "TUTTY CON NEGRO",
+        "TUTTY SIN NEGRO"
+      ],
+      "minimoTn": 6,
+      "idealTn": 9,
+      "maximoTn": 12,
+      "criterio": "Banda permanente: si baja de 6 tn comprar hasta 9/12; si supera 12 tn frenar."
+    }
+  ],
+  "subramasProducto": {
+    "0": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "1": [
+      {
+        "id": 0,
+        "nombre": "PEAD"
+      },
+      {
+        "id": 1,
+        "nombre": "PEMD"
+      },
+      {
+        "id": 2,
+        "nombre": "PEBD"
+      },
+      {
+        "id": 3,
+        "nombre": "FRUTA"
+      }
+    ],
+    "2": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "3": [
+      {
+        "id": 0,
+        "nombre": "PP COPO NEGRO"
+      },
+      {
+        "id": 1,
+        "nombre": "PP COPO COLORES"
+      }
+    ],
+    "4": [
+      {
+        "id": 0,
+        "nombre": "SOPLADO NEGRO"
+      },
+      {
+        "id": 1,
+        "nombre": "SOPLADO COLOR"
+      }
+    ],
+    "5": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "6": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "7": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "8": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "9": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "10": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ],
+    "11": [
+      {
+        "id": 0,
+        "nombre": "Sin subrama"
+      }
+    ]
+  },
+  "asignacionesSubramaMaterial": {
+    "ADI TUTY": 1,
+    "ROTOMOLDEO ROJO": 1,
+    "STRECH TUTTY": 1,
+    "1||STRECH TUTTY": 2,
+    "1||ROTOMOLDEO ROJO": 1,
+    "1||STRECH PELLETIZADO": 2,
+    "1||ADI VERDE OSCURO": 0,
+    "1||FILM DE BAJA AGRUMADO": 2,
+    "1||TAPITA POLIETILENO ALTA AZUL": 3,
+    "1||ADI TUTY": 0,
+    "1||STRECH CARAMELO": 2,
+    "1||STRECH NATURAL": 2,
+    "1||ROTOMOLDEO": 1,
+    "1||TAPON SIN CLASIFICAR": 3,
+    "1||ROTOMOLDEO NEGRO": 1,
+    "3||BAZAR ROJO": 1,
+    "3||BAZAR AZUL": 1,
+    "1||ROTOMOLDEO NATURAL COMUN": 1,
+    "4||SOPLADO AZUL": 1,
+    "4||SOPLADO AMARILLO": 1,
+    "4||SOPLADO CARAMELO": 1,
+    "4||SOPLADO BLANCO": 1,
+    "1||TAPON CLASIFICADO": 3,
+    "3||BAZAR VERDE": 1,
+    "3||BALDE BLANCO": 1
+  }
+}
