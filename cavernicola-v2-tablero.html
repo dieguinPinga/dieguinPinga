@@ -139,23 +139,26 @@
 .subgroup-empty{font-size:10px;color:var(--muted2);margin-top:5px}
 
 /* materiales */
-.sector-item{border-top:1px solid rgba(148,163,184,.10);padding:6px 0;font-size:12.5px}
-.mat-top{display:flex;align-items:center;gap:7px}
-.mat-name{font-weight:800;flex:1;min-width:0;font-size:13.5px}
-.mat-badge{font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.3px;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.sector-item{border-top:1px solid rgba(148,163,184,.10);padding:8px 0;font-size:13px}
+.mat-top{display:flex;align-items:center;gap:8px}
+.mat-name{font-weight:800;flex:1;min-width:0;font-size:15px}
+.mat-badge{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.3px;border-radius:6px;padding:3px 9px;white-space:nowrap}
+.mat-row2{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:4px;flex-wrap:wrap}
+.mat-info{min-width:0;flex:1}
 .mat-badge.verde{color:#bbf7d0;background:rgba(34,197,94,.16);border:1px solid rgba(34,197,94,.35)}
 .mat-badge.amarillo{color:#fde68a;background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.35)}
 .mat-badge.rojo{color:#fecaca;background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.4)}
 .mat-badge.azul{color:#bae6fd;background:rgba(56,189,248,.16);border:1px solid rgba(56,189,248,.35)}
 .mat-badge.gris{color:#cbd5e1;background:rgba(100,116,139,.16);border:1px solid rgba(100,116,139,.35)}
-.mat-meta{color:var(--muted);margin-top:2px;font-size:11.5px;line-height:1.35}
-.mat-obs{color:#fbbf24;font-style:italic;margin-top:1px;font-size:11.5px}
-.move-row{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-top:5px}
-.rama-move,.sub-move{display:flex;gap:4px;align-items:center}
-.rama-move button,.sub-move button{height:21px;min-width:24px;border-radius:5px;font-size:10.5px;font-weight:900;cursor:pointer;padding:0 6px}
+.mat-meta{color:var(--muted);font-size:13px;line-height:1.4}
+.mat-meta b{color:var(--txt);font-weight:800;font-variant-numeric:tabular-nums}
+.mat-obs{color:#fbbf24;font-style:italic;margin-top:2px;font-size:12.5px}
+.move-row{display:flex;gap:8px;align-items:center;flex-shrink:0}
+.rama-move,.sub-move{display:flex;gap:5px;align-items:center}
+.rama-move button,.sub-move button{height:24px;min-width:28px;border-radius:6px;font-size:11.5px;font-weight:900;cursor:pointer;padding:0 8px}
 .rama-move button{border:1px solid rgba(56,189,248,.38);background:rgba(56,189,248,.10);color:#7dd3fc}
 .sub-move button{border:1px solid rgba(167,139,250,.4);background:rgba(167,139,250,.10);color:#c4b5fd}
-.rama-move span,.sub-move span{font-size:13px;font-weight:900;min-width:14px;text-align:center}
+.rama-move span,.sub-move span{font-size:14px;font-weight:900;min-width:16px;text-align:center}
 .rama-move span{color:#7dd3fc}.sub-move span{color:#c4b5fd}
 
 .sub-actions{display:flex;justify-content:space-between;gap:8px;align-items:center;margin:9px 0 6px;
@@ -313,18 +316,22 @@
               <span class="mat-name">{{m.material}}</span>
               <span class="mat-badge" ng-class="semMat(m)">{{semLabel(m)}}</span>
             </div>
-            <div class="mat-meta">stock {{m.stockTn | number:1}} tn · min {{m.minimoTn | number:1}} · max {{m.maximoTn | number:1}} · {{m.familia}}</div>
-            <div class="mat-obs" ng-if="m.obs">✎ {{m.obs}}</div>
-            <div class="move-row">
-              <div class="rama-move">
-                <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:-1}})">rama −</button>
-                <span>{{m.productoId}}</span>
-                <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:1}})">+</button>
+            <div class="mat-row2">
+              <div class="mat-info">
+                <div class="mat-meta">stock <b>{{m.stockTn | number:1}}</b> tn · mín <b>{{m.minimoTn | number:1}}</b> · máx <b>{{m.maximoTn | number:1}}</b> · {{m.familia}}</div>
+                <div class="mat-obs" ng-if="m.obs">✎ {{m.obs}}</div>
               </div>
-              <div class="sub-move">
-                <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:-1}})">sub −</button>
-                <span>{{m.subramaId}}</span>
-                <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:1}})">+</button>
+              <div class="move-row">
+                <div class="rama-move">
+                  <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:-1}})">rama −</button>
+                  <span>{{m.productoId}}</span>
+                  <button ng-click="send({payload:{accion:'ajustarProductoMaterial',material:m.material,actualId:m.productoId,deltaId:1}})">+</button>
+                </div>
+                <div class="sub-move">
+                  <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:-1}})">sub −</button>
+                  <span>{{m.subramaId}}</span>
+                  <button ng-click="send({payload:{accion:'ajustarSubramaMaterial',material:m.material,productoId:p.id,actualId:m.subramaId,deltaId:1}})">+</button>
+                </div>
               </div>
             </div>
           </div>
