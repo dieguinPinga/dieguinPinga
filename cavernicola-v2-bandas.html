@@ -1,0 +1,188 @@
+<!--
+  ===================================================================
+  EDITOR DE BANDAS (minimo / maximo) por material  ·  Cavernicola v2
+  Se alimenta del MISMO msg.payload que las tarjetas / tabla.
+  Usa las acciones que ya existen en el nodo funcion:
+    - ajustarBanda  (min/max +/-)
+    - guardarCriterio (persistir a planComprasV2.json)
+  Conectar la salida del nodo "Cavernicola v2 - criterio simple" aca.
+  Estado de filtros en objeto scope.bf (con punto) por el scope hijo de ng-if.
+  ===================================================================
+-->
+<style>
+.bnd{--bg:#0f172a;--head:#1b2740;--txt:#e2e8f0;--muted:#94a3b8;--muted2:#64748b;--line:#26324a;
+  --blue:#38bdf8;--violet:#a78bfa;--danger:#f87171;--ok:#34d399;
+  font-family:'Segoe UI',Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);
+  padding:14px;border-radius:10px;border:1px solid var(--line);font-size:13px}
+.bnd *{box-sizing:border-box}
+.bnd-head{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;flex-wrap:wrap;
+  border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.bnd-title{font-size:19px;font-weight:800}
+.bnd-title small{display:block;font-size:11.5px;color:var(--muted);font-weight:600;margin-top:2px}
+.bnd-mes{font-size:12px;color:#a5f3fc;border:1px solid rgba(56,189,248,.3);border-radius:999px;padding:5px 12px;font-weight:700;background:rgba(56,189,248,.07)}
+
+.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.toolbar input[type=text]{height:32px;background:#0d1728;border:1px solid var(--line);border-radius:7px;color:var(--txt);font-size:13px;padding:0 10px;outline:none;min-width:210px;flex:1;max-width:320px}
+.toolbar input:focus{border-color:rgba(56,189,248,.55)}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);cursor:pointer;border:1px solid var(--line);border-radius:7px;height:32px;padding:0 12px;user-select:none}
+.chk input{width:15px;height:15px;accent-color:var(--blue);cursor:pointer}
+.save-btn{height:32px;border-radius:7px;border:1px solid rgba(52,211,153,.5);background:rgba(52,211,153,.14);color:#86efac;font-weight:800;font-size:12.5px;padding:0 14px;cursor:pointer}
+.save-btn:hover{background:rgba(52,211,153,.24)}
+.count{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap}
+.count b{color:var(--txt);font-weight:800}
+.hint{font-size:11.5px;color:var(--muted2);margin:-4px 0 10px}
+
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:9px}
+table.grid{width:100%;border-collapse:collapse;min-width:760px}
+.grid thead th{position:sticky;top:0;background:var(--head);color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.5px;font-weight:800;text-align:left;padding:9px 11px;white-space:nowrap;border-bottom:1px solid var(--line);z-index:1}
+.grid thead th.center{text-align:center}
+.grid thead th.num{text-align:right}
+.grid tbody td{padding:8px 11px;border-bottom:1px solid rgba(38,50,74,.6);font-size:13px;vertical-align:middle}
+.grid tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+.grid tbody tr:hover td{background:rgba(56,189,248,.05)}
+.c-mat{font-weight:800;white-space:nowrap}
+.c-fam{display:block;font-size:11px;color:var(--muted2);font-weight:400;margin-top:1px}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stock-lo{color:var(--danger);font-weight:800}
+.stock-ok{color:var(--txt);font-weight:700}
+.edit{display:flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap}
+.edit .val{min-width:42px;text-align:center;font-size:15px;font-weight:800;font-variant-numeric:tabular-nums}
+.edit.min .val{color:#7dd3fc}
+.edit.max .val{color:#c4b5fd}
+.edit .nomin{color:var(--muted2);font-weight:700;font-size:12px}
+.stp{height:24px;min-width:30px;border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;padding:0 6px}
+.edit.min .stp{border:1px solid rgba(56,189,248,.38);background:rgba(56,189,248,.10);color:#7dd3fc}
+.edit.max .stp{border:1px solid rgba(167,139,250,.4);background:rgba(167,139,250,.10);color:#c4b5fd}
+.stp:hover{filter:brightness(1.25)}
+.empty{padding:26px;text-align:center;color:var(--muted2)}
+.notice{margin-bottom:10px;padding:8px 12px;border-radius:7px;background:rgba(52,211,153,.10);border:1px solid rgba(52,211,153,.25);color:#86efac;font-size:12px;font-weight:600}
+</style>
+
+<div class="bnd" ng-if="msg && msg.payload">
+  <div class="bnd-head">
+    <div class="bnd-title">Editar bandas — mínimo / máximo por material
+      <small>Tocá −/+ para ajustar (se aplica al instante). Guardá para dejarlo fijo en planComprasV2.json.</small>
+    </div>
+    <div class="bnd-mes">📅 {{msg.payload.mesKey}}</div>
+  </div>
+
+  <div class="notice" ng-if="msg.payload.aviso">✓ {{msg.payload.aviso}}</div>
+
+  <div class="toolbar">
+    <input type="text" ng-model="bf.q" placeholder="🔍 Buscar material, familia, producto...">
+    <label class="chk"><input type="checkbox" ng-model="bf.soloSinMin"> Solo sin mínimo</label>
+    <button class="save-btn" ng-click="send({payload:{accion:'guardarCriterio'}})">💾 Guardar bandas</button>
+    <span class="count"><b>{{bandasRows().length}}</b> materiales</span>
+  </div>
+  <div class="hint">El mínimo/máximo se aplica por material; “−10 / +10” salta de a 10 tn y “−1 / +1” afina de a 1 tn.</div>
+
+  <div class="tbl-wrap">
+    <table class="grid">
+      <thead>
+        <tr>
+          <th>Material</th>
+          <th class="num">Stock</th>
+          <th class="center">Mínimo (tn)</th>
+          <th class="center">Máximo (tn)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="r in bandasRows() track by r.material">
+          <td><span class="c-mat">{{r.material}}</span><span class="c-fam">{{r.familia}}<span ng-if="r.producto"> · {{r.producto}}</span></span></td>
+          <td class="num" ng-class="(r.stockTn!=null && r.minimoTn>0 && r.stockTn<r.minimoTn)?'stock-lo':'stock-ok'">{{r.stockTn!=null ? (r.stockTn | number:1) : '—'}}</td>
+          <td>
+            <div class="edit min">
+              <button class="stp" ng-click="ajBanda(r,'minimoTn',-10)">−10</button>
+              <button class="stp" ng-click="ajBanda(r,'minimoTn',-1)">−1</button>
+              <span class="val" ng-class="{nomin:!(r.minimoTn>0)}">{{r.minimoTn>0 ? (r.minimoTn | number:1) : '—'}}</span>
+              <button class="stp" ng-click="ajBanda(r,'minimoTn',1)">+1</button>
+              <button class="stp" ng-click="ajBanda(r,'minimoTn',10)">+10</button>
+            </div>
+          </td>
+          <td>
+            <div class="edit max">
+              <button class="stp" ng-click="ajBanda(r,'maximoTn',-10)">−10</button>
+              <button class="stp" ng-click="ajBanda(r,'maximoTn',-1)">−1</button>
+              <span class="val" ng-class="{nomin:!(r.maximoTn>0)}">{{r.maximoTn>0 ? (r.maximoTn | number:1) : '—'}}</span>
+              <button class="stp" ng-click="ajBanda(r,'maximoTn',1)">+1</button>
+              <button class="stp" ng-click="ajBanda(r,'maximoTn',10)">+10</button>
+            </div>
+          </td>
+        </tr>
+        <tr ng-if="!bandasRows().length"><td colspan="4" class="empty">No hay materiales para este filtro.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function(scope){
+  scope.bf = { q:'', soloSinMin:false };
+
+  function norm(x){ return (x==null?'':x).toString().trim().toUpperCase(); }
+
+  // Lista fusionada (bandas + stock) CACHEADA: se reconstruye solo cuando llega
+  // un payload nuevo (cambia generadoEn). Devolver objetos estables evita el
+  // loop de digest de AngularJS (infdig) al usarla dentro de ng-repeat.
+  scope._bandCache = null;
+  scope._bandSig = null;
+  scope.bandasBase = function(){
+    var pay = (scope.msg && scope.msg.payload) ? scope.msg.payload : {};
+    var sig = String(pay.generadoEn || '') + '|' + ((pay.criterio && pay.criterio.bandasMaterial) ? pay.criterio.bandasMaterial.length : 0);
+    if(scope._bandSig === sig && scope._bandCache) return scope._bandCache;
+    var bands = (pay.criterio && pay.criterio.bandasMaterial) ? pay.criterio.bandasMaterial : [];
+    var stock = pay.stockMapeo || [];
+    var stockByMat = {};
+    stock.forEach(function(m){ stockByMat[norm(m.material)] = m; });
+    var map = {};
+    bands.forEach(function(b){
+      var k = norm(b.material); if(!k) return;
+      var s = stockByMat[k];
+      map[k] = {
+        material: b.material,
+        familia: b.familiaOperativa || (s ? s.familia : ''),
+        producto: b.productoCompra || (s ? s.producto : ''),
+        minimoTn: Number(b.minimoTn) || 0,
+        maximoTn: Number(b.maximoTn) || 0,
+        stockTn: s ? (Number(s.stockTn) || 0) : null
+      };
+    });
+    stock.forEach(function(m){
+      var k = norm(m.material); if(!k || map[k]) return;
+      map[k] = {
+        material: m.material,
+        familia: m.familia,
+        producto: m.producto,
+        minimoTn: Number(m.minimoTn) || 0,
+        maximoTn: Number(m.maximoTn) || 0,
+        stockTn: Number(m.stockTn) || 0
+      };
+    });
+    var rows = Object.keys(map).map(function(k){ return map[k]; });
+    rows.sort(function(a,b){ return a.material.localeCompare(b.material); });
+    scope._bandSig = sig;
+    scope._bandCache = rows;
+    return rows;
+  };
+
+  scope.bandasRows = function(){
+    var tf = scope.bf, q = (tf.q||'').toString().toLowerCase().trim();
+    return scope.bandasBase().filter(function(r){
+      if(tf.soloSinMin && r.minimoTn > 0) return false;
+      if(q){ var hay = (r.material+' '+r.familia+' '+r.producto).toLowerCase(); if(hay.indexOf(q) < 0) return false; }
+      return true;
+    });
+  };
+
+  scope.ajBanda = function(r, campo, delta){
+    scope.send({ payload: {
+      accion: 'ajustarBanda',
+      material: r.material,
+      campo: campo,
+      deltaTn: delta,
+      producto: r.producto,
+      familia: r.familia
+    }});
+  };
+})(scope);
+</script>
