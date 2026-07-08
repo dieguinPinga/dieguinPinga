@@ -18,6 +18,23 @@
         { "familia": "PE", "material": "rotomoldeo", "color": "colores",        "min_tn": 20, "max_tn": 60, "stockMatch": "ROTOMOLDEO",       "familiaOperativa": "ROTOMOLDEO", "productoCompra": "ROTOMOLDEO" },
         { "familia": "PE", "material": "rotomoldeo", "color": "natural",        "min_tn": 20, "max_tn": 60, "stockMatch": "ROTOMOLDEO NATURAL","familiaOperativa": "ROTOMOLDEO", "productoCompra": "ROTOMOLDEO" }
       ]
+    },
+    {
+      "id": 2,
+      "nombre": "Compras mat prima - PP copo/bazar/balde/silla + Soplado PE",
+      "materiales": [
+        { "familia": "PP", "material": "copo",    "color": "bateria_negro",   "min_tn": 20, "max_tn": 40, "stockMatch": "BATERIA",                 "familiaOperativa": "BATERIA", "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "bazar",   "color": "tutty_con_negro", "min_tn": 20, "max_tn": 40, "stockMatch": "BAZAR TUTY",              "familiaOperativa": "BAZAR",   "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "bazar",   "color": "rojo",            "min_tn": 10, "max_tn": 30, "stockMatch": "BAZAR ROJO",              "familiaOperativa": "BAZAR",   "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "bazar",   "color": "verde",           "min_tn": 10, "max_tn": 30, "stockMatch": "BAZAR VERDE",             "familiaOperativa": "BAZAR",   "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "balde",   "color": "blanco",          "min_tn": 20, "max_tn": 50, "stockMatch": "BALDE BLANCO",            "familiaOperativa": "BALDE",   "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "silla",   "color": "blanco",          "min_tn": 20, "max_tn": 50, "stockMatch": "SILLA BLANCA",            "familiaOperativa": "SILLA",   "productoCompra": "PP_COPO" },
+        { "familia": "PP", "material": "silla",   "color": "tutty",           "min_tn": 0,  "max_tn": 10, "stockMatch": "SILLA TUTY",              "familiaOperativa": "SILLA",   "productoCompra": "PP_COPO", "nota": "usuario dio un solo valor '10'; asumido max 10 / min 0" },
+        { "familia": "PE", "material": "soplado", "color": "tutty_sin_negro", "min_tn": 10, "max_tn": 20, "stockMatch": "SOPLADO TUTTY SIN NEGRO", "familiaOperativa": "SOPLADO", "productoCompra": "SOPLADO_TUTTY", "fueraPlan200": true },
+        { "familia": "PE", "material": "soplado", "color": "tutty_con_negro", "min_tn": 20, "max_tn": 30, "stockMatch": "SOPLADO TUTTY CON NEGRO", "familiaOperativa": "SOPLADO", "productoCompra": "SOPLADO_TUTTY", "fueraPlan200": true },
+        { "familia": "PE", "material": "soplado", "color": "blanco",          "min_tn": 10, "max_tn": 20, "stockMatch": "SOPLADO BLANCO",          "familiaOperativa": "SOPLADO", "productoCompra": "SOPLADO_OTROS", "fueraPlan200": true },
+        { "familia": "PE", "material": "soplado", "color": "caramelo",        "min_tn": 10, "max_tn": 20, "stockMatch": "SOPLADO CARAMELO",        "familiaOperativa": "SOPLADO", "productoCompra": "SOPLADO_OTROS", "fueraPlan200": true }
+      ]
     }
   ]
 }
