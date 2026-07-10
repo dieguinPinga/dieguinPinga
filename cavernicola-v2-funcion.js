@@ -757,14 +757,95 @@ function realRowsByCompraGrupo(rows) {
   });
   return out;
 }
+// Cada familia real cae en su grupo del plan 200. SOPLADO, ROTOMOLDEO,
+// MEZCLAS y OTROS quedan FUERA (son control, no consumen el cupo PE).
+const FAMILIA_A_GRUPO_PLAN = {
+  "ADI": "PE",
+  "STRETCH": "PE",
+  "PP Copo": "PP COPO",
+  "SILLAS": "PP COPO",
+  "BALDE": "PP COPO",
+  "BAZAR": "PP COPO",
+  "TAPITA": "PP COPO",
+  "TAPON": "PP COPO",
+  "NEGRO": "PP COPO",
+  "PP": "PP COPO",
+  "PP Homo": "PP HOMO"
+};
+
 // Comprado del mes por grupo (PE / PP COPO / PP HOMO) desde el total real por
-// familia (familias[].totalKilos), para NO inflar con los movimientos de muestra.
+// familia (familias[].totalKilos), para NO inflar con los movimientos de muestra
+// y sin lumpear soplado/roto/otros dentro de PE.
 function grupoCompraDesdeIdx(realIdx) {
   const out = { "PE": 0, "PP COPO": 0, "PP HOMO": 0 };
   const byFamily = (realIdx && realIdx.byFamily) ? realIdx.byFamily : {};
   Object.keys(byFamily).forEach(fam => {
-    const grupo = grupoCompraPlanFromRow({ familia: fam, material: "" });
+    const grupo = FAMILIA_A_GRUPO_PLAN[normFamilia(fam)];
+    if (!grupo) return; // control: fuera del plan 200
     out[grupo] = r0((out[grupo] || 0) + r0(byFamily[fam] || 0));
+  });
+  return out;
+}
+
+// Familia real deducida del nombre del material de stock (para matchear reales).
+function familiaDesdeNombre(name) {
+  const t = normText(name);
+  if (t.includes("MEZCLA")) return "MEZCLAS";
+  if (t.includes("ROTOMOLDEO") || t.includes("ROTO")) return "ROTOMOLDEO";
+  if (t.includes("SOPLADO")) return "SOPLADO";
+  if (t.includes("SILLA")) return "SILLAS";
+  if (t.includes("STRECH") || t.includes("STRETCH")) return "STRETCH";
+  if (t.includes("PP HOMO")) return "PP Homo";
+  if (t.includes("ADI") || t.includes("PEAD") || t.includes("PEMD")) return "ADI";
+  if (t.includes("BAZAR") || t.includes("BALDE") || t.includes("BATERIA") ||
+      t.includes("TAPITA") || t.includes("TAPON") || t.includes("PP COPO") || t.includes("COPO")) return "PP Copo";
+  return "";
+}
+
+// Color deducido del nombre del material de stock.
+function colorDesdeNombre(name) {
+  const k = normText(name).replace(/[^A-Z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!k) return "SIN COLOR";
+  const tut = /TUTT?[YI]|TUTY/.test(k);
+  if (tut && (k.includes("SIN NEG") || / S N( |$)/.test(k))) return "TUTTY SIN NEGRO";
+  if (tut && (k.includes("CON NEG") || / C N( |$)/.test(k))) return "TUTTY CON NEGRO";
+  if (k.includes("CARAMELO")) return "CARAMELO";
+  if (k.includes("NATURAL")) return "NATURAL";
+  if (k.includes("NARANJ")) return "NARANJA";
+  if (k.includes("BLANC")) return "BLANCO";
+  if (k.includes("CELEST")) return "CELESTE";
+  if (k.includes("VERDE")) return "VERDE";
+  if (k.includes("AZUL")) return "AZUL";
+  if (k.includes("ROJO") || k.includes("ROJA")) return "ROJO";
+  if (k.includes("AMARILL")) return "AMARILLO";
+  if (k.includes("GRIS")) return "GRIS";
+  if (k.includes("NEGR")) return "NEGRO";
+  if (tut) return "TUTTY";
+  return "SIN COLOR";
+}
+
+// Comprado del mes atribuido a cada material del stock, matcheando por
+// familia+color contra los kilos reales. Si varios materiales comparten el
+// mismo familia+color, se reparte en partes iguales (los reales solo llegan a
+// nivel de color, no de material puntual).
+function realComprasPorMaterialStock(stockDb, realIdx) {
+  const byFC = (realIdx && realIdx.byFamilyColor) ? realIdx.byFamilyColor : {};
+  const materialesPorKey = {};
+  stockRows(stockDb).forEach(row => {
+    const name = normText(materialName(row));
+    if (!name) return;
+    const fam = familiaDesdeNombre(name) || familyFromMaterial(row);
+    const key = fam + "||" + colorDesdeNombre(name);
+    if (!materialesPorKey[key]) materialesPorKey[key] = [];
+    if (materialesPorKey[key].indexOf(name) < 0) materialesPorKey[key].push(name);
+  });
+  const out = {};
+  Object.keys(byFC).forEach(key => {
+    const kg = r0(byFC[key] || 0);
+    const mats = materialesPorKey[key];
+    if (!kg || !mats || !mats.length) return;
+    const cada = r0(kg / mats.length);
+    mats.forEach(name => { out[name] = r0((out[name] || 0) + cada); });
   });
   return out;
 }
@@ -1083,7 +1164,8 @@ function buildDashboard(criteria, realDb, stockDb, agendaDb, aviso) {
         registrosPostStock: realesDesdeStockRows.length
       },
       porMaterial: realRowsByMaterial(realesDesdeStockRows),
-      porMaterialMes: realRowsByMaterial(realesRows),
+      porMaterialMes: realComprasPorMaterialStock(stockDb, realesIdx),
+      porFamiliaColorMes: realesIdx.byFamilyColor,
       porGrupoCompra: realRowsByCompraGrupo(realesDesdeStockRows),
       porGrupoCompraMes: grupoCompraDesdeIdx(realesIdx),
       filasPostStock: realAuditRows(realesDesdeStockRows),
