@@ -2,6 +2,7 @@ const PLAN_FILE = "/home/gangleo81/planComprasV2.json";
 const REALES_FILE = "/home/gangleo81/comprasRealesIA.json";
 const STOCK_FILE = "/home/gangleo81/stockIntermediosIA.json";
 const AGENDA_FILE = "/home/gangleo81/agendaComprasIA.json";
+const TABLERO_FILE = "/home/gangleo81/comprasV2Tablero.json";
 
 const BANDAS_MATERIAL_BASE = [
   { material: "BATERIA", productoCompra: "PP_COPO", familiaOperativa: "BATERIA", minimoTn: 20, maximoTn: 40 },
@@ -1171,6 +1172,16 @@ function persistCriteria(criteria) {
   return { filename: PLAN_FILE, payload: JSON.stringify(criteria, null, 2) };
 }
 
+// Snapshot completo del tablero calculado, a disco, en cada recarga.
+function persistTablero(out) {
+  return { filename: TABLERO_FILE, payload: JSON.stringify(out && out.payload ? out.payload : {}, null, 2) };
+}
+// Cierre comun: salida 1 = tablero; salida 2 = snapshot (y criterio si corresponde).
+function finalizar(out, criterioMsg) {
+  const snap = persistTablero(out);
+  return [out, criterioMsg ? [criterioMsg, snap] : snap];
+}
+
 let criteria = ensureCriteria(flow.get("cavernicola_v2_criteria") || {});
 let realDb = flow.get("cavernicola_v2_reales") || {};
 let stockDb = flow.get("cavernicola_v2_stock") || {};
@@ -1180,27 +1191,27 @@ let accion = msg.accion || msg.topic || (msg.payload && msg.payload.accion) || "
 if (accion === "cargarCriterio") {
   criteria = ensureCriteria(parseJsonPayload(msg.payload, defaultCriteria()));
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio v2 cargado"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio v2 cargado"));
 }
 if (accion === "cargarReales") {
   realDb = parseJsonPayload(msg.payload, {});
   flow.set("cavernicola_v2_reales", realDb);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Reales cargados"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Reales cargados"));
 }
 if (accion === "cargarStock") {
   stockDb = parseJsonPayload(msg.payload, {});
   flow.set("cavernicola_v2_stock", stockDb);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Stock cargado"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Stock cargado"));
 }
 if (accion === "cargarAgenda") {
   agendaDb = parseJsonPayload(msg.payload, {});
   flow.set("cavernicola_v2_agenda", agendaDb);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Agenda cargada"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Agenda cargada"));
 }
 if (accion === "resetCriterio") {
   criteria = defaultCriteria();
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio base restaurado: 100 PEMD, 50 PP Copo, 50 PP Homo"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio base restaurado: 100 PEMD, 50 PP Copo, 50 PP Homo"));
 }
 if (accion === "mesAnterior" || accion === "mesSiguiente") {
   const mesActualCriteria = criteria.mesKey || mesActual();
@@ -1208,7 +1219,7 @@ if (accion === "mesAnterior" || accion === "mesSiguiente") {
   const nuevoMes = addMes(mesActualCriteria, accion === "mesAnterior" ? -1 : 1);
   applyMesMeta(criteria, nuevoMes);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Mes ajustado: meta leida desde JSON/criterio"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Mes ajustado: meta leida desde JSON/criterio"));
 }
 if (accion === "ajustarObjetivoTotal") {
   const delta = n((msg.payload || {}).deltaTn, 0);
@@ -1219,7 +1230,7 @@ if (accion === "ajustarObjetivoTotal") {
   criteria.objetivoTotalTn = r1(criteria.planFamilias.reduce((s, x) => s + n(x.objetivoTn), 0));
   saveMesMeta(criteria, criteria.mesKey);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Meta total ajustada para este mes sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Meta total ajustada para este mes sin guardar"));
 }
 if (accion === "ajustarObjetivo") {
   const p = msg.payload || {};
@@ -1229,7 +1240,7 @@ if (accion === "ajustarObjetivo") {
   criteria.objetivoTotalTn = r1(criteria.planFamilias.reduce((s, x) => s + n(x.objetivoTn), 0));
   saveMesMeta(criteria, criteria.mesKey);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Objetivo ajustado para este mes sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Objetivo ajustado para este mes sin guardar"));
 }
 if (accion === "ajustarBanda") {
   const p = msg.payload || {};
@@ -1260,7 +1271,7 @@ if (accion === "ajustarBanda") {
     criteria.bandasMaterial.push(inferred);
   }
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Banda de stock ajustada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Banda de stock ajustada sin guardar"));
 }
 if (accion === "setBandaMaterial") {
   const p = msg.payload || {};
@@ -1286,7 +1297,7 @@ if (accion === "setBandaMaterial") {
     criteria.bandasMaterial = mergeBandasMaterial(criteria.bandasMaterial);
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Banda de " + material + " actualizada sin guardar. Usar guardar JSON para persistir."), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Banda de " + material + " actualizada sin guardar. Usar guardar JSON para persistir."));
 }
 if (accion === "ajustarProductoMaterial") {
   const p = msg.payload || {};
@@ -1300,7 +1311,7 @@ if (accion === "ajustarProductoMaterial") {
     criteria.asignacionesMaterial[key] = Math.max(0, Math.min(maxId, actual + delta));
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Asignacion de producto ajustada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Asignacion de producto ajustada sin guardar"));
 }
 if (accion === "setRamaMaterial") {
   const p = msg.payload || {};
@@ -1320,7 +1331,7 @@ if (accion === "setRamaMaterial") {
     criteria.asignacionesSubramaMaterial[subramaAssignKey(material, nextProductoId)] = 0;
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Rama de " + material + " actualizada y guardada en JSON"), persistCriteria(criteria)];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Rama de " + material + " actualizada y guardada en JSON"), persistCriteria(criteria));
 }
 if (accion === "setSubramaMaterial") {
   const p = msg.payload || {};
@@ -1336,7 +1347,7 @@ if (accion === "setSubramaMaterial") {
     delete criteria.asignacionesSubramaMaterial[normText(material)];
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama de " + material + " actualizada y guardada en JSON"), persistCriteria(criteria)];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama de " + material + " actualizada y guardada en JSON"), persistCriteria(criteria));
 }
 if (accion === "ajustarSubramaMaterial") {
   const p = msg.payload || {};
@@ -1353,7 +1364,7 @@ if (accion === "ajustarSubramaMaterial") {
     criteria.asignacionesSubramaMaterial[scopedKey] = Math.max(0, Math.min(maxId, actual + delta));
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama ajustada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama ajustada sin guardar"));
 }
 if (accion === "aplicarSugeridoMaterial") {
   const p = msg.payload || {};
@@ -1365,7 +1376,7 @@ if (accion === "aplicarSugeridoMaterial") {
     criteria.asignacionesMaterial[key] = Math.max(0, Math.min(maxId, r0(p.sugeridoId || 0)));
     flow.set("cavernicola_v2_criteria", criteria);
   }
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Sugerencia aplicada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Sugerencia aplicada sin guardar"));
 }
 if (accion === "renombrarProducto") {
   const p = msg.payload || {};
@@ -1374,13 +1385,13 @@ if (accion === "renombrarProducto") {
   criteria.productosTerminados = mergeProductosTerminados(criteria.productosTerminados);
   criteria.productosTerminados = criteria.productosTerminados.map(x => Number(x.id) === id ? Object.assign({}, x, { nombre: nombre || x.nombre }) : x);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Nombre de rama ajustado sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Nombre de rama ajustado sin guardar"));
 }
 if (accion === "renombrarSubrama") {
   const p = msg.payload || {};
   criteria = setSubramaNombre(criteria, p.productoId, p.subId, p.nombre);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Nombre de subrama ajustado sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Nombre de subrama ajustado sin guardar"));
 }
 if (accion === "agregarProducto") {
   criteria.productosTerminados = mergeProductosTerminados(criteria.productosTerminados);
@@ -1388,7 +1399,7 @@ if (accion === "agregarProducto") {
   criteria.productosTerminados.push({ id: nextId, key: "RAMA_" + nextId, nombre: "Nueva rama " + nextId, tipo: "control" });
   criteria.subramasProducto = mergeSubramasProducto(criteria.subramasProducto, criteria.productosTerminados);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Rama agregada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Rama agregada sin guardar"));
 }
 if (accion === "agregarSubrama") {
   const p = msg.payload || {};
@@ -1398,13 +1409,13 @@ if (accion === "agregarSubrama") {
   const nextId = list.reduce((m, x) => Math.max(m, r0(x.id)), 0) + 1;
   criteria.subramasProducto[productoId] = list.concat([{ id: nextId, nombre: "Subrama " + nextId }]);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama agregada sin guardar"), null];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Subrama agregada sin guardar"));
 }
 if (accion === "guardarCriterio") {
   saveMesMeta(criteria, criteria.mesKey);
   flow.set("cavernicola_v2_criteria", criteria);
-  return [buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio guardado en planComprasV2.json"), persistCriteria(criteria)];
+  return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, "Criterio guardado en planComprasV2.json"), persistCriteria(criteria));
 }
 
 flow.set("cavernicola_v2_criteria", criteria);
-return [buildDashboard(criteria, realDb, stockDb, agendaDb, ""), null];
+return finalizar(buildDashboard(criteria, realDb, stockDb, agendaDb, ""));
