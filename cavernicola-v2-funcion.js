@@ -757,6 +757,17 @@ function realRowsByCompraGrupo(rows) {
   });
   return out;
 }
+// Comprado del mes por grupo (PE / PP COPO / PP HOMO) desde el total real por
+// familia (familias[].totalKilos), para NO inflar con los movimientos de muestra.
+function grupoCompraDesdeIdx(realIdx) {
+  const out = { "PE": 0, "PP COPO": 0, "PP HOMO": 0 };
+  const byFamily = (realIdx && realIdx.byFamily) ? realIdx.byFamily : {};
+  Object.keys(byFamily).forEach(fam => {
+    const grupo = grupoCompraPlanFromRow({ familia: fam, material: "" });
+    out[grupo] = r0((out[grupo] || 0) + r0(byFamily[fam] || 0));
+  });
+  return out;
+}
 function indexStockByProduct(stockDb, criteria) {
   const byProduct = {};
   const componentsByProduct = {};
@@ -1074,7 +1085,7 @@ function buildDashboard(criteria, realDb, stockDb, agendaDb, aviso) {
       porMaterial: realRowsByMaterial(realesDesdeStockRows),
       porMaterialMes: realRowsByMaterial(realesRows),
       porGrupoCompra: realRowsByCompraGrupo(realesDesdeStockRows),
-      porGrupoCompraMes: realRowsByCompraGrupo(realesRows),
+      porGrupoCompraMes: grupoCompraDesdeIdx(realesIdx),
       filasPostStock: realAuditRows(realesDesdeStockRows),
       filas: realAuditRows(realesRows)
     }
