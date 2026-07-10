@@ -757,31 +757,16 @@ function realRowsByCompraGrupo(rows) {
   });
   return out;
 }
-// Cada familia real cae en su grupo del plan 200. SOPLADO, ROTOMOLDEO,
-// MEZCLAS y OTROS quedan FUERA (son control, no consumen el cupo PE).
-const FAMILIA_A_GRUPO_PLAN = {
-  "ADI": "PE",
-  "STRETCH": "PE",
-  "PP Copo": "PP COPO",
-  "SILLAS": "PP COPO",
-  "BALDE": "PP COPO",
-  "BAZAR": "PP COPO",
-  "TAPITA": "PP COPO",
-  "TAPON": "PP COPO",
-  "NEGRO": "PP COPO",
-  "PP": "PP COPO",
-  "PP Homo": "PP HOMO"
-};
-
 // Comprado del mes por grupo (PE / PP COPO / PP HOMO) desde el total real por
-// familia (familias[].totalKilos), para NO inflar con los movimientos de muestra
-// y sin lumpear soplado/roto/otros dentro de PE.
+// familia (familias[].totalKilos), para NO inflar con los movimientos de muestra.
+// PE incluye ADI y STRETCH y tambien SOPLADO, ROTOMOLDEO, OTROS y MEZCLAS: son
+// PE y llegan sin fuerza de compra, pero suman a los kilos totales de PE (y por
+// lo tanto reducen lo que hay que comprar activamente).
 function grupoCompraDesdeIdx(realIdx) {
   const out = { "PE": 0, "PP COPO": 0, "PP HOMO": 0 };
   const byFamily = (realIdx && realIdx.byFamily) ? realIdx.byFamily : {};
   Object.keys(byFamily).forEach(fam => {
-    const grupo = FAMILIA_A_GRUPO_PLAN[normFamilia(fam)];
-    if (!grupo) return; // control: fuera del plan 200
+    const grupo = grupoCompraPlanFromRow({ familia: fam, material: "" });
     out[grupo] = r0((out[grupo] || 0) + r0(byFamily[fam] || 0));
   });
   return out;
@@ -797,7 +782,13 @@ function familiaDesdeNombre(name) {
   if (t.includes("STRECH") || t.includes("STRETCH")) return "STRETCH";
   if (t.includes("PP HOMO")) return "PP Homo";
   if (t.includes("ADI") || t.includes("PEAD") || t.includes("PEMD")) return "ADI";
-  if (t.includes("BAZAR") || t.includes("BALDE") || t.includes("BATERIA") ||
+  // BAZAR con color definido -> PP Copo (revirginizado con virgen a copo).
+  // BAZAR tutty o negro -> PP Homo.
+  if (t.includes("BAZAR")) {
+    const col = colorDesdeNombre(name);
+    return (col === "NEGRO" || col.indexOf("TUTTY") === 0) ? "PP Homo" : "PP Copo";
+  }
+  if (t.includes("BALDE") || t.includes("BATERIA") ||
       t.includes("TAPITA") || t.includes("TAPON") || t.includes("PP COPO") || t.includes("COPO")) return "PP Copo";
   return "";
 }
