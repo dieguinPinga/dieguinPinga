@@ -20064,20 +20064,10 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
             if candidatas:
                 candidatas.sort(reverse=True)
                 return candidatas[0][2]
-        if "NEGRO" in texto:
-            return "NEGRO"
-        if "BLANCO" in texto:
-            return "BLANCO"
-        if "CARAMELO" in texto:
-            return "CARAMELO"
-        if "NATURAL" in texto:
-            return "NATURAL"
-        if "ROJO" in texto:
-            return "ROJO"
-        if "AZUL" in texto:
-            return "AZUL"
-        if "VERDE" in texto:
-            return "VERDE"
+        # Sin match con una subrama REAL del arbol: no inventamos una rama por
+        # color (un color no es una rama). Queda en una unica bolsa para
+        # clasificacion humana; al canalizar un registro, el resto con la misma
+        # descripcion hereda la rama/subrama (propagacion por descripcion).
         return "Sin subrama clara"
     composicion = {}
     def _texto_es_soplado_compra(texto):
@@ -20165,6 +20155,15 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
         for kcorr in keys:
             if any(kcorr):
                 correcciones_compra[kcorr] = corr
+        # Propagacion por descripcion/material (sin proveedor): clasificar un
+        # "adi celeste" hace que TODOS los "adi celeste" hereden la misma
+        # rama/subrama, sin importar el proveedor. Es el fallback de menor
+        # prioridad: los match por proveedor+descripcion ganan primero. Se exige
+        # >=2 tokens para no propagar por una palabra suelta generica.
+        for txt_prop in (x.get("description"), x.get("material")):
+            norm_prop = _norm_override_compra(txt_prop)
+            if len(norm_prop.split()) >= 2:
+                correcciones_compra[_clave_override_compra(None, txt_prop, None, None)] = corr
 
     for m in materiales_mysql or []:
         key = _clasificar_material_plan_compras(m.get("n"))
@@ -20211,6 +20210,9 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
             or correcciones_compra.get(_clave_override_compra(ev.get("proveedor"), desc_ev, mat_ev, None))
             or correcciones_compra.get(_clave_override_compra(ev.get("proveedor"), desc_ev, None, ev.get("reclas")))
             or correcciones_compra.get(_clave_override_compra(ev.get("proveedor"), desc_ev, None, None))
+            # Propagacion por descripcion/material sin importar el proveedor.
+            or correcciones_compra.get(_clave_override_compra(None, desc_ev, None, None))
+            or correcciones_compra.get(_clave_override_compra(None, mat_ev, None, None))
         )
         origen_ev = "automatico"
         subrama_ev = None
