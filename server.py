@@ -21555,8 +21555,9 @@ TABLERO_HTML = r'''<!doctype html><html lang="es"><head><meta charset="utf-8">
   .plan-val{text-align:right;font-family:var(--mono);font-size:12px;line-height:1.45}.plan-val b{font-size:16px;color:var(--ink)}.plan-val .bad{color:var(--bad)}.plan-val .good{color:var(--good)}
   .desc-list{display:flex;flex-direction:column;gap:5px;margin-top:9px;max-height:260px;overflow:auto;padding-right:4px}.desc-row{display:grid;grid-template-columns:auto minmax(135px,.45fr) 1fr;gap:7px;align-items:start;border-top:1px solid var(--line-soft);padding-top:5px;font-size:10.5px;color:var(--ink-2)}.desc-row:first-child{border-top:0}.desc-row.confirmed{opacity:.92;background:rgba(34,197,94,.045)}.desc-row b{color:var(--ink);font-weight:700}.prov-list.compact{max-height:150px}.mark-btn{border:1px solid rgba(76,159,254,.45);background:rgba(76,159,254,.10);color:#b8d8ff;border-radius:999px;padding:3px 7px;font-size:10px;cursor:pointer;white-space:nowrap}.mark-btn.ok{border-color:rgba(34,197,94,.55);background:rgba(34,197,94,.22);color:#baf7c8}.save-cls-btn{border:1px solid rgba(34,197,94,.48);background:rgba(34,197,94,.12);color:#baf7c8;border-radius:999px;padding:5px 10px;font-size:10.5px;cursor:pointer;margin-top:7px}.bulk-cls-btn{border:1px solid rgba(76,159,254,.45);background:rgba(76,159,254,.10);color:#b8d8ff;border-radius:999px;padding:5px 10px;font-size:10.5px;cursor:pointer;margin-top:7px;margin-right:6px}.save-cls-btn[disabled]{opacity:.55;cursor:wait}.mark-btn.badmark{border-color:rgba(255,77,77,.5);color:#ffb4b4}.mini-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.mini-chip{font-size:10.5px;color:var(--ink-2);border:1px solid var(--line-soft);border-radius:999px;padding:4px 8px;background:#0d141d;line-height:1.25}.mini-chip.warn{border-color:rgba(255,180,0,.28);color:#ffcc66}.mini-chip.task{border-color:rgba(76,159,254,.28);color:#b8d8ff}.op-read{margin-top:8px;border:1px solid rgba(76,159,254,.22);background:rgba(76,159,254,.07);border-radius:8px;padding:8px 10px;color:var(--ink-2);font-size:11px;line-height:1.45}.op-read b{color:var(--ink)}.evidence-box{margin-top:9px;border-top:1px solid var(--line-soft);padding-top:8px;color:var(--ink-3);font-size:10.5px}.evidence-box summary{cursor:pointer;color:#b8d8ff;font-weight:650}.unmatched-row{display:grid;grid-template-columns:minmax(145px,.25fr) 1fr auto auto;gap:8px;align-items:center;border-top:1px solid var(--line-soft);padding:7px 0;font-size:11px}.unmatched-row:first-child{border-top:0}.unmatched-row b{color:var(--ink)}.unmatched-row select{background:#090f16;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:5px;max-width:260px}.unmatched-row button{white-space:nowrap}
   .rd-wrap{overflow:auto;border:1px solid var(--line-soft);border-radius:10px;margin-top:10px;max-height:620px;background:rgba(4,10,18,.45)}
-  .comp-detail{display:block}.comp-detail summary{display:grid;grid-template-columns:minmax(190px,.75fr) minmax(320px,2fr) 130px;gap:14px;align-items:center;cursor:pointer;list-style:none}.comp-detail summary::-webkit-details-marker{display:none}.comp-evidence{border-top:1px solid var(--line-soft);margin-top:12px;padding-top:12px}.evidence-row{display:grid;grid-template-columns:minmax(150px,.35fr) minmax(360px,1fr) auto;gap:10px;align-items:start;border-top:1px solid var(--line-soft);padding:7px 0;font-size:11px}.evidence-row:first-child{border-top:0}.evidence-row b{color:var(--ink);font-weight:750}.evidence-main{color:var(--ink-2)}.evidence-main strong{color:var(--ink);font-weight:650}.evidence-side{font-family:var(--mono);color:var(--blue);text-align:right;white-space:nowrap}.evidence-actions{grid-column:2/4;display:grid;grid-template-columns:minmax(160px,220px) minmax(160px,220px) auto 1fr;gap:8px;align-items:center}.evidence-actions select{background:#060b12;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 8px}.evidence-actions button{justify-self:start}.rd-table{width:100%;border-collapse:collapse;font-size:12px;min-width:980px}.rd-table th{position:sticky;top:0;background:#101a26;color:var(--ink-3);text-align:left;text-transform:uppercase;letter-spacing:.08em;font-size:10px;padding:8px;border-bottom:1px solid var(--line)}.rd-table td{padding:7px 8px;border-bottom:1px solid var(--line-soft)}.rd-table td:nth-child(n+5){text-align:right;font-family:var(--mono);color:var(--blue)}.rd-materia{background:rgba(255,204,102,.13);font-weight:800;color:#fff}.rd-familia{background:rgba(255,204,102,.08);font-weight:750}.rd-estado{background:rgba(80,160,255,.05);font-weight:650}.rd-detalle td:first-child{color:var(--ink-3)}.resumen-detalle .plan-sub{max-width:920px}
-  @media (max-width:900px){.plan-kpis{grid-template-columns:repeat(2,minmax(130px,1fr))}.plan-summary{grid-template-columns:1fr}.plan-row{grid-template-columns:1fr}.plan-val{text-align:left}.bar{grid-template-columns:120px 1fr auto}}
+  .comp-detail{display:block}.comp-detail summary{display:grid;grid-template-columns:minmax(190px,.75fr) minmax(320px,2fr) 130px;gap:14px;align-items:center;cursor:pointer;list-style:none}.comp-detail summary::-webkit-details-marker{display:none}
+  .comp-rama-group{display:block;border:1px solid var(--line);border-radius:12px;background:rgba(6,11,18,.5);overflow:hidden}.comp-rama-group>summary{display:grid;grid-template-columns:minmax(190px,.75fr) minmax(320px,2fr) 130px;gap:14px;align-items:center;cursor:pointer;list-style:none;padding:13px 15px;background:rgba(76,159,254,.07)}.comp-rama-group>summary::-webkit-details-marker{display:none}.comp-rama-group>summary:hover{background:rgba(76,159,254,.12)}.comp-rama-group>summary .plan-name{font-size:14.5px;font-weight:850;letter-spacing:.01em}.comp-rama-group[open]>summary{border-bottom:1px solid var(--line-soft)}.comp-rama-body{display:flex;flex-direction:column;gap:9px;padding:11px 12px}.comp-evidence{border-top:1px solid var(--line-soft);margin-top:12px;padding-top:12px}.evidence-row{display:grid;grid-template-columns:minmax(150px,.35fr) minmax(360px,1fr) auto;gap:10px;align-items:start;border-top:1px solid var(--line-soft);padding:7px 0;font-size:11px}.evidence-row:first-child{border-top:0}.evidence-row b{color:var(--ink);font-weight:750}.evidence-main{color:var(--ink-2)}.evidence-main strong{color:var(--ink);font-weight:650}.evidence-side{font-family:var(--mono);color:var(--blue);text-align:right;white-space:nowrap}.evidence-actions{grid-column:2/4;display:grid;grid-template-columns:minmax(160px,220px) minmax(160px,220px) auto 1fr;gap:8px;align-items:center}.evidence-actions select{background:#060b12;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 8px}.evidence-actions button{justify-self:start}.rd-table{width:100%;border-collapse:collapse;font-size:12px;min-width:980px}.rd-table th{position:sticky;top:0;background:#101a26;color:var(--ink-3);text-align:left;text-transform:uppercase;letter-spacing:.08em;font-size:10px;padding:8px;border-bottom:1px solid var(--line)}.rd-table td{padding:7px 8px;border-bottom:1px solid var(--line-soft)}.rd-table td:nth-child(n+5){text-align:right;font-family:var(--mono);color:var(--blue)}.rd-materia{background:rgba(255,204,102,.13);font-weight:800;color:#fff}.rd-familia{background:rgba(255,204,102,.08);font-weight:750}.rd-estado{background:rgba(80,160,255,.05);font-weight:650}.rd-detalle td:first-child{color:var(--ink-3)}.resumen-detalle .plan-sub{max-width:920px}
+  @media (max-width:900px){.plan-kpis{grid-template-columns:repeat(2,minmax(130px,1fr))}.plan-summary{grid-template-columns:1fr}.plan-row{grid-template-columns:1fr}.comp-rama-group>summary{grid-template-columns:1fr}.plan-val{text-align:left}.bar{grid-template-columns:120px 1fr auto}}
 </style></head><body>
 <div class="wrap">
   <header class="top">
@@ -21695,6 +21696,18 @@ if(!window.OPEN_COMP_CLICK_READY){
   });
   window.OPEN_COMP_CLICK_READY = true;
 }
+// Persistencia del colapso de los grupos por rama (abierto por defecto).
+window.COMP_RAMA_COLLAPSED = window.COMP_RAMA_COLLAPSED || new Set();
+if(!window.COMP_RAMA_CLICK_READY){
+  document.addEventListener('click',e=>{
+    const summary=e.target?.closest?.('.comp-rama-group > summary');
+    if(!summary)return;
+    const d=summary.parentElement;
+    if(!d||!d.dataset.ramaKey)return;
+    setTimeout(()=>{if(d.open)window.COMP_RAMA_COLLAPSED.delete(d.dataset.ramaKey);else window.COMP_RAMA_COLLAPSED.add(d.dataset.ramaKey);},0);
+  });
+  window.COMP_RAMA_CLICK_READY = true;
+}
 // Apertura tipo ResumenDetalle: compra real agrupada por rama/subrama.
 // Cada fila debe poder abrirse y mostrar evidencia real. La fila REVISAR/Sin computar
 // usa noComputadoPlan como fallback para no quedar como una bolsa muda de toneladas.
@@ -21703,7 +21716,8 @@ function composicionCompraPlan(plan){
   const items=comp.items||[];
   if(!items.length)return '';
   const total=Number(plan.compraTotalTn||comp.totalClasificadoTn||0)||1;
-  const rows=items.map((x,idx)=>{
+  // Fila de una subrama (misma UI de siempre: evidencia, selects y persistencia).
+  const filaSub=(x)=>{
     const pc=Math.max(0,Math.min(100,(Number(x.tn||0)/total)*100));
     const matsAll=(x.materiales||[]).slice().sort((a,b)=>Number(b.tn||0)-Number(a.tn||0));
     const matsTop=matsAll.slice(0,4).map(m=>`<span class="mini-chip">${esc(m.material||'sin material')} Â· ${NF2.format(m.tn||0)} tn</span>`).join('');
@@ -21732,9 +21746,30 @@ function composicionCompraPlan(plan){
     const tituloDetalle=evRows ? 'Registros MySQL que componen esta rama/subrama' : 'Materiales agregados que componen esta rama/subrama';
     const ckey=compKey(x);
     const openAttr=window.OPEN_COMP_KEYS.has(ckey)?'open':'';
-    return `<details class="plan-row comp-row comp-detail" data-comp-key="${ckey}" ${openAttr}><summary><div><div class="plan-name${cls}">${esc(x.rama||'Sin rama')} / ${esc(x.subrama||'Sin subrama')}</div><div class="plan-meta">${subt}</div></div><div class="plan-progress"><div class="tk"><div class="fl" style="width:${pc.toFixed(1)}%"></div></div><div class="plan-progress-meta"><span>${NF2.format(x.tn||0)} tn sobre compra real</span><span>${NF2.format(pc)}%</span></div>${matsTop?`<div class="mini-list">${matsTop}</div>`:''}</div><div class="plan-val"><b>${NF2.format(x.tn||0)} tn</b><br><span>${openAttr?'detalle abierto':'abrir detalle'}</span></div></summary><div class="comp-evidence"><div class="need-meta">${tituloDetalle}. Si algo no corresponde, canalizalo abajo y queda aprendido.</div><div class="prov-list">${detalle}</div></div></details>`;
+    return `<details class="plan-row comp-row comp-detail" data-comp-key="${ckey}" ${openAttr}><summary><div><div class="plan-name${cls}">${esc(x.subrama||x.rama||'Sin subrama')}</div><div class="plan-meta">${subt}</div></div><div class="plan-progress"><div class="tk"><div class="fl" style="width:${pc.toFixed(1)}%"></div></div><div class="plan-progress-meta"><span>${NF2.format(x.tn||0)} tn sobre compra real</span><span>${NF2.format(pc)}%</span></div>${matsTop?`<div class="mini-list">${matsTop}</div>`:''}</div><div class="plan-val"><b>${NF2.format(x.tn||0)} tn</b><br><span>${openAttr?'detalle abierto':'abrir detalle'}</span></div></summary><div class="comp-evidence"><div class="need-meta">${tituloDetalle}. Si algo no corresponde, canalizalo abajo y queda aprendido.</div><div class="prov-list">${detalle}</div></div></details>`;
+  };
+  // Agrupar por rama padre (PEMD, PP Copo, PP Homo, Soplado...) con sus subramas
+  // adentro. Cada rama es un bloque colapsable; abierto por defecto, y si el
+  // usuario lo colapsa se recuerda entre refrescos (window.COMP_RAMA_COLLAPSED).
+  window.COMP_RAMA_COLLAPSED = window.COMP_RAMA_COLLAPSED || new Set();
+  const grupos={};
+  items.forEach(x=>{
+    const rama=String(x.rama||'Sin rama');
+    if(!grupos[rama])grupos[rama]={rama,tn:0,reg:0,items:[]};
+    grupos[rama].tn+=Number(x.tn||0);
+    grupos[rama].reg+=Number(x.reg||0);
+    grupos[rama].items.push(x);
+  });
+  const bloques=Object.values(grupos).sort((a,b)=>b.tn-a.tn).map(g=>{
+    const pc=Math.max(0,Math.min(100,(g.tn/total)*100));
+    const nsub=g.items.length;
+    const warnName=/sin computar/i.test(g.rama)?' warn':'';
+    const subFilas=g.items.slice().sort((a,b)=>Number(b.tn||0)-Number(a.tn||0)).map(filaSub).join('');
+    const gkey='rama::'+encodeURIComponent(g.rama);
+    const openAttr=window.COMP_RAMA_COLLAPSED.has(gkey)?'':'open';
+    return `<details class="comp-rama-group" data-rama-key="${gkey}" ${openAttr}><summary><div><div class="plan-name${warnName}">${esc(g.rama)}</div><div class="plan-meta">${nsub} subrama${nsub===1?'':'s'} Â· ${g.reg} reg</div></div><div class="plan-progress"><div class="tk"><div class="fl" style="width:${pc.toFixed(1)}%"></div></div><div class="plan-progress-meta"><span>${NF2.format(g.tn)} tn sobre compra real</span><span>${NF2.format(pc)}%</span></div></div><div class="plan-val"><b>${NF2.format(g.tn)} tn</b><br><span>${NF2.format(pc)}%</span></div></summary><div class="comp-rama-body">${subFilas}</div></details>`;
   }).join('');
-  return `<div class="sec planbox"><div class="sec-h"><h2>ComposiciÃ³n de compras del mes</h2><span class="hint">${NF2.format(plan.compraTotalTn||0)} tn reales Â· por rama/subrama</span></div><div class="plan-sub">Apertura de las toneladas compradas reales del mes. AbrÃ­ una rama para ver los registros/proveedores que la explican.</div><div class="plan-table">${rows}</div></div>`;
+  return `<div class="sec planbox"><div class="sec-h"><h2>ComposiciÃ³n de compras del mes</h2><span class="hint">${NF2.format(plan.compraTotalTn||0)} tn reales Â· agrupado por rama</span></div><div class="plan-sub">Toneladas compradas reales del mes, agrupadas por rama padre. AbrÃ­ una rama para ver sus subramas y, dentro, los registros/proveedores que la explican.</div><div class="plan-table">${bloques}</div></div>`;
 }
 // Compra real no computada al plan. Es la mesa de trabajo para canalizar:
 // el usuario elige rama/subrama y eso persiste como criterio humano.
