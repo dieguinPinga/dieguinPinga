@@ -18699,13 +18699,19 @@ def _clasificar_material_plan_compras(nombre):
     t = _normalizar_material_plan_compras(nombre)
     if not t:
         return "REVISAR"
+    # Alineado con el clasificador Node-RED (getProductoTerminado): la rama es el
+    # ProductoTerminado. Las 5 ramas son PEMD, PP COPO, PP HOMO, SOPLADO, MEZCLAS.
+    if "MEZCL" in t:
+        return "MEZCLAS"
+    if "SOPLAD" in t:
+        return "SOPLADO"
     if "PP HOMO" in t or "HOMOPOL" in t:
         return "PP_HOMO"
     if any(x in t for x in ("PP COPO", "BALDE", "TAPITA", "TAPON", "BATERIA")):
         return "PP_COPO"
     if t.startswith("PP ") and "HOMO" not in t:
         return "PP_COPO"
-    if any(x in t for x in ("PEMD", "PEAD", "PEBD", "STRECH", "STRETCH", "ADI", "FILM")):
+    if any(x in t for x in ("PEMD", "PEAD", "PEBD", "STRECH", "STRETCH", "ADI", "FILM", "ROTOMOLDEO")):
         return "PEMD"
     return "REVISAR"
 
@@ -18733,11 +18739,15 @@ def _num_plan_compras(valor):
 
 def _key_desde_rama_plan(rama):
     t = _normalizar_material_plan_compras(rama)
+    if "MEZCL" in t:
+        return "MEZCLAS"
+    if "SOPLAD" in t:
+        return "SOPLADO"
     if "PP HOMO" in t or "SILLA" in t:
         return "PP_HOMO"
     if "PP COPO" in t or "BALDE" in t or "BAZAR" in t or "TAPITA" in t or "TAPON" in t:
         return "PP_COPO"
-    if any(x in t for x in ("ADI", "STRETCH", "STRECH", "ROTOMOLDEO", "SOPLADO", "PEMD", "PEAD", "PEBD")):
+    if any(x in t for x in ("ADI", "STRETCH", "STRECH", "ROTOMOLDEO", "PEMD", "PEAD", "PEBD")):
         return "PEMD"
     return _clasificar_material_plan_compras(rama)
 
@@ -19721,30 +19731,30 @@ def _arbol_base_clasificacion_compras():
     Las compras sin match se asignan a Rama/Subrama; los registros crudos nunca
     son ramas. Este fallback evita que el selector quede vacio si falta el JSON fino.
     """
+    # Ramas = ProductoTerminado del clasificador Node-RED (Cavernicola):
+    # PEMD, PP COPO, PP HOMO, SOPLADO, MEZCLAS. Las subramas son las Familias
+    # que alimentan cada rama (reglasProducto de Node-RED). El color y el estado
+    # son atributos del registro, NO ramas: nunca se inventan ramas por color.
     return [
         {"key": "PEMD", "nombre": "PEMD", "subramas": [
-            {"key": "PEAD_INYECCION", "nombre": "PEAD INYECCION"},
-            {"key": "STRETCH_NAT", "nombre": "STRETCH NAT"},
+            {"key": "ADI", "nombre": "ADI"},
+            {"key": "STRETCH", "nombre": "STRETCH"},
             {"key": "ROTOMOLDEO", "nombre": "ROTOMOLDEO"},
-            {"key": "STRETCH_CARAMELO", "nombre": "STRETCH CARAMELO"},
-            {"key": "TAPON", "nombre": "TAPON"},
-            {"key": "ROTOMOLDEO_IF_BAJO", "nombre": "ROTOMOLDEO IF BAJO"},
+            {"key": "PEBD_TAPON", "nombre": "PEBD TAPON"},
+            {"key": "PEAD_INYECCION", "nombre": "PEAD INYECCION"},
         ]},
         {"key": "PP_COPO", "nombre": "PP COPO", "subramas": [
-            {"key": "PP_COPO_COLORES", "nombre": "PP COPO COLORES"},
-            {"key": "PP_COPO_NEGRO", "nombre": "PP COPO NEGRO"},
+            {"key": "PP_COPO", "nombre": "PP COPO"},
+        ]},
+        {"key": "PP_HOMO", "nombre": "PP HOMO", "subramas": [
+            {"key": "PP_HOMO", "nombre": "PP Homo"},
+            {"key": "SILLAS", "nombre": "SILLAS"},
         ]},
         {"key": "SOPLADO", "nombre": "Soplado", "subramas": [
-            {"key": "SOPLADO_COLORES", "nombre": "SOPLADO COLORES"},
-            {"key": "SOPLADO_NEGRO", "nombre": "SOPLADO NEGRO"},
+            {"key": "SOPLADO", "nombre": "SOPLADO"},
         ]},
-        {"key": "PP_HOMO", "nombre": "PP Homo", "subramas": [
-            {"key": "PP_HOMO_NEGRO", "nombre": "PP HOMO NEGRO"},
-            {"key": "PP_HOMO_BLANCO", "nombre": "PP HOMO BLANCO"},
-        ]},
-        {"key": "FUERA_PLAN", "nombre": "Fuera del plan / control", "subramas": [
-            {"key": "MEZCLA", "nombre": "MEZCLA"},
-            {"key": "SIN_SUBRAMA", "nombre": "Sin subrama"},
+        {"key": "MEZCLAS", "nombre": "MEZCLAS", "subramas": [
+            {"key": "MEZCLAS", "nombre": "MEZCLAS"},
         ]},
     ]
 
@@ -20044,6 +20054,7 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
     }
     key_nombre = {str((it.get("key") or it.get("productoKey") or it.get("nombre") or "")).strip().upper(): (it.get("nombre") or it.get("key") or it.get("productoKey")) for it in plan}
     key_nombre.setdefault("SOPLADO", "Soplado")
+    key_nombre.setdefault("MEZCLAS", "MEZCLAS")
     arbol_por_key = {str((r.get("key") or r.get("nombre") or "")).strip().upper(): r for r in arbol_clasificacion if isinstance(r, dict)}
     def _subrama_compra_para(key, material, subrama_manual=None):
         if subrama_manual:
