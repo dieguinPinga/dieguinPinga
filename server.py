@@ -21008,22 +21008,31 @@ def construir_tablero_datos():
                     params.extend(["%" + v + "%" for v in variantes])
                 if token_groups:
                     conds.append("(" + " AND ".join(token_groups) + ")")
-                sql_det = (
-                    "SELECT Proveedor AS proveedor, " + mat_expr_nc + " AS material, " + desc_expr_nc + " AS description, "
-                    + obs_expr_nc + " AS observacion, " + reclas_expr_nc + " AS reclas, " + desc_norm_expr_nc + " AS description_normalizada, "
-                    + materiales_raw_expr_nc + " AS materiales_raw, TiposDeMovimiento AS tipo, COUNT(*) AS reg, COUNT(DISTINCT DATE(FechaHora)) AS dias, "
-                    "MIN(FechaHora) AS primera, MAX(FechaHora) AS ultima, COALESCE(SUM(kilos),0) AS kg, "
-                    "COALESCE(SUM(CASE WHEN Precio>0 AND kilos>0 THEN Precio*kilos ELSE 0 END),0) AS monto, "
-                    "COALESCE(SUM(CASE WHEN Precio>0 AND kilos>0 THEN kilos ELSE 0 END),0) AS kgp "
-                    "FROM TiposDeMovimiento WHERE FechaHora >= %s AND FechaHora < %s AND " + W_COMPRA + " "
-                    "AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> '' AND (" + " OR ".join(conds) + ") "
-                    "GROUP BY Proveedor, material, description, observacion, reclas, description_normalizada, materiales_raw, tipo ORDER BY kg DESC LIMIT 400"
-                )
-                try:
-                    co.execute(sql_det, tuple(params))
-                    rows_det = co.fetchall() or []
-                except Exception:
-                    rows_det = []
+                def _run_det(prov_filter):
+                    sql_det = (
+                        "SELECT Proveedor AS proveedor, " + mat_expr_nc + " AS material, " + desc_expr_nc + " AS description, "
+                        + obs_expr_nc + " AS observacion, " + reclas_expr_nc + " AS reclas, " + desc_norm_expr_nc + " AS description_normalizada, "
+                        + materiales_raw_expr_nc + " AS materiales_raw, TiposDeMovimiento AS tipo, COUNT(*) AS reg, COUNT(DISTINCT DATE(FechaHora)) AS dias, "
+                        "MIN(FechaHora) AS primera, MAX(FechaHora) AS ultima, COALESCE(SUM(kilos),0) AS kg, "
+                        "COALESCE(SUM(CASE WHEN Precio>0 AND kilos>0 THEN Precio*kilos ELSE 0 END),0) AS monto, "
+                        "COALESCE(SUM(CASE WHEN Precio>0 AND kilos>0 THEN kilos ELSE 0 END),0) AS kgp "
+                        "FROM TiposDeMovimiento WHERE FechaHora >= %s AND FechaHora < %s AND " + W_COMPRA + " "
+                        + prov_filter +
+                        "AND (" + " OR ".join(conds) + ") "
+                        "GROUP BY Proveedor, material, description, observacion, reclas, description_normalizada, materiales_raw, tipo ORDER BY kg DESC LIMIT 400"
+                    )
+                    try:
+                        co.execute(sql_det, tuple(params))
+                        return co.fetchall() or []
+                    except Exception:
+                        return []
+                # Primero exigimos proveedor (dato mas rico). Si no aparece nada,
+                # reintentamos sin exigirlo: un registro sin proveedor cargado
+                # igual trae producto/description/fecha/kilos/precio reales y no
+                # debe quedar como "Pendiente de vincular" cuando existe en MySQL.
+                rows_det = _run_det("AND Proveedor IS NOT NULL AND TRIM(Proveedor) <> '' ")
+                if not rows_det:
+                    rows_det = _run_det("")
                 out_det = []
                 for rd in rows_det:
                     kgd = float(rd.get("kg") or 0)
@@ -21802,8 +21811,10 @@ function noComputadoPlan(plan){
     if(x.materiales_raw&&x.materiales_raw!==principal)extras.push('Materiales: '+x.materiales_raw);
     if(x.description_normalizada&&x.description_normalizada!==principal)extras.push('normalizado: '+x.description_normalizada);
     if(x.material&&x.material!==principal&&x.material!==x.description_normalizada)extras.push('material usado: '+x.material);
+    if(x.tipo)extras.push('tipo mov.: '+x.tipo);
+    if(x.dias)extras.push(x.dias+' dia'+(x.dias===1?'':'s')+' con compra');
     const extraHtml=extras.length?'<div class="need-meta">'+esc(extras.join(' Â· '))+'</div>':'';
-    const linea='<span><b class="desc-main">'+esc(principal)+'</b> Â· '+NF2.format(x.tn||0)+' tn Â· '+(x.reg||0)+' reg'+(rango?' Â· '+rango:'')+(x.precio?' Â· $'+NF0.format(x.precio):'')+' Â· '+esc(x.motivo||'revisar')+extraHtml+'</span>';
+    const linea='<span><b class="desc-main">'+esc(principal)+'</b> Â· '+NF2.format(x.tn||0)+' tn Â· '+(x.reg||0)+' reg'+(rango?' Â· '+rango:'')+(x.precio?' Â· $'+NF0.format(x.precio)+'/kg':'')+' Â· '+esc(x.motivo||'revisar')+extraHtml+'</span>';
     return '<div class="unmatched-row no-comp-row" data-row="'+data+'"><b>'+esc(x.proveedor||'sin proveedor')+'</b>'+linea+selects+'<button class="need-btn" data-unmatched="1">Canalizar</button></div>';
   }).join('');
   const alerta=(Math.abs((total||0)-(diff||0))>0.5 && diff>0.01)
