@@ -18728,7 +18728,15 @@ def _clasificar_material_plan_compras(nombre):
         return "MEZCLAS"
     if "SOPLAD" in t:
         return "SOPLADO"
-    if "PP HOMO" in t or "HOMOPOL" in t:
+    # Bazar (criterio Cavernicola/Node-RED): con tutty o negro -> PP HOMO;
+    # con color definido -> PP COPO; bazar sin color claro -> PP HOMO.
+    if "BAZAR" in t:
+        if any(x in t for x in ("TUTTY", "TUTTI", "TUTY", "NEGRO")):
+            return "PP_HOMO"
+        if any(x in t for x in ("BLANCO", "ROJO", "AZUL", "VERDE", "AMARIL", "NARANJ", "CELEST", "CARAME", "GRIS", "HABANO", "NATURA")):
+            return "PP_COPO"
+        return "PP_HOMO"
+    if "PP HOMO" in t or "HOMOPOL" in t or "SILLA" in t:
         return "PP_HOMO"
     if any(x in t for x in ("PP COPO", "BALDE", "TAPITA", "TAPON", "BATERIA")):
         return "PP_COPO"
@@ -20892,6 +20900,12 @@ def construir_tablero_datos(periodo_override=None):
                         matchea = c.get("label") or "plan"
                         break
                 if matchea:
+                    continue
+                # Si las reglas de clasificacion ya ubican el registro en una rama
+                # (no REVISAR), no se pide criterio humano: ya quedo clasificado
+                # automaticamente y esta en la composicion. Solo lo que las reglas
+                # no pueden ubicar (REVISAR) pide criterio humano.
+                if _clasificar_material_plan_compras(texto) != "REVISAR":
                     continue
                 kg = float(r.get("kg") or 0)
                 if kg <= 0.05:
