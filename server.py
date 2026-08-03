@@ -19999,7 +19999,7 @@ def _extraer_opciones_clasificacion_compras(plan_vigente, limite=700):
 # 2) HTTP/MQTT = plan/mix/stock externo tomado como verdad operativa humana vigente.
 # 3) memoria humana = correcciones/canalizaciones hechas desde el tablero.
 # Si algo no cierra visualmente, mirar primero este armado antes que el render JS.
-def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evidencia_mysql=None):
+def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evidencia_mysql=None, periodo=None):
     # El plan externo no reemplaza la base: define COMO interpretar la compra real.
     # Puede venir incompleto o cambiar de forma; por eso se diagnostican fuentes mas abajo.
     plan_vigente = extraer_plan_y_mix_compras_vigente()
@@ -20127,7 +20127,7 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
     compras_por_key = {}
     materiales_por_key = {}
     revisar = []
-    periodo_plan = str(plan_vigente.get("periodo") or datetime.now().strftime("%Y-%m"))[:7]
+    periodo_plan = str(periodo or plan_vigente.get("periodo") or datetime.now().strftime("%Y-%m"))[:7]
     canalizado_por_key = {}
     plan_keys_existentes = {str((it.get("key") or it.get("productoKey") or it.get("nombre") or "")).strip().upper() for it in plan}
     usar_evidencia_compra = bool(evidencia_mysql)
@@ -20475,8 +20475,13 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
         "contrato": (plan_vigente.get("contrato") or {}).get("autoridad") or "Plan externo tomado como criterio vigente.",
     }
 
-def construir_tablero_datos():
-    """Arma el payload del tablero con varias dimensiones por flujo."""
+def construir_tablero_datos(periodo_override=None):
+    """Arma el payload del tablero con varias dimensiones por flujo.
+
+    Si se pasa periodo_override (formato YYYY-MM) se muestra ese mes en vez del
+    mes abierto/actual. Sirve para "pararse" en un mes pasado (ej. julio) desde
+    el dashboard sin cambiar la base.
+    """
     conn_lab = get_ia_connection()
     conn_op = get_db_connection()
     if not conn_op:
@@ -20485,10 +20490,35 @@ def construir_tablero_datos():
         co = conn_op.cursor()
         cl = conn_lab.cursor() if conn_lab else None
 
+        # Periodo elegido por el usuario (?periodo=YYYY-MM), si es valido.
+        override = None
+        if periodo_override:
+            po = str(periodo_override).strip()[:7]
+            if re.match(r"^\d{4}-\d{2}$", po):
+                override = po
+
         # Periodo abierto mas reciente (fallback: mes actual)
         periodo = datetime.now().strftime("%Y-%m")
         estado_periodo = "abierto"
-        if cl:
+        if override:
+            periodo = override
+            # Mes pasado = cerrado; mes actual/futuro = abierto. Si la tabla lo
+            # tiene registrado, ese estado manda.
+            estado_periodo = "cerrado" if override < datetime.now().strftime("%Y-%m") else "abierto"
+            if cl:
+                try:
+                    cl.execute(
+                        "SELECT estado_periodo FROM ia_periodos_procesados "
+                        "WHERE periodo = %s AND criterio_version = %s "
+                        "ORDER BY periodo DESC LIMIT 1",
+                        (override, DERIVADAS_VERSION),
+                    )
+                    prow = cl.fetchone()
+                    if prow and prow.get("estado_periodo"):
+                        estado_periodo = prow["estado_periodo"]
+                except Exception:
+                    pass
+        elif cl:
             try:
                 cl.execute(
                     "SELECT periodo, estado_periodo FROM ia_periodos_procesados "
@@ -21193,7 +21223,7 @@ def construir_tablero_datos():
         c_mat_plan = limpiar(dim(MAT, W_COMPRA, (), precio=True, limit=500))
         c_precio = precio_prom(W_COMPRA)
         c_evidencia = evidencia_compra_mes(limit=4000)
-        c_plan = proveedores_historicos_para_necesidades(_armar_plan_compras_para_tablero(c_mat_plan, c_total, c_evidencia))
+        c_plan = proveedores_historicos_para_necesidades(_armar_plan_compras_para_tablero(c_mat_plan, c_total, c_evidencia, periodo=periodo))
         if isinstance(c_plan, dict) and c_plan.get("ok"):
             try:
                 c_plan["sinMatch"] = registros_compra_sin_match(c_plan, limite=120)
@@ -21478,7 +21508,8 @@ def api_ia_json_central():
 
 @app.route('/api/tablero')
 def api_tablero():
-    datos = construir_tablero_datos()
+    periodo_sel = request.args.get('periodo')
+    datos = construir_tablero_datos(periodo_override=periodo_sel)
     return jsonify(datos), (200 if datos.get("ok") else 500)
 
 
@@ -21524,6 +21555,12 @@ TABLERO_HTML = r'''<!doctype html><html lang="es"><head><meta charset="utf-8">
     color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;line-height:1.45}
   .wrap{max-width:1120px;margin:0 auto;padding:26px 22px 60px}
   .top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+  .periodo-nav{display:inline-flex;align-items:center;gap:6px}
+  .mes-btn{background:#0d141d;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;line-height:1}
+  .mes-btn:hover{border-color:var(--blue);color:#b8d8ff}
+  .mes-hoy{font-weight:650}
+  .mes-input{background:#0d141d;border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:5px 8px;font-size:12px;font-family:var(--mono);color-scheme:dark}
+  .mes-input.sel{border-color:var(--orange);color:#ffcc99}
   .brand h1{margin:0;font-size:20px;letter-spacing:-.01em;font-weight:650}
   .brand .sub{margin-top:3px;color:var(--ink-2);font-size:12.5px;letter-spacing:.02em}
   .status{display:inline-flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
@@ -21584,6 +21621,12 @@ TABLERO_HTML = r'''<!doctype html><html lang="es"><head><meta charset="utf-8">
 <div class="wrap">
   <header class="top">
     <div class="brand"><h1>Tablero de Planta</h1><div class="sub" id="sub">Cargando...</div></div>
+    <div class="periodo-nav">
+      <button id="mesPrev" class="mes-btn" title="Mes anterior">&#9664;</button>
+      <input type="month" id="mesInput" class="mes-input" title="Elegir mes">
+      <button id="mesNext" class="mes-btn" title="Mes siguiente">&#9654;</button>
+      <button id="mesHoy" class="mes-btn mes-hoy" title="Volver al mes actual">Hoy</button>
+    </div>
     <span class="status"><span class="dot" id="dot"></span> <span id="stxt">conectando</span></span>
   </header>
   <div class="tabs" role="tablist" aria-label="Flujos de planta">
@@ -21613,6 +21656,7 @@ const META={
     lede:'Kilos fabricados en el mes (PRODUCCION): mÃ¡quinas, operadores y materiales.'}
 };
 let DATA=null, activa='compras';
+let PERIODO_SEL=null; // null = mes abierto/actual que decide el server; 'YYYY-MM' = mes elegido a mano
 const NEED_RESULT_CACHE={};
 const NEED_PENDING_CACHE={};
 function tiles(m,f){
@@ -22250,12 +22294,14 @@ function programarRenderIdle(){
 async function cargar(){
   const panel=document.getElementById('panel');
   try{
-    const r=await fetch('/api/tablero',{cache:'no-store'});
+    const url='/api/tablero'+(PERIODO_SEL?('?periodo='+encodeURIComponent(PERIODO_SEL)):'');
+    const r=await fetch(url,{cache:'no-store'});
     if(!r.ok)throw new Error('HTTP '+r.status);
     DATA=await r.json();const ok=DATA&&DATA.ok;
     document.getElementById('dot').className='dot'+(ok?'':' off');
     document.getElementById('stxt').textContent=ok?'en vivo':'sin datos';
     if(ok)document.getElementById('sub').textContent='Periodo '+DATA.periodo+' ('+DATA.estado_periodo+') - actualizado '+DATA.actualizado;
+    if(ok)sincronizarMesInput(DATA.periodo);
     try{
       if(clasificacionEnCurso()){
         // Datos frescos ya guardados en DATA; diferimos el repintado para no
@@ -22280,6 +22326,33 @@ async function cargar(){
     if(panel)panel.innerHTML='<div class="empty"><b>No pude cargar /api/tablero:</b> '+esc(e.message||String(e))+'</div>';
   }
 }
+// --- Selector de mes: pararse en un mes pasado (ej. julio) sin tocar la base -
+function mesActualStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
+function pasoMes(ym,delta){
+  const m=/^(\d{4})-(\d{2})$/.exec(ym||mesActualStr());
+  if(!m)return mesActualStr();
+  let y=+m[1], mo=+m[2]-1+delta;
+  y+=Math.floor(mo/12); mo=((mo%12)+12)%12;
+  return y+'-'+String(mo+1).padStart(2,'0');
+}
+function sincronizarMesInput(periodo){
+  const inp=document.getElementById('mesInput');
+  if(inp&&document.activeElement!==inp)inp.value=periodo||'';
+  if(inp)inp.classList.toggle('sel',!!PERIODO_SEL);
+  const hoy=document.getElementById('mesHoy');
+  if(hoy)hoy.style.display=PERIODO_SEL?'inline-flex':'none';
+}
+function irAMes(ym){
+  // El mes actual vuelve a modo automatico (sigue al periodo abierto del server).
+  PERIODO_SEL=(ym===mesActualStr())?null:ym;
+  const inp=document.getElementById('mesInput'); if(inp)inp.value=ym;
+  cargar();
+}
+function _baseMes(){return document.getElementById('mesInput').value||(DATA&&DATA.periodo)||mesActualStr();}
+document.getElementById('mesPrev').addEventListener('click',()=>irAMes(pasoMes(_baseMes(),-1)));
+document.getElementById('mesNext').addEventListener('click',()=>{const nxt=pasoMes(_baseMes(),1);if(nxt>mesActualStr())return;irAMes(nxt);});
+document.getElementById('mesInput').addEventListener('change',e=>{if(e.target.value)irAMes(e.target.value);});
+document.getElementById('mesHoy').addEventListener('click',()=>{PERIODO_SEL=null;const inp=document.getElementById('mesInput');if(inp)inp.value=mesActualStr();cargar();});
 cargar();setInterval(cargar,15000);
 </script></body></html>'''
 
