@@ -15158,8 +15158,14 @@ def _score_payload_plan_compras(payload):
         if c.get('meta'): score += 5
     return score
 
-def extraer_plan_y_mix_compras_vigente():
-    """Devuelve la parte humana/operativa del plan recibido y tomado como verdad."""
+def extraer_plan_y_mix_compras_vigente(periodo_objetivo=None):
+    """Devuelve la parte humana/operativa del plan recibido y tomado como verdad.
+
+    Si se pasa periodo_objetivo (YYYY-MM), se prefiere el plan cuyo periodo
+    coincida con ese mes. Si el unico plan disponible declara otro mes, se
+    devuelve ok=False con error 'sin_plan_para_periodo' para no comparar las
+    compras reales de un mes contra el plan de otro.
+    """
 
     def _payload_fuente_o_ingesta(clave_fuente, tipo_ingesta):
         item = por_clave.get(clave_fuente)
@@ -15214,7 +15220,12 @@ def extraer_plan_y_mix_compras_vigente():
     criterios = [x for x in items if x.get('clave') == 'plan_compras_criterio']
     criterio = None
     if criterios:
-        criterio = sorted(criterios, key=lambda x: (_score_payload_plan_compras(x.get('payload')), str(x.get('actualizado_en') or '')), reverse=True)[0]
+        ordenados = sorted(criterios, key=lambda x: (_score_payload_plan_compras(x.get('payload')), str(x.get('actualizado_en') or '')), reverse=True)
+        if periodo_objetivo:
+            # Preferir el plan cuyo periodo coincida con el mes que se esta viendo.
+            criterio = next((x for x in ordenados if str(x.get('periodo') or '')[:7] == periodo_objetivo), None)
+        if criterio is None:
+            criterio = ordenados[0]
     if not criterio:
         return {
             "ok": False,
@@ -15282,6 +15293,18 @@ def extraer_plan_y_mix_compras_vigente():
     if not tareas and tareas_compras:
         tareas = tareas_compras
     periodo = data.get('mesKey') or meta.get('mesKey') or criterio.get('periodo') or payload.get('mesKey') or data_original.get('mesKey') or raw.get('mesKey')
+    # Si se pidio un mes puntual y el plan disponible declara claramente OTRO mes,
+    # no hay plan para ese periodo (no comparamos contra un plan ajeno). Si el
+    # periodo del plan es desconocido, no bloqueamos (se mantiene el comportamiento).
+    plan_periodo_norm = str(periodo or '')[:7]
+    if periodo_objetivo and re.match(r"^\d{4}-\d{2}$", plan_periodo_norm) and plan_periodo_norm != periodo_objetivo:
+        return {
+            "ok": False,
+            "error": "sin_plan_para_periodo",
+            "periodo_objetivo": periodo_objetivo,
+            "periodo_plan_disponible": periodo,
+            "fuentes_disponibles": sorted([k for k in por_clave.keys() if k]),
+        }
     objetivo_total = (mix.get('objetivoTotalTn') or data.get('objetivoTotalTn') or
                       meta.get('objetivoTotalTn') or meta.get('objetivoTotalKg'))
 
@@ -20002,9 +20025,15 @@ def _extraer_opciones_clasificacion_compras(plan_vigente, limite=700):
 def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evidencia_mysql=None, periodo=None):
     # El plan externo no reemplaza la base: define COMO interpretar la compra real.
     # Puede venir incompleto o cambiar de forma; por eso se diagnostican fuentes mas abajo.
-    plan_vigente = extraer_plan_y_mix_compras_vigente()
-    if not plan_vigente.get("ok"):
+    plan_vigente = extraer_plan_y_mix_compras_vigente(periodo)
+    plan_disponible = bool(plan_vigente.get("ok"))
+    plan_periodo_disponible = plan_vigente.get("periodo_plan_disponible")
+    if not plan_disponible and plan_vigente.get("error") != "sin_plan_para_periodo":
         return {"ok": False, "error": plan_vigente.get("error"), "estado": "sin_plan_vigente"}
+    if not plan_disponible:
+        # No hay plan para el mes elegido: mostramos solo compras reales del mes
+        # y su composicion, sin inventar comparacion contra un plan de otro mes.
+        plan_vigente = {"ok": True, "periodo": periodo, "plan": [], "tareas": []}
     plan = plan_vigente.get("plan") or []
     tareas = plan_vigente.get("tareas") or []
     necesidades = _extraer_necesidades_plan_compras(plan_vigente)
@@ -20452,6 +20481,8 @@ def _armar_plan_compras_para_tablero(materiales_mysql, total_compra_mysql, evide
     return {
         "ok": True,
         "estado": "vigente",
+        "planDisponible": plan_disponible,
+        "planPeriodoDisponible": plan_periodo_disponible,
         "periodo": plan_vigente.get("periodo"),
         "lectura": plan_vigente.get("lectura"),
         "fuente": plan_vigente.get("fuente_criterio"),
@@ -21605,6 +21636,9 @@ TABLERO_HTML = r'''<!doctype html><html lang="es"><head><meta charset="utf-8">
   .plan-head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:14px;flex-wrap:wrap}
   .plan-title{font-size:16px;font-weight:750}.plan-sub{font-size:12px;color:var(--ink-2);margin-top:4px;max-width:72ch;line-height:1.45}
   .plan-pill{border:1px solid rgba(76,159,254,.42);border-radius:999px;padding:6px 12px;color:#b8d8ff;font-size:11px;white-space:nowrap;background:rgba(76,159,254,.08)}
+  .plan-pill.warn{border-color:rgba(255,180,0,.5);color:#ffcc66;background:rgba(255,180,0,.08)}
+  .plan-aviso{border:1px solid rgba(255,180,0,.35);background:rgba(255,180,0,.08);color:#ffcc66;border-radius:9px;padding:10px 12px;font-size:12px;margin-bottom:12px;line-height:1.45}
+  .plan-aviso b{color:#ffdd99}
   .plan-kpis{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));gap:10px;margin:16px 0 18px}
   .plan-kpi{background:#0d141d;border:1px solid var(--line-soft);border-radius:10px;padding:12px 13px}.plan-kpi b{display:block;font-family:var(--mono);font-size:24px;color:var(--blue);line-height:1}.plan-kpi span{display:block;margin-top:8px;font-size:10px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em}
   .plan-summary{display:grid;grid-template-columns:1.1fr 1fr;gap:14px;margin-bottom:16px}.plan-note{border:1px solid var(--line-soft);background:#0d141d;border-radius:10px;padding:12px}.plan-note h3{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-3)}
@@ -22003,7 +22037,16 @@ function needCard(n,idx){
   const composicion=composicionCompraPlan(plan);
   const noComp=noComputadoPlan(plan);
   const sinMatch=sinMatchCompras(plan);
-  return `<div class="sec planbox"><div class="plan-head"><div><div class="plan-title">Plan/mix de compras vigente</div><div class="plan-sub">Cruza compras reales del mes contra el plan recibido por HTTP/MQTT.</div></div><div class="plan-pill">${plan.periodo||DATA.periodo} - fuente MQTT/HTTP</div></div>${kpis}${lectura}${resumenDetalle}${composicion}${noComp}${sinMatch}${accionables}<div class="plan-table">${rows}</div>${tareas?`<div class="mini-list" style="margin-top:14px">${tareas}</div>`:''}</div>`;
+  const sinPlan=plan.planDisponible===false;
+  const pill=sinPlan
+    ? `<div class="plan-pill warn">Sin plan para ${esc(DATA.periodo||'')} Â· solo compras reales</div>`
+    : `<div class="plan-pill">${plan.periodo||DATA.periodo} - fuente MQTT/HTTP</div>`;
+  const aviso=sinPlan
+    ? `<div class="plan-aviso">No hay plan/mix cargado para <b>${esc(DATA.periodo||'')}</b>${plan.planPeriodoDisponible?` (el plan vigente es de ${esc(plan.planPeriodoDisponible)})`:''}. Se muestran solo las compras reales del mes y su composiciÃ³n; objetivo, avance y faltante contra plan no aplican a este mes.</div>`
+    : '';
+  const titulo=sinPlan?'Compras reales del mes':'Plan/mix de compras vigente';
+  const subtit=sinPlan?'No hay plan para este mes; solo compras reales y su composiciÃ³n.':'Cruza compras reales del mes contra el plan recibido por HTTP/MQTT.';
+  return `<div class="sec planbox"><div class="plan-head"><div><div class="plan-title">${titulo}</div><div class="plan-sub">${subtit}</div></div>${pill}</div>${aviso}${sinPlan?'':kpis}${lectura}${resumenDetalle}${composicion}${noComp}${sinMatch}${sinPlan?'':accionables}${sinPlan?'':`<div class="plan-table">${rows}</div>`}${(!sinPlan&&tareas)?`<div class="mini-list" style="margin-top:14px">${tareas}</div>`:''}</div>`;
 }
 
 function snapshotOpenCompGlobal(){
