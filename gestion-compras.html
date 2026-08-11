@@ -1,0 +1,576 @@
+<style>
+.mant-wrap{font-family:Segoe UI,Arial,sans-serif;font-size:15px;line-height:1.4;background:#0d1117;color:#e6edf3;padding:20px;border:1px solid #30363d;border-radius:8px;min-height:1050px}
+.mant-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;border-bottom:1px solid #30363d;padding-bottom:12px;margin-bottom:12px}
+.mant-title{font-size:27px;font-weight:700;color:#58a6ff}.mant-meta{font-size:13px;color:#8b949e;text-align:right;line-height:1.45}
+.mant-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.mant-kpi{background:#161b22;border:1px solid #30363d;border-radius:7px;padding:14px 17px}.mant-kpi small{display:block;font-size:13px;color:#a5afba;text-transform:uppercase}.mant-kpi b{display:block;font-size:27px;margin-top:5px}
+.mant-tools{display:flex;gap:11px;flex-wrap:wrap;margin:16px 0}.mant-tools input,.mant-tools select{font-size:15px;background:#161b22;color:#e6edf3;border:1px solid #46505c;border-radius:6px;padding:10px 12px;min-width:235px}
+.budget-box{font-size:16px;border:1px solid #30363d;background:#161b22;border-radius:7px;padding:15px;margin:15px 0}.budget-line{height:18px;background:#30363d;border-radius:10px;overflow:hidden;margin-top:10px}.budget-fill{height:100%;background:#3fb950;transition:width .3s}.budget-fill.atencion{background:#d29922}.budget-fill.alerta{background:#f0883e}.budget-fill.excedido{background:#f85149}.budget-msg{font-size:14px;margin-top:9px}.danger{color:#f85149}.warn{color:#d29922}.good{color:#3fb950}
+.mant-table-wrap{overflow:auto;max-height:1000px;border:1px solid #30363d;border-radius:7px}.mant-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14px;min-width:0}
+.new-box{background:#161b22;border:1px solid #58a6ff;border-radius:7px;padding:15px;margin:14px 0}.new-title{font-size:18px;color:#58a6ff;font-weight:700;margin-bottom:11px}.new-grid{display:grid;grid-template-columns:repeat(4,minmax(170px,1fr));gap:12px}.new-grid label{font-size:13px;color:#a5afba;text-transform:uppercase}.new-grid input,.new-grid select,.new-grid textarea{font-size:15px;box-sizing:border-box;width:100%;background:#0d1117;color:#e6edf3;border:1px solid #46505c;border-radius:6px;padding:10px;margin-top:4px}.new-grid textarea{min-height:78px;resize:vertical}.span2{grid-column:span 2}.save-btn{font-size:15px;background:#238636;color:white;border:1px solid #2ea043;border-radius:6px;padding:11px 21px;font-weight:700;cursor:pointer;margin-top:11px}.save-btn:disabled{opacity:.45;cursor:not-allowed}@media(max-width:900px){.new-grid{grid-template-columns:1fr 1fr}}@media(max-width:550px){.new-grid{grid-template-columns:1fr}.span2{grid-column:span 1}}
+.areas-box{background:#161b22;border:1px solid #30363d;border-radius:7px;padding:10px;margin:10px 0}.area-chip{display:inline-flex;gap:6px;align-items:center;background:#21262d;border:1px solid #30363d;border-radius:14px;padding:4px 8px;margin:3px;font-size:11px}.area-chip button{background:transparent;color:#f85149;border:0;cursor:pointer;font-weight:bold}.area-add{display:flex;gap:7px;margin-top:8px}.area-add input{background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:7px;min-width:260px}.area-add button{background:#1f6feb;color:white;border:0;border-radius:5px;padding:7px 12px;cursor:pointer}
+.mant-table th{position:sticky;top:0;background:#252c35!important;color:#c3ccd5;text-align:left;padding:12px 11px;font-size:13px;font-weight:700;letter-spacing:.2px;z-index:1}.mant-table td{padding:11px;border-top:1px solid #29313a;vertical-align:top;background-color:transparent!important}.mant-table tbody tr,.mant-table tbody tr:nth-child(odd),.mant-table tbody tr:nth-child(even){background-color:#0f151c!important}.mant-table tbody tr:hover{background-color:#19232d!important}
+.mant-table th:nth-child(1){width:8%}.mant-table th:nth-child(2){width:4.5%}.mant-table th:nth-child(3){width:8%}.mant-table th:nth-child(4){width:8.5%}.mant-table th:nth-child(5){width:5.5%}.mant-table th:nth-child(6){width:5%}.mant-table th:nth-child(7){width:7.5%}.mant-table th:nth-child(8){width:20%}.mant-table th:nth-child(9){width:14%}.mant-table th:nth-child(10){width:19%}
+.mant-table select,.mant-table input,.mant-table textarea{font-size:14px;background:#0d1117;color:#f0f3f6;border:1px solid #46505c;border-radius:5px;padding:7px}.obs-edit,.quotes-edit{box-sizing:border-box;width:100%;height:34px;min-height:34px;resize:none;line-height:1.2}.recep-date,.recep-person,.fecha-solicitud-edit{box-sizing:border-box;width:100%;min-width:0;height:34px}.recep-grid,.gestion-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}.cell-label{display:block;margin:0 0 3px;font-size:10px;font-weight:700;color:#57635b;text-transform:uppercase;white-space:nowrap}.pedido-main{font-weight:700}.pedido-form{margin-top:6px}.pedido-form label{display:block;font-size:10px;font-weight:700;color:#57635b;text-transform:uppercase}.pedido-form-input,.proveedor-edit,.tipo-edit,.pedido-por-edit{box-sizing:border-box;width:100%;height:32px;margin-top:2px}.proveedor-edit{font-weight:700}.desc-label{margin-top:6px}.descripcion-edit{box-sizing:border-box;width:100%;height:44px;min-height:44px;resize:vertical;line-height:1.2}
+.quotes-toggle{box-sizing:border-box;width:100%;height:34px;background:#e8f3ec!important;color:#217346!important;border:1px solid #70ad87!important;border-radius:5px;font-weight:700;cursor:pointer}.quote-detail td{padding:12px 18px!important;background:#f7fbf8!important;border-top:2px solid #70ad87!important}.quote-panel{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.quote-card{background:#fff;border:1px solid #a8c9b4;border-radius:6px;padding:10px}.quote-card.chosen{border:2px solid #217346;background:#eef7f1}.quote-title{display:flex;justify-content:space-between;align-items:center;color:#217346;font-weight:700;margin-bottom:8px}.quote-fields{display:grid;grid-template-columns:1.1fr .75fr .8fr 1fr;gap:7px}.quote-fields label,.quote-justify label{font-size:10px;font-weight:700;color:#57635b;text-transform:uppercase}.quote-fields input,.quote-justify input{box-sizing:border-box;width:100%;margin-top:3px}.quote-actions{display:flex;gap:8px;margin-top:10px}.quote-add{background:#217346;color:#fff;border:0;border-radius:5px;padding:7px 11px;cursor:pointer}.quote-remove{background:#fff;color:#c42b1c;border:1px solid #c42b1c;border-radius:5px;padding:5px 8px;cursor:pointer}.quote-justify{margin-top:10px}.quote-summary{font-size:11px;color:#57635b;margin-top:4px}.gestion-grid{grid-template-columns:1fr 1fr}.obs-detail td{padding:5px 12px 7px!important;background:#fffdf2!important;border-top:0!important}.obs-detail-wrap{display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center}.obs-detail-title{font-size:11px;font-weight:800;color:#6b5a18;text-transform:uppercase}.obs-detail .obs-edit{width:100%;height:38px;min-height:38px;box-sizing:border-box;resize:vertical;overflow:hidden;line-height:1.25;background:#fff!important;transition:min-height .15s}.obs-detail .obs-edit:focus{min-height:66px;overflow:auto}@media(max-width:1200px){.quote-panel{grid-template-columns:1fr}.quote-fields{grid-template-columns:1fr 1fr}.obs-detail-wrap{grid-template-columns:130px 1fr}}
+.money-edit{display:flex;align-items:center;gap:5px;min-width:0}.money-edit span{font-size:16px;color:#3fb950;font-weight:700}.money-edit input{box-sizing:border-box;width:calc(100% - 18px);text-align:right;font-variant-numeric:tabular-nums}.cantidad-edit{box-sizing:border-box;width:100%;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}.unit-label{margin-top:7px}.unit-money input{height:32px}.mant-table select{box-sizing:border-box;width:100%;max-width:100%}
+.stages{display:flex;gap:5px;align-items:center;min-width:0}.stage{display:flex;flex-direction:column;align-items:center;font-size:11px;font-weight:650;color:#8b949e}.stage input{accent-color:#3fb950;transform:scale(1.16);margin-bottom:4px}.stage.done{color:#3fb950}.stage.cancel{color:#f85149}.stage-update{display:none}.batch-update{font-size:16px;background:#238636;color:#fff;border:1px solid #2ea043;border-radius:6px;padding:11px 19px;font-weight:700;cursor:pointer}.batch-update:hover{background:#2ea043}.batch-note{font-size:13px;color:#a5afba;align-self:center}
+.num{text-align:right;font-variant-numeric:tabular-nums}.badge{display:inline-block;border-radius:12px;padding:2px 8px;background:#1f3a25;color:#3fb950;white-space:nowrap}
+.pending{background:#3a2f1c;color:#d29922}.muted{color:#8b949e}.desc{max-width:330px}.empty{text-align:center;padding:30px;color:#8b949e}
+
+/* Tema claro inspirado en Excel: familiaridad, cuadrícula y jerarquía de planilla */
+.mant-wrap{font-family:Aptos,Calibri,"Segoe UI",Arial,sans-serif!important;background:#f3f6f4!important;color:#1f2328!important;border-color:#b8c4bc!important}
+.mant-head{border-bottom-color:#aebbb2!important}.mant-title{color:#217346!important}.mant-meta,.muted,.batch-note{color:#57635b!important}
+.mant-kpi,.budget-box,.new-box,.areas-box{background:#fff!important;border-color:#b8c4bc!important;box-shadow:0 1px 2px #00000012}.mant-kpi small{color:#526057!important}.mant-kpi b{color:#1f2328}.mant-kpi b.good,.good{color:#107c41!important}
+.budget-line{background:#d8e2db!important}.budget-fill{background:#21a366!important}.new-title,.obs-head{color:#fff!important}.new-box{border-color:#70ad87!important}.new-box summary,.areas-box summary{color:#217346!important}
+.mant-tools input,.mant-tools select,.new-grid input,.new-grid select,.new-grid textarea,.area-add input,.mant-table select,.mant-table input,.mant-table textarea{background:#fff!important;color:#1f2328!important;border-color:#9daaa1!important;box-shadow:inset 0 1px 1px #0000000d}
+.mant-tools input:focus,.mant-tools select:focus,.new-grid input:focus,.new-grid select:focus,.new-grid textarea:focus,.mant-table input:focus,.mant-table select:focus,.mant-table textarea:focus{outline:2px solid #21a366!important;outline-offset:0}
+.mant-table-wrap{background:#fff!important;border-color:#9daaa1!important}.mant-table th{background:#217346!important;color:#fff!important;border-right:1px solid #4f956f!important;border-bottom:2px solid #185c37!important}.mant-table td{color:#1f2328!important;border-top:1px solid #ccd5cf!important;border-right:1px solid #e0e6e2!important}
+.mant-table tbody tr,.mant-table tbody tr:nth-child(odd){background:#fff!important}.mant-table tbody tr:nth-child(even){background:#eef7f1!important}.mant-table tbody tr:hover{background:#fff4ce!important}
+.obs-col,.quotes-col{background:inherit!important}.obs-head,.quotes-head{background:#217346!important;color:#fff!important}
+.stage{color:#66726a}.stage.done{color:#107c41!important}.stage.cancel{color:#c42b1c!important}.stage input{accent-color:#107c41}.money-edit span{color:#107c41!important}
+.batch-update,.save-btn,.area-add button{background:#217346!important;border-color:#185c37!important;color:#fff!important}.batch-update:hover,.save-btn:hover,.area-add button:hover{background:#185c37!important}
+.area-chip{background:#e8f3ec!important;border-color:#a8c9b4!important;color:#1f2328!important}.danger{color:#c42b1c!important}.warn{color:#9a6700!important}
+.mant-table-wrap::-webkit-scrollbar{height:14px;width:14px}.mant-table-wrap::-webkit-scrollbar-track{background:#e5ebe7}.mant-table-wrap::-webkit-scrollbar-thumb{background:#70ad87;border:3px solid #e5ebe7;border-radius:8px}
+.area-summary{margin:14px 0;border:1px solid #a8c9b4;border-radius:6px;background:#fff;color:#1f2328;overflow:hidden}.area-summary-title{display:flex;align-items:center;justify-content:space-between;padding:10px 13px;background:#e8f3ec;color:#176b3a;font-size:16px;font-weight:700}.area-summary-title button{border:1px solid #70ad87;background:#fff;color:#176b3a;border-radius:4px;padding:5px 10px;cursor:pointer}.area-summary-grid{width:100%;border-collapse:collapse;font-size:13px}.area-summary-grid th{background:#217346!important;color:#fff!important;padding:8px;text-align:center}.area-summary-grid th:first-child,.area-summary-grid td:first-child{text-align:left}.area-summary-grid td{padding:8px;border:1px solid #d8e3dc;text-align:center;background:transparent!important}.area-summary-grid tbody tr{cursor:pointer;background:#fff}.area-summary-grid tbody tr:nth-child(even){background:#f3faf6}.area-summary-grid tbody tr:hover,.area-summary-grid tbody tr.active{background:#d8f0e1}.area-name{font-weight:700;color:#176b3a}.area-money{font-weight:700;white-space:nowrap}.status-zero{color:#a0a7a2}.summary-empty{padding:12px;color:#66706a}.quick-check{display:inline-flex;align-items:center;gap:7px;background:#e8f3ec;border:1px solid #a8c9b4;border-radius:5px;padding:8px 10px;color:#176b3a;font-weight:700;white-space:nowrap;cursor:pointer}.mant-tools .quick-check input{min-width:0!important;width:18px!important;height:18px;margin:0;box-shadow:none!important;accent-color:#217346}.area-summary-grid tfoot td{background:#d9eadf!important;border-top:3px solid #217346;font-weight:800;color:#176b3a}.view-switch{display:flex;align-items:center;gap:8px;margin:12px 0}.view-switch button{padding:10px 16px;border:1px solid #70ad87;border-radius:5px;background:#fff;color:#176b3a;font-weight:700;cursor:pointer}.view-switch button.active{background:#217346;color:#fff}.view-switch .reload-excel{border-color:#4472c4;color:#2952a3}.view-switch .reload-excel:hover{background:#e8f0fe}.view-switch span{font-size:12px;color:#66726a}.excel-view{background:#fff;border:1px solid #9daaa1;border-radius:6px;padding:12px;color:#1f2328}.excel-view-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}.excel-view-head b{display:block;font-size:17px;color:#176b3a}.excel-view-head small{display:block;color:#66726a;margin-top:2px}.excel-view-head input{min-width:300px;padding:9px;border:1px solid #9daaa1;border-radius:5px}.excel-raw-wrap{overflow:auto;max-height:1020px;border:1px solid #b7c4bb}.excel-raw-table{border-collapse:collapse;width:max-content;min-width:100%;font-size:12px}.excel-raw-table th{position:sticky;top:0;z-index:2;background:#217346;color:#fff;border:1px solid #4f956f;padding:7px 9px;min-width:120px;white-space:nowrap;text-align:left}.excel-raw-table th span{display:block;font-size:10px;color:#d8f0e1}.excel-raw-table td{border:1px solid #d7dfda;padding:6px 8px;white-space:pre-wrap;max-width:360px;background:#fff}.excel-raw-table tbody tr:nth-child(even) td{background:#f3faf6}.excel-raw-table tbody tr:hover td{background:#fff4ce}.excel-raw-table .excel-row-num{position:sticky;left:0;z-index:1;min-width:48px;width:48px;text-align:right;background:#e8f3ec!important;color:#466052;font-weight:700}.excel-raw-table th.excel-row-num{z-index:3;background:#185c37!important;color:#fff}@media(max-width:800px){.view-switch{flex-wrap:wrap}.excel-view-head{align-items:stretch;flex-direction:column}.excel-view-head input{min-width:0;width:100%;box-sizing:border-box}}.excel-nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}.excel-nav button,.excel-nav select{height:36px;border:1px solid #70ad87;border-radius:5px;background:#fff;color:#176b3a;padding:0 11px;font-weight:700}.excel-nav button{cursor:pointer}.excel-nav button:hover{background:#e8f3ec}.excel-nav select{min-width:250px}.excel-nav span{font-size:12px;color:#9a6700}.excel-raw-table th.excel-col-compacta,.excel-raw-table td.excel-col-compacta{min-width:64px!important;width:64px!important;max-width:64px!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}.excel-raw-table th[ng-dblclick]{cursor:col-resize;user-select:none}.excel-raw-table th[ng-dblclick]:hover{background:#185c37!important}.month-summary{margin:14px 0;border:1px solid #a8c9b4;border-radius:6px;background:#fff;overflow:hidden}.month-summary-title{padding:10px 13px;background:#d9eadf;color:#176b3a;font-size:16px;font-weight:700}.month-summary-grid{width:100%;border-collapse:collapse;font-size:13px}.month-summary-grid th{background:#217346!important;color:#fff!important;padding:8px;text-align:left}.month-summary-grid td{padding:8px;border:1px solid #d8e3dc;background:#fff}.month-summary-grid tbody tr{cursor:pointer}.month-summary-grid tbody tr:nth-child(even) td{background:#f3faf6}.month-summary-grid tbody tr:hover td,.month-summary-grid tbody tr.active td{background:#fff4ce}.month-summary-grid th:not(:first-child),.month-summary-grid td:not(:first-child){text-align:right}.month-summary-grid td:nth-child(3),.month-summary-grid td:nth-child(4){font-weight:700}.month-summary-grid .danger{color:#c42b1c}.summary-duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start;margin:12px 0}.summary-duo .month-summary,.summary-duo .area-summary{margin:0!important;height:100%;box-sizing:border-box}.summary-duo .month-summary-grid,.summary-duo .area-summary-grid{font-size:11px!important}.summary-duo th,.summary-duo td{padding:6px 5px!important;line-height:1.15}.summary-duo .month-summary-title,.summary-duo .area-summary-title{min-height:42px;box-sizing:border-box;padding:8px 10px!important;font-size:14px!important}@media(max-width:1450px){.summary-duo{grid-template-columns:1fr}.summary-duo .month-summary-grid,.summary-duo .area-summary-grid{font-size:12px!important}}.provider-summary{margin:0 0 12px;border:1px solid #a8c9b4;border-radius:7px;background:#fff;color:#1f2328;overflow:hidden}.provider-summary>summary{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 13px;background:#e8f3ec;color:#176b3a;font-size:14px;font-weight:800;cursor:pointer}.provider-summary>summary b{white-space:nowrap}.provider-summary-wrap{max-height:285px;overflow:auto}.provider-summary-grid{width:100%;border-collapse:collapse;font-size:12px}.provider-summary-grid th{position:sticky;top:0;z-index:1;background:#217346!important;color:#fff!important;padding:7px 9px;text-align:right}.provider-summary-grid th:first-child,.provider-summary-grid td:first-child{text-align:left}.provider-summary-grid td{padding:7px 9px;border:1px solid #d8e3dc;text-align:right;background:#fff}.provider-summary-grid tbody tr{cursor:pointer}.provider-summary-grid tbody tr:nth-child(even) td{background:#f3faf6}.provider-summary-grid tbody tr:hover td{background:#fff4ce}.provider-name{font-weight:700;color:#176b3a}.provider-money{font-weight:700;white-space:nowrap}.provider-share{display:inline-block;width:76px;height:7px;margin-right:7px;background:#e1e7e3;border-radius:5px;overflow:hidden;vertical-align:middle}.provider-share i{display:block;height:100%;max-width:100%;background:#21a366}.provider-summary-grid tfoot td{position:sticky;bottom:0;background:#d9eadf!important;border-top:3px solid #217346;font-weight:800;color:#176b3a}@media(max-width:800px){.provider-summary>summary{align-items:flex-start;flex-direction:column}.provider-share{display:none}}.provider-summary{width:min(1120px,100%);box-sizing:border-box}.provider-summary>summary{padding:7px 10px!important;font-size:12px!important}.provider-summary-wrap{max-height:235px}.provider-summary-grid{table-layout:fixed;font-size:11px!important}.provider-summary-grid th,.provider-summary-grid td{padding:4px 7px!important;line-height:1.15}.provider-summary-grid th:nth-child(1){width:42%}.provider-summary-grid th:nth-child(2){width:7%}.provider-summary-grid th:nth-child(3){width:19%}.provider-summary-grid th:nth-child(4){width:19%}.provider-summary-grid th:nth-child(5){width:13%}.provider-share{width:42px;height:5px;margin-right:4px}@media(max-width:1150px){.provider-summary{width:100%}}.sc-filter{min-width:155px!important}.sc-badge{margin-top:6px;padding:5px 7px;border:1px solid #70ad87;border-radius:4px;background:#e8f3ec;color:#176b3a;font-size:11px;line-height:1.25}.apply-sc-sector{width:100%;margin-top:5px;padding:5px;border:1px solid #70ad87;border-radius:4px;background:#fff;color:#176b3a;font-size:11px;font-weight:700;cursor:pointer}.apply-sc-sector:hover{background:#e8f3ec}.mant-table tbody.sc-grupo-a>tr:not(.obs-detail):not(.quote-detail)>td{background:#fff9df!important}.mant-table tbody.sc-grupo-b>tr:not(.obs-detail):not(.quote-detail)>td{background:#eaf4ff!important}.mant-table tbody.sc-grupo-a,.mant-table tbody.sc-grupo-b{border-top:3px solid #70ad87}.download-reconciliation{height:40px;padding:0 12px;border:1px solid #4472c4;border-radius:5px;background:#eef4ff;color:#2952a3;font-weight:700;white-space:nowrap;cursor:pointer}.download-reconciliation:hover{background:#dce8ff}.mant-table tbody.fila-pendiente>tr:first-child>td{box-shadow:inset 0 3px 0 #f2b01e;background:#fff8d6!important}.mant-table tbody.fila-pendiente>tr:first-child>td:first-child:before{content:"CAMBIO PENDIENTE";display:block;width:max-content;margin:0 0 6px;padding:3px 6px;border-radius:3px;background:#f2b01e;color:#3a2a00;font-size:10px;font-weight:800}.batch-update span{display:inline-block;min-width:20px;margin-left:4px;padding:1px 5px;border-radius:10px;background:#fff;color:#176b3a}.naida-price{padding:7px 8px;margin-bottom:8px;border:1px solid #b7c8bd;border-radius:4px;background:#eef3ef;color:#42554a;font-weight:700}.local-price-label{color:#176b3a!important}.local-source{display:block;margin-top:4px;color:#176b3a;font-weight:700}.readonly-money input[readonly],.cantidad-edit[readonly]{background:#eef3ef!important;color:#58665d!important}.mant-meta-local{color:#176b3a;font-weight:700}.accounting-local{margin-top:10px;padding:8px;border:1px solid #70ad87;border-radius:5px;background:#f1f8f4}.accounting-local select,.accounting-local .paid-date{width:100%;box-sizing:border-box;margin-bottom:7px}.paid-check{display:flex!important;align-items:center;gap:6px;font-weight:700;color:#176b3a}.paid-check input{width:auto!important}.payment-warning{margin-top:6px;padding:5px;border-radius:4px;background:#fff4ce;color:#8a5b00;font-size:11px;font-weight:700}
+/* V15: diagramación compacta y jerarquía visual para gestión operativa */
+.mant-tools{display:grid!important;grid-template-columns:auto minmax(260px,1fr) repeat(6,minmax(150px,auto));align-items:center;gap:8px!important;margin:12px 0!important;padding:10px;border:1px solid #c5d2c9;border-radius:7px;background:#fff;position:sticky;top:0;z-index:8;box-shadow:0 2px 5px #00000012}
+.mant-tools .batch-note{min-width:220px;line-height:1.25}.mant-tools input,.mant-tools select{min-width:0!important;width:100%;box-sizing:border-box;height:40px}.mant-tools .quick-check{height:40px;box-sizing:border-box}
+.page-tools{display:flex;align-items:center;gap:8px;margin:8px 0}.page-tools b{margin-right:auto;color:#405248}.page-tools button{height:32px;padding:0 11px;border:1px solid #9db7a6;border-radius:4px;background:#fff;color:#176b3a;font-weight:700}.page-tools button:disabled{opacity:.45}
+.mant-table{min-width:1780px!important;font-size:13px!important}.mant-table th{padding:9px 8px!important;line-height:1.2}.mant-table td{padding:8px!important;vertical-align:top!important}
+.mant-table th:nth-child(1){width:145px!important}.mant-table th:nth-child(2){width:92px!important}.mant-table th:nth-child(3){width:165px!important}.mant-table th:nth-child(4){width:155px!important}.mant-table th:nth-child(5){width:105px!important}.mant-table th:nth-child(6){width:115px!important}.mant-table th:nth-child(7){width:150px!important}.mant-table th:nth-child(8){width:350px!important}.mant-table th:nth-child(9){width:235px!important}.mant-table th:nth-child(10){width:330px!important}
+.gestion-grid{display:grid!important;grid-template-columns:minmax(125px,.8fr) minmax(190px,1.2fr)!important;gap:10px!important;align-items:start!important}.gestion-grid>div{min-width:0}.recep-grid{align-items:start!important;gap:7px!important}
+.accounting-local{display:grid!important;grid-template-columns:minmax(105px,1fr) minmax(115px,1fr);gap:6px 8px;margin-top:8px!important;padding:8px!important}.accounting-local>.cell-label,.accounting-local>select,.accounting-local>.payment-warning{grid-column:1/-1}.accounting-local select,.accounting-local .paid-date{height:32px!important;margin:0!important}.paid-check{min-height:32px;margin:0!important}.payment-warning{margin:0!important;line-height:1.2}
+.quotes-toggle,.pedido-por-edit{height:32px!important}.quote-summary{margin:3px 0 0}.stages{justify-content:center;gap:6px!important;padding-top:4px}.stage{min-width:42px}.stage input{margin-bottom:2px!important}.naida-price{padding:6px 7px!important;margin-bottom:6px!important}.local-price-label,.unit-label,.desc-label{margin-top:5px!important}
+.descripcion-edit{height:42px!important;min-height:42px!important}.sc-badge{margin-top:5px!important}.payment-warning:before{content:'⚠ ';font-weight:900}
+@media(max-width:1500px){.mant-tools{grid-template-columns:auto minmax(220px,1fr) repeat(3,minmax(150px,1fr))}.mant-tools>*:nth-child(n+6){grid-row:2}.mant-table{min-width:1720px!important}}
+.mant-table input,.mant-table textarea,.mant-table select{pointer-events:auto;opacity:1}.autosave-indicator{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 13px;border:1px solid #70ad87;border-radius:6px;background:#e8f3ec;color:#176b3a;white-space:nowrap}.autosave-dot{width:9px;height:9px;border-radius:50%;background:#21a366}.autosave-indicator.pending .autosave-dot{background:#f2b01e}.autosave-indicator.saving .autosave-dot{background:#4472c4;animation:autosavePulse .8s infinite alternate}@keyframes autosavePulse{to{opacity:.25}}.autosave-indicator.retry{cursor:pointer;border-color:#d39b17;background:#fff4ce;color:#7a5200}.autosave-indicator.retry:hover{background:#ffe8a3}.ghost-preview{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:12px;background:#e8f3ec;color:#176b3a;font-size:12px}.new-stages{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px;border:1px solid #a8c9b4;border-radius:6px;background:#f3faf6}.new-stages>b{width:100%;color:#176b3a}.new-stages label,.new-paid{display:flex!important;align-items:center;gap:5px}.new-stages input,.new-paid input{width:auto!important;margin:0!important}.new-box .save-btn{min-width:220px}.new-save-status{display:inline-block;margin-left:10px;padding:8px 10px;border-radius:5px;background:#e8f3ec;color:#176b3a;font-size:12px;font-weight:700;vertical-align:middle}.import-box{margin:12px 0;padding:12px;border:1px solid #70ad87;border-radius:7px;background:#f7fbf8}.import-box summary{cursor:pointer}.import-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:10px 0}.import-row input{max-width:420px}.import-row button{padding:9px 15px;border:1px solid #217346;border-radius:5px;background:#217346;color:#fff;font-weight:700;cursor:pointer}.import-row button:disabled{opacity:.5}.import-row span{font-size:12px;font-weight:700;color:#176b3a}.mant-table tbody.fila-local>tr:first-child>td:first-child{border-left:5px solid #4472c4!important}.mant-table tbody.fila-local>tr:first-child>td:first-child:after{content:"SC LOCAL";display:inline-block;margin-top:6px;padding:2px 6px;border-radius:10px;background:#e8f0fe;color:#2952a3;font-size:9px;font-weight:800}
+.density-toggle{height:40px;padding:0 12px;border:1px solid #70ad87;border-radius:5px;background:#fff;color:#176b3a;font-weight:800;white-space:nowrap;cursor:pointer}.density-toggle:hover{background:#e8f3ec}
+.compact-view .mant-table td{padding:4px 6px!important;vertical-align:middle!important}
+.compact-view .mant-table input,.compact-view .mant-table select,.compact-view .quotes-toggle{height:28px!important;padding:3px 6px!important;font-size:12px!important}
+.compact-view .cell-label{margin:0 0 1px!important;font-size:8px!important;line-height:1!important}
+.compact-view .pedido-form{margin-top:3px!important}.compact-view .pedido-form label{font-size:8px!important}
+.compact-view .descripcion-edit{height:30px!important;min-height:30px!important;resize:none!important;font-size:11px!important}
+.compact-view .desc-label,.compact-view .unit-label,.compact-view .local-price-label{margin-top:2px!important}
+.compact-view .sc-badge{display:inline-block;margin:3px 0 0!important;padding:2px 5px!important;font-size:9px!important;line-height:1.1!important}
+.compact-view .apply-sc-sector{margin-top:3px!important;padding:2px!important;font-size:9px!important}
+.compact-view .naida-price{display:flex;align-items:center;justify-content:flex-end;height:28px;box-sizing:border-box;padding:3px 6px!important;margin-bottom:2px!important;font-size:12px!important}
+.compact-view .local-source{margin-top:1px!important;font-size:8px!important;line-height:1!important}
+.compact-view .stages{gap:3px!important;padding:0!important}.compact-view .stage{min-width:35px!important;font-size:9px!important;line-height:1!important}.compact-view .stage input{transform:scale(.95)!important;margin:0 0 2px!important;padding:0!important;height:auto!important}
+.compact-view .recep-grid{gap:4px!important}.compact-view .gestion-grid{grid-template-columns:86px minmax(185px,1fr)!important;gap:5px!important}
+.compact-view .accounting-local{grid-template-columns:minmax(88px,1fr) auto!important;gap:3px 5px!important;margin-top:3px!important;padding:4px 5px!important}.compact-view .accounting-local>.cell-label{display:none!important}.compact-view .accounting-local>select{grid-column:1/2!important;margin:0!important}.compact-view .accounting-local>.paid-check{grid-column:2/3!important;min-height:28px!important;font-size:10px!important;white-space:nowrap}.compact-view .accounting-local>.paid-date{grid-column:1/3!important;height:26px!important}.compact-view .accounting-local>.payment-warning{grid-column:1/3!important;padding:2px 4px!important;font-size:8px!important;line-height:1.1!important}
+.compact-view .obs-detail{display:none!important}
+.compact-view .mant-table tbody.fila-pendiente>tr:first-child>td:first-child:before{margin-bottom:2px!important;padding:1px 4px!important;font-size:8px!important}
+.compact-view .mant-table tbody.fila-local>tr:first-child>td:first-child:after{margin-top:2px!important;padding:1px 4px!important;font-size:8px!important}
+@media(max-width:1500px){.mant-tools{grid-template-columns:auto auto minmax(190px,1fr) repeat(3,minmax(135px,1fr))!important}}
+.provider-summary-grid tbody tr.provider-selected td{background:#cfead9!important;box-shadow:inset 4px 0 0 #217346}.provider-filter-active{height:40px;padding:0 12px;border:1px solid #217346;border-radius:5px;background:#d8f0e1;color:#176b3a;font-weight:800;white-space:nowrap;cursor:pointer}.provider-filter-active:hover{background:#bee2cb}.area-summary-grid .paid-money{color:#176b3a;font-weight:900;background:#edf8f1!important}.area-summary-grid tfoot .paid-money{background:#cfe8d8!important}
+/* V42 · panel ejecutivo limpio */
+.summary-duo{grid-template-columns:minmax(520px,41%) minmax(760px,59%)!important;gap:14px!important;align-items:start!important;margin:14px 0!important}
+.summary-duo .month-summary,.summary-duo .area-summary,.provider-summary{height:auto!important;border:1px solid #b7cbbd!important;border-radius:9px!important;box-shadow:0 2px 7px #173b2514!important;background:#fff!important}
+.summary-duo .month-summary,.summary-duo .area-summary{margin:0!important;overflow:hidden!important}
+.month-summary-title,.area-summary-title,.provider-summary>summary{min-height:48px!important;box-sizing:border-box!important;padding:9px 13px!important;background:linear-gradient(90deg,#e5f2e9,#f5faf7)!important;border-bottom:1px solid #b7cbbd!important;color:#145f35!important}
+.summary-card-heading{display:block;font-size:14px!important;font-weight:850!important;line-height:1.15!important;letter-spacing:.1px}.summary-card-context{display:block;margin-top:3px;font-size:11px!important;font-weight:650!important;color:#557064!important;text-transform:capitalize}
+.month-summary-grid,.area-summary-grid{font-size:12px!important}.month-summary-grid th,.area-summary-grid th{height:31px!important;padding:6px 8px!important;font-size:10.5px!important;line-height:1.1!important;white-space:nowrap}.month-summary-grid td,.area-summary-grid td{height:31px!important;box-sizing:border-box!important;padding:6px 8px!important;line-height:1.15!important;font-variant-numeric:tabular-nums}
+.month-summary-grid tbody tr.active td{background:#fff0bd!important;box-shadow:inset 0 1px 0 #efd172,inset 0 -1px 0 #efd172}.month-summary-grid td:first-child,.area-summary-grid td:first-child{font-weight:750!important}.area-summary-grid tfoot td,.month-summary-grid tfoot td{height:34px!important;background:#d8eadf!important;border-top:2px solid #217346!important;font-weight:850!important}
+.provider-summary{width:100%!important;max-width:none!important;margin:0 0 14px!important}.provider-summary>summary{display:flex!important;align-items:center!important;justify-content:space-between!important}.provider-summary>summary b{font-size:13px!important;padding:5px 9px;border-radius:14px;background:#d7ecdf;color:#145f35}.provider-summary-wrap{max-height:320px!important;overflow:auto!important}.provider-summary-grid{width:100%!important;table-layout:fixed!important;font-size:12px!important}.provider-summary-grid th{height:31px!important;padding:6px 10px!important;font-size:10.5px!important}.provider-summary-grid td{height:31px!important;box-sizing:border-box!important;padding:6px 10px!important;line-height:1.15!important}.provider-summary-grid th:nth-child(1){width:38%!important}.provider-summary-grid th:nth-child(2){width:7%!important}.provider-summary-grid th:nth-child(3){width:20%!important}.provider-summary-grid th:nth-child(4){width:20%!important}.provider-summary-grid th:nth-child(5){width:15%!important}.provider-summary-grid tfoot td{height:35px!important;background:#d8eadf!important;border-top:2px solid #217346!important;font-weight:850!important}.provider-share{width:68px!important;height:6px!important}
+.areas-box{padding:7px 11px!important;margin:7px 0 11px!important}.areas-box>summary{font-size:13px!important;line-height:28px!important}.area-summary-title button{height:30px;padding:0 10px!important;font-size:11px;font-weight:750}
+@media(max-width:1500px){.summary-duo{grid-template-columns:1fr!important}.summary-duo .month-summary,.summary-duo .area-summary{width:100%!important}}
+
+.metric-guide{display:grid;grid-template-columns:minmax(170px,1fr) auto minmax(170px,1fr) auto minmax(170px,1fr) minmax(310px,1.6fr);gap:9px;align-items:center;margin:0 0 14px;padding:10px 13px;border:1px solid #b7cbbd;border-radius:8px;background:#f8fbf9;color:#40584b;box-shadow:0 1px 4px #173b2510}.metric-guide div{padding:3px 8px;border-left:3px solid #70ad87}.metric-guide b{display:block;font-size:11px;color:#176b3a}.metric-guide span{display:block;margin-top:2px;font-size:10px;color:#60756a}.metric-guide i{color:#70ad87;font-style:normal;font-weight:900}.metric-guide em{padding:7px 10px;border-radius:6px;background:#e8f3ec;color:#176b3a;font-size:10px;font-style:normal;font-weight:750;line-height:1.25}.budget-reading{padding:8px 11px;border-top:1px solid #c8d8ce;background:#edf7f0;color:#176b3a;font-size:11px;text-align:right}.budget-reading.exceeded{background:#fff0e8;color:#b42318}.budget-reading b{font-size:12px}.month-summary-grid th:nth-child(3),.month-summary-grid td:nth-child(3){background-color:#f4f8f5}.month-summary-grid th:nth-child(4),.month-summary-grid td:nth-child(4){font-weight:850}.area-summary-grid th:last-child,.area-summary-grid td:last-child{border-left:2px solid #8fbea0!important}
+@media(max-width:1150px){.metric-guide{grid-template-columns:1fr}.metric-guide i{display:none}.metric-guide em{margin-top:2px}}
+
+/* V45 · legibilidad real en pantallas de notebook */
+.mant-wrap{font-size:16px!important}
+.summary-duo{display:grid!important;grid-template-columns:1fr!important;gap:16px!important;width:100%!important;margin:16px 0!important}
+.summary-duo .month-summary,.summary-duo .area-summary{width:100%!important;min-width:0!important}
+.month-summary-title,.area-summary-title,.provider-summary>summary{min-height:60px!important;padding:12px 16px!important}
+.summary-card-heading{font-size:17px!important;line-height:1.2!important}.summary-card-context{margin-top:4px!important;font-size:13px!important;line-height:1.2!important}
+.month-summary-grid,.area-summary-grid,.provider-summary-grid{font-size:14px!important}
+.month-summary-grid th,.area-summary-grid th,.provider-summary-grid th{height:40px!important;padding:9px 11px!important;font-size:12px!important;line-height:1.2!important}
+.month-summary-grid td,.area-summary-grid td,.provider-summary-grid td{height:42px!important;padding:9px 11px!important;font-size:14px!important;line-height:1.2!important}
+.month-summary-grid tfoot td,.area-summary-grid tfoot td,.provider-summary-grid tfoot td{height:44px!important;font-size:14px!important}
+.area-summary{overflow-x:auto!important}.area-summary-title{position:sticky;left:0;min-width:100%;width:max-content}.area-summary-grid{min-width:1180px!important}
+.provider-summary-wrap{max-height:390px!important}.provider-summary-grid{min-width:940px!important}.provider-summary>summary b{font-size:14px!important;padding:7px 12px!important}
+.metric-guide{grid-template-columns:minmax(190px,1fr) auto minmax(190px,1fr) auto minmax(190px,1fr)!important;gap:12px!important;padding:13px 16px!important}.metric-guide em{grid-column:1/-1;margin-top:2px;padding:9px 12px!important;font-size:12px!important;text-align:center}.metric-guide b{font-size:13px!important}.metric-guide span{font-size:12px!important;line-height:1.3!important}.metric-guide i{font-size:18px!important}
+.budget-reading{padding:10px 13px!important;font-size:13px!important}.budget-reading b{font-size:14px!important}
+.month-summary-grid th:first-child{width:18%}.month-summary-grid td:not(:first-child){font-weight:650}
+.area-summary-title button{height:36px!important;padding:0 13px!important;font-size:13px!important}
+.mant-tools{font-size:14px!important}.mant-tools input,.mant-tools select,.density-toggle,.download-reconciliation,.provider-filter-active{font-size:14px!important}
+@media(max-width:1250px){.metric-guide{grid-template-columns:1fr!important}.metric-guide i{display:none!important}.metric-guide em{grid-column:auto}.area-summary-grid{min-width:1080px!important}}
+
+/* V46 · pulido para notebook: menos ruido de fondo, más aire y jerarquía moderna
+   Sólo capa visual. No toca ninguna estructura, binding ng-* ni el <script>. */
+.mant-wrap{
+  min-height:auto!important;
+  padding:18px 22px 26px!important;
+  background:
+    radial-gradient(1200px 260px at 12% -60px,#e7f2ea 0,rgba(231,242,234,0) 70%),
+    linear-gradient(180deg,#eef4f0 0,#f4f7f5 180px)!important;
+  color:#1b2a22!important;
+  border:1px solid #cbd8d0!important;
+  border-radius:14px!important;
+  box-shadow:0 1px 3px #16402a12,0 12px 30px -22px #16402a45!important;
+  -webkit-font-smoothing:antialiased;
+}
+/* Encabezado */
+.mant-head{align-items:center!important;gap:14px 20px!important;padding-bottom:15px!important;margin-bottom:16px!important;border-bottom:1px solid #cbd8d0!important}
+.mant-title{font-size:23px!important;font-weight:800!important;letter-spacing:-.2px;color:#14663a!important;display:flex;align-items:center;gap:10px}
+.mant-title:before{content:"";width:6px;height:23px;border-radius:4px;background:linear-gradient(180deg,#21a366,#39c58a)}
+.mant-head .muted{font-size:12px!important}
+.mant-meta{background:#fff;border:1px solid #d3ded7;border-radius:9px;padding:8px 13px;box-shadow:0 1px 2px #16402a10}
+
+/* KPIs: tarjetas limpias con acento superior y números tabulares */
+.mant-kpis{gap:12px!important;margin:14px 0 16px!important}
+.mant-kpi{
+  position:relative;overflow:hidden;
+  background:#fff!important;border:1px solid #d3ded7!important;border-radius:12px!important;
+  padding:16px 17px 15px!important;
+  box-shadow:0 2px 6px #16402a10,0 10px 24px -20px #16402a4d!important;
+  transition:box-shadow .18s,transform .18s;
+}
+.mant-kpi:hover{box-shadow:0 4px 12px #16402a1c,0 14px 30px -18px #16402a55!important;transform:translateY(-1px)}
+.mant-kpi:before{content:"";position:absolute;inset:0 0 auto 0;height:4px;background:linear-gradient(90deg,#21a366,#4cc98a)}
+.mant-kpi small{font-size:11px!important;letter-spacing:.5px;color:#5c6f64!important;font-weight:700;text-transform:uppercase}
+.mant-kpi b{font-size:25px!important;margin-top:6px!important;font-weight:800!important;letter-spacing:-.6px;font-variant-numeric:tabular-nums;color:#17331f}
+.mant-kpi b.good{color:#0f7c41!important}.mant-kpi b.warn{color:#b06a00!important}.mant-kpi b.danger{color:#c02a1c!important}
+
+/* Barra de límite de presupuesto */
+.budget-box{border:1px solid #d3ded7!important;border-radius:12px!important;box-shadow:0 2px 6px #16402a0d!important;padding:15px 17px!important}
+.budget-box>b{font-size:14px!important;color:#14663a}
+.budget-line{height:14px!important;border-radius:9px!important;background:#e2ece7!important;box-shadow:inset 0 1px 2px #16402a14}
+.budget-fill{background:linear-gradient(90deg,#1f9e5f,#39c58a)!important;border-radius:9px!important}
+.budget-fill.atencion{background:linear-gradient(90deg,#d29a24,#eab94a)!important}
+.budget-fill.alerta{background:linear-gradient(90deg,#e2802b,#f2a259)!important}
+.budget-fill.excedido{background:linear-gradient(90deg,#dc4438,#f26a5e)!important}
+
+/* Conmutador de vista: pastillas suaves */
+.view-switch{gap:8px!important;margin:14px 0!important;flex-wrap:wrap}
+.view-switch button{border-radius:9px!important;padding:9px 16px!important;box-shadow:0 1px 2px #16402a0d;transition:background .15s,box-shadow .15s}
+.view-switch button.active{box-shadow:0 3px 10px -2px #21a36655!important}
+.view-switch .reload-excel{background:#eef4ff!important}
+.view-switch span{font-size:12px!important;color:#66726a}
+
+/* Barra de herramientas pegajosa: contorno más suave */
+.mant-tools{border:1px solid #d3ded7!important;border-radius:12px!important;box-shadow:0 3px 10px -3px #16402a24,0 1px 2px #16402a10!important;padding:11px 12px!important;background:#fffffff2!important;backdrop-filter:saturate(1.1) blur(2px)}
+.mant-tools input,.mant-tools select,.density-toggle,.download-reconciliation,.provider-filter-active,.quick-check{border-radius:9px!important}
+.mant-tools input:focus,.mant-tools select:focus{outline:2px solid #21a366!important;box-shadow:0 0 0 4px #21a3661f!important}
+
+/* Paginador */
+.page-tools{margin:10px 0!important}
+.page-tools button{border-radius:8px!important;transition:background .15s}
+.page-tools button:not(:disabled):hover{background:#e8f3ec!important}
+.page-tools b{color:#3c4f45}
+
+/* Cajas plegables */
+.new-box,.import-box,.areas-box{border-radius:12px!important;box-shadow:0 2px 6px -1px #16402a12!important}
+.new-box{border-color:#b9d6c4!important}
+
+/* Tarjetas resumen: encabezado y contorno más pulidos (respeta tamaños V45) */
+.summary-duo .month-summary,.summary-duo .area-summary,.provider-summary{border:1px solid #c4d5c9!important;border-radius:12px!important;box-shadow:0 3px 12px -6px #16402a30,0 1px 2px #16402a10!important}
+.month-summary-title,.area-summary-title,.provider-summary>summary{background:linear-gradient(90deg,#e8f4ec,#f6fbf8)!important;border-bottom:1px solid #c4d5c9!important}
+.metric-guide{border-radius:12px!important;box-shadow:0 2px 8px -3px #16402a1c!important}
+
+/* Tabla principal: cabecera con leve profundidad, hover cálido y foco visible */
+.mant-table-wrap{border-radius:12px!important;border:1px solid #cbd8d0!important;box-shadow:0 3px 12px -6px #16402a26,0 1px 2px #16402a0d!important}
+.mant-table th{background:linear-gradient(180deg,#22794b 0,#1c6b41 100%)!important;border-right:1px solid #2f8a58!important;border-bottom:2px solid #155636!important;letter-spacing:.3px}
+.mant-table tbody tr:nth-child(even){background:#f0f8f3!important}
+.mant-table tbody tr:hover{background:#fff6d6!important}
+.mant-table input:focus,.mant-table select:focus,.mant-table textarea:focus{outline:2px solid #21a366!important;box-shadow:0 0 0 3px #21a36622!important}
+.mant-table-wrap::-webkit-scrollbar-thumb{background:#8cbf9f;border-radius:9px}
+
+/* Etapas: casillas con un poco más de presencia */
+.stage input{transform:scale(1.05)}
+.stage.done{font-weight:750}
+
+/* Autoguardado */
+.autosave-indicator{border-radius:10px!important;box-shadow:0 1px 2px #16402a0f}
+
+/* Scroll suave general en la vista */
+.mant-wrap{scroll-behavior:smooth}
+</style>
+<div class="mant-wrap">
+ <div class="mant-head"><div><div class="mant-title">{{payloadEnEdicion.titulo}}</div><div class="muted">Hoja: {{payloadEnEdicion.hoja}} · encabezados en fila {{payloadEnEdicion.encabezadoFila}}</div></div><div class="mant-meta">Archivo: {{payloadEnEdicion.archivo}}<br>Actualizado: {{payloadEnEdicion.actualizado | date:'dd/MM/yyyy HH:mm:ss'}}</div></div>
+ <div class="view-switch" ng-init="modoVista='gestion';tamPaginaExcel=75;paginaExcel=0;tamPaginaGestion=50;paginaGestion=0"><button class="reload-excel" ng-click="abrirExcel()" ng-disabled="cargandoArchivo">📂 {{cargandoArchivo ? 'Leyendo Excel…' : 'Abrir Gestión de compras'}}</button><button ng-class="{active:modoVista==='excel'}" ng-click="abrirVistaExcel()">Vista Excel completa</button><button ng-class="{active:modoVista==='gestion'}" ng-click="modoVista='gestion'">Gestión de compras</button><span>Gestión abre liviana; las 117 columnas se cargan solamente al pedir la vista completa.</span></div>
+ <div class="excel-view" ng-show="modoVista==='excel'"><div class="excel-view-head"><div><b>Contenido completo de la hoja · últimos registros arriba</b><small>{{payloadEnEdicion.filasExcel.length}} filas cargadas · {{payloadEnEdicion.columnasExcel.length}} columnas utilizadas · bloques de {{tamPaginaExcel}}</small></div><input ng-model="excelQ" ng-change="paginaExcel=0" placeholder="Buscar en todo el Excel..."></div><div class="excel-nav"><button ng-click="irInicioExcel()">← Inicio (A)</button><button ng-if="payloadEnEdicion.columnasPrecio.length" ng-click="irPreciosExcel()">$ Ir a precios ({{payloadEnEdicion.columnasPrecio.length}})</button><select ng-model="columnaExcel" ng-options="c as (c.letra + ' · ' + c.nombre) for c in payloadEnEdicion.columnasExcel" ng-change="irColumnaExcel(columnaExcel)"><option value="">Ir a columna...</option></select><button ng-click="paginaExcel=paginaExcel-1" ng-disabled="paginaExcel<=0">← Anteriores</button><b>Página {{paginaExcel+1}}</b><button ng-click="paginaExcel=paginaExcel+1" ng-disabled="(paginaExcel+1)*tamPaginaExcel>=payloadEnEdicion.filasExcel.length">Siguientes →</button><button ng-click="descargarMovimientosCsv()">↓ Movimientos crudos CSV</button><button ng-click="descargarResumenMensualCsv()">↓ Resumen mensual CSV</button></div><div class="excel-loading" ng-if="cargandoArchivo">Leyendo y preparando la vista completa…</div><div class="excel-raw-wrap" id="excel-raw-wrap"><table class="excel-raw-table"><thead><tr><th class="excel-row-num">Fila</th><th ng-repeat="c in payloadEnEdicion.columnasExcel" id="excel-col-{{c.indice}}" ng-class="{'excel-col-compacta':c.compacta}" ng-dblclick="c.compacta=!c.compacta" title="Doble clic para angostar o restaurar esta columna"><span>{{c.letra}}</span>{{c.nombre}}</th></tr></thead><tbody><tr ng-repeat="f in payloadEnEdicion.filasExcel | filter:excelQ | limitTo:tamPaginaExcel:(paginaExcel*tamPaginaExcel)"><td class="excel-row-num">{{f.filaExcel}}</td><td ng-repeat="c in payloadEnEdicion.columnasExcel" ng-class="{'excel-col-compacta':c.compacta}" title="{{formatoCeldaExcel(f.celdas[c.indice],c.nombre)}}">{{formatoCeldaExcel(f.celdas[c.indice],c.nombre)}}</td></tr><tr class="obs-detail"><td colspan="10"><div class="obs-detail-wrap"><div class="obs-detail-title">Observaciones / seguimiento</div><textarea class="obs-edit" rows="1" ng-model="r.editObservacion" ng-change="marcarPendiente(r,'editObservacion')" placeholder="Necesidad, contexto y seguimiento del pedido..." ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></textarea></div></td></tr><tr class="quote-detail" ng-if="r.cotizacionesAbiertas"><td colspan="10"><div class="quote-panel"><div class="quote-card" ng-class="{chosen:r.cotElegida==='1'}"><div class="quote-title"><span>Presupuesto 1</span><label><input type="radio" ng-model="r.cotElegida" value="1" ng-change="elegirCotizacion(r,'1')"> Elegido</label></div><div class="quote-fields"><label>Proveedor / postulante<input ng-model="r.c1Proveedor" ng-change="marcarPendiente(r,'c1Proveedor')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Importe<input ng-model="r.c1ImporteTexto" ng-change="marcarPendiente(r,'c1ImporteTexto');actualizarImporteElegido(r,'1')" placeholder="$ 0,00" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Entrega<input type="date" min="{{hoyIso}}" ng-model="r.c1Entrega" ng-change="marcarPendiente(r,'c1Entrega')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Forma / condición de pago<input ng-model="r.c1FormaPago" ng-change="marcarPendiente(r,'c1FormaPago')" placeholder="Contado, 30 días, cuotas..." ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label></div></div><div class="quote-card" ng-if="r.q2Visible" ng-class="{chosen:r.cotElegida==='2'}"><div class="quote-title"><span>Presupuesto 2</span><label><input type="radio" ng-model="r.cotElegida" value="2" ng-change="elegirCotizacion(r,'2')"> Elegido</label></div><div class="quote-fields"><label>Proveedor / postulante<input ng-model="r.c2Proveedor" ng-change="marcarPendiente(r,'c2Proveedor')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Importe<input ng-model="r.c2ImporteTexto" ng-change="marcarPendiente(r,'c2ImporteTexto');actualizarImporteElegido(r,'2')" placeholder="$ 0,00" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Entrega<input type="date" min="{{hoyIso}}" ng-model="r.c2Entrega" ng-change="marcarPendiente(r,'c2Entrega')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Forma / condición de pago<input ng-model="r.c2FormaPago" ng-change="marcarPendiente(r,'c2FormaPago')" placeholder="Contado, 30 días, cuotas..." ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label></div><button class="quote-remove" ng-click="r.q2Visible=false;r.c2Proveedor='';r.c2ImporteTexto='0,00';r.c2Entrega='';r.c2FormaPago='';r.cotElegida=r.cotElegida==='2'?'':r.cotElegida">Quitar P2</button></div><div class="quote-card" ng-if="r.q3Visible" ng-class="{chosen:r.cotElegida==='3'}"><div class="quote-title"><span>Presupuesto 3</span><label><input type="radio" ng-model="r.cotElegida" value="3" ng-change="elegirCotizacion(r,'3')"> Elegido</label></div><div class="quote-fields"><label>Proveedor / postulante<input ng-model="r.c3Proveedor" ng-change="marcarPendiente(r,'c3Proveedor')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Importe<input ng-model="r.c3ImporteTexto" ng-change="marcarPendiente(r,'c3ImporteTexto');actualizarImporteElegido(r,'3')" placeholder="$ 0,00" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Entrega<input type="date" min="{{hoyIso}}" ng-model="r.c3Entrega" ng-change="marcarPendiente(r,'c3Entrega')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label><label>Forma / condición de pago<input ng-model="r.c3FormaPago" ng-change="marcarPendiente(r,'c3FormaPago')" placeholder="Contado, 30 días, cuotas..." ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label></div><button class="quote-remove" ng-click="r.q3Visible=false;r.c3Proveedor='';r.c3ImporteTexto='0,00';r.c3Entrega='';r.c3FormaPago='';r.cotElegida=r.cotElegida==='3'?'':r.cotElegida">Quitar P3</button></div></div><div class="quote-actions"><button class="quote-add" ng-if="!r.q2Visible" ng-click="r.q2Visible=true;r.c2Entrega=r.c2Entrega||fechaEntregaInicial()">+ Segundo presupuesto</button><button class="quote-add" ng-if="r.q2Visible&&!r.q3Visible" ng-click="r.q3Visible=true;r.c3Entrega=r.c3Entrega||fechaEntregaInicial()">+ Tercer presupuesto</button></div><div class="quote-justify"><label>Justificación de elección (opcional)<input ng-model="r.editJustificacion" ng-change="marcarPendiente(r,'editJustificacion')" placeholder="Calidad, plazo, garantía, financiación..." ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></label></div></td></tr></tbody></table></div></div>
+ <div ng-show="modoVista==='gestion'">
+ <div class="mant-kpis">
+  <div class="mant-kpi"><small>Presupuesto Mantenimiento</small><b>{{moneda(payloadEnEdicion.resumenMeses[mes].presupuesto,0)}}</b></div>
+  <div class="mant-kpi"><small>Gasto efectivo pagado · {{payloadEnEdicion.resumenMeses[mes].label}}</small><b ng-class="{danger:payloadEnEdicion.resumenMeses[mes].nivel==='excedido',warn:payloadEnEdicion.resumenMeses[mes].nivel==='alerta'||payloadEnEdicion.resumenMeses[mes].nivel==='atencion',good:payloadEnEdicion.resumenMeses[mes].nivel==='ok'}">{{moneda(payloadEnEdicion.resumenMeses[mes].pagado,2)}}</b></div>
+  <div class="mant-kpi"><small>Disponible</small><b ng-class="{danger:payloadEnEdicion.resumenMeses[mes].disponible<0,good:payloadEnEdicion.resumenMeses[mes].disponible>=0}">{{moneda(payloadEnEdicion.resumenMeses[mes].disponible,2)}}</b></div>
+  <div class="mant-kpi"><small>Uso del presupuesto</small><b>{{payloadEnEdicion.resumenMeses[mes].porcentaje | number:1}}%</b></div>
+ </div>
+ <div class="budget-box"><b>Control del límite de $6.000.000 · gasto efectivo marcado como Pagado</b><div class="budget-line"><div class="budget-fill" ng-class="payloadEnEdicion.resumenMeses[mes].nivel" ng-style="{width:(payloadEnEdicion.resumenMeses[mes].porcentaje>100?100:payloadEnEdicion.resumenMeses[mes].porcentaje)+'%'}"></div></div><div class="budget-msg" ng-if="payloadEnEdicion.resumenMeses[mes].nivel==='ok'">Pagado: {{moneda(payloadEnEdicion.resumenMeses[mes].pagado,2)}} · disponible real: {{moneda(payloadEnEdicion.resumenMeses[mes].disponible,2)}}.</div><div class="budget-msg warn" ng-if="payloadEnEdicion.resumenMeses[mes].nivel==='atencion'">Atención: ya se pagó más del 70% del presupuesto.</div><div class="budget-msg warn" ng-if="payloadEnEdicion.resumenMeses[mes].nivel==='alerta'">Alerta: queda poco margen disponible.</div><div class="budget-msg danger" ng-if="payloadEnEdicion.resumenMeses[mes].nivel==='excedido'">LÍMITE PAGADO SUPERADO por {{moneda(-payloadEnEdicion.resumenMeses[mes].disponible,2)}}.</div></div>
+ <details class="new-box"><summary class="new-title">＋ Crear SC local <span class="ghost-preview">{{nuevo.formulario}}</span></summary>
+  <div class="new-grid">
+   <label>SC local<input ng-model="nuevo.formulario" placeholder="XX001"><span class="muted">Identificador local; no existe en el Excel.</span></label>
+   <label>Pedido / OC<input ng-model="nuevo.pedido" placeholder="Pack memorias SD"></label>
+   <label>Fecha del pedido *<input type="date" ng-model="nuevo.fecha"><span class="muted">Por defecto: hoy</span></label>
+   <label>Fecha necesaria / estimada<input type="date" ng-model="nuevo.entrega"><span class="muted">Cuándo debería recibirse; no es la prioridad</span></label>
+   <label>Proveedor<input ng-model="nuevo.proveedor"></label>
+   <label>Tipo<input ng-model="nuevo.tipo" placeholder="COMPRA / REPARACIÓN / SERVICIO"></label>
+   <label>Pedido por<input ng-model="nuevo.pedidoPor" placeholder="Nombre y apellido"></label>
+   <label class="span2">Descripción *<textarea ng-model="nuevo.descripcion" placeholder="Pack de memorias SD..."></textarea></label>
+   <label>Área / sector<select ng-model="nuevo.sector"><option ng-repeat="a in payloadEnEdicion.areas" value="{{a}}">{{a}}</option></select></label>
+   <label>Prioridad<select ng-model="nuevo.prioridad"><option>BAJA</option><option>NORMAL</option><option>ALTA</option><option>URGENTE</option><option>CRÍTICA</option></select></label>
+   <div class="new-stages span2"><b>Estado inicial</b><label><input type="checkbox" ng-model="nuevo.etapaPedido"> Pedido</label><label><input type="checkbox" ng-model="nuevo.etapaPresupuestado"> Presupuestado</label><label><input type="checkbox" ng-model="nuevo.etapaAprobado"> Aprobado</label><label><input type="checkbox" ng-model="nuevo.etapaComprado"> Comprado</label><label><input type="checkbox" ng-model="nuevo.etapaRecibido"> Recibido</label><label><input type="checkbox" ng-model="nuevo.cancelado"> Cancelado</label></div>
+   <label>Cantidad<input type="number" min="0" step="0.01" ng-model="nuevo.cantidad"></label>
+   <label>Costo unitario ($)<input ng-model="nuevo.costoUnitarioTexto" placeholder="$ 0,00"></label>
+   <label>Costo total ($)<input ng-model="nuevo.importeTexto" placeholder="$ 0,00"></label>
+   <label>Asignar gasto al mes<select ng-model="nuevo.mesImputacion" ng-options="m.key as m.label for m in payloadEnEdicion.opcionesMesesImputacion"></select></label>
+   <label>Fecha de recepción<input type="date" ng-model="nuevo.fechaRecepcion"></label>
+   <label>Recibido por<input ng-model="nuevo.recibidoPor"></label>
+   <label class="new-paid"><input type="checkbox" ng-model="nuevo.pagado"> Pagado</label>
+   <label ng-if="nuevo.pagado">Fecha de pago<input type="date" ng-model="nuevo.fechaPago"></label>
+   <label class="span2">Observación<textarea ng-model="nuevo.observacion"></textarea></label>
+   <label class="span2">Presupuestos / comparación<textarea ng-model="nuevo.presupuestos" placeholder="Proveedor A: $... · Proveedor B: $... · plazos o diferencias"></textarea></label>
+  </div>
+  <button class="save-btn" ng-disabled="altaLocalEnCurso || !nuevo.fecha || !nuevo.descripcion || !nuevo.formulario" ng-click="guardarNuevaScLocal()">{{altaLocalEnCurso ? 'Creando…' : ('Crear '+nuevo.formulario+' localmente')}}</button><span class="new-save-status" ng-if="altaLocalMsg">{{altaLocalMsg}}</span>
+ </details>
+ <details class="import-box"><summary class="new-title">⇧ Importar información local desde JSON</summary><div class="import-row"><input id="mant-import-json" type="file" accept="application/json,.json"><button ng-click="importarJsonConciliacion()" ng-disabled="importacionEnCurso">{{importacionEnCurso?'Importando…':'Importar JSON local'}}</button><span>{{importacionMsg}}</span></div><div class="muted">Acepta conciliaciones o parches actualizaciones_locales por renglón. Enriquece la vista sin escribir nunca el Excel oficial.</div></details>
+ <details class="areas-box"><summary class="new-title">⚙ Administrar áreas / sectores</summary><div><span class="area-chip" ng-repeat="a in payloadEnEdicion.areas">{{a}} <button title="Quitar de las opciones futuras" ng-click="send({topic:'gestionar_area',payload:{accion:'quitar',nombre:a}})">×</button></span></div><div class="area-add"><input ng-model="nuevaArea" placeholder="Ej.: MEJORAS DE INMUEBLES"><button ng-click="send({topic:'gestionar_area',payload:{accion:'agregar',nombre:nuevaArea}});nuevaArea=''">Agregar área</button></div><div class="muted">Quitar un área no modifica los pedidos históricos.</div></details>
+  <div class="summary-duo"><div class="month-summary"><div class="month-summary-title"><span class="summary-card-heading">Cuenta Mantenimiento</span><span class="summary-card-context">Solo área MANTENIMIENTO · presupuesto mensual $6.000.000</span></div><table class="month-summary-grid"><thead><tr><th>Mes imputado</th><th>Presupuesto</th><th>Comprado</th><th>Pagado efectivo</th><th>Saldo presupuesto</th><th>Uso pagado</th></tr></thead><tbody><tr ng-repeat="m in payloadEnEdicion.meses" ng-if="m.key!=='TOTAL'" ng-click="mes=m.key;soloMesActual=false;calcularResumenAreas()" ng-class="{active:mes===m.key}"><td>{{m.label}}</td><td>{{moneda(m.presupuesto,2)}}</td><td>{{moneda(m.importe,2)}}</td><td>{{moneda(m.pagado,2)}}</td><td ng-class="{danger:m.disponible<0}">{{moneda(m.disponible,2)}}</td><td>{{m.porcentaje | number:1}}%</td></tr></tbody></table><div class="budget-reading" ng-if="mes!=='TOTAL'" ng-class="{exceeded:payloadEnEdicion.resumenMeses[mes].disponible<0}"><span ng-if="payloadEnEdicion.resumenMeses[mes].disponible>=0">Disponible para pagar: <b>{{moneda(payloadEnEdicion.resumenMeses[mes].disponible,2)}}</b></span><span ng-if="payloadEnEdicion.resumenMeses[mes].disponible<0">Presupuesto excedido en <b>{{moneda(-payloadEnEdicion.resumenMeses[mes].disponible,2)}}</b></span></div></div><div class="area-summary"><div class="area-summary-title"><span><span class="summary-card-heading">Resumen por área y estado</span><span class="summary-card-context">{{payloadEnEdicion.resumenMeses[mes].label}}</span></span><button ng-if="areaFiltro" ng-click="seleccionarArea('')">Ver todas las areas</button></div><table class="area-summary-grid" ng-if="resumenAreas.length"><thead><tr><th>Area / sector</th><th>Pedidos</th><th>Presup.</th><th>Aprobados</th><th>Comprados</th><th>Recibidos</th><th>Pagados</th><th>Cancelados</th><th>Previsto / cargado</th><th>Total comprado</th><th>Total pagado</th></tr></thead><tbody><tr ng-repeat="a in resumenAreas" ng-click="seleccionarArea(a.area)" ng-class="{active:areaFiltro===a.area}"><td class="area-name">{{a.area}}</td><td>{{a.pedidos}}</td><td ng-class="{'status-zero':!a.presupuestados}">{{a.presupuestados}}</td><td ng-class="{'status-zero':!a.aprobados}">{{a.aprobados}}</td><td ng-class="{'status-zero':!a.comprados}">{{a.comprados}}</td><td ng-class="{'status-zero':!a.recibidos}">{{a.recibidos}}</td><td ng-class="{'status-zero':!a.pagados}">{{a.pagados}}</td><td ng-class="{'status-zero':!a.cancelados}">{{a.cancelados}}</td><td class="area-money">{{moneda(a.importeCargado,2)}}</td><td class="area-money">{{moneda(a.importeComprado,2)}}</td><td class="area-money paid-money">{{moneda(a.importePagado,2)}}</td></tr></tbody><tfoot><tr><td class="area-name">TOTAL GENERAL DEL MES</td><td>{{totalResumenAreas.pedidos}}</td><td>{{totalResumenAreas.presupuestados}}</td><td>{{totalResumenAreas.aprobados}}</td><td>{{totalResumenAreas.comprados}}</td><td>{{totalResumenAreas.recibidos}}</td><td>{{totalResumenAreas.pagados}}</td><td>{{totalResumenAreas.cancelados}}</td><td class="area-money">{{moneda(totalResumenAreas.importeCargado,2)}}</td><td class="area-money">{{moneda(totalResumenAreas.importeComprado,2)}}</td><td class="area-money paid-money">{{moneda(totalResumenAreas.importePagado,2)}}</td></tr></tfoot></table><div class="summary-empty" ng-if="!resumenAreas.length">No hay pedidos para el periodo elegido.</div></div></div><div class="metric-guide"><div><b>Previsto / cargado</b><span>Todo lo asignado al período.</span></div><i>→</i><div><b>Comprado</b><span>Solo registros con etapa Comprado.</span></div><i>→</i><div><b>Pagado</b><span>Solo registros marcados como Pagado.</span></div><em>El presupuesto de $6.000.000 se compara únicamente con pagos del área MANTENIMIENTO.</em></div><details class="provider-summary" open><summary><span><span class="summary-card-heading">Composición por proveedor</span><span class="summary-card-context">{{areaFiltro||'Todas las áreas'}} · {{mes==='TOTAL'?'Todos los meses':payloadEnEdicion.resumenMeses[mes].label}}</span></span><b>{{moneda(totalResumenProveedores.comprometido,2)}} comprado</b></summary><div class="provider-summary-wrap"><table class="provider-summary-grid" ng-if="resumenProveedores.length"><thead><tr><th>Proveedor</th><th>SC</th><th>Subtotal comprado</th><th>Pagado efectivo</th><th>Participaci&oacute;n</th></tr></thead><tbody><tr ng-repeat="p in resumenProveedores" ng-click="seleccionarProveedor(p.proveedor)" ng-class="{'provider-selected':proveedorFiltro===p.proveedor}" title="Clic para ver abajo solamente los registros de este proveedor"><td class="provider-name">{{p.proveedor}}</td><td>{{p.scs}}</td><td class="provider-money">{{moneda(p.comprometido,2)}}</td><td class="provider-money">{{moneda(p.pagado,2)}}</td><td><div class="provider-share"><i ng-style="{width:p.participacion+'%'}"></i></div><span>{{p.participacion | number:1}}%</span></td></tr></tbody><tfoot><tr><td>TOTAL DEL PER&Iacute;ODO</td><td>{{totalResumenProveedores.scs}}</td><td>{{moneda(totalResumenProveedores.comprometido,2)}}</td><td>{{moneda(totalResumenProveedores.pagado,2)}}</td><td>100%</td></tr></tfoot></table><div class="summary-empty" ng-if="!resumenProveedores.length">No hay proveedores para el per&iacute;odo elegido.</div></div></details><div class="mant-tools"><button class="density-toggle" ng-click="vistaCompacta=!vistaCompacta" title="Alternar entre lectura rápida y edición detallada">{{vistaCompacta ? '⊞ Vista completa' : '⊟ Vista compacta'}}</button><div class="autosave-indicator" ng-click="!esperandoConfirmacionGuardado && cantidadPendientes && actualizarExcel()" ng-class="{saving:esperandoConfirmacionGuardado,pending:cantidadPendientes,retry:cantidadPendientes&&!esperandoConfirmacionGuardado}" title="Si hay cambios pendientes, hacé clic para reintentar"><span class="autosave-dot"></span><b>{{esperandoConfirmacionGuardado ? 'Guardando…' : (cantidadPendientes ? 'Cambios pendientes · clic para guardar' : 'Guardado local automático')}}</b></div><span class="batch-note">{{batchMsg || 'Podés modificar varias filas y guardar todo junto.'}}</span><label class="quick-check"><input type="checkbox" ng-model="ocultarCompletadas"> Ocultar compras completadas</label><select ng-model="mes" ng-change="calcularResumenAreas()"><option value="TOTAL">Todos los meses</option><option ng-repeat="m in payloadEnEdicion.meses" ng-if="m.key!=='TOTAL'" value="{{m.key}}">{{m.label}}</option></select><input class="sc-filter" ng-model="scFiltro" placeholder="Filtrar por SC, ej. 2606"><select ng-model="areaFiltro" ng-change="paginaGestion=0;calcularResumenAreas()"><option value="">Todas las areas</option><option ng-repeat="a in payloadEnEdicion.areas" value="{{a}}">{{a}}</option></select><input ng-model="q" placeholder="Buscar pedido, proveedor, detalle..."><button class="provider-filter-active" ng-if="proveedorFiltro" ng-click="seleccionarProveedor(proveedorFiltro)" title="Quitar filtro de proveedor">Proveedor: {{proveedorFiltro}} ×</button><button class="download-reconciliation" ng-click="descargarConciliacionMes()" title="Descarga los registros respetando período y origen seleccionados">↓ {{mes==='TOTAL'?'Descargar todos los registros':'Descargar registros del mes'}}</button><select class="ghost-filter" ng-model="origenFiltro" ng-change="paginaGestion=0"><option value="">Todos los registros</option><option value="excel">Solo registros del Excel</option><option value="local">Solo SC fantasmas</option></select><select ng-model="estado"><option value="">Todos los estados</option><option ng-repeat="e in payloadEnEdicion.estados" value="{{e.nombre}}">{{e.nombre}} ({{e.cantidad}})</option></select></div>
+ <div class="page-tools"><button ng-click="paginaGestion=paginaGestion-1" ng-disabled="paginaGestion<=0">← Anteriores</button><b>Página {{paginaGestion+1}} · {{tamPaginaGestion}} registros por bloque</b><button ng-click="paginaGestion=paginaGestion+1" ng-disabled="(paginaGestion+1)*tamPaginaGestion>=payloadEnEdicion.registros.length">Siguientes →</button></div><div class="mant-table-wrap" ng-class="{'compact-view':vistaCompacta}"><table class="mant-table"><thead><tr><th>Proveedor / SC</th><th>Fecha solicitud</th><th>Tipo / descripción</th><th>Sector</th><th>Prioridad</th><th class="num">Cantidad / unitario Excel</th><th class="num">Precio Naida / precio local</th><th>Avance por etapas</th><th>Entrega / recepción</th><th>Gestión / respaldo</th></tr></thead>
+ <tbody ng-repeat="r in payloadEnEdicion.registros | filter:filtrarMes | filter:q | filter:{estado:estado} | limitTo:tamPaginaGestion:(paginaGestion*tamPaginaGestion) track by r.uiKey" ng-class="[claseGrupoSc(r.formulario),{'fila-pendiente':r._pendiente,'fila-local':r.origen==='local'}]"><tr ng-init="r.editSector=r.sector;r.editPrioridad=r.prioridad;r.editImporte=r.importe;r.editObservacion=r.observacion;r.editFormulario=r.formulario;r.editProveedor=r.proveedor;r.editTipo=r.tipo;r.editDescripcion=r.descripcion;r.editPedidoPor=r.pedidoPor;r.editCantidad=r.cantidad;r.editCostoUnitarioTexto=monedaInput(r.costoUnitario);r.editPresupuestos=r.presupuestos;r.editRecibidoPor=r.recibidoPor"><td><label class="cell-label">Proveedor</label><input class="proveedor-edit" ng-model="r.editProveedor" ng-change="marcarPendiente(r,'editProveedor')" placeholder="Proveedor" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><div class="pedido-form"><label>SC / Solicitud de compra</label><input class="pedido-form-input" ng-model="r.editFormulario" ng-change="marcarPendiente(r,'editFormulario')" placeholder="Número de SC" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><div class="sc-badge" ng-if="infoSc(r.formulario).lineas>1">SC compartida · {{infoSc(r.formulario).lineas}} renglones<br><b>{{moneda(infoSc(r.formulario).importe,2)}}</b> total</div></div></td><td><input class="fecha-solicitud-edit" type="date" ng-model="r.editFechaSolicitud" ng-change="marcarPendiente(r,'editFechaSolicitud')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></td><td class="desc"><label class="cell-label">Tipo</label><input class="tipo-edit" ng-model="r.editTipo" ng-change="marcarPendiente(r,'editTipo')" placeholder="COMPRA / REPARACIÓN" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><label class="cell-label desc-label">Descripción</label><textarea class="descripcion-edit" ng-model="r.editDescripcion" ng-change="marcarPendiente(r,'editDescripcion')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></textarea></td><td><select ng-model="r.editSector" ng-change="marcarPendiente(r,'editSector')" ng-options="a for a in r.opcionesSector track by a"></select><button class="apply-sc-sector" ng-if="infoSc(r.formulario).lineas>1" ng-click="aplicarSectorSc(r)">Aplicar a toda la SC</button></td><td><select ng-model="r.editPrioridad" ng-change="marcarPendiente(r,'editPrioridad')"><option>BAJA</option><option>NORMAL</option><option>ALTA</option><option>URGENTE</option><option>CRÍTICA</option></select></td><td class="num"><label class="cell-label">Cantidad Excel</label><input class="cantidad-edit" type="number" ng-model="r.editCantidad" ng-change="marcarPendiente(r,'editCantidad')" readonly ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><label class="cell-label unit-label">Unitario Excel</label><div class="money-edit unit-money readonly-money"><span>$</span><input type="text" ng-model="r.editCostoUnitarioTexto" ng-change="marcarPendiente(r,'editCostoUnitarioTexto')" readonly ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></div></td><td class="num"><label class="cell-label">Informado por Naida</label><div class="naida-price">{{moneda(r.importeNaida,2)}}</div><label class="cell-label local-price-label">Precio gestión local</label><div class="money-edit"><span>$</span><input type="text" ng-model="r.editImporteTexto" ng-change="marcarPendiente(r,'editImporteTexto')" placeholder="0,00" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></div><small class="local-source" ng-if="r.tieneGestionLocal">Guardado localmente</small></td><td><div class="stages"><label class="stage" ng-class="{done:r.ePedido}"><input type="checkbox" ng-model="r.ePedido" ng-change="marcarPendiente(r,'ePedido')">Pedido</label><span>→</span><label class="stage" ng-class="{done:r.ePres}"><input type="checkbox" ng-model="r.ePres" ng-change="marcarPendiente(r,'ePres')" ng-disabled="!r.ePedido">Presup.</label><span>→</span><label class="stage" ng-class="{done:r.eAprob}"><input type="checkbox" ng-model="r.eAprob" ng-change="marcarPendiente(r,'eAprob')" ng-disabled="!r.ePres">Aprobado</label><span>→</span><label class="stage" ng-class="{done:r.eCompra}"><input type="checkbox" ng-model="r.eCompra" ng-change="marcarPendiente(r,'eCompra')" ng-disabled="!r.eAprob">Comprado</label><span>→</span><label class="stage" ng-class="{done:r.eRec}"><input type="checkbox" ng-model="r.eRec" ng-change="marcarPendiente(r,'eRec')" ng-disabled="!r.eCompra">Recibido</label><label class="stage cancel"><input type="checkbox" ng-model="r.eCancel" ng-change="marcarPendiente(r,'eCancel')">Cancelado</label><button class="stage-update">Actualizar</button></div></td><td><div class="recep-grid"><div><label class="cell-label">Fecha</label><input class="recep-date" type="date" ng-model="r.editFechaRecepcion" ng-change="marcarPendiente(r,'editFechaRecepcion')" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></div><div><label class="cell-label">Recibido por</label><input class="recep-person" ng-model="r.editRecibidoPor" ng-change="marcarPendiente(r,'editRecibidoPor')" placeholder="Nombre y apellido" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"></div></div></td><td><div class="gestion-grid"><div><label class="cell-label">Presupuestos / comparación</label><button class="quotes-toggle" ng-click="r.cotizacionesAbiertas=!r.cotizacionesAbiertas;r.c1Entrega=r.c1Entrega||fechaEntregaInicial()">Presupuestos ({{cantidadCotizaciones(r)}})</button><div class="quote-summary" ng-if="r.cotElegida">Elegido: P{{r.cotElegida}}</div></div><div><label class="cell-label">Pedido por</label><input class="pedido-por-edit" ng-model="r.editPedidoPor" ng-change="marcarPendiente(r,'editPedidoPor')" placeholder="Nombre y apellido" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><div class="accounting-local"><label class="cell-label">Mes de imputación</label><select ng-model="r.editMesImputacion" ng-change="marcarPendiente(r,'editMesImputacion')" ng-options="m.key as m.label for m in payloadEnEdicion.opcionesMesesImputacion"></select><label class="paid-check"><input type="checkbox" ng-model="r.ePagado" ng-change="marcarPendiente(r,'ePagado')"> Pagado</label><input class="paid-date" type="date" ng-model="r.editFechaPago" ng-change="marcarPendiente(r,'editFechaPago')" ng-if="r.ePagado" ng-focus="iniciarEdicionTexto()" ng-blur="finalizarEdicionTexto()"><div class="payment-warning" ng-if="r.eRec&&!r.ePagado">Producto recibido: revisar pago.</div></div></div></div></td></tr></tbody></table><div class="empty" ng-if="!payloadEnEdicion.registros.length">No se encontraron registros en el Excel.</div></div>
+ </div>
+ <script>
+ (function(scope){
+   scope.abrirExcel=function(){if(scope.cantidadPendientes){scope.batchMsg='Guardá o descartá los cambios pendientes antes de volver a abrir el archivo.';return;}scope.modoVista='gestion';scope.cargandoArchivo=true;scope.batchMsg='Leyendo gestión desde Excel...';scope.send({topic:'abrir_excel',payload:Date.now()});};
+   scope.abrirVistaExcel=function(){if(scope.cantidadPendientes){scope.batchMsg='Guardá los cambios pendientes antes de cargar la vista completa.';return;}scope.modoVista='excel';scope.paginaExcel=0;scope.cargandoArchivo=true;scope.batchMsg='Cargando las columnas completas del Excel...';scope.send({topic:'abrir_excel_completo',payload:Date.now()});};
+   function fechaIso(v){if(!v)return '';if(typeof v==='string'){var m=v.match(/\d{4}-\d{2}-\d{2}/);return m?m[0]:v;}return v.getFullYear()+'-'+String(v.getMonth()+1).padStart(2,'0')+'-'+String(v.getDate()).padStart(2,'0');}
+   function fechaEntregaIso(v){
+     if(!v)return '';
+     var s=String(v).trim(),iso=s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+     if(iso)return iso[1]+'-'+iso[2]+'-'+iso[3];
+     var ar=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+     return ar?ar[3]+'-'+String(ar[2]).padStart(2,'0')+'-'+String(ar[1]).padStart(2,'0'):'';
+   }
+   function fechaEntregaDate(v){var iso=fechaEntregaIso(v);if(!iso)return null;var p=iso.split('-');return new Date(Number(p[0]),Number(p[1])-1,Number(p[2]));}
+   var hoy=new Date(),manana=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate()+1);
+   scope.hoyIso=fechaIso(hoy);
+   scope.vistaCompacta=true;scope.mesActualKey=hoy.getFullYear()+'-'+String(hoy.getMonth()+1).padStart(2,'0');
+   scope.mananaFecha=manana;
+   scope.fechaEntregaInicial=function(){return new Date(scope.mananaFecha);};
+   scope.siguienteScFantasma=function(){
+     var rows=(scope.msg&&scope.msg.payload&&scope.msg.payload.registros)||[],max=0;
+     rows.forEach(function(r){var m=String(r.formulario||'').toUpperCase().match(/^XX(\d+)$/);if(m)max=Math.max(max,Number(m[1]||0));});
+     return 'XX'+String(max+1).padStart(3,'0');
+   };
+   scope.prepararNuevaScLocal=function(){
+     var f=new Date();f.setHours(0,0,0,0);
+     scope.nuevo={formulario:scope.siguienteScFantasma(),fecha:f,sector:'MANTENIMIENTO',prioridad:'NORMAL',tipo:'COMPRA',cantidad:1,costoUnitarioTexto:'0,00',importeTexto:'0,00',mesImputacion:scope.mesActualKey,etapaPedido:true,etapaPresupuestado:false,etapaAprobado:false,etapaComprado:false,etapaRecibido:false,cancelado:false,pagado:false};
+   };
+   scope.guardarNuevaScLocal=function(){
+     if(!scope.nuevo||!scope.nuevo.formulario||!scope.nuevo.fecha||!String(scope.nuevo.descripcion||'').trim())return;
+     if(scope.altaLocalEnCurso)return;
+     scope.altaLocalParaEnfocar={formulario:String(scope.nuevo.formulario),mes:scope.nuevo.mesImputacion||scope.mesActualKey,proveedor:String(scope.nuevo.proveedor||'')};
+     scope.altaLocalEnCurso=true;scope.altaLocalMsg='Creando '+scope.nuevo.formulario+' en la gestión local…';scope.batchMsg=scope.altaLocalMsg;
+     scope.esperandoConfirmacionGuardado=true;
+     if(guardadoWatchdog)clearTimeout(guardadoWatchdog);
+     guardadoWatchdog=setTimeout(function(){scope.$evalAsync(function(){
+       if(!scope.altaLocalEnCurso)return;
+       scope.altaLocalEnCurso=false;scope.esperandoConfirmacionGuardado=false;
+       scope.altaLocalMsg='No hubo confirmación. Podés volver a pulsar Crear; '+scope.nuevo.formulario+' no se duplicará.';
+     });},15000);
+     scope.send({topic:'crear_pedido',payload:angular.copy(scope.nuevo)});
+   };
+   scope.importarJsonConciliacion=function(){
+     if(scope.cantidadPendientes||scope.esperandoConfirmacionGuardado){scope.importacionMsg='Esperá a que terminen los cambios pendientes antes de importar.';return;}
+     var input=document.getElementById('mant-import-json'),file=input&&input.files&&input.files[0];
+     if(!file){scope.importacionMsg='Elegí primero un archivo JSON.';return;}
+     var reader=new FileReader();scope.importacionEnCurso=true;scope.importacionMsg='Leyendo y validando '+file.name+'…';
+     reader.onerror=function(){scope.$evalAsync(function(){scope.importacionEnCurso=false;scope.importacionMsg='No se pudo leer el archivo.';});};
+     reader.onload=function(ev){scope.$evalAsync(function(){
+       try{
+         var data=JSON.parse(String(ev.target.result||'')),esParche=data.metadata&&data.metadata.tipo==='actualizaciones_locales',items=esParche?data.changes:(Array.isArray(data)?data:data.records);
+         if(!Array.isArray(items)||!items.length)throw new Error(esParche?'El JSON no contiene changes.':'El JSON no contiene records.');
+         if(data.metadata&&data.metadata.tipo==='exportacion_registros_mantenimiento'&&items.some(function(x){return x.origen==='EXCEL';}))throw new Error('Esta es una exportación de auditoría. Para enriquecer filas Excel debe convertirse primero a tipo actualizaciones_locales.');
+         if(esParche)items.forEach(function(x,i){var k=String(x.rowOverlayKey||x.overlayKey||'');if(!x||(!k.startsWith('EXCELROW:')&&!k.startsWith('LOCALSC:'))||!x.fields||typeof x.fields!=='object')throw new Error('Cambio '+(i+1)+' sin clave EXCELROW/LOCALSC o fields.');});
+         else items.forEach(function(x,i){if(!x||!String(x.formulario||'').trim()||!String(x.descripcion||'').trim())throw new Error('Registro '+(i+1)+' sin formulario o descripción.');});
+         scope.importacionMsg='Importando '+items.length+' registros en la gestión local…';
+         scope.esperandoConfirmacionGuardado=true;
+         if(guardadoWatchdog)clearTimeout(guardadoWatchdog);
+         guardadoWatchdog=setTimeout(function(){scope.$evalAsync(function(){if(!scope.importacionEnCurso)return;scope.importacionEnCurso=false;scope.esperandoConfirmacionGuardado=false;scope.importacionMsg='La importación no fue confirmada; podés reintentar sin generar duplicados.';});},15000);
+         scope.send({topic:esParche?'importar_parches_locales':'importar_conciliacion',payload:esParche?{changes:items,metadata:data.metadata||{}}:{records:items,metadata:data.metadata||{}}});
+       }catch(e){scope.importacionEnCurso=false;scope.importacionMsg='JSON rechazado: '+e.message;}
+     });};
+     reader.readAsText(file,'utf-8');
+   };
+   function asegurarMesActual(){
+     var p=scope.msg&&scope.msg.payload;if(!p)return;
+     p.resumenMeses=p.resumenMeses||{};p.meses=p.meses||[];
+     if(!p.resumenMeses[scope.mesActualKey]){
+       var nombres=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+       var presupuesto=Number(p.presupuestoMensual||6000000);
+       p.resumenMeses[scope.mesActualKey]={key:scope.mesActualKey,label:nombres[hoy.getMonth()]+' '+hoy.getFullYear(),importe:0,pedidos:0,presupuesto:presupuesto,disponible:presupuesto,porcentaje:0,nivel:'ok'};
+     }
+     if(!p.meses.some(function(m){return m.key===scope.mesActualKey;}))p.meses.push(p.resumenMeses[scope.mesActualKey]);
+     p.meses.sort(function(a,b){return a.key==='TOTAL'?-1:b.key==='TOTAL'?1:b.key.localeCompare(a.key);});
+   }
+   function parseImporte(v){if(typeof v==='number')return v;var s=String(v||'').replace(/\$/g,'').replace(/\s/g,'');if(s.indexOf(',')>=0)s=s.replace(/\./g,'').replace(',','.');else if((s.match(/\./g)||[]).length>1)s=s.replace(/\./g,'');var n=Number(s.replace(/[^0-9.-]/g,''));return isFinite(n)?n:0;}
+   scope.moneda=function(v,d){return new Intl.NumberFormat('es-AR',{style:'currency',currency:'ARS',minimumFractionDigits:d,maximumFractionDigits:d}).format(Number(v||0));};
+   scope.monedaInput=function(v){return new Intl.NumberFormat('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}).format(Number(v||0));};
+   scope.formatoCeldaExcel=function(v,encabezado){if(v===null||v===undefined)return '';if(typeof v==='boolean')return v?'Sí':'No';var s=String(v),esFecha=/fecha|entrega|recepci|actualizaci|etapa/i.test(String(encabezado||'')),m;if(esFecha){m=s.match(/^(\d{3,4})[\/-](\d{4})$/);if(m){var cuerpo=m[1],dia=Number(cuerpo.slice(0,2)),mes=Number(cuerpo.slice(2));if(dia>=1&&dia<=31&&mes>=1&&mes<=12)s=dia+'/'+mes+'/'+m[2];}}m=s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);return m?m[3]+'/'+m[2]+'/'+m[1]:s;};
+   function csvCampo(v){var s=v===null||v===undefined?'':String(v);return '"'+s.replace(/"/g,'""')+'"';}
+   function descargarCsv(nombre,lineas){var blob=new Blob(['\ufeff'+lineas.join('\r\n')],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=nombre;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);}
+   function descargarJson(nombre,data){var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=nombre;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(url);},1000);}
+   scope.descargarMovimientosCsv=function(){var p=(scope.msg&&scope.msg.payload)||{},cols=p.columnasExcel||[],filas=p.filasExcel||[],lineas=[];lineas.push(['Fila Excel'].concat(cols.map(function(c){return c.letra+' · '+c.nombre;})).map(csvCampo).join(';'));filas.forEach(function(f){lineas.push([f.filaExcel].concat(cols.map(function(c){return f.celdas[c.indice];})).map(csvCampo).join(';'));});descargarCsv('auditoria_movimientos_mantenimiento_'+new Date().toISOString().slice(0,10)+'.csv',lineas);};
+   scope.descargarResumenMensualCsv=function(){var meses=((scope.msg&&scope.msg.payload&&scope.msg.payload.meses)||[]).filter(function(m){return m.key!=='TOTAL';}),lineas=[['Mes imputado','Presupuesto mantenimiento','Comprometido','Pagado efectivo','Disponible real','Uso pagado %','Cantidad de compras'].map(csvCampo).join(';')];meses.forEach(function(m){lineas.push([m.label,m.presupuesto,m.importe,m.pagado||0,m.disponible,m.porcentaje,m.pedidos].map(csvCampo).join(';'));});descargarCsv('resumen_mensual_mantenimiento_'+new Date().toISOString().slice(0,10)+'.csv',lineas);};
+   scope.descargarConciliacionMes=function(){
+     var p=scope.payloadEnEdicion||(scope.msg&&scope.msg.payload)||{},todos=!scope.mes||scope.mes==='TOTAL',vistos={},filtroOrigen=scope.origenFiltro||'',rows=(p.registros||[]).filter(function(r){var mes=r.editMesImputacion||r.mesContableKey||r.mesKey,esLocal=r.origen==='local',origenOk=!filtroOrigen||(filtroOrigen==='local'?esLocal:!esLocal);return (todos||mes===scope.mes)&&origenOk;}).filter(function(r){var id=r.uiKey||r.overlayKey||r.formulario||('ROW:'+r.filaExcel);if(vistos[id])return false;vistos[id]=true;return true;});
+     var records=rows.map(function(r){return {origen:r.origen==='local'?'LOCAL':'EXCEL',overlayKey:r.overlayKey||'',filaExcel:r.filaExcel||0,formulario:r.editFormulario||r.formulario,fecha:r.fechaIso||'',proveedor:r.editProveedor||r.proveedor,tipo:r.editTipo||r.tipo||'',descripcion:r.editDescripcion||r.descripcion,sector:r.editSector||r.sector,importe:Number(r.importeCuenta==null?r.importe||0:r.importeCuenta),mesImputacion:r.editMesImputacion||r.mesContableKey||r.mesKey,etapaPedido:r.ePedido===undefined?!!r.etapaPedido:!!r.ePedido,etapaPresupuestado:r.ePres===undefined?!!r.etapaPresupuestado:!!r.ePres,etapaAprobado:r.eAprob===undefined?!!r.etapaAprobado:!!r.eAprob,etapaComprado:r.eCompra===undefined?!!r.etapaComprado:!!r.eCompra,etapaRecibido:r.eRec===undefined?!!r.etapaRecibido:!!r.eRec,cancelado:r.eCancel===undefined?!!r.cancelado:!!r.eCancel,pagado:r.ePagado===undefined?!!r.pagado:!!r.ePagado,fechaPago:fechaIso(r.editFechaPago)||r.fechaPago||'',observacion:r.editObservacion||r.observacion||''};});
+     records.forEach(function(x,i){var r=rows[i];x.rowOverlayKey=r.rowOverlayKey||'';x.datosExcel={hoja:r.hojaExcel||'',fila:r.filaExcel||0,sc:r.formulario||'',proveedor:r.proveedor||'',tipo:r.tipo||'',descripcion:r.descripcion||'',cantidad:Number(r.cantidad||0),costoUnitario:Number(r.costoUnitario||0),importeNaida:Number(r.importeNaida==null?r.importe||0:r.importeNaida),estadoExcel:r.estadoExcel||''};x.gestionLocal={tieneGestionLocal:!!r.tieneGestionLocal,sector:x.sector,prioridad:r.editPrioridad||r.prioridad||'',mesImputacion:x.mesImputacion,importeLocal:r.importeLocal,etapaPedido:x.etapaPedido,etapaPresupuestado:x.etapaPresupuestado,etapaAprobado:x.etapaAprobado,etapaComprado:x.etapaComprado,etapaRecibido:x.etapaRecibido,cancelado:x.cancelado,pagado:x.pagado,fechaPago:x.fechaPago,observacion:x.observacion};});
+     if(!records.length){scope.batchMsg='No hay registros de conciliación para '+(todos?'ningún mes':'el mes elegido')+'.';return;}
+     var total=Math.round(records.reduce(function(s,r){return s+Number(r.importe||0);},0)*100)/100,totalComprado=Math.round(records.filter(function(r){return r.etapaComprado&&!r.cancelado;}).reduce(function(s,r){return s+Number(r.importe||0);},0)*100)/100,totalPagado=Math.round(records.filter(function(r){return r.pagado&&!r.cancelado;}).reduce(function(s,r){return s+Number(r.importe||0);},0)*100)/100,subtotales={};records.forEach(function(r){var m=subtotales[r.mesImputacion]||(subtotales[r.mesImputacion]={cantidadRegistros:0,totalCargado:0,totalComprado:0,totalPagado:0});m.cantidadRegistros++;m.totalCargado+=r.importe;if(r.etapaComprado&&!r.cancelado)m.totalComprado+=r.importe;if(r.pagado&&!r.cancelado)m.totalPagado+=r.importe;});Object.keys(subtotales).forEach(function(k){['totalCargado','totalComprado','totalPagado'].forEach(function(c){subtotales[k][c]=Math.round(subtotales[k][c]*100)/100;});});
+     var label=todos?'todos los meses':((p.resumenMeses&&p.resumenMeses[scope.mes]&&p.resumenMeses[scope.mes].label)||scope.mes),periodo=todos?'TOTAL':scope.mes,nombre=todos?'todos_los_meses':scope.mes;
+     descargarJson('registros_mantenimiento_'+nombre+'.json',{metadata:{schemaVersion:2,tipo:'exportacion_registros_mantenimiento',grano:'un renglon del Excel o un registro local',periodo:periodo,periodoLabel:label,filtroOrigen:filtroOrigen||'TODOS',cantidadRegistros:records.length,totalCargado:total,totalComprado:totalComprado,totalPagado:totalPagado,subtotalesPorMes:subtotales,generadoEl:new Date().toISOString(),excelOficialModificado:false},records:records});
+     scope.batchMsg='✓ Conciliación de '+label+' descargada: '+records.length+' registros · '+scope.moneda(total,2)+'.';
+   };
+   scope.recalcularGruposSc=function(){var rows=(scope.msg&&scope.msg.payload&&scope.msg.payload.registros)||[],map={};rows.forEach(function(r){var sc=String(r.formulario||'').trim();if(!sc)return;var g=map[sc]||(map[sc]={sc:sc,lineas:0,importe:0,cantidad:0});g.lineas++;g.importe+=Number(r.importe||0);g.cantidad+=Number(r.cantidad||0);});scope.gruposSc=map;};
+   scope.infoSc=function(sc){return (scope.gruposSc||{})[String(sc||'').trim()]||{lineas:0,importe:0,cantidad:0};};
+   scope.claseGrupoSc=function(sc){var g=scope.infoSc(sc);if(g.lineas<2)return '';var n=Number(String(sc||'').replace(/\D/g,''))||0;return n%2?'sc-grupo-a':'sc-grupo-b';};
+   scope.aplicarSectorSc=function(r){var sc=String(r.formulario||'').trim(),sector=r.editSector;if(!sc||!sector)return;(scope.msg.payload.registros||[]).forEach(function(x){if(String(x.formulario||'').trim()===sc){x.editSector=sector;scope.marcarPendiente(x,'editSector');}});scope.batchMsg='Sector '+sector+' aplicado a todos los renglones de la SC '+sc+'. Falta guardar en Excel.';};
+   scope.irColumnaExcel=function(c){if(!c)return;setTimeout(function(){var w=document.getElementById('excel-raw-wrap'),h=document.getElementById('excel-col-'+c.indice);if(w&&h)w.scrollLeft=Math.max(0,h.offsetLeft-70);},0);};
+   scope.irInicioExcel=function(){setTimeout(function(){var w=document.getElementById('excel-raw-wrap');if(w)w.scrollLeft=0;},0);};
+   scope.irPreciosExcel=function(){var p=scope.msg&&scope.msg.payload&&scope.msg.payload.columnasPrecio;if(p&&p.length){scope.columnaExcel=p[0];scope.irColumnaExcel(p[0]);}};
+   scope.elegirCotizacion=function(r,n){
+      r.cotElegida=String(n);
+      var texto=n==='1'?r.c1ImporteTexto:n==='2'?r.c2ImporteTexto:r.c3ImporteTexto;
+      r.editImporteTexto=scope.monedaInput(parseImporte(texto));
+      scope.marcarPendiente(r,'cotElegida');scope.marcarPendiente(r,'editImporteTexto');
+   };
+   scope.actualizarImporteElegido=function(r,n){
+     if(String(r.cotElegida)!==String(n))return;
+     var texto=n==='1'?r.c1ImporteTexto:n==='2'?r.c2ImporteTexto:r.c3ImporteTexto;
+     r.editImporteTexto=scope.monedaInput(parseImporte(texto));
+   };
+   scope.cantidadCotizaciones=function(r){return [r.c1Proveedor||parseImporte(r.c1ImporteTexto),r.c2Proveedor||parseImporte(r.c2ImporteTexto),r.c3Proveedor||parseImporte(r.c3ImporteTexto)].filter(Boolean).length;};
+   scope.filtrarMes=function(r){
+     var mesElegido=scope.soloMesActual?scope.mesActualKey:scope.mes;
+     var mesOk=mesElegido==="TOTAL" || !mesElegido || (r.mesContableKey||r.mesKey)===mesElegido;
+     var areaOk=!scope.areaFiltro || String(r.sector||'SIN AREA').toUpperCase()===scope.areaFiltro;
+     var completa=!!r.etapaRecibido&&!r.cancelado;
+     var scOk=!scope.scFiltro||String(r.formulario||'').toLowerCase().indexOf(String(scope.scFiltro).trim().toLowerCase())>=0;
+     var origenOk=!scope.origenFiltro||(scope.origenFiltro==='local'?r.origen==='local':r.origen!=='local');
+     var proveedorActual=String(r.editProveedor||r.proveedor||'').trim().toUpperCase()||'SIN PROVEEDOR';
+     var proveedorOk=!scope.proveedorFiltro||proveedorActual===String(scope.proveedorFiltro).trim().toUpperCase();
+     return mesOk&&areaOk&&scOk&&origenOk&&proveedorOk&&(!scope.ocultarCompletadas||!completa);
+   };
+   scope.activarSoloMesActual=function(){
+     asegurarMesActual();
+     scope.mes=scope.soloMesActual?scope.mesActualKey:"TOTAL";
+     scope.calcularResumenAreas();
+   };
+   scope.seleccionarArea=function(area){scope.areaFiltro=area||'';scope.paginaGestion=0;scope.calcularResumenAreas();};
+   scope.seleccionarProveedor=function(proveedor){var valor=String(proveedor||'SIN PROVEEDOR').trim().toUpperCase()||'SIN PROVEEDOR';scope.proveedorFiltro=scope.proveedorFiltro===valor?'':valor;scope.paginaGestion=0;scope.q='';scope.batchMsg=scope.proveedorFiltro?'Mostrando abajo los registros de '+scope.proveedorFiltro+'. Podés completar o corregir sus datos.':'Filtro de proveedor quitado.';};
+   var autoSaveTimer=null,guardadoWatchdog=null;
+   scope.editandoTexto=false;
+   scope.programarAutoguardado=function(demora){
+     if(autoSaveTimer)clearTimeout(autoSaveTimer);
+     autoSaveTimer=setTimeout(function(){scope.$evalAsync(function(){
+       if(scope.editandoTexto){scope.programarAutoguardado(1200);return;}
+       if(scope.esperandoConfirmacionGuardado){scope.programarAutoguardado();return;}
+       scope.actualizarExcel();
+     });},Number(demora||700));
+   };
+   scope.iniciarEdicionTexto=function(){scope.editandoTexto=true;if(autoSaveTimer){clearTimeout(autoSaveTimer);autoSaveTimer=null;}};
+   scope.finalizarEdicionTexto=function(){scope.editandoTexto=false;if(scope.cantidadPendientes)scope.programarAutoguardado(350);};
+    scope.marcarPendiente=function(r,campo){
+      r._camposModificados=r._camposModificados||{};
+      if(campo)r._camposModificados[campo]=true;
+      r._revisionLocal=Number(r._revisionLocal||0)+1;
+      if(!r._pendiente){r._pendiente=true;scope.cantidadPendientes=(scope.cantidadPendientes||0)+1;}
+     scope.recalcularCuentaLocal();
+     scope.calcularResumenAreas();
+     scope.batchMsg=(scope.cantidadPendientes===1?'1 cambio pendiente':scope.cantidadPendientes+' cambios pendientes')+'. Autoguardando…';
+     scope.programarAutoguardado();
+   };
+   scope.recalcularCuentaLocal=function(){
+     var p=scope.payloadEnEdicion||(scope.msg&&scope.msg.payload);if(!p)return;
+     var presupuesto=Number(p.presupuestoMensual||6000000),map={TOTAL:{key:'TOTAL',label:'TOTAL MANTENIMIENTO',importe:0,pagado:0,pedidos:0,presupuesto:0}},vistos={};
+     (p.registros||[]).forEach(function(r){
+       var comprado=r.eCompra===undefined?!!r.etapaComprado:!!r.eCompra,cancelado=r.eCancel===undefined?!!r.cancelado:!!r.eCancel,pagado=r.ePagado===undefined?!!r.pagado:!!r.ePagado;
+       var area=String(r.editSector||r.sector||'').trim().toUpperCase();
+       if(area!=='MANTENIMIENTO'||!comprado||cancelado)return;
+       var mes=r.editMesImputacion||r.mesContableKey||r.mesKey;if(!mes)return;
+       var importe=Number(r.importeCuenta==null?r.importe||0:r.importeCuenta),id=r.overlayKey||r.uiKey||('ROW:'+r.filaExcel),primera=!vistos[id];vistos[id]=true;
+       if(!map[mes]){var anterior=p.resumenMeses&&p.resumenMeses[mes];map[mes]={key:mes,label:(anterior&&anterior.label)||mes,importe:0,pagado:0,pedidos:0,presupuesto:presupuesto};}
+       map[mes].importe+=importe;map.TOTAL.importe+=importe;if(pagado){map[mes].pagado+=importe;map.TOTAL.pagado+=importe;}if(primera){map[mes].pedidos++;map.TOTAL.pedidos++;}
+     });
+     var claves=Object.keys(map).filter(function(k){return k!=='TOTAL';}),visibles=claves.filter(function(k){var m=map[k];return k===p.mesActivo||Number(m.importe||0)!==0||Number(m.pagado||0)!==0;});map.TOTAL.presupuesto=presupuesto*Math.max(1,visibles.length);
+     Object.keys(map).forEach(function(k){var m=map[k];m.disponibleComprometido=m.presupuesto-m.importe;m.disponible=m.presupuesto-m.pagado;m.porcentaje=m.presupuesto?Math.round(m.pagado/m.presupuesto*1000)/10:0;m.nivel=m.porcentaje>=100?'excedido':m.porcentaje>=85?'alerta':m.porcentaje>=70?'atencion':'ok';});
+     p.resumenMeses=map;p.meses=[map.TOTAL].concat(visibles.map(function(k){return map[k];}).sort(function(a,b){return b.key.localeCompare(a.key);}));
+   };
+   scope.calcularResumenAreas=function(){
+     var rows=(scope.msg&&scope.msg.payload&&scope.msg.payload.registros)||[],map={},vistos={},proveedores={},vistosProveedor={};
+     rows.forEach(function(r){
+       if(scope.mes!=="TOTAL"&&scope.mes&&(r.editMesImputacion||r.mesContableKey||r.mesKey)!==scope.mes)return;
+       var importe=Number(r.importeCuenta==null?r.importe||0:r.importeCuenta);
+       var comprado=r.eCompra===undefined?!!r.etapaComprado:!!r.eCompra,cancelado=r.eCancel===undefined?!!r.cancelado:!!r.eCancel,pagado=r.ePagado===undefined?!!r.pagado:!!r.ePagado,recibido=r.eRec===undefined?!!r.etapaRecibido:!!r.eRec;
+       var area=String(r.editSector||r.sector||'SIN AREA').trim().toUpperCase()||'SIN AREA';
+        var a=map[area]||(map[area]={area:area,pedidos:0,presupuestados:0,aprobados:0,comprados:0,recibidos:0,pagados:0,cancelados:0,importeCargado:0,importeComprado:0,importePagado:0});
+       a.importeCargado+=importe;
+       if(comprado&&!cancelado)a.importeComprado+=importe;
+       var identidad=r.overlayKey||('FILA:'+r.hojaExcel+':'+r.filaExcel),primera=!vistos[identidad];vistos[identidad]=true;
+       var proveedor=String(r.editProveedor||r.proveedor||'SIN PROVEEDOR').trim().toUpperCase()||'SIN PROVEEDOR';
+       var incluirEnProveedores=!scope.areaFiltro||area===String(scope.areaFiltro).trim().toUpperCase();
+       if(incluirEnProveedores){
+         var p=proveedores[proveedor]||(proveedores[proveedor]={proveedor:proveedor,scs:0,comprometido:0,pagado:0,participacion:0});
+         if(comprado&&!cancelado)p.comprometido+=importe;
+         if(pagado&&!cancelado)p.pagado+=importe;
+         var identidadProveedor=proveedor+'|'+identidad;
+         if(!vistosProveedor[identidadProveedor]){p.scs++;vistosProveedor[identidadProveedor]=true;}
+       }
+       if(pagado&&!cancelado)a.importePagado+=importe;
+       if(!primera)return;
+       a.pedidos++;if(r.ePres===undefined?r.etapaPresupuestado:r.ePres)a.presupuestados++;if(r.eAprob===undefined?r.etapaAprobado:r.eAprob)a.aprobados++;
+       if(comprado&&!cancelado)a.comprados++;
+       if(recibido&&!cancelado)a.recibidos++;if(pagado&&!cancelado)a.pagados++;if(cancelado)a.cancelados++;
+     });
+      scope.resumenAreas=Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.importeComprado-a.importeComprado||b.importeCargado-a.importeCargado||b.pedidos-a.pedidos||a.area.localeCompare(b.area);});
+      scope.totalResumenAreas=scope.resumenAreas.reduce(function(t,a){t.pedidos+=a.pedidos;t.presupuestados+=a.presupuestados;t.aprobados+=a.aprobados;t.comprados+=a.comprados;t.recibidos+=a.recibidos;t.pagados+=a.pagados;t.cancelados+=a.cancelados;t.importeCargado+=a.importeCargado;t.importeComprado+=a.importeComprado;t.importePagado+=a.importePagado;return t;},{pedidos:0,presupuestados:0,aprobados:0,comprados:0,recibidos:0,pagados:0,cancelados:0,importeCargado:0,importeComprado:0,importePagado:0});
+      scope.resumenProveedores=Object.keys(proveedores).map(function(k){return proveedores[k];}).filter(function(p){return p.comprometido||p.pagado;}).sort(function(a,b){return b.comprometido-a.comprometido||b.pagado-a.pagado||a.proveedor.localeCompare(b.proveedor);});
+      scope.totalResumenProveedores=scope.resumenProveedores.reduce(function(t,p){t.scs+=p.scs;t.comprometido+=p.comprometido;t.pagado+=p.pagado;return t;},{scs:0,comprometido:0,pagado:0});
+      scope.resumenProveedores.forEach(function(p){p.participacion=scope.totalResumenProveedores.comprometido?100*p.comprometido/scope.totalResumenProveedores.comprometido:(scope.totalResumenProveedores.pagado?100*p.pagado/scope.totalResumenProveedores.pagado:0);});
+   };
+    scope.actualizarExcel=function(){
+     var rows=(scope.msg&&scope.msg.payload&&scope.msg.payload.registros)||[];
+      var changed=rows.filter(function(r){
+        if(!r._pendiente) return false;
+        if(r.editSector===undefined) return false;
+       return String(r.editFormulario||'')!==String(r.formulario||'') || String(r.editProveedor||'')!==String(r.proveedor||'') || String(r.editTipo||'')!==String(r.tipo||'') || String(r.editDescripcion||'')!==String(r.descripcion||'') || String(r.editPedidoPor||'')!==String(r.pedidoPor||'') || fechaIso(r.editFechaSolicitud)!==String(r.fechaIso||'') || r.editSector!==r.sector || r.editPrioridad!==r.prioridad || Number(r.editCantidad||0)!==Number(r.cantidad||0) || parseImporte(r.editCostoUnitarioTexto)!==Number(r.costoUnitario||0) ||
+         parseImporte(r.editImporteTexto)!==Number(r.importe||0) || r.editPresupuestos!==r.presupuestos || r.editObservacion!==r.observacion ||
+         !!r.ePedido!==!!r.etapaPedido || !!r.ePres!==!!r.etapaPresupuestado ||
+         !!r.eAprob!==!!r.etapaAprobado || !!r.eCompra!==!!r.etapaComprado ||
+         !!r.eRec!==!!r.etapaRecibido || !!r.eCancel!==!!r.cancelado ||
+         String(r.editRecibidoPor||'')!==String(r.recibidoPor||'') ||
+         fechaIso(r.editFechaRecepcion)!==String(r.fechaRecepcionIso||'') ||
+         String(r.c1Proveedor||'')!==String(r.p1Proveedor||'') || parseImporte(r.c1ImporteTexto)!==Number(r.p1Importe||0) || fechaIso(r.c1Entrega)!==fechaEntregaIso(r.p1Entrega) || String(r.c1FormaPago||'')!==String(r.p1FormaPago||'') ||
+         String(r.c2Proveedor||'')!==String(r.p2Proveedor||'') || parseImporte(r.c2ImporteTexto)!==Number(r.p2Importe||0) || fechaIso(r.c2Entrega)!==fechaEntregaIso(r.p2Entrega) || String(r.c2FormaPago||'')!==String(r.p2FormaPago||'') ||
+         String(r.c3Proveedor||'')!==String(r.p3Proveedor||'') || parseImporte(r.c3ImporteTexto)!==Number(r.p3Importe||0) || fechaIso(r.c3Entrega)!==fechaEntregaIso(r.p3Entrega) || String(r.c3FormaPago||'')!==String(r.p3FormaPago||'') ||
+         String(r.cotElegida||'')!==String(r.presupuestoElegido||'') || String(r.editJustificacion||'')!==String(r.justificacionEleccion||'') ||
+         String(r.editMesImputacion||'')!==String(r.mesImputacion||'') || !!r.ePagado!==!!r.pagado || fechaIso(r.editFechaPago)!==String(r.fechaPago||'');
+     });
+     var invalido=changed.find(function(r){return r.eRec&&r._camposModificados&&r._camposModificados.eRec&&!String(r.editRecibidoPor||'').trim();});
+     if(invalido){scope.batchMsg='Falta completar “Recibido por” en un pedido recibido.';return;}
+     var sinElegir=changed.find(function(r){var m=r._camposModificados||{};return r.eCompra&&(m.eCompra||m.cotElegida)&&scope.cantidadCotizaciones(r)>0&&!r.cotElegida;});
+     if(sinElegir){scope.batchMsg='Un pedido comprado tiene presupuestos pero ninguno está marcado como Elegido.';return;}
+     scope.revisionesEnGuardado={};
+     changed.forEach(function(r){scope.revisionesEnGuardado[r.uiKey]=Number(r._revisionLocal||0);});
+     changed=changed.map(function(r){var p1=parseImporte(r.c1ImporteTexto),p2=parseImporte(r.c2ImporteTexto),p3=parseImporte(r.c3ImporteTexto),e=String(r.cotElegida||''),importeElegido=e==='1'?p1:e==='2'?p2:e==='3'?p3:parseImporte(r.editImporteTexto),recepcion=fechaIso(r.editFechaRecepcion);return {overlayKey:r.overlayKey,origen:r.origen,filaExcel:r.filaExcel,hojaExcel:r.hojaExcel,versionArchivo:scope.msg.payload.versionArchivo,camposModificados:Object.keys(r._camposModificados||{}),originalDescripcion:r.originalDescripcion,formulario:r.editFormulario,proveedor:r.editProveedor,tipo:r.editTipo,descripcion:r.editDescripcion,fecha:fechaIso(r.editFechaSolicitud),entrega:recepcion,pedidoPor:r.editPedidoPor,sector:r.editSector,prioridad:r.editPrioridad,cantidad:Number(r.editCantidad||0),costoUnitario:parseImporte(r.editCostoUnitarioTexto),importe:importeElegido,presupuestos:r.editPresupuestos,p1Proveedor:r.c1Proveedor,p1Importe:p1,p1Entrega:fechaIso(r.c1Entrega),p1FormaPago:r.c1FormaPago,p2Proveedor:r.c2Proveedor,p2Importe:p2,p2Entrega:fechaIso(r.c2Entrega),p2FormaPago:r.c2FormaPago,p3Proveedor:r.c3Proveedor,p3Importe:p3,p3Entrega:fechaIso(r.c3Entrega),p3FormaPago:r.c3FormaPago,presupuestoElegido:e,justificacionEleccion:r.editJustificacion,observacion:r.editObservacion,etapaPedido:r.ePedido,etapaPresupuestado:r.ePres,etapaAprobado:r.eAprob,etapaComprado:r.eCompra,etapaRecibido:r.eRec,cancelado:r.eCancel,fechaRecepcion:recepcion,recibidoPor:r.editRecibidoPor,mesImputacion:r.editMesImputacion,pagado:!!r.ePagado,fechaPago:fechaIso(r.editFechaPago)};});
+     if(!changed.length){scope.batchMsg='No hay cambios pendientes.';return;}
+     scope.cantidadPendientes=changed.length;
+     scope.batchMsg='Guardando '+changed.length+' cambio(s)...';
+     scope.esperandoConfirmacionGuardado=true;
+     if(guardadoWatchdog)clearTimeout(guardadoWatchdog);
+     guardadoWatchdog=setTimeout(function(){scope.$evalAsync(function(){
+       if(!scope.esperandoConfirmacionGuardado)return;
+       scope.esperandoConfirmacionGuardado=false;
+       if(scope.altaLocalEnCurso){scope.altaLocalEnCurso=false;scope.altaLocalMsg='No hubo confirmación. Podés volver a pulsar Crear; el identificador no se duplicará.';}
+       scope.batchMsg='⚠ El escritor local no confirmó el guardado. Los cambios siguen pendientes; tocá el indicador para reintentar.';
+     });},15000);
+      scope.send({topic:'actualizar_lote',payload:changed});
+    };
+    scope.$watch('msg.topic',function(t){
+      if(t==='excel_guardado_error'&&scope.payloadEnEdicion){
+        if(guardadoWatchdog){clearTimeout(guardadoWatchdog);guardadoWatchdog=null;}
+        var detalle=String((scope.msg&&scope.msg.payload)||'Error desconocido al guardar la gestión local');
+        scope.msg.payload=scope.payloadEnEdicion;
+        scope.esperandoConfirmacionGuardado=false;
+        if(scope.altaLocalEnCurso){scope.altaLocalEnCurso=false;scope.altaLocalMsg='No se creó: '+detalle;}
+        if(scope.importacionEnCurso){scope.importacionEnCurso=false;scope.importacionMsg='Importación rechazada: '+detalle;}
+        scope.batchMsg='⚠ NO SE GUARDÓ: '+detalle;
+        return;
+      }
+      if(t!=='excel_guardado_sin_releer'||!scope.payloadEnEdicion)return;
+      if(guardadoWatchdog){clearTimeout(guardadoWatchdog);guardadoWatchdog=null;}
+      var confirmacionGuardado=scope.msg&&scope.msg.payload;
+      scope.msg.payload=scope.payloadEnEdicion;
+      if(confirmacionGuardado&&confirmacionGuardado.versionArchivo){
+        scope.payloadEnEdicion.versionArchivo=confirmacionGuardado.versionArchivo;
+        scope.payloadEnEdicion.modificado=confirmacionGuardado.modificado||scope.payloadEnEdicion.modificado;
+      }
+      (scope.payloadEnEdicion.registros||[]).forEach(function(r){
+        if(!r._pendiente)return;
+        if(!scope.revisionesEnGuardado||scope.revisionesEnGuardado[r.uiKey]!==Number(r._revisionLocal||0))return;
+        r.formulario=r.editFormulario;r.proveedor=r.editProveedor;r.tipo=r.editTipo;r.descripcion=r.editDescripcion;
+        r.pedidoPor=r.editPedidoPor;r.sector=r.editSector;r.prioridad=r.editPrioridad;
+        r.cantidad=Number(r.editCantidad||0);r.costoUnitario=parseImporte(r.editCostoUnitarioTexto);r.importe=parseImporte(r.editImporteTexto);
+        r.observacion=r.editObservacion;r.recibidoPor=r.editRecibidoPor;
+        r.etapaPedido=!!r.ePedido;r.etapaPresupuestado=!!r.ePres;
+        r.etapaAprobado=!!r.eAprob;r.etapaComprado=!!r.eCompra;r.etapaRecibido=!!r.eRec;
+        r.mesImputacion=r.editMesImputacion;r.mesContableKey=r.editMesImputacion;r.pagado=!!r.ePagado;r.fechaPago=fechaIso(r.editFechaPago);
+         r._pendiente=false;r._camposModificados={};
+      });
+      scope.cantidadPendientes=(scope.payloadEnEdicion.registros||[]).filter(function(r){return r._pendiente;}).length;scope.esperandoConfirmacionGuardado=false;
+      var altaConfirmada=!!scope.altaLocalParaEnfocar;
+      var importacionConfirmada=!!scope.importacionEnCurso;
+      if(altaConfirmada){scope.altaLocalEnCurso=false;scope.altaLocalMsg='✓ '+scope.altaLocalParaEnfocar.formulario+' creada localmente.';}
+      if(importacionConfirmada){scope.importacionEnCurso=false;scope.importacionMsg='✓ Importación local guardada. Actualizando el listado…';}
+      scope.batchMsg=importacionConfirmada?scope.importacionMsg:(altaConfirmada?scope.altaLocalMsg:(scope.cantidadPendientes?'Cambios nuevos detectados; continuando autoguardado…':'✓ Guardado automáticamente en la gestión local.'));
+      scope.calcularResumenAreas();
+      if(scope.cantidadPendientes)scope.programarAutoguardado();
+      else if(importacionConfirmada){scope.origenFiltro='local';scope.scFiltro='';scope.q='';scope.paginaGestion=0;scope.send({topic:'abrir_excel',payload:Date.now()});}
+      else if(altaConfirmada){scope.nuevo=null;scope.send({topic:'abrir_excel',payload:Date.now()});}
+    });
+    scope.$watch('msg.payload.actualizado',function(v){
+      if(!v) return;
+      if(scope.msg.topic==='excel_guardado_sin_releer'||scope.msg.topic==='excel_guardado_error')return;
+      var entrante=scope.msg&&scope.msg.payload;
+      if(scope.payloadEnEdicion&&entrante!==scope.payloadEnEdicion&&Number(scope.cantidadPendientes||0)>0&&!scope.esperandoConfirmacionGuardado){
+        scope.snapshotEnEspera=entrante;
+        scope.msg.payload=scope.payloadEnEdicion;
+        scope.batchMsg='⚠ Llegó una actualización mientras editabas. Tus cambios pendientes fueron conservados y el guardado quedará sujeto al control de conflicto.';
+        return;
+      }
+     scope.cargandoArchivo=false;
+     asegurarMesActual();
+     if(!scope.mes || !scope.msg.payload.resumenMeses[scope.mes]) scope.mes=scope.msg.payload.mesActivo;
+     var habiaPendientes=Number(scope.cantidadPendientes||0)>0;
+     if(scope.msg.topic==='cambio_externo')scope.modoVista='gestion';
+     scope.batchMsg=scope.esperandoConfirmacionGuardado?'✓ Gestión local guardada correctamente.':'Excel leído en modo seguro. La gestión local fue combinada sin sobrescribirse.';
+     scope.esperandoConfirmacionGuardado=false;
+     scope.cantidadPendientes=0;
+      (scope.msg.payload.registros||[]).forEach(function(r){
+        r._pendiente=false;r._camposModificados={};
+        r.opcionesSector=(scope.msg.payload.areas||[]).slice();
+        if(r.sector&&r.opcionesSector.indexOf(r.sector)<0)r.opcionesSector.unshift(r.sector);
+        r.editSector=r.sector||'';r.editPrioridad=r.prioridad||'NORMAL';r.editObservacion=r.observacion||'';
+        r.ePedido=!!r.etapaPedido;r.ePres=!!r.etapaPresupuestado;r.eAprob=!!r.etapaAprobado;
+        r.eCompra=!!r.etapaComprado;r.eRec=!!r.etapaRecibido;r.eCancel=!!r.cancelado;
+       r.editFormulario=r.formulario||'';
+       r.editProveedor=r.proveedor||'';r.editTipo=r.tipo||'';r.editDescripcion=r.descripcion||'';r.editPedidoPor=r.pedidoPor||'';
+       r.editCantidad=Number(r.cantidad||0);
+       r.editCostoUnitarioTexto=scope.monedaInput(r.costoUnitario);
+       r.editImporteTexto=scope.monedaInput(r.importe);
+       r.c1Proveedor=r.p1Proveedor||'';r.c1ImporteTexto=scope.monedaInput(r.p1Importe);r.c1Entrega=fechaEntregaDate(r.p1Entrega);r.c1FormaPago=r.p1FormaPago||'';
+       r.c2Proveedor=r.p2Proveedor||'';r.c2ImporteTexto=scope.monedaInput(r.p2Importe);r.c2Entrega=fechaEntregaDate(r.p2Entrega);r.c2FormaPago=r.p2FormaPago||'';
+       r.c3Proveedor=r.p3Proveedor||'';r.c3ImporteTexto=scope.monedaInput(r.p3Importe);r.c3Entrega=fechaEntregaDate(r.p3Entrega);r.c3FormaPago=r.p3FormaPago||'';
+       r.cotElegida=String(r.presupuestoElegido||'');r.editJustificacion=r.justificacionEleccion||'';
+       r.q2Visible=!!(r.p2Proveedor||r.p2Importe||r.p2Entrega||r.p2FormaPago);r.q3Visible=!!(r.p3Proveedor||r.p3Importe||r.p3Entrega||r.p3FormaPago);
+       if(r.fechaIso){var fs=r.fechaIso.split('-');r.editFechaSolicitud=new Date(Number(fs[0]),Number(fs[1])-1,Number(fs[2]));}
+       if(r.fechaRecepcionIso){
+         var p=r.fechaRecepcionIso.split('-');
+         r.editFechaRecepcion=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]));
+       } else if(r.etapaRecibido) {
+         var h=new Date();h.setHours(0,0,0,0);r.editFechaRecepcion=h;
+       }
+       r.editRecibidoPor=r.recibidoPor||'';
+       r.editMesImputacion=r.mesImputacion||r.mesKey||scope.mesActualKey;
+       r.ePagado=!!r.pagado;
+       r.editFechaPago=r.fechaPago?fechaEntregaDate(r.fechaPago):null;
+     });
+     if(scope.altaLocalParaEnfocar){
+       var alta=scope.altaLocalParaEnfocar,encontrada=(scope.msg.payload.registros||[]).some(function(r){return String(r.formulario||'').toUpperCase()===String(alta.formulario||'').toUpperCase();});
+       scope.modoVista='gestion';scope.mes='TOTAL';scope.soloMesActual=false;scope.scFiltro=alta.formulario;scope.q='';scope.areaFiltro='';scope.origenFiltro='local';scope.estado='';scope.ocultarCompletadas=false;scope.paginaGestion=0;
+       scope.batchMsg=encontrada?'✓ '+alta.formulario+' creada localmente y enfocada en el listado.':'⚠ La SC fue guardada pero todavía no apareció en la lectura local.';
+       scope.altaLocalParaEnfocar=null;
+     }
+     if(!scope.nuevo||!scope.nuevo.formulario)scope.prepararNuevaScLocal();
+      scope.payloadEnEdicion=scope.msg.payload;
+      scope.recalcularCuentaLocal();
+      scope.calcularResumenAreas();
+      scope.recalcularGruposSc();
+   });
+ })(scope);
+ </script>
+</div>
