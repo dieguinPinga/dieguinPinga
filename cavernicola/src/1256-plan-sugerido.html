@@ -1,0 +1,714 @@
+<style>
+  .plan200-wrap {
+    font-family: Arial, sans-serif;
+    font-size: 11px;
+    color: #111827;
+    background: #ffffff;
+    padding: 4px;
+  }
+
+  .plan200-title {
+    font-size: 14px;
+    font-weight: 800;
+    margin-bottom: 2px;
+  }
+
+  .plan200-subtitle {
+    color: #64748b;
+    font-size: 10px;
+    margin-bottom: 6px;
+  }
+
+  .plan200-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .plan200-kpi {
+    border: 1px solid #c9ced6;
+    background: #f8fafc;
+    padding: 5px 7px;
+  }
+
+  .plan200-kpi b {
+    display: block;
+    font-size: 16px;
+    line-height: 1.1;
+  }
+
+  .plan200-kpi span {
+    color: #475569;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .plan200-mix-editor {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+    padding: 5px 7px;
+    border: 1px solid #94a3b8;
+    background: #f8fafc;
+  }
+  .plan200-mix-editor label { font-weight: 700; color: #334155; }
+  .plan200-mix-editor input { width: 64px; margin-left: 3px; text-align: right; }
+  .plan200-mix-total { padding: 2px 7px; border: 1px solid #2563eb; background: #eff6ff; color: #1e3a8a; font-weight: 800; }
+  .plan200-mix-editor button { border: 1px solid #15803d; background: #f0fdf4; color: #166534; font-weight: 800; cursor: pointer; }
+  .plan200-mix-error { color: #b91c1c; font-weight: 800; }
+  .plan200-mix-preview { color: #92400e; font-weight: 800; }
+  .plan200-outside { margin: 0 0 6px; padding: 5px 7px; border: 1px solid #f59e0b; background: #fffbeb; color: #92400e; }
+  .plan200-outside span { margin-left: 10px; }
+
+  .plan200-progress-track {
+    height: 7px;
+    margin-top: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #dbe4ee;
+  }
+
+  .plan200-progress-fill {
+    height: 100%;
+    max-width: 100%;
+    border-radius: 999px;
+    background: #16a34a;
+  }
+
+  .plan200-table {
+    width: auto;
+    min-width: 1150px;
+    max-width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    background: #ffffff;
+    margin-bottom: 8px;
+    font-size: 10px;
+  }
+
+  .plan200-table th,
+  .plan200-table td {
+    border: 1px solid #c9ced6;
+    padding: 2px 5px;
+    height: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .plan200-table th {
+    background: #eef2f7;
+    font-weight: 800;
+    text-align: left;
+  }
+
+  .plan200-table tbody tr:nth-child(even) td {
+    background: #fbfbfb;
+  }
+
+  .plan200-group td {
+    background: #dfe3e9 !important;
+    font-weight: 900;
+    border-top: 2px solid #94a3b8;
+  }
+
+  .plan200-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .plan200-material {
+    font-weight: 800;
+  }
+
+  .plan200-suggest {
+    color: #166534;
+    font-weight: 900;
+  }
+
+  .plan200-pending {
+    color: #b91c1c;
+    font-weight: 800;
+  }
+
+  .plan200-empty {
+    color: #64748b;
+    padding: 6px;
+    border: 1px solid #c9ced6;
+    background: #f8fafc;
+  }
+
+  .plan200-real-cell {
+    position: relative;
+    cursor: help;
+    overflow: visible !important;
+  }
+
+  .plan200-real-tooltip {
+    display: none;
+    position: absolute;
+    z-index: 1000;
+    right: 0;
+    bottom: calc(100% + 5px);
+    width: min(720px, 82vw);
+    max-height: 430px;
+    overflow: auto;
+    padding: 8px;
+    color: #111827;
+    background: #ffffff;
+    border: 2px solid #2563eb;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .28);
+    text-align: left;
+    white-space: normal;
+    font-size: 11px;
+    font-weight: 400;
+  }
+
+  .plan200-real-cell:hover .plan200-real-tooltip {
+    display: block;
+  }
+
+  .plan200-kpi.plan200-real-cell .plan200-real-tooltip {
+    top: calc(100% + 5px);
+    right: auto;
+    bottom: auto;
+    left: 0;
+  }
+
+  .plan200-real-tooltip-title {
+    position: sticky;
+    top: -8px;
+    z-index: 1;
+    margin: -8px -8px 7px;
+    padding: 7px 8px;
+    color: #ffffff;
+    background: #1d4ed8;
+    font-weight: 900;
+  }
+
+  .plan200-real-record {
+    margin-top: 7px;
+    padding: 6px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+  }
+
+  .plan200-real-record-title {
+    margin-bottom: 5px;
+    color: #0f172a;
+    font-weight: 900;
+  }
+
+  .plan200-real-fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px 12px;
+  }
+
+  .plan200-real-fields span {
+    overflow-wrap: anywhere;
+  }
+
+  .plan200-review {
+    margin: 7px 0 10px;
+    border: 2px solid #dc2626;
+    background: #fff7ed;
+  }
+
+  .plan200-review-title {
+    padding: 6px 8px;
+    color: #ffffff;
+    background: #b91c1c;
+    font-size: 13px;
+    font-weight: 900;
+  }
+
+  .plan200-review-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 18px;
+    padding: 6px 8px;
+    color: #7f1d1d;
+  }
+
+  .plan200-review-summary small {
+    color: #7c2d12;
+  }
+
+  .plan200-review-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #ffffff;
+    font-size: 10px;
+  }
+
+  .plan200-review-table th,
+  .plan200-review-table td {
+    border: 1px solid #d1d5db;
+    padding: 3px 5px;
+    vertical-align: top;
+  }
+
+  .plan200-review-table th {
+    background: #fee2e2;
+    text-align: left;
+    font-weight: 900;
+  }
+
+  .plan200-review-out td {
+    background: #fff7ed;
+  }
+
+  .plan200-review-reason {
+    display: inline-block;
+    margin: 0 3px 2px 0;
+    padding: 1px 4px;
+    color: #ffffff;
+    background: #b91c1c;
+    border-radius: 2px;
+    font-weight: 900;
+  }
+
+  .plan200-review-detail {
+    color: #1d4ed8;
+    text-decoration: underline;
+    font-weight: 800;
+  }
+</style>
+
+<div class="plan200-wrap" ng-if="msg && msg.payload">
+  <div class="plan200-title">Avance de Compras y estado de piletas</div>
+  <div class="plan200-subtitle">
+    Avance de Compras = recibido válido dentro del mix / objetivo mensual. Lo recibido fuera del mix no computa.
+    El objetivo total se calcula sumando las toneladas configuradas por rama y subrama.
+    El faltante de stock surge únicamente de la foto actual de piletas; las compras del mes no se restan nuevamente.
+    Fecha stock: {{stockInfo.fechaStockAr || stockInfo.fechaStockNormalizada || stockInfo.fechaStock || 'sin fecha'}} · compras del mes: {{realInfo.registrosMes || 0}} registros
+  </div>
+
+  <div class="plan200-mix-editor" ng-if="mixEdit">
+    <b>Mix del mes {{msg.payload.mesKey}}</b>
+    <label ng-repeat="rama in mixEdit.ramas track by rama.key">{{rama.ramaNombre}} / {{rama.subramaNombre}} tn <input type="number" step="0.1" min="0" ng-model="rama.tn" ng-change="previewMixMensual()"></label>
+    <span class="plan200-mix-total">Total calculado: <b>{{mixSumaTn()}} tn</b></span>
+    <button ng-click="saveMixMensual()">guardar mix</button>
+    <span ng-if="!mixSumaValida()" class="plan200-mix-error">Todas las toneladas deben ser números mayores o iguales a cero.</span>
+    <span ng-if="mixDirty && mixSumaValida()" class="plan200-mix-preview">Vista previa activa; guardar mix para conservarla en el JSON.</span>
+  </div>
+
+  <div class="plan200-grid" ng-if="plan200.totales">
+    <div class="plan200-kpi">
+      <b>{{(plan200.totales.objetivoKg ? (plan200.totales.compradoKg / plan200.totales.objetivoKg * 100) : 0) | number:1}}%</b>
+      <span>avance de Compras</span>
+      <div class="plan200-progress-track" title="Recibido válido {{plan200.totales.compradoKg}} de {{plan200.totales.objetivoKg}} kg">
+        <div class="plan200-progress-fill" ng-style="{'width': (plan200.totales.objetivoKg ? (plan200.totales.compradoKg / plan200.totales.objetivoKg * 100) : 0) + '%'}"></div>
+      </div>
+    </div>
+    <div class="plan200-kpi"><b>{{plan200.totales.objetivoKg}}</b><span>kg objetivo del mes</span></div>
+    <div class="plan200-kpi plan200-real-cell">
+      <b>{{plan200.totales.compradoKg}}</b><span>kg recibidos válidos · pasar mouse</span>
+      <div class="plan200-real-tooltip" ng-if="plan200.totales.compradoRegistros.length">
+        <div class="plan200-real-tooltip-title">{{plan200.totales.compradoRegistros.length}} registros válidos · {{plan200.totales.compradoKg}} kg</div>
+        <div class="plan200-real-record" ng-repeat="r in plan200.totales.compradoRegistros track by $index">
+          <div class="plan200-real-record-title">Registro #{{r.nro}} · {{r.fecha || 'sin fecha'}} · {{r.material}} · {{r.kg}} kg</div>
+          <div class="plan200-real-fields"><span ng-repeat="f in r.fields track by f.key"><b>{{f.key}}:</b> {{f.value}}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="plan200-kpi"><b>{{plan200.totales.cupoRestanteKg}}</b><span>kg faltantes para el objetivo</span></div>
+    <div class="plan200-kpi"><b>{{plan200.totales.fueraMixKg}}</b><span>kg recibidos fuera del mix</span></div>
+  </div>
+
+  <div class="plan200-outside" ng-if="plan200.fueraMix.length">
+    <b>Recibido fuera del mix (no cubre el objetivo): {{plan200.totales.fueraMixKg}} kg</b>
+    <span ng-repeat="x in plan200.fueraMix track by x.material">{{x.material}}: {{x.kg}} kg</span>
+  </div>
+
+  <div class="plan200-review" ng-if="plan200.registrosRevision.length">
+    <div class="plan200-review-title">Compras reales sin categoría del mix</div>
+    <div class="plan200-review-summary">
+      <b>{{plan200.revisionTotales.registros}} registros · {{plan200.revisionTotales.kg}} kg que hoy no computan en el objetivo mensual</b>
+      <small>Revisar si realmente están fuera del mix o si falta asignarles una categoría del plan.</small>
+    </div>
+    <table class="plan200-review-table">
+      <thead><tr><th>#</th><th>Fecha</th><th>Material interpretado</th><th class="plan200-num">kg</th><th>Interpretación actual</th><th>Rama / subrama</th><th>Resultado</th><th>Datos originales</th></tr></thead>
+      <tbody><tr ng-repeat="r in plan200.registrosRevision track by $index" class="plan200-review-out">
+        <td>{{r.nro}}</td><td>{{r.fecha || 'sin fecha'}}</td><td class="plan200-material">{{r.material || 'SIN MATERIAL'}}</td><td class="plan200-num">{{r.kg}}</td>
+        <td>{{r.grupo || 'FUERA MIX'}}</td><td>{{r.rama || '—'}} / {{r.subrama || '—'}}</td>
+        <td><span class="plan200-review-reason" ng-repeat="motivo in r.motivos track by $index">{{motivo}}</span></td>
+        <td class="plan200-real-cell"><span class="plan200-review-detail">pasar mouse</span>
+          <div class="plan200-real-tooltip">
+            <div class="plan200-real-tooltip-title">Registro #{{r.nro}} · {{r.material}} · {{r.kg}} kg</div>
+            <div class="plan200-real-fields"><span ng-repeat="f in r.fields track by f.key"><b>{{f.key}}:</b> {{f.value}}</span></div>
+          </div>
+        </td>
+      </tr></tbody>
+    </table>
+  </div>
+
+  <div class="operative-title">Cumplimiento del mix y estado actual de piletas</div>
+  <table class="plan200-table" ng-if="plan200.filas.length">
+    <colgroup>
+      <col style="width: 92px"><col style="width: 235px"><col style="width: 120px"><col style="width: 120px">
+      <col style="width: 82px"><col style="width: 82px"><col style="width: 98px"><col style="width: 105px"><col style="width: 240px">
+    </colgroup>
+    <thead><tr>
+      <th>Componente del mix</th><th>Material</th><th>Rama</th><th>Subrama</th>
+      <th class="plan200-num">Stock kg</th><th class="plan200-num">Mínimo kg</th>
+      <th class="plan200-num">Faltante stock kg</th><th class="plan200-num">Recibido en componente kg</th><th>Observación</th>
+    </tr></thead>
+    <tbody ng-repeat="grupo in plan200.grupos track by grupo.key">
+      <tr class="plan200-group">
+        <td>{{grupo.nombre}}</td>
+        <td colspan="3">Objetivo {{grupo.cupoKg}} kg | Recibido en componente {{grupo.compradoKg}} kg | Avance {{(grupo.cupoKg ? (grupo.compradoKg / grupo.cupoKg * 100) : 0) | number:1}}% | Faltan para objetivo {{grupo.cupoRestanteKg}} kg <span ng-if="grupo.cupoKg === 0 && grupo.compradoKg > 0">| No computa hasta asignarle toneladas</span></td>
+        <td class="plan200-num">{{grupo.stockKg}}</td><td class="plan200-num">{{grupo.minimoKg}}</td>
+        <td class="plan200-num plan200-pending">{{grupo.faltanteKg}}</td>
+        <td class="plan200-num plan200-real-cell">
+          {{grupo.compradoKg}}
+          <div class="plan200-real-tooltip" ng-if="grupo.compradoRegistros.length">
+            <div class="plan200-real-tooltip-title">{{grupo.compradoRegistros.length}} registros de {{grupo.nombre}} · {{grupo.compradoKg}} kg</div>
+            <div class="plan200-real-record" ng-repeat="r in grupo.compradoRegistros track by $index">
+              <div class="plan200-real-record-title">Registro #{{r.nro}} · {{r.fecha || 'sin fecha'}} · {{r.material}} · {{r.kg}} kg</div>
+              <div class="plan200-real-fields"><span ng-repeat="f in r.fields track by f.key"><b>{{f.key}}:</b> {{f.value}}</span></div>
+            </div>
+          </div>
+        </td><td>{{grupo.nota}}</td>
+      </tr>
+      <tr ng-repeat="m in grupo.items track by m.material" ng-if="m.compradoMostradoKg > 0 || m.faltanteKg > 0">
+        <td>{{grupo.nombre}}</td><td class="plan200-material" title="{{m.material}}">{{m.material}}</td>
+        <td title="{{m.ramaNombre}}">{{m.ramaNombre}}</td><td title="{{m.subramaNombre}}">{{m.subramaNombre}}</td>
+        <td class="plan200-num">{{m.stockKg}}</td><td class="plan200-num">{{m.minimoKg}}</td>
+        <td class="plan200-num plan200-pending">{{m.faltanteKg}}</td>
+        <td class="plan200-num plan200-real-cell" title="{{m.compradoOrigen ? ('matcheado por ' + m.compradoOrigen) : ''}}">
+          {{m.compradoMostradoKg || ''}}
+          <div class="plan200-real-tooltip" ng-if="m.compradoRegistros.length">
+            <div class="plan200-real-tooltip-title">{{m.compradoRegistros.length}} registros · {{m.material}} · {{m.compradoMostradoKg}} kg</div>
+            <div class="plan200-real-record" ng-repeat="r in m.compradoRegistros track by $index">
+              <div class="plan200-real-record-title">Registro #{{r.nro}} · {{r.fecha || 'sin fecha'}} · {{r.kg}} kg</div>
+              <div class="plan200-real-fields"><span ng-repeat="f in r.fields track by f.key"><b>{{f.key}}:</b> {{f.value}}</span></div>
+            </div>
+          </div>
+        </td>
+        <td title="{{m.obs}}">{{m.obs}}</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="plan200-empty" ng-if="!plan200.filas.length">No hay piletas faltantes ni llegadas válidas para mostrar.</div>
+</div>
+
+<script>
+(function(scope){
+  scope.normPlanText = function(v){
+    return String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toUpperCase();
+  };
+
+  scope.tnToKgPlan = function(v){
+    return Math.round(Number(v || 0) * 1000);
+  };
+
+  scope.planGrupo = function(m){
+    var rama = scope.normPlanText((m && (m.ramaKey || m.ramaNombre)) || '');
+    var sub = scope.normPlanText((m && m.subramaNombre) || '');
+    var defs = scope.mixDefs || [];
+    var found = defs.find(function(d){
+      return (scope.normPlanText(d.productoKey) === rama || scope.normPlanText(d.ramaNombre) === rama) &&
+        scope.normPlanText(d.subramaNombre) === sub;
+    });
+    return found ? found.key : '';
+  };
+
+  scope.plan200 = { grupos:[], filas:[], fueraMix:[], registrosRevision:[], revisionTotales:{registros:0,kg:0}, totales:{objetivoKg:0, compradoKg:0, cupoRestanteKg:0, faltanteKg:0, sugeridoKg:0, sinCupoKg:0, fueraMixKg:0, compradoRegistros:[]} };
+  scope.mixEdit = null;
+  scope.stockInfo = {};
+  scope.realInfo = {};
+
+  scope.formatDateArPlan = function(v){
+    var s = String(v || '').trim();
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    if (m) return m[3] + '/' + m[2] + '/' + String(m[1]).slice(2);
+    m = /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/.exec(s);
+    if (m) return String(m[1]).padStart(2,'0') + '/' + String(m[2]).padStart(2,'0') + '/' + String(m[3]).slice(-2);
+    return s;
+  };
+  
+  scope.realOnlyPlanItem = function(materialKey, kg){
+    var mat = String(materialKey || '').trim();
+    var norm = scope.normPlanText(mat);
+    var rama = 'PEMD';
+    var subrama = 'Compra real sin stock mínimo';
+    if (norm.indexOf('PP COPO') >= 0 || norm.indexOf('BALDE') >= 0 || norm.indexOf('BATERIA') >= 0) {
+      rama = 'PP COPO';
+      subrama = 'Compra real sin stock mínimo';
+    } else if (norm.indexOf('PP HOMO') >= 0 || norm.indexOf('BAZAR TUTY') >= 0 || norm.indexOf('SILLA TUTY') >= 0) {
+      rama = 'PP HOMO NEGRO';
+      subrama = 'PP HOMO';
+    } else if (norm.indexOf('STRECH') >= 0 || norm.indexOf('STRETCH') >= 0 || norm.indexOf('FILM DE BAJA') >= 0) {
+      rama = 'PEMD';
+      subrama = 'STRETCH';
+    } else if (norm.indexOf('ADI') >= 0) {
+      rama = 'PEMD';
+      subrama = 'PEAD';
+    }
+    return {
+      material: mat,
+      ramaNombre: rama,
+      ramaKey: rama,
+      subramaNombre: subrama,
+      familia: '',
+      obs: 'Compra real sin fila base de stock mínimo',
+      stockKg: 0,
+      compradoKg: Math.round(Number(kg || 0)),
+      compradoMostradoKg: Math.round(Number(kg || 0)),
+      compradoOrigen: 'material real sin fila base',
+      minimoKg: 0,
+      faltanteKg: 0,
+      faltaPendienteKg: 0,
+      sugeridoKg: 0,
+      sinCupoKg: 0,
+      grupo: (rama.indexOf('PP COPO') >= 0 ? 'PP COPO' : (rama.indexOf('PP HOMO') >= 0 ? 'PP HOMO' : 'PE'))
+    };
+  };
+
+  scope.ingresadoGrupoKg = function(key){
+    var data = scope.msg && scope.msg.payload ? scope.msg.payload : {};
+    var porGrupo = data.realesAuditoria && data.realesAuditoria.porGrupoCompraMes ? data.realesAuditoria.porGrupoCompraMes : {};
+    if (porGrupo[key] !== undefined) return Math.round(Number(porGrupo[key] || 0));
+    return 0;
+  };
+
+  scope.auditFieldsPlan = function(row){
+    var prioridad = ['nro','fechaNormalizada','materialNormalizado','kgCalculado','tnCalculado','grupoCompraPlan','productoKeyCalculado','ramaCalculada','subramaCalculada','familiaNormalizada','obsNormalizada'];
+    var keys = Object.keys(row || {}).filter(function(k){
+      var v = row[k];
+      return v !== null && v !== undefined && v !== '' && typeof v !== 'function';
+    });
+    keys.sort(function(a,b){
+      var ia = prioridad.indexOf(a), ib = prioridad.indexOf(b);
+      ia = ia < 0 ? 999 : ia; ib = ib < 0 ? 999 : ib;
+      return ia - ib || String(a).localeCompare(String(b));
+    });
+    return keys.map(function(k){
+      var v = row[k];
+      if (typeof v === 'object') {
+        try { v = JSON.stringify(v); } catch (e) { v = String(v); }
+      }
+      return { key:k, value:String(v) };
+    });
+  };
+
+  scope.rebuildPlan200 = function(){
+    var data = scope.msg && scope.msg.payload ? scope.msg.payload : {};
+    var materiales = data.planos && data.planos.materiales ? data.planos.materiales : [];
+    var rawStockInfo = data.stockAuditoria && data.stockAuditoria.info ? data.stockAuditoria.info : {};
+    scope.stockInfo = angular.copy(rawStockInfo || {});
+    scope.stockInfo.fechaStockAr = scope.formatDateArPlan(scope.stockInfo.fechaStockNormalizada || scope.stockInfo.fechaStock);
+    scope.realInfo = data.realesAuditoria && data.realesAuditoria.info ? data.realesAuditoria.info : {};
+    var realByMaterial = data.realesAuditoria && data.realesAuditoria.porMaterialDentroMixMes ? data.realesAuditoria.porMaterialDentroMixMes : {};
+    var realFueraMix = data.realesAuditoria && data.realesAuditoria.porMaterialFueraMixMes ? data.realesAuditoria.porMaterialFueraMixMes : {};
+    var realAuditRowsPlan = data.realesAuditoria && Array.isArray(data.realesAuditoria.filas) ? data.realesAuditoria.filas : [];
+    var realDetalleByMaterial = {};
+    var realDetalleByGrupo = {};
+    var realDetalleTodos = [];
+    var registrosRevision = [];
+    var revisionTotales = {registros:0,kg:0};
+    realAuditRowsPlan.forEach(function(row){
+      if (!row || Number(row.kgCalculado || 0) === 0) return;
+      var detalle = {
+        nro:Number(row.nro || 0),
+        fecha:row.fechaNormalizada || '',
+        material:row.materialNormalizado || '',
+        kg:Math.round(Number(row.kgCalculado || 0)),
+        grupo:row.mixComponenteKey || row.grupoCompraPlan || '',
+        fields:scope.auditFieldsPlan(row)
+      };
+      var materialKey = scope.normPlanText(row.materialNormalizado || '');
+      var fueraMix = row.dentroMix !== true;
+      if (fueraMix) {
+        detalle.motivos = ['SIN CATEGORIA DEL MIX'];
+        detalle.motivoTexto = 'SIN CATEGORIA DEL MIX';
+        detalle.rama = row.ramaCalculada || '';
+        detalle.subrama = row.subramaCalculada || '';
+        detalle.fueraMix = fueraMix;
+        registrosRevision.push(detalle);
+        revisionTotales.registros += 1;
+        revisionTotales.kg += detalle.kg;
+      }
+      if (fueraMix) return;
+      if (materialKey) (realDetalleByMaterial[materialKey] = realDetalleByMaterial[materialKey] || []).push(detalle);
+      if (detalle.grupo) (realDetalleByGrupo[detalle.grupo] = realDetalleByGrupo[detalle.grupo] || []).push(detalle);
+      realDetalleTodos.push(detalle);
+    });
+    registrosRevision.sort(function(a,b){ return Number(b.kg || 0) - Number(a.kg || 0) || Number(a.nro || 0) - Number(b.nro || 0); });
+    var realByPlanos = data.realesAuditoria && data.realesAuditoria.porProductoSubramaMes ? data.realesAuditoria.porProductoSubramaMes : {};
+    var realBySubrama = realByPlanos.porSubramaKey || {};
+    var realByRama = realByPlanos.porRamaKey || {};
+    var realByMaterialRama = realByPlanos.porMaterialRamaKey || {};
+    var mixMensual = data.mixMensual || {};
+    var componentes = Array.isArray(mixMensual.mixComponentes) ? mixMensual.mixComponentes : [];
+    var defs = componentes.map(function(x){
+      return {
+        key:String(x.key || ''), sourceKey:String(x.key || ''),
+        nombre:String(x.ramaNombre || '') + ' / ' + String(x.subramaNombre || ''),
+        ramaNombre:String(x.ramaNombre || ''), subramaNombre:String(x.subramaNombre || ''),
+        productoKey:String(x.productoKey || ''), subramaId:Number(x.subramaId || 0),
+        cupoKg:scope.tnToKgPlan(x.objetivoTn), nota:'Objetivo mensual por rama / subrama'
+      };
+    });
+    scope.mixDefs = defs;
+    scope.mixEdit = {
+      ramas: defs.map(function(d){ return {key:d.sourceKey,ramaNombre:d.ramaNombre,subramaNombre:d.subramaNombre,tn:Number(d.cupoKg || 0)/1000}; })
+    };
+    scope.mixDirty = false;
+    var byKey = {};
+    var seen = {};
+    defs.forEach(function(g){
+      byKey[g.key] = {
+        key:g.key,
+        nombre:g.nombre,
+        cupoKg:g.cupoKg,
+        nota:g.nota,
+        stockKg:0,
+        minimoKg:0,
+        faltanteKg:0,
+        sugeridoKg:0,
+        compradoKg:scope.ingresadoGrupoKg(g.key),
+        compradoRegistros:angular.copy(realDetalleByGrupo[g.key] || []),
+        sinCupoKg:0,
+        items:[]
+      };
+    });
+
+    materiales
+      .filter(function(m){
+        var materialKey = scope.normPlanText(m && m.material);
+        var compradoExacto = Number(realByMaterial[materialKey] || 0);
+        return Number(m && m.faltanteTn || 0) > 0 || compradoExacto > 0;
+      })
+      .filter(function(m){
+        var key = String(m.material || '').toUpperCase();
+        if (!key || seen[key]) return false;
+        seen[key] = true;
+        return true;
+      })
+      .map(function(m){
+        return {
+          material:m.material || '',
+          ramaNombre:m.ramaNombre || '',
+          ramaKey:m.ramaKey || '',
+          subramaNombre:m.subramaNombre || '',
+          familia:m.familia || '',
+          obs:m.obs || '',
+          stockKg:scope.tnToKgPlan(m.stockTn),
+          compradoKg:Number(realByMaterial[scope.normPlanText(m.material)] || 0),
+          compradoRegistros:angular.copy(realDetalleByMaterial[scope.normPlanText(m.material)] || []),
+          compradoRamaKg:Number(realByRama[m.ramaKey || ''] || 0),
+          compradoSubramaKg:Number(realBySubrama[(m.ramaKey || '') + '||' + (m.subramaNombre || '')] || 0),
+          compradoMaterialRamaKg:Number(realByMaterialRama[(m.ramaKey || '') + '||' + scope.normPlanText(m.material)] || 0),
+          minimoKg:scope.tnToKgPlan(m.minimoTn),
+          faltanteKg:scope.tnToKgPlan(m.faltanteTn),
+          sugeridoKg:0,
+          sinCupoKg:0,
+          grupo:scope.planGrupo(m)
+        };
+      })
+      .sort(function(a,b){
+        return b.faltanteKg - a.faltanteKg ||
+               b.stockKg - a.stockKg ||
+               String(a.material).localeCompare(String(b.material));
+      })
+      .forEach(function(item){
+        if (!item.grupo || !byKey[item.grupo]) return;
+        var g = byKey[item.grupo];
+        item.compradoMostradoKg = item.compradoKg || 0;
+        item.compradoOrigen = item.compradoKg ? 'material exacto' : '';
+        g.stockKg += item.stockKg;
+        g.minimoKg += item.minimoKg;
+        g.faltanteKg += item.faltanteKg;
+        g.items.push(item);
+      });
+
+    // Agregar compras reales que no existen como material base en planos.materiales.
+    // Ejemplo tipico: STRETCH en el Excel de compras cuando la banda esta evaluada por grupo.
+    Object.keys(realByMaterial || {}).forEach(function(materialKey){
+      var kg = Number(realByMaterial[materialKey] || 0);
+      if (!kg || kg <= 0) return;
+      var key = scope.normPlanText(materialKey);
+      if (seen[key]) return;
+      seen[key] = true;
+      var item = scope.realOnlyPlanItem(materialKey, kg);
+      item.grupo = scope.planGrupo(item);
+      item.compradoRegistros = angular.copy(realDetalleByMaterial[key] || []);
+      if (!item.grupo || !byKey[item.grupo]) return;
+        var g = byKey[item.grupo];
+      g.items.push(item);
+    });
+
+    defs.forEach(function(def){
+      var g = byKey[def.key];
+      // El avance del mix usa llegadas reales. El faltante de pileta queda
+      // exactamente como surge del snapshot de stock, sin volver a restarlas.
+      g.cupoRestanteKg = Math.max(0, g.cupoKg - g.compradoKg);
+      g.compradoComputableKg = g.cupoKg > 0 ? g.compradoKg : 0;
+    });
+
+    var grupos = defs.map(function(def){ return byKey[def.key]; });
+    var filas = [];
+    grupos.forEach(function(g){ filas = filas.concat(g.items); });
+    var totales = grupos.reduce(function(acc,g){
+      acc.objetivoKg += g.cupoKg;
+      acc.compradoKg += g.compradoComputableKg;
+      acc.cupoRestanteKg += g.cupoRestanteKg;
+      acc.faltanteKg += g.faltanteKg;
+      return acc;
+    }, {objetivoKg:0, compradoKg:0, cupoRestanteKg:0, faltanteKg:0, fueraMixKg:0});
+    var fueraMix = Object.keys(realFueraMix || {}).map(function(material){
+      return { material:material, kg:Math.round(Number(realFueraMix[material] || 0)) };
+    }).filter(function(x){ return x.kg > 0; }).sort(function(a,b){ return b.kg - a.kg; });
+    totales.fueraMixKg = fueraMix.reduce(function(s,x){ return s + x.kg; }, 0);
+    totales.compradoRegistros = angular.copy(realDetalleTodos.filter(function(d){ return byKey[d.grupo] && byKey[d.grupo].cupoKg > 0; }));
+
+    scope.plan200 = { grupos:grupos, filas:filas, totales:totales, fueraMix:fueraMix, registrosRevision:registrosRevision, revisionTotales:revisionTotales };
+  };
+
+  scope.mixSumaTn = function(){
+    var x = scope.mixEdit || {};
+    return Math.round(((x.ramas || []).reduce(function(s,r){ return s + Number(r.tn || 0); }, 0)) * 10) / 10;
+  };
+  scope.mixSumaValida = function(){
+    var x = scope.mixEdit || {};
+    return (x.ramas || []).length > 0 && (x.ramas || []).every(function(r){ var v=Number(r.tn || 0); return isFinite(v) && v >= 0; });
+  };
+  scope.previewMixMensual = function(){
+    scope.mixDirty = true;
+    if (!scope.mixSumaValida() || !scope.plan200 || !scope.plan200.grupos) return;
+    var x = scope.mixEdit || {};
+    var cupos = {};
+    (x.ramas || []).forEach(function(r){ cupos[r.key] = Number(r.tn || 0) * 1000; });
+    scope.plan200.grupos.forEach(function(g){
+      g.cupoKg = Math.round(cupos[g.key] || 0);
+      g.cupoRestanteKg = Math.max(0, g.cupoKg - Number(g.compradoKg || 0));
+      g.compradoComputableKg = g.cupoKg > 0 ? Number(g.compradoKg || 0) : 0;
+    });
+    scope.plan200.totales.objetivoKg = scope.plan200.grupos.reduce(function(s,g){ return s + Number(g.cupoKg || 0); }, 0);
+    scope.plan200.totales.compradoKg = scope.plan200.grupos.reduce(function(s,g){ return s + Number(g.compradoComputableKg || 0); }, 0);
+    scope.plan200.totales.cupoRestanteKg = scope.plan200.grupos.reduce(function(s,g){ return s + Number(g.cupoRestanteKg || 0); }, 0);
+    scope.plan200.totales.compradoRegistros = scope.plan200.grupos.reduce(function(out,g){ return g.cupoKg > 0 ? out.concat(g.compradoRegistros || []) : out; }, []);
+  };
+  scope.saveMixMensual = function(){
+    if (!scope.mixSumaValida()) { window.alert('Todas las toneladas deben ser números mayores o iguales a cero.'); return; }
+    var x = scope.mixEdit || {};
+    var objetivos = {};
+    (x.ramas || []).forEach(function(r){ objetivos[r.key] = Number(r.tn || 0); });
+    scope.send({payload:{
+      accion:'setMixMensual',
+      objetivos:objetivos
+    }});
+  };
+
+  scope.$watch('msg.payload', function(){
+    scope.rebuildPlan200();
+  });
+})(scope);
+</script>

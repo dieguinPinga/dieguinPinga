@@ -1,0 +1,1557 @@
+<style>
+  .sheet-wrap {
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    color: #111827;
+    background: #ffffff;
+    padding: 4px;
+  }
+
+  .sheet-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 2px;
+    color: #111827;
+  }
+
+  .sheet-subtitle {
+    font-size: 11px;
+    margin-bottom: 6px;
+    color: #4b5563;
+  }
+
+  .status-table {
+    width: auto;
+    min-width: 760px;
+    border-collapse: collapse;
+    table-layout: fixed;
+    margin: 4px 0 6px;
+    background: #ffffff;
+    font-size: 10.5px;
+  }
+
+  .status-table th,
+  .status-table td {
+    border: 1px solid #c9ced6;
+    padding: 3px 6px;
+    white-space: nowrap;
+    color: #111827;
+  }
+
+  .status-table th {
+    background: #eef2f7;
+    text-align: left;
+    font-weight: 800;
+  }
+
+  .status-table td.num {
+    text-align: center;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .coverage-cell {
+    padding: 3px 8px !important;
+  }
+
+  .coverage-bar {
+    position: relative;
+    height: 12px;
+    width: 98px;
+    border: 1px solid #94a3b8;
+    background: #f8fafc;
+    overflow: hidden;
+  }
+
+  .coverage-bar:after {
+    content: "";
+    position: absolute;
+    right: -4px;
+    top: 3px;
+    width: 3px;
+    height: 6px;
+    background: #94a3b8;
+  }
+
+  .coverage-fill {
+    height: 100%;
+    min-width: 2px;
+  }
+
+  .coverage-fill.low { background: #ef4444; }
+  .coverage-fill.mid { background: #f59e0b; }
+  .coverage-fill.high { background: #16a34a; }
+
+  .status-total td {
+    background: #dfe3e9;
+    font-weight: 900;
+  }
+
+  .status-rama td {
+    background: #f8fafc;
+    font-weight: 800;
+  }
+
+  .status-sub td {
+    background: #ffffff;
+    color: #334155;
+    font-size: 10px;
+  }
+
+  .status-sub .sub-name {
+    padding-left: 18px;
+    font-weight: 700;
+  }
+
+  .status-bad {
+    color: #b91c1c !important;
+  }
+
+  .status-ok {
+    color: #166534 !important;
+  }
+
+  .summary-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    margin-bottom: 6px;
+    background: #ffffff;
+  }
+
+  .summary-table th,
+  .summary-table td {
+    border: 1px solid #c9ced6;
+    padding: 3px 5px;
+    font-size: 11px;
+    color: #111827;
+    background: #ffffff;
+    text-align: left;
+  }
+
+  .summary-table th {
+    background: #f3f4f6;
+    font-weight: 700;
+  }
+
+  .operative-title {
+    margin: 6px 0 2px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #111827;
+  }
+
+  .operative-note {
+    margin-bottom: 3px;
+    font-size: 10px;
+    color: #64748b;
+  }
+
+  .operative-table {
+    width: auto;
+    min-width: 980px;
+    max-width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    margin-bottom: 8px;
+    background: #ffffff;
+    font-size: 10px;
+  }
+
+  .operative-table th,
+  .operative-table td {
+    border: 1px solid #c9ced6;
+    padding: 2px 5px;
+    height: 18px;
+    color: #111827;
+    background: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .operative-table th {
+    background: #eef2f7;
+    font-weight: 800;
+    text-align: left;
+  }
+
+  .operative-table tbody tr:nth-child(even) td {
+    background: #fbfbfb;
+  }
+
+  .operative-table .op-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .operative-table .op-material {
+    font-weight: 800;
+  }
+
+  .operative-table .op-falta {
+    color: #b91c1c;
+    font-weight: 800;
+  }
+
+  .operative-table .op-max {
+    color: #92400e;
+    font-weight: 700;
+  }
+
+  .sheet-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin: -2px 0 4px;
+  }
+
+  .sort-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #475569;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .sort-btn {
+    height: 20px;
+    border: 1px solid #cbd5e1;
+    background: #f8fafc;
+    color: #334155;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 0 7px;
+    cursor: pointer;
+  }
+
+  .sort-btn.active {
+    border-color: #2563eb;
+    background: #eff6ff;
+    color: #1d4ed8;
+  }
+
+  .download-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .json-download,
+  .excel-download {
+    height: 20px;
+    border: 1px solid #2563eb;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 0 8px;
+    cursor: pointer;
+  }
+
+  .excel-download {
+    border-color: #15803d;
+    background: #f0fdf4;
+    color: #166534;
+  }
+
+  .excel-table {
+    width: auto;
+    min-width: 1120px;
+    max-width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    background: #ffffff;
+    font-size: 10px;
+  }
+
+  .excel-table th,
+  .excel-table td {
+    border: 1px solid #d5d9df;
+    padding: 1px 4px;
+    height: 18px;
+    line-height: 1.05;
+    vertical-align: middle;
+    color: #111827;
+    background: #ffffff;
+  }
+
+  .excel-table th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #eef2f7;
+    font-weight: 800;
+    text-align: center;
+    vertical-align: middle;
+  }
+
+  .excel-table tbody { border-top: 6px solid #ffffff; }
+
+  .excel-rama td {
+    background: #1e3a5f;
+    color: #ffffff;
+    font-weight: 900;
+    font-size: 12px;
+    height: 28px;
+    border-top: 4px solid #0f172a;
+    border-bottom: 2px solid #0f172a;
+  }
+  .excel-rama input { background:#ffffff; color:#111827; border:1px solid rgba(255,255,255,.7); }
+
+  .excel-sub td {
+    background: #dbeafe;
+    color: #0f172a;
+    font-size: 11px;
+    height: 25px;
+    border-top: 2px solid #3b82f6;
+    border-bottom: 1px solid #93c5fd;
+    font-weight: 800;
+  }
+  .excel-material td { border-bottom:1px solid #e5e7eb; }
+
+  .rama-color-0 .excel-rama td { background:#475569; }
+  .rama-color-0 .excel-sub td { background:#f1f5f9; border-top-color:#64748b; }
+  .rama-color-1 .excel-rama td { background:#075985; }
+  .rama-color-1 .excel-sub td { background:#e0f2fe; border-top-color:#0284c7; }
+  .rama-color-2 .excel-rama td { background:#166534; }
+  .rama-color-2 .excel-sub td { background:#dcfce7; border-top-color:#16a34a; }
+  .rama-color-3 .excel-rama td { background:#6b21a8; }
+  .rama-color-3 .excel-sub td { background:#f3e8ff; border-top-color:#9333ea; }
+  .rama-color-4 .excel-rama td { background:#9a3412; }
+  .rama-color-4 .excel-sub td { background:#ffedd5; border-top-color:#ea580c; }
+  .rama-color-5 .excel-rama td { background:#9f1239; }
+  .rama-color-5 .excel-sub td { background:#ffe4e6; border-top-color:#e11d48; }
+
+  .sub-total {
+    display: inline-flex;
+    gap: 14px;
+    align-items: baseline;
+    white-space: nowrap;
+  }
+
+  .sub-total strong {
+    font-size: 13px;
+  }
+
+  .sub-total span {
+    color: #475569;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .sub-stock {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 1px 8px;
+    border: 1px solid #94a3b8;
+    background: #ffffff;
+    color: #0f172a !important;
+    font-size: 12px !important;
+    font-weight: 900 !important;
+  }
+
+  .sub-stock b {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .excel-material td {
+    background: #ffffff;
+  }
+
+  .excel-material:hover td {
+    background: #fff7d6;
+  }
+
+
+  .stock-cell {
+    background: #f8fafc !important;
+    font-weight: 700;
+  }
+
+  .sub-cell {
+    background: #eef2f7 !important;
+    border-right: 2px solid #cbd5e1 !important;
+  }
+
+  .sub-label {
+    display: block;
+    color: #111827;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sub-detail {
+    display: block;
+    color: #64748b;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .rama-select {
+    width: 112px;
+    height: 16px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #334155;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 2px;
+  }
+
+  .rama-select:hover,
+  .rama-select:focus {
+    border-color: #cbd5e1;
+    background: #fff;
+    outline: 1px solid #2563eb;
+  }
+
+  .sub-select {
+    width: 118px;
+    height: 16px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #334155;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 0 2px;
+  }
+
+  .sub-select:hover {
+    border-color: #cbd5e1;
+    background: #fff;
+  }
+
+  .sub-select:focus {
+    outline: 1px solid #2563eb;
+    border-color: #2563eb;
+  }
+
+  .excel-material:nth-child(even) td {
+    background: #fbfbfb;
+  }
+
+  .cell-main {
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cell-muted {
+    display: block;
+    color: #6b7280;
+    font-size: 9px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .excel-num {
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .excel-obs {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #374151;
+  }
+
+  .excel-band {
+    width: 42px;
+    height: 15px;
+    padding: 0 2px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: #111827;
+    font-size: 10px;
+    line-height: 15px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .excel-band:hover,
+  .excel-band:focus {
+    border-color: #c9ced6;
+    background: #fff;
+    outline: 1px solid #2563eb;
+  }
+
+  .excel-band.dirty {
+    border-color: #d97706;
+    background: #fffbeb;
+  }
+
+  .excel-ok {
+    height: 15px;
+    padding: 0 4px;
+    border: 1px solid #2563eb;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+    cursor: pointer;
+  }
+
+  .excel-status {
+    width: 8px;
+    padding: 0;
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    vertical-align: middle;
+  }
+
+  .status-dot.falta { background: #dc2626; }
+  .status-dot.ok { background: #16a34a; }
+  .status-dot.sin-min { background: #9ca3af; }
+  .status-dot.alto { background: #2563eb; }
+  .status-dot.sobra { background: #f59e0b; }
+  .excel-material.falta .excel-status { background: #fff1f2; }
+  .excel-material.ok .excel-status { background: #f0fdf4; }
+  .excel-material.sobra .excel-status { background: #fffbeb; }
+  .excel-material.sin-min .excel-status { background: #f9fafb; }
+
+  .excel-material.sin-min td {
+    color: #4b5563;
+  }
+
+  .excel-falta {
+    font-weight: 700;
+  }
+
+  .excel-falta.falta {
+    color: #b91c1c;
+  }
+
+  .excel-falta.ok {
+    color: #166534;
+  }
+
+  .excel-sobra {
+    font-weight: 700;
+    color: #b45309;
+  }
+
+  .excel-estado {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .ramas-grid {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    grid-auto-flow: row dense;
+    gap: 6px;
+    align-items: start;
+  }
+
+  .rama-block {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .rama-block.span-full { grid-column: span 22; }
+  .rama-block.span-xl { grid-column: span 10; }
+  .rama-block.span-lg { grid-column: span 8; }
+  .rama-block.span-md { grid-column: span 6; }
+  .rama-block.span-sm { grid-column: span 5; }
+  .rama-block.span-xs { grid-column: span 4; }
+  .rama-block.one .rama-meta { white-space: normal; line-height: 1.2; }
+  .rama-block.one .sub-grid { display: block; }
+  .rama-block.one .sub-card { width: 100%; }
+
+  .rama-head {
+    border: 1px solid #c9ced6;
+    background: #e5e7eb;
+    padding: 4px 6px;
+    margin-bottom: 4px;
+  }
+
+  .rama-title {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 1px;
+  }
+
+  .rama-meta {
+    font-size: 11px;
+    color: #4b5563;
+  }
+
+  /* Tarjetas por densidad: pocas filas ocupan menos ancho */
+  .sub-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: flex-start;
+    align-content: flex-start;
+  }
+
+  .sub-card {
+    border: 1px solid #c9ced6;
+    background: #ffffff;
+    min-width: 0;
+    flex: 0 0 340px;
+  }
+
+  .sub-card.xs { flex-basis: 280px; }
+  .sub-card.sm { flex-basis: 320px; }
+  .sub-card.md { flex-basis: 380px; }
+  .sub-card.lg { flex-basis: 470px; }
+  .sub-card.solo-xs { width: 280px; }
+  .sub-card.solo-sm { width: 320px; }
+  .sub-card.solo-md { width: 380px; }
+  .sub-card.solo-lg { width: 470px; }
+
+  .sub-head {
+    background: #f3f4f6;
+    border-bottom: 1px solid #c9ced6;
+    padding: 3px 5px;
+  }
+
+  .sub-title {
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 1px;
+  }
+
+  .sub-meta {
+    font-size: 10px;
+    color: #6b7280;
+    line-height: 1.1;
+  }
+
+  .mini-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+    background: #ffffff;
+  }
+
+  .mini-table th,
+  .mini-table td {
+    border-top: 1px solid #e5e7eb;
+    padding: 2px 4px;
+    font-size: 10.5px;
+    vertical-align: top;
+    color: #111827;
+    background: #ffffff;
+  }
+
+  .mini-table th {
+    background: #fafafa;
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .mini-table tbody tr:nth-child(even) td {
+    background: #fcfcfc;
+  }
+
+  .mat-name {
+    font-weight: 700;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .mat-fam {
+    display: block;
+    margin-top: 1px;
+    color: #4b5563;
+    font-size: 9.5px;
+    font-weight: 400;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .num {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .band-input {
+    width: 36px;
+    height: 17px;
+    padding: 0 2px;
+    border: 1px solid #c9ced6;
+    background: #fff;
+    color: #111827;
+    font-size: 10.5px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .band-input:focus {
+    outline: 1px solid #2563eb;
+    border-color: #2563eb;
+  }
+
+  .band-input.dirty {
+    border-color: #d97706;
+    background: #fffbeb;
+  }
+
+  .band-apply {
+    margin-left: 3px;
+    height: 17px;
+    padding: 0 5px;
+    border: 1px solid #2563eb;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    cursor: pointer;
+  }
+
+  .obs-cell {
+    min-width: 0;
+  }
+
+  .obs-line {
+    display: block;
+    max-width: 100%;
+    color: #374151;
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+  }
+
+  .estado-line {
+    display: block;
+    max-width: 100%;
+    color: #6b7280;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+  }
+
+  .empty {
+    color: #6b7280;
+    padding: 8px;
+    font-size: 13px;
+  }
+
+  /* Responsive: si el monitor queda mas chico, baja columnas */
+  @media (max-width: 1500px) {
+    .sub-card.xs { flex-basis: 270px; }
+    .sub-card.sm { flex-basis: 305px; }
+    .sub-card.md { flex-basis: 360px; }
+    .sub-card.lg { flex-basis: 440px; }
+  }
+
+  @media (max-width: 1500px) {
+    .ramas-grid { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+    .rama-block.span-full { grid-column: span 12; }
+    .rama-block.span-xl { grid-column: span 8; }
+    .rama-block.span-lg { grid-column: span 7; }
+    .rama-block.span-md { grid-column: span 6; }
+    .rama-block.span-sm { grid-column: span 5; }
+    .rama-block.span-xs { grid-column: span 4; }
+    .sub-card,
+    .sub-card.xs,
+    .sub-card.sm,
+    .sub-card.md,
+    .sub-card.lg { flex: 1 1 280px; }
+  }
+
+  @media (max-width: 750px) {
+    .ramas-grid { display: block; }
+    .rama-block { margin-bottom: 6px; }
+    .sub-card,
+    .sub-card.xs,
+    .sub-card.sm,
+    .sub-card.md,
+    .sub-card.lg { flex-basis: 100%; }
+  }
+
+  .sub-total span.sub-deficit-alert {
+    color: #991b1b;
+    background: #fee2e2;
+    border: 1px solid #ef4444;
+    border-radius: 2px;
+    padding: 2px 6px;
+    font-weight: 900;
+  }
+
+  .rama-deficit-badge {
+    display: inline-block;
+    color: #ffffff;
+    background: #b91c1c;
+    border: 1px solid #fecaca;
+    border-radius: 2px;
+    padding: 2px 6px;
+    font-weight: 900;
+  }
+</style>
+
+<div class="sheet-wrap" ng-if="msg && msg.payload">
+
+  <div class="sheet-title">Plan de compras y stock</div>
+  <div class="sheet-subtitle">
+    Mes: {{msg.payload.mesKey || '-'}} |
+    Generado: {{formatDateTimeAr(msg.payload.generadoEn)}} |
+    Stock: {{formatDateAr(msg.payload.stockAuditoria.info.fechaStock) || 'sin fecha'}}
+  </div>
+
+  <table class="status-table" ng-if="msg.payload.arbol && msg.payload.arbol.length">
+    <colgroup>
+      <col style="width: 220px">
+      <col style="width: 105px">
+      <col style="width: 105px">
+      <col style="width: 115px">
+      <col style="width: 105px">
+      <col style="width: 120px">
+      <col style="width: 130px">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Estado general</th>
+        <th>Stock</th>
+        <th>Faltante</th>
+        <th>Stock mínimo</th>
+        <th>Cobertura</th>
+        <th>Nivel</th>
+        <th>Estado</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="status-total">
+        <td>Total</td>
+        <td class="num">{{statusTotal().stockTn}} tn</td>
+        <td class="num" ng-class="{'status-bad': statusTotal().faltanteTn > 0, 'status-ok': statusTotal().faltanteTn <= 0}">{{statusTotal().faltanteTn}} tn</td>
+        <td class="num">{{statusTotal().minDeseadoTn}} tn</td>
+        <td class="num" ng-class="{'status-bad': statusTotal().coberturaPct < 80, 'status-ok': statusTotal().coberturaPct >= 100}">{{statusTotal().coberturaPct}}%</td>
+        <td class="coverage-cell"><div class="coverage-bar" title="{{statusTotal().coberturaPct}}%"><div class="coverage-fill" ng-class="coverageClass(statusTotal().coberturaPct)" ng-style="{width:coverageWidth(statusTotal().coberturaPct)}"></div></div></td>
+        <td ng-class="{'status-bad': statusTotal().faltanteTn > 0, 'status-ok': statusTotal().faltanteTn <= 0}">{{statusTotal().estado}}</td>
+      </tr>
+    </tbody>
+    <tbody ng-repeat="rama in msg.payload.arbol | orderBy:ramaSortKey:sortReverse track by (rama.ramaId + '-' + rama.ramaKey)">
+      <tr class="status-rama">
+        <td>{{rama.ramaNombre}}</td>
+        <td class="num">{{rama.stockTn}} tn</td>
+        <td class="num" ng-class="{'status-bad': rama.faltanteTn > 0, 'status-ok': rama.faltanteTn <= 0}">{{rama.faltanteTn}} tn</td>
+        <td class="num">{{ramaMinDeseado(rama)}} tn</td>
+        <td class="num" ng-class="{'status-bad': ramaCobertura(rama) < 80, 'status-ok': ramaCobertura(rama) >= 100}">{{ramaCobertura(rama)}}%</td>
+        <td class="coverage-cell"><div class="coverage-bar" title="{{ramaCobertura(rama)}}%"><div class="coverage-fill" ng-class="coverageClass(ramaCobertura(rama))" ng-style="{width:coverageWidth(ramaCobertura(rama))}"></div></div></td>
+        <td ng-class="{'status-bad': rama.faltanteTn > 0, 'status-ok': rama.faltanteTn <= 0}">{{rama.estado}}</td>
+      </tr>
+      <tr class="status-sub" ng-repeat="sub in rama.subramas | orderBy:subSortKey:sortReverse track by (sub.ramaId + '-' + sub.subramaId + '-' + sub.subramaNombre)">
+        <td class="sub-name">{{sub.subramaNombre}}</td>
+        <td class="num">{{sub.stockTn}} tn</td>
+        <td class="num" ng-class="{'status-bad': sub.faltanteTn > 0, 'status-ok': sub.faltanteTn <= 0}">{{sub.faltanteTn}} tn</td>
+        <td class="num">{{subMinDeseado(sub)}} tn</td>
+        <td class="num" ng-class="{'status-bad': subCobertura(sub) < 80, 'status-ok': subCobertura(sub) >= 100}">{{subCobertura(sub)}}%</td>
+        <td class="coverage-cell"><div class="coverage-bar" title="{{subCobertura(sub)}}%"><div class="coverage-fill" ng-class="coverageClass(subCobertura(sub))" ng-style="{width:coverageWidth(subCobertura(sub))}"></div></div></td>
+        <td ng-class="{'status-bad': sub.faltanteTn > 0, 'status-ok': sub.faltanteTn <= 0}">{{sub.estado}}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="sheet-actions">
+    <div class="sort-actions">
+      <span>Orden vista</span>
+      <button class="sort-btn" ng-class="{active:sortMode==='faltante'}" ng-click="setSort('faltante', true)">Falta {{sortArrow('faltante')}}</button>
+      <button class="sort-btn" ng-class="{active:sortMode==='stock'}" ng-click="setSort('stock', true)">Stock {{sortArrow('stock')}}</button>
+      <button class="sort-btn" ng-class="{active:sortMode==='material'}" ng-click="setSort('material', false)">Material {{sortArrow('material')}}</button>
+    </div>
+    <div class="download-actions">
+      <button class="excel-download" style="background:#166534;color:#fff" ng-click="send({payload:{accion:'agregarProducto'}})">+ crear rama</button>
+      <button class="excel-download" ng-click="downloadExcelFile()">descargar Excel</button>
+      <button class="json-download" ng-click="downloadExcelJson()">descargar JSON</button>
+    </div>
+  </div>
+
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Ramas</th>
+        <th>Subramas</th>
+        <th>Materiales</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{msg.payload.resumen.ramas}}</td>
+        <td>{{msg.payload.resumen.subramas}}</td>
+        <td>{{msg.payload.resumen.materiales}}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="operative-title" ng-if="listaCompraMinima.length">Lista operativa mínima</div>
+  <div class="operative-note" ng-if="listaCompraMinima.length">
+    Materiales bajo stock mínimo. Falta kg = kilos necesarios para llegar al mínimo; Hasta max kg es referencia para rellenar banda.
+  </div>
+  <table class="operative-table" ng-if="listaCompraMinima.length">
+    <colgroup>
+      <col style="width: 36px">
+      <col style="width: 245px">
+      <col style="width: 115px">
+      <col style="width: 120px">
+      <col style="width: 78px">
+      <col style="width: 78px">
+      <col style="width: 88px">
+      <col style="width: 94px">
+      <col style="width: 220px">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Material</th>
+        <th>Rama</th>
+        <th>Subrama</th>
+        <th class="op-num">Stock kg</th>
+        <th class="op-num">Mín kg</th>
+        <th class="op-num">Falta kg</th>
+        <th class="op-num">Hasta max kg</th>
+        <th>Observación</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr ng-repeat="m in listaCompraMinima track by m.material">
+        <td>{{$index + 1}}</td>
+        <td class="op-material" title="{{m.material}}">{{m.material}}</td>
+        <td title="{{m.ramaNombre}}">{{m.ramaNombre}}</td>
+        <td title="{{m.subramaNombre}}">{{m.subramaNombre}}</td>
+        <td class="op-num">{{tnToKg(m.stockTn)}}</td>
+        <td class="op-num">{{tnToKg(m.minimoTn)}}</td>
+        <td class="op-num op-falta">{{tnToKg(m.faltanteTn)}}</td>
+        <td class="op-num op-max">{{kgHastaMaximo(m)}}</td>
+        <td title="{{m.obs}}">{{m.obs}}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <table class="excel-table" ng-if="msg.payload.arbol && msg.payload.arbol.length">
+    <colgroup>
+      <col style="width: 18px">
+      <col style="width: 124px">
+      <col style="width: 150px">
+      <col style="width: 300px">
+      <col style="width: 84px">
+      <col style="width: 60px">
+      <col style="width: 60px">
+      <col style="width: 60px">
+      <col style="width: 78px">
+      <col style="width: 88px">
+      <col style="width: 236px">
+      <col style="width: 360px">
+    </colgroup>
+    <thead>
+      <tr>
+        <th></th>
+        <th>Rama</th>
+        <th>Subrama</th>
+        <th>Material</th>
+                <th class="excel-num">Stock total</th>
+        <th class="excel-num">Mínimo</th>
+        <th class="excel-num">Máximo</th>
+        <th class="excel-num">Faltan</th>
+        <th class="excel-num">Exceso</th>
+        <th>Estado</th>
+        <th>Familia</th>
+        <th>Observación</th>
+      </tr>
+    </thead>
+    <tbody ng-repeat="rama in msg.payload.arbol | orderBy:ramaSortKey:sortReverse" ng-class="'rama-color-' + (rama.ramaId % 6)">
+      <tr class="excel-rama">
+        <td colspan="12">
+          <input style="width:220px;font-weight:800" ng-model="rama.ramaNombre" placeholder="Nombre de rama">
+          <button class="excel-ok" ng-click="send({payload:{accion:'renombrarProducto',id:rama.ramaId,nombre:rama.ramaNombre}})">guardar</button>
+          <button class="excel-ok" ng-click="send({payload:{accion:'agregarSubrama',productoId:rama.ramaId}})">+ subrama</button>
+          <button class="excel-ok" style="background:#991b1b;color:#fff" ng-if="rama.ramaId != 0" ng-click="deleteTreeRama(rama)">borrar</button> |
+          Stock <b>{{rama.stockTn}} tn</b> |
+          <span ng-class="{'rama-deficit-badge': rama.faltanteTn > 0}">Faltan <b>{{rama.faltanteTn}} tn</b></span> |
+          {{rama.subramas.length}} subramas
+        </td>
+      </tr>
+      <tr class="excel-sub" ng-repeat-start="sub in rama.subramas | orderBy:subSortKey:sortReverse">
+        <td></td>
+        <td colspan="11">
+          <div class="sub-total">
+<input style="width:190px;font-weight:800" ng-model="sub.subramaNombre" placeholder="Nombre de subrama">
+            <button class="excel-ok" ng-click="send({payload:{accion:'renombrarSubrama',productoId:rama.ramaId,subId:sub.subramaId,nombre:sub.subramaNombre}})">guardar</button>
+            <button class="excel-ok" style="background:#991b1b;color:#fff" ng-if="sub.subramaId != 0" ng-click="deleteTreeSubrama(rama,sub)">borrar</button>
+            <span class="sub-stock">Stock <b>{{sub.stockTn}}</b> tn</span>
+            <label class="group-band-label" title="Evaluar minimo/maximo por suma de la subrama">
+              <input class="group-band-check" type="checkbox" ng-model="sub.bandaGrupoActiva" ng-change="markSubBandDirty(sub)">sumar grupo</label>
+            <span ng-if="sub.bandaGrupoActiva">Mínimo <input class="group-band-input" ng-class="{dirty:sub.bandDirty}" type="number" step="0.1" ng-model="sub.bandaGrupoMinimoTn" ng-change="markSubBandDirty(sub)" ng-keypress="subBandKey($event,sub)"></span>
+            <span ng-if="sub.bandaGrupoActiva">Máximo <input class="group-band-input" ng-class="{dirty:sub.bandDirty}" type="number" step="0.1" ng-model="sub.bandaGrupoMaximoTn" ng-change="markSubBandDirty(sub)" ng-keypress="subBandKey($event,sub)"></span>
+            <span ng-if="!sub.bandaGrupoActiva">Mínimo {{sub.minimoTn}} tn</span>
+            <span ng-if="sub.bandaGrupoActiva" ng-class="{'sub-deficit-alert': sub.faltanteTn > 0}">Faltan {{sub.faltanteTn}} tn</span>
+            <span ng-if="sub.bandaGrupoActiva && sub.bandaGrupoDentroDeRango">Sobre minimo +{{sub.bandaGrupoMargenSobreMinimoTn}} tn</span>
+            <span ng-if="sub.bandaGrupoActiva && sub.bandaGrupoDentroDeRango">Hasta máximo {{sub.bandaGrupoHastaMaximoTn}} tn</span>
+            <span ng-if="!sub.bandaGrupoActiva" ng-class="{'sub-deficit-alert': sub.faltanteTn > 0}">Faltan {{sub.faltanteTn}} tn</span>
+            <span ng-if="sub.sobraTn > 0">Sobra {{sub.sobraTn}} tn</span>
+            <span ng-if="sub.bandaGrupoActiva">Materiales incluidos <input style="width:360px" class="group-band-input" ng-class="{dirty:sub.bandDirty}" type="text" ng-model="sub.bandaGrupoMaterialesTexto" ng-change="markSubBandDirty(sub)" ng-keypress="subBandKey($event,sub)" title="Nombres exactos separados por coma; se guardan en planComprasV2.json"></span>
+            <button class="excel-ok" ng-if="sub.bandDirty" ng-mousedown="applySubBand(sub)" ng-click="applySubBand(sub)">ok</button>
+          </div>
+        </td>
+      </tr>
+      <tr class="excel-material" ng-class="rowStatus(m)" ng-repeat="m in sub.materiales | orderBy:materialSortKey:sortReverse">
+        <td class="excel-status">
+          <span class="status-dot" ng-class="rowStatus(m)" title="{{m.estado}}"></span>
+        </td>
+        <td>
+          <select class="rama-select" ng-model="m.destinoRamaId" ng-options="r.id as r.nombre for r in m.ramaOptions" ng-change="prepareTreeMove(m)" title="Rama destino"></select>
+        </td>
+        <td>
+          <select class="sub-select" ng-model="m.destinoSubramaId" ng-options="s.id as s.nombre for s in targetTreeSubramas(m)" ng-change="moveTreeMaterial(m)" title="Subrama destino">
+            <option value="">elegir subrama...</option>
+          </select>
+        </td>
+        <td>
+          <span class="cell-main" title="{{m.material}}">{{m.material}}</span>
+        </td>
+                <td class="excel-num stock-cell" title="A moler + A lavar + Lavado + Extruido">{{m.stockTn}}</td>
+        <td class="excel-num">
+          <input class="excel-band" ng-class="{dirty:m.bandDirty}" type="number" step="0.1" ng-model="m.minimoTn" ng-change="markBandDirty(m)" ng-keypress="bandKey($event,m)">
+        </td>
+        <td class="excel-num">
+          <input class="excel-band" ng-class="{dirty:m.bandDirty}" type="number" step="0.1" ng-model="m.maximoTn" ng-change="markBandDirty(m)" ng-keypress="bandKey($event,m)">
+        </td>
+        <td class="excel-num excel-falta" ng-class="rowStatus(m)">{{m.faltanteTn}}</td>
+        <td class="excel-num excel-sobra">{{m.excesoTn || 0}}</td>
+        <td>
+          <button class="excel-ok" ng-if="m.bandDirty" ng-mousedown="applyBand(m)" ng-click="applyBand(m)">ok</button>
+          <span class="excel-estado" ng-class="rowStatus(m)" ng-if="!m.bandDirty">{{m.estado}}</span>
+        </td>
+        <td title="{{m.familia}}">{{m.familia}}</td>
+        <td class="excel-obs" title="{{m.obs}}">{{m.obs}}</td>
+      </tr>
+      <tr ng-repeat-end style="display:none"></tr>
+    </tbody>
+  </table>
+
+  <div class="empty" ng-if="!msg.payload.arbol || !msg.payload.arbol.length">
+    No hay datos para mostrar.
+  </div>
+
+</div>
+<script>
+(function(scope){
+  scope.sortMode = 'faltante';
+  scope.sortReverse = true;
+
+  scope.setSort = function(mode, defaultReverse){
+    mode = mode || 'faltante';
+    if (scope.sortMode === mode) {
+      scope.sortReverse = !scope.sortReverse;
+      return;
+    }
+    scope.sortMode = mode;
+    scope.sortReverse = !!defaultReverse;
+  };
+
+  scope.sortArrow = function(mode){
+    if (scope.sortMode !== mode) return '';
+    return scope.sortReverse ? '↓' : '↑';
+  };
+
+  scope.materialSortKey = function(m){
+    if (!m) return 0;
+    if (scope.sortMode === 'stock') return Number(m.stockTn || 0);
+    if (scope.sortMode === 'sobra') return Number(m.excesoTn || 0);
+    if (scope.sortMode === 'material') return String(m.material || '');
+    return Number(m.faltanteTn || 0);
+  };
+
+  scope.subSortKey = function(sub){
+    if (!sub) return 0;
+    if (scope.sortMode === 'stock') return Number(sub.stockTn || 0);
+    if (scope.sortMode === 'sobra') return Number(sub.sobraTn || 0);
+    if (scope.sortMode === 'material') return String(sub.subramaNombre || '');
+    return Number(sub.faltanteTn || 0);
+  };
+
+  scope.ramaSortKey = function(rama){
+    if (!rama) return 0;
+    if (scope.sortMode === 'stock') return Number(rama.stockTn || 0);
+    if (scope.sortMode === 'sobra') return Number(rama.sobraTn || 0);
+    if (scope.sortMode === 'material') return String(rama.ramaNombre || '');
+    return Number(rama.faltanteTn || 0);
+  };
+
+  scope.sortedByView = function(list, keyFn){
+    var arr = (list || []).slice();
+    arr.sort(function(a, b){
+      var ka = keyFn(a);
+      var kb = keyFn(b);
+      var na = Number(ka);
+      var nb = Number(kb);
+      var cmp;
+      if (!isNaN(na) && !isNaN(nb)) {
+        cmp = na - nb;
+      } else {
+        cmp = String(ka || '').localeCompare(String(kb || ''));
+      }
+      return scope.sortReverse ? -cmp : cmp;
+    });
+    return arr;
+  };
+
+  scope.r1 = function(v){
+    return Math.round(Number(v || 0) * 10) / 10;
+  };
+
+  scope.ramaMinDeseado = function(rama){
+    return scope.r1(Number(rama && rama.stockTn || 0) + Number(rama && rama.faltanteTn || 0));
+  };
+
+  scope.ramaCobertura = function(rama){
+    var min = scope.ramaMinDeseado(rama);
+    if (min <= 0) return 100;
+    return scope.r1((Number(rama && rama.stockTn || 0) / min) * 100);
+  };
+
+
+  scope.subMinDeseado = function(sub){
+    return scope.r1(Number(sub && sub.stockTn || 0) + Number(sub && sub.faltanteTn || 0));
+  };
+
+  scope.subCobertura = function(sub){
+    var min = scope.subMinDeseado(sub);
+    if (min <= 0) return 100;
+    return scope.r1((Number(sub && sub.stockTn || 0) / min) * 100);
+  };
+
+  scope.coverageClass = function(pct){
+    var p = Number(pct || 0);
+    if (p >= 100) return 'high';
+    if (p >= 80) return 'mid';
+    return 'low';
+  };
+
+  scope.coverageWidth = function(pct){
+    var p = Math.max(0, Math.min(100, Number(pct || 0)));
+    return p + '%';
+  };
+
+  scope.ramaMaterialCount = function(rama){
+    var subs = rama && rama.subramas ? rama.subramas : [];
+    return subs.reduce(function(total, sub){
+      return total + (sub && sub.materiales ? sub.materiales.length : 0);
+    }, 0);
+  };
+
+  scope.tnToKg = function(v){
+    return Math.round(Number(v || 0) * 1000);
+  };
+
+  scope.kgHastaMaximo = function(m){
+    var max = Number(m && m.maximoTn || 0);
+    var stock = Number(m && m.stockTn || 0);
+    if (max <= 0) return 0;
+    return Math.max(0, Math.round((max - stock) * 1000));
+  };
+
+  scope.listaCompraMinima = [];
+
+  scope.rebuildListaCompraMinima = function(){
+    var materiales = scope.msg && scope.msg.payload && scope.msg.payload.planos && scope.msg.payload.planos.materiales ? scope.msg.payload.planos.materiales : [];
+    var byMaterial = {};
+    materiales
+      .filter(function(m){ return Number(m && m.faltanteTn || 0) > 0; })
+      .forEach(function(m){
+        var key = String(m.material || '').toUpperCase();
+        if (!key) return;
+        if (!byMaterial[key]) byMaterial[key] = m;
+      });
+    scope.listaCompraMinima = Object.keys(byMaterial)
+      .map(function(k){ return byMaterial[k]; })
+      .sort(function(a, b){
+        return Number(b.faltanteTn || 0) - Number(a.faltanteTn || 0) ||
+               Number(b.stockTn || 0) - Number(a.stockTn || 0) ||
+               String(a.material || '').localeCompare(String(b.material || ''));
+      });
+  };
+
+  scope.$watch('msg.payload', function(){
+    scope.rebuildListaCompraMinima();
+  });
+
+  scope.statusTotal = function(){
+    var arbol = scope.msg && scope.msg.payload && scope.msg.payload.arbol ? scope.msg.payload.arbol : [];
+    var total = arbol.reduce(function(acc, rama){
+      acc.stockTn += Number(rama.stockTn || 0);
+      acc.faltanteTn += Number(rama.faltanteTn || 0);
+      acc.subramas += rama && rama.subramas ? rama.subramas.length : 0;
+      acc.materiales += scope.ramaMaterialCount(rama);
+      return acc;
+    }, {stockTn:0, faltanteTn:0, subramas:0, materiales:0});
+    total.stockTn = scope.r1(total.stockTn);
+    total.faltanteTn = scope.r1(total.faltanteTn);
+    total.minDeseadoTn = scope.r1(total.stockTn + total.faltanteTn);
+    total.coberturaPct = total.minDeseadoTn > 0 ? scope.r1((total.stockTn / total.minDeseadoTn) * 100) : 100;
+    total.estado = total.faltanteTn > 0 ? 'FALTA COMPRA' : 'OK';
+    return total;
+  };
+
+  scope.escapeExcel = function(v){
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  scope.xlsCell = function(v, cls){
+    return '<td' + (cls ? ' class="' + cls + '"' : '') + '>' + scope.escapeExcel(v) + '</td>';
+  };
+
+  scope.downloadBlob = function(blob, filename){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  };
+
+  scope.formatDateAr = function(value){
+    if (value === undefined || value === null || value === '') return '';
+    if (value instanceof Date && !isNaN(value.getTime())) {
+      return String(value.getDate()).padStart(2, '0') + '/' + String(value.getMonth() + 1).padStart(2, '0') + '/' + String(value.getFullYear()).slice(-2);
+    }
+    var s = String(value).trim();
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[3] + '/' + m[2] + '/' + m[1].slice(-2);
+    m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/);
+    if (m) return String(m[1]).padStart(2, '0') + '/' + String(m[2]).padStart(2, '0') + '/' + String(m[3]).slice(-2);
+    var d = new Date(s);
+    if (!isNaN(d.getTime())) return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getFullYear()).slice(-2);
+    return s;
+  };
+
+  scope.formatDateTimeAr = function(value){
+    if (!value) return '-';
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return scope.formatDateAr(value) || String(value);
+    return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getFullYear()).slice(-2) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  };
+
+  scope.xmlEscape = function(v){
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  scope.xlsXmlCell = function(v, style, type){
+    var t = type || ((v !== '' && v !== null && v !== undefined && !isNaN(Number(v))) ? 'Number' : 'String');
+    var val = t === 'Number' ? Number(v || 0) : scope.xmlEscape(v);
+    return '<Cell' + (style ? ' ss:StyleID="' + style + '"' : '') + '><Data ss:Type="' + t + '">' + val + '</Data></Cell>';
+  };
+
+  scope.xlsXmlRow = function(cells, style){
+    return '<Row>' + (cells || []).map(function(c){
+      if (c && typeof c === 'object' && c.merge) {
+        return '<Cell' + (c.style ? ' ss:StyleID="' + c.style + '"' : '') + ' ss:MergeAcross="' + Number(c.merge || 0) + '"><Data ss:Type="String">' + scope.xmlEscape(c.v) + '</Data></Cell>';
+      }
+      return scope.xlsXmlCell(c && c.v !== undefined ? c.v : c, c && c.style ? c.style : style, c && c.type ? c.type : undefined);
+    }).join('') + '</Row>';
+  };
+
+  scope.stockAuditHeaders = function(rows){
+    var base = ['nro', 'materialNormalizado', 'familiaNormalizada', 'productoCalculado', 'stockTnCalculado', 'minimoTnOrigen', 'obsNormalizada'];
+    var seen = {};
+    base.forEach(function(k){ seen[k] = true; });
+    (rows || []).forEach(function(row){
+      Object.keys(row || {}).forEach(function(k){
+        if (!seen[k]) seen[k] = true;
+      });
+    });
+    return Object.keys(seen);
+  };
+
+  scope.downloadExcelFile = function(){
+    var data = angular.copy(scope.msg && scope.msg.payload ? scope.msg.payload : {});
+    var arbol = data.arbol || [];
+    var total = scope.statusTotal();
+    var mes = data.mesKey || 'sin_mes';
+    var generado = scope.formatDateTimeAr(data.generadoEn);
+    var stockInfo = (data.stockAuditoria && data.stockAuditoria.info) ? data.stockAuditoria.info : {};
+    var fechaStock = scope.formatDateAr(stockInfo.fechaStock) || 'sin fecha';
+    var rows = [];
+    var stockRows = data.stockAuditoria && data.stockAuditoria.filas ? data.stockAuditoria.filas : [];
+    var rawHeaders = scope.stockAuditHeaders(stockRows);
+
+    rows.push('<?xml version="1.0" encoding="UTF-8"?>');
+    rows.push('<?mso-application progid="Excel.Sheet"?>');
+    rows.push('<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">');
+    rows.push('<Styles>');
+    rows.push('<Style ss:ID="Title"><Font ss:Bold="1" ss:Size="14"/><Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/></Style>');
+    rows.push('<Style ss:ID="Meta"><Font ss:Color="#475569"/></Style>');
+    rows.push('<Style ss:ID="Header"><Font ss:Bold="1"/><Interior ss:Color="#EEF2F7" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>');
+    rows.push('<Style ss:ID="Total"><Font ss:Bold="1"/><Interior ss:Color="#DFE3E9" ss:Pattern="Solid"/></Style>');
+    rows.push('<Style ss:ID="Rama"><Font ss:Bold="1"/><Interior ss:Color="#E5E7EB" ss:Pattern="Solid"/></Style>');
+    rows.push('<Style ss:ID="Sub"><Font ss:Bold="1"/><Interior ss:Color="#EEF2F7" ss:Pattern="Solid"/></Style>');
+    rows.push('<Style ss:ID="Bad"><Font ss:Bold="1" ss:Color="#B91C1C"/></Style>');
+    rows.push('<Style ss:ID="Ok"><Font ss:Bold="1" ss:Color="#166534"/></Style>');
+    rows.push('<Style ss:ID="Num"><NumberFormat ss:Format="0.0"/></Style>');
+    rows.push('</Styles>');
+
+    rows.push('<Worksheet ss:Name="Plan compras"><Table>');
+    rows.push('<Column ss:Width="120"/><Column ss:Width="120"/><Column ss:Width="260"/><Column ss:Width="70"/><Column ss:Width="55"/><Column ss:Width="55"/><Column ss:Width="55"/><Column ss:Width="55"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="70"/><Column ss:Width="120"/><Column ss:Width="120"/><Column ss:Width="260"/>');
+    rows.push(scope.xlsXmlRow([{v:'Plan de compras y stock', merge:9, style:'Title'}]));
+    rows.push(scope.xlsXmlRow([{v:'Mes: ' + mes + ' | Generado: ' + generado + ' | Stock: ' + fechaStock, merge:9, style:'Meta'}]));
+    rows.push(scope.xlsXmlRow(['Estado general','Stock','Faltante','Stock mínimo','Cobertura','Estado'].map(function(v){ return {v:v, style:'Header'}; })));
+    rows.push(scope.xlsXmlRow([{v:'Total', style:'Total'}, {v:total.stockTn + ' tn', style:'Total'}, {v:total.faltanteTn + ' tn', style:total.faltanteTn > 0 ? 'Bad' : 'Ok'}, {v:total.minDeseadoTn + ' tn', style:'Total'}, {v:total.coberturaPct + '%', style:'Total'}, {v:total.estado, style:total.faltanteTn > 0 ? 'Bad' : 'Ok'}]));
+    scope.sortedByView(arbol, scope.ramaSortKey).forEach(function(rama){
+      rows.push(scope.xlsXmlRow([{v:rama.ramaNombre, style:'Rama'}, {v:rama.stockTn + ' tn', style:'Rama'}, {v:rama.faltanteTn + ' tn', style:Number(rama.faltanteTn || 0) > 0 ? 'Bad' : 'Ok'}, {v:scope.ramaMinDeseado(rama) + ' tn', style:'Rama'}, {v:scope.ramaCobertura(rama) + '%', style:'Rama'}, {v:rama.estado, style:Number(rama.faltanteTn || 0) > 0 ? 'Bad' : 'Ok'}]));
+      scope.sortedByView(rama.subramas || [], scope.subSortKey).forEach(function(sub){
+        rows.push(scope.xlsXmlRow([{v:'  ' + sub.subramaNombre}, sub.stockTn + ' tn', sub.faltanteTn + ' tn', scope.subMinDeseado(sub) + ' tn', scope.subCobertura(sub) + '%', sub.estado]));
+      });
+    });
+    rows.push(scope.xlsXmlRow(['Lista operativa mínima', '', '', '', '', '', '', '', '', ''].map(function(v, idx){ return idx === 0 ? {v:v, style:'Header'} : {v:v, style:'Header'}; })));
+    rows.push(scope.xlsXmlRow(['Material','Rama','Subrama','Stock kg','Mín kg','Falta kg','Hasta max kg','Estado','Familia','Obs'].map(function(v){ return {v:v, style:'Header'}; })));
+    scope.listaCompraMinima.forEach(function(m){
+      rows.push(scope.xlsXmlRow([m.material, m.ramaNombre, m.subramaNombre, scope.tnToKg(m.stockTn), scope.tnToKg(m.minimoTn), {v:scope.tnToKg(m.faltanteTn), style:'Bad'}, scope.kgHastaMaximo(m), {v:m.estado, style:'Bad'}, m.familia, m.obs]));
+    });
+    rows.push(scope.xlsXmlRow(['Rama','Subrama','Material','Stock','Moler','Lavar','Lav','Extr','Min','Max','Falta','Sobra','Estado','Familia','Obs'].map(function(v){ return {v:v, style:'Header'}; })));
+    scope.sortedByView(arbol, scope.ramaSortKey).forEach(function(rama){
+      rows.push(scope.xlsXmlRow([{v:(rama.ramaNombre || '') + ' | ID ' + (rama.ramaId || '') + ' - ' + (rama.ramaKey || '') + ' - ' + (rama.tipo || '') + ' | Stock ' + (rama.stockTn || 0) + ' tn | Faltante ' + (rama.faltanteTn || 0) + ' tn | Estado ' + (rama.estado || '') + ' | ' + ((rama.subramas || []).length) + ' subramas', merge:9, style:'Rama'}]));
+      scope.sortedByView(rama.subramas || [], scope.subSortKey).forEach(function(sub){
+        rows.push(scope.xlsXmlRow([{v:(sub.subramaNombre || '') + ' | Sub ' + (sub.subramaId || 0) + ' | Stock ' + (sub.stockTn || 0) + ' tn | Min ' + (sub.minimoTn || 0) + ' tn | Falta ' + (sub.faltanteTn || 0) + ' tn | Cobertura ' + (sub.coberturaPct || 0) + '% | Estado ' + (sub.estado || ''), merge:9, style:'Sub'}]));
+        scope.sortedByView(sub.materiales || [], scope.materialSortKey).forEach(function(m){
+          var falta = Number(m.faltanteTn || 0);
+          var sobra = Number(m.excesoTn || 0);
+          rows.push(scope.xlsXmlRow([rama.ramaNombre, sub.subramaNombre, m.material, m.stockTn, m.paraMolerTn || 0, m.paraLavarTn || 0, m.lavadoTn || 0, m.extruidoTn || 0, m.minimoTn, m.maximoTn, {v:m.faltanteTn, style:falta > 0 ? 'Bad' : 'Ok'}, {v:m.excesoTn || 0, style:sobra > 0 ? 'Bad' : 'Ok'}, {v:m.estado, style:(falta > 0 || sobra > 0) ? 'Bad' : 'Ok'}, m.familia, m.obs]));
+        });
+      });
+    });
+    rows.push('</Table></Worksheet>');
+
+    rows.push('<Worksheet ss:Name="Stock original"><Table>');
+    rows.push(scope.xlsXmlRow([{v:'Auditoria stock original', merge:Math.max(rawHeaders.length - 1, 0), style:'Title'}]));
+    rows.push(scope.xlsXmlRow([{v:'Fuente: ' + ((data.stockAuditoria && data.stockAuditoria.fuente) || '') + ' | Fecha stock: ' + fechaStock + ' | Registros: ' + (stockInfo.registros || stockRows.length), merge:Math.max(rawHeaders.length - 1, 0), style:'Meta'}]));
+    rows.push(scope.xlsXmlRow(rawHeaders.map(function(h){ return {v:h, style:'Header'}; })));
+    stockRows.forEach(function(row){
+      rows.push(scope.xlsXmlRow(rawHeaders.map(function(h){ return row[h]; })));
+    });
+    rows.push('</Table></Worksheet>');
+    rows.push('</Workbook>');
+
+    scope.downloadBlob(new Blob([rows.join('')], {type: 'application/vnd.ms-excel;charset=utf-8'}), 'compras_v4_excel_' + mes + '.xls');
+  };
+
+  scope.downloadExcelJson = function(){
+    var data = angular.copy(scope.msg && scope.msg.payload ? scope.msg.payload : {});
+    var out = {
+      version: 4,
+      tipo: 'compras_v4_excel_export',
+      generadoEn: new Date().toISOString(),
+      mesKey: data.mesKey || '',
+      mixMensual: angular.copy(data.mixMensual || {}),
+      modeloCompras: angular.copy(data.modeloCompras || {}),
+      resumen: angular.copy(data.resumen || {}),
+      plan: angular.copy(data.plan || []),
+      realesAuditoria: angular.copy(data.realesAuditoria || {}),
+      arbol: angular.copy(data.arbol || []),
+      planos: angular.copy(data.planos || {}),
+      stockAuditoria: angular.copy(data.stockAuditoria || {})
+    };
+    var blob = new Blob([JSON.stringify(out, null, 2)], {type: 'application/json;charset=utf-8'});
+    scope.downloadBlob(blob, 'compras_v4_excel_' + (out.mesKey || 'sin_mes') + '.json');
+  };
+
+  scope.ramaLayout = function(rama){
+    var subs = rama && rama.subramas ? rama.subramas : [];
+    var subCount = subs.length;
+    var matCount = subs.reduce(function(s, sub){
+      return s + (sub && sub.materiales ? sub.materiales.length : 0);
+    }, 0);
+    var one = subCount <= 1 ? ' one' : '';
+    var falta = Number(rama && rama.faltanteTn || 0);
+
+    if (subCount >= 4 || falta >= 120) return 'span-full' + one;
+    if (subCount >= 3) return 'span-xl' + one;
+    if (subCount >= 2 && matCount >= 7) return 'span-lg' + one;
+    if (subCount >= 2) return 'span-md' + one;
+    if (matCount >= 6) return 'span-md' + one;
+    if (matCount >= 3) return 'span-sm' + one;
+    return 'span-xs' + one;
+  };
+
+  scope.cardSize = function(sub, rama){
+    var n = sub && sub.materiales ? sub.materiales.length : 0;
+    var solo = rama && rama.subramas && rama.subramas.length <= 1;
+    if (n <= 1) return solo ? 'solo-xs' : 'xs';
+    if (n <= 2) return solo ? 'solo-sm' : 'sm';
+    if (n <= 5) return solo ? 'solo-md' : 'md';
+    return solo ? 'solo-lg' : 'lg';
+  };
+
+  scope.rowStatus = function(m){
+    if (!m) return 'sin-min';
+    var estado = String(m.estado || '').toUpperCase();
+    var falta = Number(m.faltanteTn || 0);
+    var sobra = Number(m.excesoTn || m.sobraTn || 0);
+    if (sobra > 0 || estado.indexOf('SOBRA') === 0) return 'sobra';
+    if (falta > 0 || estado.indexOf('FALTA') === 0) return 'falta';
+    if (estado === 'OK') return 'ok';
+    if (estado.indexOf('ALTO') >= 0) return 'alto';
+    return 'sin-min';
+  };
+
+  scope.rowClass = function(m, first){
+    return (scope.rowStatus(m) || '') + (first ? ' sub-start' : '');
+  };
+
+  scope.targetTreeSubramas = function(m){
+    var ramas = (m && m.ramaOptions) || [];
+    var rama = ramas.find(function(r){ return Number(r.id) === Number(m.destinoRamaId); });
+    return rama && rama.subramas && rama.subramas.length ? rama.subramas : [{id:0,nombre:'Sin subrama'}];
+  };
+
+  scope.prepareTreeMove = function(m){
+    // Esperar una eleccion explicita de subrama. Al elegirla se mueve solo.
+    m.destinoSubramaId = null;
+  };
+
+  scope.treeMoveDirty = function(m){
+    return m && (Number(m.destinoRamaId) !== Number(m.ramaId) || Number(m.destinoSubramaId) !== Number(m.subramaId));
+  };
+
+  scope.moveTreeMaterial = function(m){
+    if (!m || m.destinoSubramaId === null || m.destinoSubramaId === undefined || m.destinoSubramaId === '' || !scope.treeMoveDirty(m)) return;
+    scope.send({payload:{
+      accion:'moverMaterialArbol',
+      material:m.material,
+      productoId:Number(m.destinoRamaId),
+      subramaId:Number(m.destinoSubramaId)
+    }});
+  };
+
+  scope.deleteTreeRama = function(rama){
+    if (!rama || Number(rama.ramaId) === 0) return;
+    if (!window.confirm('Borrar la rama "' + rama.ramaNombre + '"? Solo si esta vacia.')) return;
+    scope.send({payload:{accion:'eliminarProducto',id:Number(rama.ramaId)}});
+  };
+
+  scope.deleteTreeSubrama = function(rama, sub){
+    if (!rama || !sub || Number(sub.subramaId) === 0) return;
+    if (!window.confirm('Borrar la subrama "' + sub.subramaNombre + '"? Solo si esta vacia.')) return;
+    scope.send({payload:{accion:'eliminarSubrama',productoId:Number(rama.ramaId),subId:Number(sub.subramaId)}});
+  };
+
+  scope.changeRama = function(m){
+    if (!m || !m.material) return;
+    scope.send({payload:{
+      accion: 'setRamaMaterial',
+      material: m.material,
+      productoId: m.ramaId,
+      actualProductoId: m.asignacionMaterial && m.asignacionMaterial.productoId
+    }});
+  };
+
+  scope.changeSubrama = function(m){
+    if (!m || !m.material) return;
+    scope.send({payload:{
+      accion: 'setSubramaMaterial',
+      material: m.material,
+      productoId: m.ramaId,
+      subramaId: m.subramaId
+    }});
+  };
+
+  scope.markSubBandDirty = function(sub){
+    if (sub) {
+      sub.bandDirty = true;
+      sub.bandSaving = false;
+    }
+  };
+
+  scope.applySubBand = function(sub){
+    if (!sub || sub.bandSaving) return;
+    sub.bandSaving = true;
+    var min = Number(sub.bandaGrupoMinimoTn);
+    var max = Number(sub.bandaGrupoMaximoTn);
+    if (!isFinite(min)) min = 0;
+    if (!isFinite(max)) max = 0;
+    sub.bandDirty = false;
+var materialesTexto = String(sub.bandaGrupoMaterialesTexto || '').trim();
+    var materiales = materialesTexto
+      ? materialesTexto.split(/[,;\n]+/).map(function(v){ return v.trim(); }).filter(Boolean)
+      : (sub.materiales || []).map(function(m){ return m.material; }).filter(Boolean);
+    materiales = materiales.filter(function(v, i, arr){ return arr.indexOf(v) === i; });
+    scope.send({payload:{
+      accion: 'setBandaGrupo',
+      key: sub.bandaGrupoKey,
+      activa: !!sub.bandaGrupoActiva,
+      ramaKey: sub.ramaKey || (sub.materiales && sub.materiales[0] && sub.materiales[0].ramaKey),
+      subramaNombre: sub.subramaNombre,
+      minimoTn: min,
+      maximoTn: max,
+      materiales: materiales
+    }});
+  };
+
+  scope.subBandKey = function(ev, sub){
+    if (ev && ev.which === 13) scope.applySubBand(sub);
+  };
+
+  scope.markBandDirty = function(m){
+    if (m) {
+      m.bandDirty = true;
+      m.bandSaving = false;
+    }
+  };
+
+  scope.applyBand = function(m){
+    if (!m || !m.material) return;
+    if (m.bandSaving) return;
+    m.bandSaving = true;
+    var min = Number(m.minimoTn);
+    var max = Number(m.maximoTn);
+    if (!isFinite(min)) min = 0;
+    if (!isFinite(max)) max = 0;
+    m.bandDirty = false;
+    scope.send({payload:{
+      accion: 'setBandaMaterial',
+      material: m.material,
+      minimoTn: min,
+      maximoTn: max,
+      producto: m.ramaKey,
+      familia: m.familia
+    }});
+  };
+
+  scope.bandKey = function(ev, m){
+    if (ev && ev.which === 13) scope.applyBand(m);
+  };
+})(scope);
+</script>
