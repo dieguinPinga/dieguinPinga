@@ -83,3 +83,9 @@ El export `compras_v4_excel_*.json` (guardado en `samples/`) es el **modelo de l
 (arbol, planos, plan, auditorias) y NO incluye `criterio`. Para reconstruir la config viva
 1:1 (asignaciones material->rama/subrama, bandasGrupo exactas, metasPorMes) hace falta el
 archivo **`planComprasV2.json`**. Ese es el verdadero "base".
+
+## Cambios
+- **[quitado]** Segundo `ui_template` "plan sugerido 200 tn" (nodo `1256`, seccion
+  "Avance de Compras y estado de piletas / Mix del mes"). El flow quedo con un solo
+  tablero: "Plan de compras y stock". El archivo `src/1256-plan-sugerido.html` se
+  conserva por si se quiere reincorporar, pero ya no se referencia en `build.js`.

@@ -11,7 +11,7 @@ const func5905   = read('5905-criterio-simple.js');
 const func35280  = read('35280-criterio-simple.js');
 const funcA778   = read('a778-estructurar-arbol.js');
 const tplB6a7    = read('b6a7-tablero.html');
-const tpl1256    = read('1256-plan-sugerido.html');
+// tpl1256 (plan sugerido / avance de compras) removido a pedido: ya no se usa.
 
 const flow = [
   { id:"8b27e6e670a085da", type:"tab", label:"Cavernicola v2", disabled:false,
@@ -96,7 +96,7 @@ const flow = [
 
   { id:"a77807b90f04b3ca", type:"function", z:"8b27e6e670a085da", name:"function 8",
     func:funcA778, outputs:1, timeout:0, noerr:0, initialize:"", finalize:"", libs:[],
-    x:2680, y:980, wires:[["28407f6b2128045a","b6a7cce012889f34","1256065432905bef"]] },
+    x:2680, y:980, wires:[["28407f6b2128045a","b6a7cce012889f34"]] },
 
   { id:"28407f6b2128045a", type:"debug", z:"8b27e6e670a085da", name:"debug 23", active:false,
     tosidebar:true, console:false, tostatus:false, complete:"false", statusVal:"",
@@ -106,11 +106,6 @@ const flow = [
     name:"aca mostramos", order:1, width:"42", height:"37", format:tplB6a7,
     storeOutMessages:false, fwdInMessages:false, resendOnRefresh:true, templateScope:"local",
     className:"", x:2850, y:1060, wires:[["35280b2d61b594de"]] },
-
-  { id:"1256065432905bef", type:"ui_template", z:"8b27e6e670a085da", group:"cavernicola_v2_group",
-    name:"plan sugerido 200 tn", order:2, width:"42", height:"14", format:tpl1256,
-    storeOutMessages:false, fwdInMessages:false, resendOnRefresh:true, templateScope:"local",
-    className:"", x:2850, y:1120, wires:[[]] },
 
   { id:"ecodp_watch_plan", type:"watch", z:"8b27e6e670a085da", d:true, name:"watch planComprasV2.json",
     files:"/home/gangleo81/planComprasV2.json", recursive:false, x:1240, y:1350,
