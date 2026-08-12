@@ -42,3 +42,44 @@ cavernicola/
   `/home/gangleo81/planComprasV2.json`, `comprasRealesIA.json`,
   `stockIntermediosIA.json`, `agendaComprasIA.json`.
 - Los watchdog hacen POST a `http://100.73.116.111:8080/api/ia/ingest/plan_compras`.
+
+## Modelo de datos (entendido desde el export real 2026-07)
+
+### Flujo de punta a punta
+1. **Entradas (4 JSON en disco)** que leen los botones "Recargar":
+   - `planComprasV2.json` -> **criterio/config** (la fuente de verdad editable).
+   - `comprasRealesIA.json` -> compras del mes.
+   - `stockIntermediosIA.json` -> foto actual de piletas (stock).
+   - `agendaComprasIA.json` -> agenda.
+2. Nodo **35280** combina todo en `buildDashboard` -> nodo **a778** arma el `arbol`
+   (rama -> subrama -> material) -> los 2 `ui_template` lo dibujan.
+3. Cada edicion en la UI manda una `accion` al 35280, que actualiza el criterio y
+   lo **persiste** en `planComprasV2.json` (salida 2 -> nodo file "Guardar").
+
+### De donde salen los minimos/maximos (y los botoncitos +/-)
+- Semilla en el codigo: `BANDAS_MATERIAL_BASE` (dentro del 35280), solo si no hay config.
+- **Fuente viva:** `planComprasV2.json`:
+  - `criterio.bandasMaterial` -> min/max por material.
+  - `criterio.bandasGrupo`    -> bandas "sumar grupo".
+- La UI edita con las acciones:
+  - `setBandaMaterial` (min/max de un material)  -> se guarda en el JSON.
+  - `setBandaGrupo`   (checkbox "sumar grupo")    -> se guarda en el JSON.
+
+### Banda de grupo ("sumar grupo")
+Cuando esta activa, el min/max se evalua sobre la **suma** de los materiales del grupo;
+los materiales individuales quedan min=0/max=0 y su estado pasa a "BANDA GRUPO".
+Ej 2026-07: STRETCH CARAMELO (min 30 / max 50, incluye STRECH CARAMELO + STRECH TUTTY,
+stock 13.2, falta 16.8).
+
+### Quirk a decidir: max = 0
+Un material con **max 0** siempre muestra "SOBRA" (exceso = todo el stock) aunque este
+por debajo del minimo y sume faltante. Ej: ADI AMARILLO (stock 9.5, min 20 -> falta 10.5
+y a la vez SOBRA 9.5). El faltante de la subrama SI lo cuenta
+(PEAD INYECCION: min 190 - stock 108.2 = 81.8 tn). Se puede cambiar el criterio para que
+max=0 signifique "sin tope" (no marcar sobra) si asi se prefiere.
+
+### Importante para "tenerlo como base"
+El export `compras_v4_excel_*.json` (guardado en `samples/`) es el **modelo de lectura**
+(arbol, planos, plan, auditorias) y NO incluye `criterio`. Para reconstruir la config viva
+1:1 (asignaciones material->rama/subrama, bandasGrupo exactas, metasPorMes) hace falta el
+archivo **`planComprasV2.json`**. Ese es el verdadero "base".
