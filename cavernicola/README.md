@@ -89,3 +89,6 @@ archivo **`planComprasV2.json`**. Ese es el verdadero "base".
   "Avance de Compras y estado de piletas / Mix del mes"). El flow quedo con un solo
   tablero: "Plan de compras y stock". El archivo `src/1256-plan-sugerido.html` se
   conserva por si se quiere reincorporar, pero ya no se referencia en `build.js`.
+- **[fix]** La "Lista operativa mínima" ahora incluye las **bandas de grupo**
+  ("sumar grupo") como una línea por grupo con su faltante total. Antes se
+  escapaban (ej: STRETCH CARAMELO faltaba 16.8 tn y no aparecía).

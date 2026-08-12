@@ -1178,22 +1178,46 @@
   scope.listaCompraMinima = [];
 
   scope.rebuildListaCompraMinima = function(){
-    var materiales = scope.msg && scope.msg.payload && scope.msg.payload.planos && scope.msg.payload.planos.materiales ? scope.msg.payload.planos.materiales : [];
+    var payload = scope.msg && scope.msg.payload ? scope.msg.payload : {};
+    var materiales = payload.planos && payload.planos.materiales ? payload.planos.materiales : [];
+    var lista = [];
     var byMaterial = {};
+    // 1) Materiales individuales bajo minimo. Los que estan en banda de grupo tienen
+    //    faltante 0 a nivel material (su faltante vive en el grupo) y quedan afuera aca.
     materiales
       .filter(function(m){ return Number(m && m.faltanteTn || 0) > 0; })
       .forEach(function(m){
         var key = String(m.material || '').toUpperCase();
-        if (!key) return;
-        if (!byMaterial[key]) byMaterial[key] = m;
+        if (!key || byMaterial[key]) return;
+        byMaterial[key] = m;
+        lista.push(m);
       });
-    scope.listaCompraMinima = Object.keys(byMaterial)
-      .map(function(k){ return byMaterial[k]; })
-      .sort(function(a, b){
-        return Number(b.faltanteTn || 0) - Number(a.faltanteTn || 0) ||
-               Number(b.stockTn || 0) - Number(a.stockTn || 0) ||
-               String(a.material || '').localeCompare(String(b.material || ''));
+    // 2) Bandas de grupo con faltante ("sumar grupo"): entran como UNA linea por grupo,
+    //    con el faltante, stock, min y max evaluados sobre la suma del grupo.
+    (payload.arbol || []).forEach(function(rama){
+      (rama.subramas || []).forEach(function(sub){
+        if (!sub || !sub.bandaGrupoActiva || Number(sub.faltanteTn || 0) <= 0) return;
+        var mats = sub.bandaGrupoMaterialesTexto ||
+          (Array.isArray(sub.bandaGrupoMateriales) ? sub.bandaGrupoMateriales.join(', ') : '');
+        lista.push({
+          material: sub.subramaNombre + (mats ? ' (grupo: ' + mats + ')' : ' (grupo)'),
+          ramaNombre: rama.ramaNombre,
+          subramaNombre: sub.subramaNombre,
+          familia: 'BANDA GRUPO',
+          stockTn: Number(sub.stockTn || 0),
+          minimoTn: Number(sub.minimoTn || 0),
+          maximoTn: Number(sub.maximoTn || 0),
+          faltanteTn: Number(sub.faltanteTn || 0),
+          obs: mats ? ('Banda de grupo, suma de: ' + mats) : 'Banda de grupo',
+          esGrupo: true
+        });
       });
+    });
+    scope.listaCompraMinima = lista.sort(function(a, b){
+      return Number(b.faltanteTn || 0) - Number(a.faltanteTn || 0) ||
+             Number(b.stockTn || 0) - Number(a.stockTn || 0) ||
+             String(a.material || '').localeCompare(String(b.material || ''));
+    });
   };
 
   scope.$watch('msg.payload', function(){
