@@ -1,0 +1,884 @@
+[
+  {
+    "id": "crypto_lite_v3_tab",
+    "type": "tab",
+    "label": "CRYPTO LITE V3",
+    "disabled": false,
+    "info": "Tablero BTC + XMR + GMX + LTC liviano para Raspberry Pi, con guardado de historial en disco."
+  },
+  {
+    "id": "crypto_cfg_inject",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Config al arrancar",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.2",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 60,
+    "wires": [
+      [
+        "crypto_cfg_fn"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_cfg_fn",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Set config global",
+    "func": "// Config inicial: rutas y ventanas (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 1);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nreturn null;",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "crypto_btc_mqtt",
+    "type": "mqtt in",
+    "z": "crypto_lite_v3_tab",
+    "name": "BTC MQTT",
+    "topic": "btc/#",
+    "qos": "0",
+    "datatype": "auto",
+    "broker": "crypto_mqtt_broker",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 150,
+    "y": 140,
+    "wires": [
+      [
+        "crypto_btc_proc"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_btc_proc",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "BTC · guardar",
+    "func": "// BTC via MQTT -> guarda ultimo valor en flow.btc (+ promedio de flujo 5 min)\nlet p = msg.payload;\nif (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return null; } }\nif (!p || typeof p !== 'object') return null;\n\nconst price = Number(p.price);\nif (!Number.isFinite(price) || price < 1000) return null;\n\nconst now  = Date.now();\nconst flowv = Number(p.flow_btc_s);\nconst rssi  = Number(p.rssi);\n\nlet samples = context.get('flowSamples') || [];\nif (Number.isFinite(flowv)) samples.push({ t: now, v: flowv });\nconst cutoff = now - 300000;               // ultimos 5 min\nsamples = samples.filter(s => s.t >= cutoff);\ncontext.set('flowSamples', samples);\n\nlet avg = null;\nif (samples.length) avg = samples.reduce((a, s) => a + s.v, 0) / samples.length;\n\nflow.set('btc', {\n  price: price,\n  flow:  Number.isFinite(flowv) ? flowv : null,\n  avg:   avg,\n  rssi:  Number.isFinite(rssi) ? rssi : null,\n  device: p.device || '-',\n  ts: now\n});\nreturn null;",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 140,
+    "wires": []
+  },
+  {
+    "id": "crypto_kraken_sub",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Kraken · suscribir",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "600",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "3",
+    "topic": "",
+    "payload": "{\"event\":\"subscribe\",\"pair\":[\"XMR/USD\",\"GMX/USD\",\"LTC/USD\"],\"subscription\":{\"name\":\"ticker\"}}",
+    "payloadType": "str",
+    "x": 160,
+    "y": 220,
+    "wires": [
+      [
+        "crypto_kraken_out"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_kraken_out",
+    "type": "websocket out",
+    "z": "crypto_lite_v3_tab",
+    "name": "KRAKEN OUT",
+    "server": "",
+    "client": "crypto_kraken_ws",
+    "x": 390,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "crypto_kraken_in",
+    "type": "websocket in",
+    "z": "crypto_lite_v3_tab",
+    "name": "KRAKEN IN",
+    "server": "",
+    "client": "crypto_kraken_ws",
+    "x": 150,
+    "y": 280,
+    "wires": [
+      [
+        "crypto_kraken_parse"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_kraken_parse",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Guardar Kraken",
+    "func": "// Kraken WS -> guarda ultimo ticker de XMR / GMX / LTC en flow context\nlet d;\ntry { d = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload; }\ncatch (e) { return null; }\n\nif (!Array.isArray(d)) {\n  if (d && d.event === 'subscriptionStatus') {\n    node.status({\n      fill: d.status === 'subscribed' ? 'green' : 'red',\n      shape: 'dot',\n      text: (d.pair || '') + ' ' + (d.status || '')\n    });\n  }\n  return null;\n}\n\nif (d.length < 4 || d[2] !== 'ticker') return null;\nconst t = d[1] || {};\nconst pair = String(d[3] || '');\nif (!t.c || !t.c.length) return null;\n\nconst price = Number(t.c[0]);\nif (!Number.isFinite(price) || price <= 0) return null;\n\nconst q = {\n  price: price,\n  bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n  ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n  ts: Date.now()\n};\n\nif      (pair === 'XMR/USD') flow.set('xmr', q);\nelse if (pair === 'GMX/USD') flow.set('gmx', q);\nelse if (pair === 'LTC/USD') flow.set('ltc', q);\nreturn null;",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "crypto_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Tarjetas · cada 5s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "6",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 380,
+    "wires": [
+      [
+        "crypto_emit"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_emit",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Emitir tarjetas",
+    "func": "// Cada 5 s: arma el panel resumen + tarjetas de detalle (rapido, sin tocar disco)\nconst now = Date.now();\n\nfunction chg(coin, price) {                 // variacion % vs ~1 h atras\n  const ring = flow.get('hist_' + coin) || [];\n  if (!ring.length) return null;\n  const target = now - 3600000;\n  let ref = ring[0];\n  for (const pt of ring) { if (pt.t <= target) ref = pt; else break; }\n  if (!ref || !Number.isFinite(ref.p) || ref.p === 0) return null;\n  return (price - ref.p) / ref.p * 100;\n}\n\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\nconst sum = {};\nconst cards = {};\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (q && Number.isFinite(q.price)) {\n    const item = {\n      symbol: sym,\n      price:  q.price,\n      change: chg(k, q.price),\n      age:    q.ts ? Math.round((now - q.ts) / 1000) : null,\n      stale:  q.ts ? (now - q.ts > 60000) : true,\n      bid:    q.bid  != null ? q.bid  : null,\n      ask:    q.ask  != null ? q.ask  : null,\n      flow:   q.flow != null ? q.flow : null,\n      avg:    q.avg  != null ? q.avg  : null,\n      rssi:   q.rssi != null ? q.rssi : null,\n      device: q.device || null\n    };\n    sum[k] = item;\n    cards[k] = { payload: item };\n  } else {\n    sum[k] = null;\n    cards[k] = null;\n  }\n}\n\nreturn [{ payload: sum }, cards.btc, cards.xmr, cards.gmx, cards.ltc];",
+    "outputs": 5,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 380,
+    "wires": [
+      [
+        "crypto_summary"
+      ],
+      [
+        "crypto_btc_card"
+      ],
+      [
+        "crypto_xmr_card"
+      ],
+      [
+        "crypto_gmx_card"
+      ],
+      [
+        "crypto_ltc_card"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_hist_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Historial · cada 60s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "60",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "20",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 460,
+    "wires": [
+      [
+        "crypto_historian"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_historian",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Historian (1/min)",
+    "func": "// Cada 60 s: 1 punto por moneda -> grafico + append a disco (varios dias)\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;   // dato viejo: no lo registro\n  const p = q.price;\n\n  // ring en memoria para calcular la variacion (acotado)\n  let ring = flow.get('hist_' + k) || [];\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;                     // 24 h\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(ring.length - 1500);\n  flow.set('hist_' + k, ring);\n\n  // linea a disco (append, 1 JSON por linea) y punto al grafico\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = { payload: p, topic: sym };\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
+    "outputs": 5,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 460,
+    "wires": [
+      [
+        "crypto_file_write"
+      ],
+      [
+        "crypto_btc_chart"
+      ],
+      [
+        "crypto_xmr_chart"
+      ],
+      [
+        "crypto_gmx_chart"
+      ],
+      [
+        "crypto_ltc_chart"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_file_write",
+    "type": "file",
+    "z": "crypto_lite_v3_tab",
+    "name": "Guardar a disco",
+    "filename": "filename",
+    "filenameType": "msg",
+    "appendNewline": true,
+    "createDir": true,
+    "overwriteFile": "false",
+    "encoding": "utf8",
+    "x": 650,
+    "y": 460,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_load_inject",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Cargar historial",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "4",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 560,
+    "wires": [
+      [
+        "crypto_load_req"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_load_req",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Pedir archivos",
+    "func": "// Pide leer el historial de cada moneda (una vez al arrancar)\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nreturn [ ['BTC','XMR','GMX','LTC'].map(sym => ({ filename: base + sym + '.log', coin: sym })) ];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 560,
+    "wires": [
+      [
+        "crypto_file_read"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_file_read",
+    "type": "file in",
+    "z": "crypto_lite_v3_tab",
+    "name": "Leer historial",
+    "filename": "filename",
+    "filenameType": "msg",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": false,
+    "encoding": "utf8",
+    "allProps": false,
+    "x": 590,
+    "y": 560,
+    "wires": [
+      [
+        "crypto_seed"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_seed",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Sembrar grafico",
+    "func": "// Toma el archivo de una moneda y siembra el grafico con el historial guardado\nconst coin = msg.coin || '?';\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst now = Date.now();\nconst days = Number(global.get('cryptoViewDays')) || 1;   // ventana a mostrar\nconst cut = now - days * 86400000;\n\nconst pts = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t) || !Number.isFinite(o.p)) continue;\n  if (o.t < cut) continue;\n  pts.push({ x: o.t, y: o.p });\n}\nif (!pts.length) return null;\npts.sort((a, b) => a.x - b.x);\n\n// downsample para no ahogar al navegador de la Pi\nconst MAX = 600;\nlet ds = pts;\nif (pts.length > MAX) {\n  const step = Math.ceil(pts.length / MAX);\n  ds = pts.filter((_, i) => i % step === 0);\n}\n\n// tambien reconstruimos el ring para la variacion %\nflow.set('hist_' + coin.toLowerCase(), pts.slice(-1500).map(p => ({ t: p.x, p: p.y })));\n\nmsg.payload = [{ series: [coin], data: [ds], labels: [''] }];\nmsg.topic = coin;\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 790,
+    "y": 560,
+    "wires": [
+      [
+        "crypto_seed_switch"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_seed_switch",
+    "type": "switch",
+    "z": "crypto_lite_v3_tab",
+    "name": "ruta moneda",
+    "property": "coin",
+    "propertyType": "msg",
+    "rules": [
+      {
+        "t": "eq",
+        "v": "BTC",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "XMR",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "GMX",
+        "vt": "str"
+      },
+      {
+        "t": "eq",
+        "v": "LTC",
+        "vt": "str"
+      }
+    ],
+    "checkall": "false",
+    "repair": false,
+    "outputs": 4,
+    "x": 980,
+    "y": 560,
+    "wires": [
+      [
+        "crypto_btc_chart"
+      ],
+      [
+        "crypto_xmr_chart"
+      ],
+      [
+        "crypto_gmx_chart"
+      ],
+      [
+        "crypto_ltc_chart"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_load_catch",
+    "type": "catch",
+    "z": "crypto_lite_v3_tab",
+    "name": "silenciar (archivo nuevo)",
+    "scope": [
+      "crypto_file_read",
+      "crypto_trim_read"
+    ],
+    "uncaught": false,
+    "x": 590,
+    "y": 620,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_trim_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "Recortar · cada 6h",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "21600",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "120",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 700,
+    "wires": [
+      [
+        "crypto_trim_req"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trim_req",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Pedir archivos",
+    "func": "// Pide leer cada archivo para recortarlo (retencion en dias)\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nreturn [ ['BTC','XMR','GMX','LTC'].map(sym => ({ filename: base + sym + '.log', coin: sym })) ];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 700,
+    "wires": [
+      [
+        "crypto_trim_read"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trim_read",
+    "type": "file in",
+    "z": "crypto_lite_v3_tab",
+    "name": "Leer (recorte)",
+    "filename": "filename",
+    "filenameType": "msg",
+    "format": "utf8",
+    "chunk": false,
+    "sendError": false,
+    "encoding": "utf8",
+    "allProps": false,
+    "x": 590,
+    "y": 700,
+    "wires": [
+      [
+        "crypto_trim_proc"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trim_proc",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Dejar ultimos N dias",
+    "func": "// Deja solo los ultimos N dias en el archivo (evita que crezca sin fin)\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst keep = Number(global.get('cryptoKeepDays')) || 7;\nconst cut = Date.now() - keep * 86400000;\n\nconst kept = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t)) continue;\n  if (o.t < cut) continue;\n  kept.push(JSON.stringify({ t: o.t, p: o.p }));\n}\n// si no cambio la cantidad de lineas utiles, no reescribo\nmsg.payload = kept.join('\\n');\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 700,
+    "wires": [
+      [
+        "crypto_trim_write"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trim_write",
+    "type": "file",
+    "z": "crypto_lite_v3_tab",
+    "name": "Reescribir",
+    "filename": "filename",
+    "filenameType": "msg",
+    "appendNewline": true,
+    "createDir": true,
+    "overwriteFile": "true",
+    "encoding": "utf8",
+    "x": 1010,
+    "y": 700,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_summary",
+    "type": "ui_template",
+    "z": "crypto_lite_v3_tab",
+    "group": "crypto_group_summary",
+    "name": "Panel 4 monedas",
+    "order": 1,
+    "width": 12,
+    "height": 4,
+    "format": "<style>\n.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}\n.cl-tile{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px 12px}\n.cl-sym{font-size:12px;color:#8b949e;letter-spacing:1px;text-transform:uppercase}\n.cl-px{font-size:24px;font-weight:700;color:#e6edf3;margin-top:2px;line-height:1.1}\n.cl-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;font-size:12px;color:#8b949e}\n.cl-up{color:#3fb950}.cl-down{color:#f85149}.cl-flat{color:#8b949e}\n.cl-off{opacity:.4}\n.cl-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}\n.cl-dg{background:#3fb950}.cl-dr{background:#f85149}\n.cl-na{color:#8b949e;font-size:20px}\n</style>\n<div class=\"cl-grid\">\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.btc || msg.payload.btc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.btc && !msg.payload.btc.stale)?'cl-dg':'cl-dr'\"></span>Bitcoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.btc\">${{msg.payload.btc.price | number:0}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.btc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.btc\">\n      <span ng-class=\"msg.payload.btc.change>0?'cl-up':(msg.payload.btc.change<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change>=0?'▲':'▼'}} {{msg.payload.btc.change | number:2}}% 1h</span>\n      <span>{{msg.payload.btc.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.xmr || msg.payload.xmr.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.xmr && !msg.payload.xmr.stale)?'cl-dg':'cl-dr'\"></span>Monero</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.xmr\">${{msg.payload.xmr.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.xmr\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.xmr\">\n      <span ng-class=\"msg.payload.xmr.change>0?'cl-up':(msg.payload.xmr.change<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change>=0?'▲':'▼'}} {{msg.payload.xmr.change | number:2}}% 1h</span>\n      <span>{{msg.payload.xmr.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.gmx || msg.payload.gmx.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.gmx && !msg.payload.gmx.stale)?'cl-dg':'cl-dr'\"></span>GMX</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.gmx\">${{msg.payload.gmx.price | number:3}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.gmx\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.gmx\">\n      <span ng-class=\"msg.payload.gmx.change>0?'cl-up':(msg.payload.gmx.change<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change>=0?'▲':'▼'}} {{msg.payload.gmx.change | number:2}}% 1h</span>\n      <span>{{msg.payload.gmx.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.ltc || msg.payload.ltc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.ltc && !msg.payload.ltc.stale)?'cl-dg':'cl-dr'\"></span>Litecoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.ltc\">${{msg.payload.ltc.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.ltc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.ltc\">\n      <span ng-class=\"msg.payload.ltc.change>0?'cl-up':(msg.payload.ltc.change<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change>=0?'▲':'▼'}} {{msg.payload.ltc.change | number:2}}% 1h</span>\n      <span>{{msg.payload.ltc.age}} s</span>\n    </div>\n  </div>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 650,
+    "y": 380,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_btc_card",
+    "type": "ui_template",
+    "z": "crypto_lite_v3_tab",
+    "group": "crypto_group_btc",
+    "name": "BTC tarjeta",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>BTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:0}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Flujo {{msg.payload.flow | number:4}} BTC/s · Prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 650,
+    "y": 120,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_btc_chart",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "BTC",
+    "group": "crypto_group_btc",
+    "order": 2,
+    "width": 12,
+    "height": 4,
+    "label": "BTC · precio",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm",
+    "interpolate": "linear",
+    "nodata": "Cargando BTC...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "3",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "86400",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#f2a900"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 650,
+    "y": 160,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_xmr_card",
+    "type": "ui_template",
+    "z": "crypto_lite_v3_tab",
+    "group": "crypto_group_xmr",
+    "name": "XMR tarjeta",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>XMR</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 650,
+    "y": 220,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_xmr_chart",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "XMR",
+    "group": "crypto_group_xmr",
+    "order": 2,
+    "width": 12,
+    "height": 4,
+    "label": "XMR · precio",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm",
+    "interpolate": "linear",
+    "nodata": "Cargando XMR...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "3",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "86400",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#ff6600"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 650,
+    "y": 260,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_gmx_card",
+    "type": "ui_template",
+    "z": "crypto_lite_v3_tab",
+    "group": "crypto_group_gmx",
+    "name": "GMX tarjeta",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>GMX</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:3}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:3}} · Ask {{msg.payload.ask | number:3}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 650,
+    "y": 300,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_gmx_chart",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "GMX",
+    "group": "crypto_group_gmx",
+    "order": 2,
+    "width": 12,
+    "height": 4,
+    "label": "GMX · precio",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm",
+    "interpolate": "linear",
+    "nodata": "Cargando GMX...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "3",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "86400",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#3fb950"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 650,
+    "y": 300,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_ltc_card",
+    "type": "ui_template",
+    "z": "crypto_lite_v3_tab",
+    "group": "crypto_group_ltc",
+    "name": "LTC tarjeta",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>LTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "storeOutMessages": true,
+    "fwdInMessages": true,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 650,
+    "y": 340,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_ltc_chart",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "LTC",
+    "group": "crypto_group_ltc",
+    "order": 2,
+    "width": 12,
+    "height": 4,
+    "label": "LTC · precio",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm",
+    "interpolate": "linear",
+    "nodata": "Cargando LTC...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "3",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "86400",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#c0c0c0"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 650,
+    "y": 340,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_mqtt_broker",
+    "type": "mqtt-broker",
+    "name": "Mosquitto CRYPTO LITE",
+    "broker": "127.0.0.1",
+    "port": "1883",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "autoUnsubscribe": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {}
+  },
+  {
+    "id": "crypto_kraken_ws",
+    "type": "websocket-client",
+    "path": "wss://ws.kraken.com",
+    "tls": "",
+    "wholemsg": "false",
+    "hb": "0",
+    "subprotocol": ""
+  },
+  {
+    "id": "crypto_ui_tab",
+    "type": "ui_tab",
+    "name": "CRYPTO LITE V3",
+    "icon": "dashboard",
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "crypto_group_summary",
+    "type": "ui_group",
+    "name": "RESUMEN",
+    "tab": "crypto_ui_tab",
+    "order": 1,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "crypto_group_btc",
+    "type": "ui_group",
+    "name": "BITCOIN · BTC",
+    "tab": "crypto_ui_tab",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "crypto_group_xmr",
+    "type": "ui_group",
+    "name": "MONERO · XMR",
+    "tab": "crypto_ui_tab",
+    "order": 3,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "crypto_group_gmx",
+    "type": "ui_group",
+    "name": "GMX",
+    "tab": "crypto_ui_tab",
+    "order": 4,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "crypto_group_ltc",
+    "type": "ui_group",
+    "name": "LITECOIN · LTC",
+    "tab": "crypto_ui_tab",
+    "order": 5,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  }
+]
