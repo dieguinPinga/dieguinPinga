@@ -4,10 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v8.json`](./crypto-lite-v8.json)
-— sobre [`crypto-lite-v7.json`](./crypto-lite-v7.json) agrega **padding de eje Y**
-en todos los gráficos (la línea no toca el borde: piso = mín − pad, techo = máx + pad,
-vía `ui_control`) y sube el poll de **trades a 30s** (presión más fluida).
+Archivo importable (última versión): [`crypto-lite-v9.json`](./crypto-lite-v9.json)
+— sobre [`crypto-lite-v7.json`](./crypto-lite-v7.json) sube el poll de **trades a 30s**
+(presión más fluida). Los datos del historial en disco (`cryptohist/*.log`) no se tocan.
+
+⚠️ `crypto-lite-v8.json` quedó DESCARTADO: intentaba dar padding al eje Y con
+`ui_control`, pero en node-red-dashboard eso **borra los puntos del gráfico** cada vez
+que se reenvía (no borra el disco, solo el dibujo). v9 revierte ese cambio.
 v7 llevó el tick-flash al panel RESUMEN.
 v6 agregó el tick-flash en las tarjetas de detalle; sobre
 [`crypto-lite-v5.json`](./crypto-lite-v5.json).
