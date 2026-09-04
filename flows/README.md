@@ -4,8 +4,12 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v15.json`](./crypto-lite-v15.json)
-— sobre [`crypto-lite-v14.json`](./crypto-lite-v14.json): **corta la línea en los huecos**
+Archivo importable (última versión): [`crypto-lite-v16.json`](./crypto-lite-v16.json)
+— sobre [`crypto-lite-v15.json`](./crypto-lite-v15.json): **ticker REST a 2s** (más fluido)
+y **margen fijo por moneda** en los gráficos en vivo (evita el overshoot del eje):
+BTC +$15, XMR +$0.50, GMX +$0.02, LTC +$0.40 (editable en *Precio actual (1s)*).
+
+v15 **corta la línea en los huecos**
 de los 4 gráficos grandes (apagón/feed caído) con un punto `null`, para no "pegar" datos
 de timestamps separados. Umbral configurable `cryptoGapMin` (10 min). También reinicia la
 EMA tras el hueco.
