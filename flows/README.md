@@ -4,10 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v12.json`](./crypto-lite-v12.json)
-— sobre [`crypto-lite-v11.json`](./crypto-lite-v11.json) agrega **margen de eje** en los
-gráficos EN VIVO (la línea no toca el borde) mediante 2 series invisibles piso/techo
-(no usa `ui_control`, no borra datos). Los gráficos grandes quedan sin margen todavía.
+Archivo importable (última versión): [`crypto-lite-v13.json`](./crypto-lite-v13.json)
+— sobre [`crypto-lite-v12.json`](./crypto-lite-v12.json): **fondo de gráficos negro**
+(CSS global) para que las series piso/techo (negras) del margen queden invisibles, y
+**saca los puntos** de los gráficos en vivo.
+
+v12 agregó **margen de eje** en los gráficos EN VIVO (2 series invisibles piso/techo,
+sin `ui_control`, no borra datos). Los gráficos grandes quedan sin margen todavía.
 
 v11 sincronizó el flash con los gráficos en vivo (tarjetas a 1s).
 
