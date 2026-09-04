@@ -36,7 +36,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Set config global",
-    "func": "// Config inicial: rutas y ventanas (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 1);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nreturn null;",
+    "func": "// Config inicial: rutas y ventanas (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 3);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nreturn null;",
     "outputs": 0,
     "timeout": 0,
     "noerr": 0,
@@ -212,13 +212,13 @@
     "id": "crypto_hist_clock",
     "type": "inject",
     "z": "crypto_lite_v3_tab",
-    "name": "Historial · cada 60s",
+    "name": "Historial · cada 3min",
     "props": [
       {
         "p": "payload"
       }
     ],
-    "repeat": "60",
+    "repeat": "180",
     "crontab": "",
     "once": true,
     "onceDelay": "20",
@@ -238,7 +238,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Historian (1/min)",
-    "func": "// Cada 60 s: 1 punto por moneda -> grafico + append a disco (varios dias)\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;   // dato viejo: no lo registro\n  const p = q.price;\n\n  // ring en memoria para calcular la variacion (acotado)\n  let ring = flow.get('hist_' + k) || [];\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;                     // 24 h\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(ring.length - 1500);\n  flow.set('hist_' + k, ring);\n\n  // linea a disco (append, 1 JSON por linea) y punto al grafico\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = { payload: p, topic: sym };\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
+    "func": "// Cada 3 min: 1 punto por moneda -> grafico + append a disco (varios dias)\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;   // dato viejo: no lo registro\n  const p = q.price;\n\n  // ring en memoria para calcular la variacion (acotado)\n  let ring = flow.get('hist_' + k) || [];\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;                     // 24 h\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(ring.length - 1500);\n  flow.set('hist_' + k, ring);\n\n  // linea a disco (append, 1 JSON por linea) y punto al grafico\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = { payload: p, topic: sym };\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
     "outputs": 5,
     "timeout": 0,
     "noerr": 0,

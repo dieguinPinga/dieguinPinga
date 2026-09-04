@@ -15,17 +15,18 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
 - **Por moneda**: una tarjeta de detalle + un gráfico de precio.
   - BTC: flujo BTC/s, promedio y RSSI (viene por MQTT).
   - XMR / GMX / LTC: bid, ask y edad del feed (vienen por WebSocket de Kraken).
-- **Historial en disco**: 1 punto por minuto por moneda, guardado en
+- **Historial en disco**: 1 punto cada 3 min por moneda, guardado en
   `~/.node-red/cryptohist/<MONEDA>.log` (un JSON por línea). Al arrancar,
-  Node-RED recarga ese historial en los gráficos.
+  Node-RED recarga ese historial en los gráficos (por defecto muestra 3 días).
 - **Recorte automático** cada 6 h para que los archivos no crezcan sin fin
   (por defecto conserva 7 días).
 
 ## Por qué es liviano
 
 - Las **tarjetas** se refrescan rápido (cada 5 s) → se siente ágil.
-- Los **gráficos e historial** van despacio (1 punto/min) → pocos puntos en
-  memoria, poca escritura a disco y el navegador de la Pi no se ahoga.
+- Los **gráficos e historial** van despacio (1 punto cada 3 min) → con 3 días
+  son ~1.440 puntos por gráfico: poca memoria, poca escritura a disco y el
+  navegador no se ahoga.
 - Al cargar el historial se hace **downsample** a máx. 600 puntos por gráfico.
 - Usa solo **nodos nativos** de Node-RED (`file` / `file in`): no hay que
   instalar SQLite ni módulos extra.
@@ -57,12 +58,13 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
 | Variable            | Default        | Qué hace                                        |
 |---------------------|----------------|-------------------------------------------------|
 | `cryptoHistBase`    | `cryptohist/`  | Carpeta donde se guardan los `.log`.            |
-| `cryptoViewDays`    | `1`            | Días que se **muestran** en los gráficos al cargar. |
+| `cryptoViewDays`    | `3`            | Días que se **muestran** en los gráficos al cargar. |
 | `cryptoKeepDays`    | `7`            | Días que se **guardan** en disco.               |
 
-- ¿Querés ver más días en el gráfico? Subí `cryptoViewDays` (ej. `3`) y también
+- ¿Querés ver más días en el gráfico? Subí `cryptoViewDays` y también
   el `removeOlder` de cada nodo `ui_chart` (viene en 3 días). Ojo: más puntos =
-  más trabajo para el navegador de la Pi.
+  más trabajo para el navegador. Si vas a muchos días, conviene además espaciar
+  el guardado (nodo **Historial · cada 3min**: subí `repeat` a 300 = 5 min).
 - ¿Querés guardar más historia? Subí `cryptoKeepDays`. El disco usado es chico
   (~30 bytes por punto → ~4 KB por moneda por día).
 
