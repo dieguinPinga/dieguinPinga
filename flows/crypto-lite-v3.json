@@ -88,13 +88,13 @@
     "id": "crypto_kraken_sub",
     "type": "inject",
     "z": "crypto_lite_v3_tab",
-    "name": "Kraken · suscribir",
+    "name": "Kraken · suscribir (60s)",
     "props": [
       {
         "p": "payload"
       }
     ],
-    "repeat": "600",
+    "repeat": "60",
     "crontab": "",
     "once": true,
     "onceDelay": "3",
@@ -1102,7 +1102,7 @@
     "path": "wss://ws.kraken.com",
     "tls": "",
     "wholemsg": "false",
-    "hb": "0",
+    "hb": "30000",
     "subprotocol": ""
   },
   {
