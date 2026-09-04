@@ -4,10 +4,12 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v11.json`](./crypto-lite-v11.json)
-— sobre [`crypto-lite-v10.json`](./crypto-lite-v10.json) sincroniza el flash con los
-gráficos en vivo: las **tarjetas refrescan a 1s** (antes 5s), así el parpadeo coincide
-con el movimiento del precio en el chart en vivo.
+Archivo importable (última versión): [`crypto-lite-v12.json`](./crypto-lite-v12.json)
+— sobre [`crypto-lite-v11.json`](./crypto-lite-v11.json) agrega **margen de eje** en los
+gráficos EN VIVO (la línea no toca el borde) mediante 2 series invisibles piso/techo
+(no usa `ui_control`, no borra datos). Los gráficos grandes quedan sin margen todavía.
+
+v11 sincronizó el flash con los gráficos en vivo (tarjetas a 1s).
 
 v10 hizo el **tick-flash proporcional**:
 la opacidad del parpadeo depende del tamaño del cambio, normalizado por la volatilidad
