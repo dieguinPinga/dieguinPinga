@@ -48,8 +48,9 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
 - Para BTC: un broker MQTT (por defecto `127.0.0.1:1883`, ej. Mosquitto local)
   publicando en `btc/#` un JSON tipo:
   `{"price":65000,"flow_btc_s":0.12,"rssi":-70,"device":"esp32"}`.
-- Para XMR/GMX/LTC: salida a internet hacia `wss://ws.kraken.com` (tiempo real)
-  y a `https://api.kraken.com` (latido REST de respaldo).
+- Para BTC/XMR/GMX/LTC: salida a internet hacia `wss://ws.kraken.com/v2`
+  (tiempo real, WebSocket v2 de Kraken) y a `https://api.kraken.com` (latido
+  REST de respaldo). Kraken es de los pocos exchanges que aún lista XMR (Monero).
 
 ## Cómo importar
 
