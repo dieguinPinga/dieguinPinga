@@ -19,7 +19,8 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
   **media móvil (EMA)** superpuesta.
   - Tarjeta: **Mín/Máx** (con barra de rango que marca dónde está el precio hoy),
     **Δ1h y Δ24h**, y para las de Kraken **Vol 24h + nº de operaciones**.
-  - BTC: además flujo BTC/s, promedio y RSSI (viene por MQTT).
+  - BTC: precio/vol/presión por WebSocket de Kraken (par XBT/USD), **más** el
+    flujo BTC/s, promedio y RSSI de tu sensor por MQTT (se muestran como "Sensor").
   - XMR / GMX / LTC: además bid, ask, edad del feed, y **presión compra/venta**
     (últimos 5 min, barra verde/roja) vía el canal de *trades* de Kraken.
 - **Historial en disco**: 1 punto cada 3 min por moneda, guardado en
@@ -97,10 +98,13 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
 - **Presión compra/venta**: se calcula de las operaciones reales de Kraken
   (canal *trades*, últimos 5 min). En monedas de bajo volumen (GMX) puede tardar
   en tener datos hasta que ocurra alguna operación. **BTC no tiene split** real:
-  el feed MQTT manda un flujo único, así que en BTC se muestra ese flujo como
-  proxy, no compra vs venta.
+  el feed MQTT manda un flujo único. Por eso BTC ahora también toma precio y
+  operaciones del WebSocket de Kraken (XBT/USD) y así tiene barra de presión real.
+- **BTC: dos fuentes.** Kraken (XBT/USD) manda el precio de mercado, volumen y
+  presión; tu sensor MQTT aporta flujo/RSSI/device (línea "Sensor") y queda de
+  respaldo del precio si el WebSocket de Kraken se cae >2 min.
 - **Vol 24h / operaciones**: vienen en el ticker de Kraken (ticker + REST), sin
-  costo extra. BTC no las trae (su fuente es tu MQTT).
+  costo extra, ahora también para BTC.
 - La **EMA** se reconstruye desde el historial en disco al arrancar, así que la
   línea de tendencia aparece completa apenas cargás.
 - Para que el historial sobreviva reinicios **de la Pi**, alcanza con este
