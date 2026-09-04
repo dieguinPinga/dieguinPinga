@@ -152,6 +152,71 @@
     "wires": []
   },
   {
+    "id": "crypto_rest_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "REST · cada 5min",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "300",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "10",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 340,
+    "wires": [
+      [
+        "crypto_rest_req"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_rest_req",
+    "type": "http request",
+    "z": "crypto_lite_v3_tab",
+    "name": "Kraken REST Ticker",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "url": "https://api.kraken.com/0/public/Ticker?pair=XMRUSD,GMXUSD,LTCUSD",
+    "tls": "",
+    "x": 390,
+    "y": 340,
+    "wires": [
+      [
+        "crypto_rest_parse"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_rest_parse",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Guardar REST",
+    "func": "// Latido REST: toma el ultimo precio de Kraken (aunque el WS este mudo/caido)\nconst d = msg.payload;\nif (!d || !d.result || (Array.isArray(d.error) && d.error.length)) {\n  node.status({ fill: 'red', shape: 'ring', text: 'REST error' });\n  return null;\n}\nconst now = Date.now();\nconst res = d.result;\nlet n = 0;\nfor (const key of Object.keys(res)) {\n  const t = res[key];\n  if (!t || !t.c || !t.c.length) continue;\n  const price = Number(t.c[0]);\n  if (!Number.isFinite(price) || price <= 0) continue;\n  const q = {\n    price: price,\n    bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n    ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n    ts: now\n  };\n  const k = key.toUpperCase();\n  if      (k.indexOf('XMR') >= 0) { flow.set('xmr', q); n++; }\n  else if (k.indexOf('GMX') >= 0) { flow.set('gmx', q); n++; }\n  else if (k.indexOf('LTC') >= 0) { flow.set('ltc', q); n++; }\n}\nnode.status({ fill: 'green', shape: 'dot', text: 'REST ok ' + n + ' · ' + new Date(now).toLocaleTimeString() });\nreturn null;",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 620,
+    "y": 340,
+    "wires": []
+  },
+  {
     "id": "crypto_clock",
     "type": "inject",
     "z": "crypto_lite_v3_tab",

@@ -43,7 +43,8 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
 - Para BTC: un broker MQTT (por defecto `127.0.0.1:1883`, ej. Mosquitto local)
   publicando en `btc/#` un JSON tipo:
   `{"price":65000,"flow_btc_s":0.12,"rssi":-70,"device":"esp32"}`.
-- Para XMR/GMX/LTC: salida a internet hacia `wss://ws.kraken.com`.
+- Para XMR/GMX/LTC: salida a internet hacia `wss://ws.kraken.com` (tiempo real)
+  y a `https://api.kraken.com` (latido REST de respaldo).
 
 ## Cómo importar
 
@@ -81,6 +82,11 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
   aparece atenuada con un punto rojo. Kraken solo manda precio cuando hay
   operaciones, así que monedas de bajo volumen (GMX, XMR) pueden estar minutos
   "quietas" sin estar caídas: por eso el umbral es amplio.
+- **Latido REST** (nodo *REST · cada 5min*): cada 5 min consulta el último
+  precio de XMR/GMX/LTC por HTTP directo a Kraken. Sirve de respaldo si el
+  WebSocket se corta o si una moneda no opera hace rato → nunca deberían
+  quedar "caídas" por inactividad. Para cambiar la frecuencia, editá el
+  `repeat` de ese inject.
 - Kraken pide `GMX/USD`; si tu Kraken no lista ese par, esa tarjeta quedará
   vacía (las otras funcionan igual).
 - Para que el historial sobreviva reinicios **de la Pi**, alcanza con este
