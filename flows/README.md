@@ -12,6 +12,9 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
 
 - **Panel RESUMEN** arriba: las 4 monedas en una grilla 2×2 con precio,
   variación % de la última hora (verde/rojo) y "frescura" del dato en segundos.
+- **EN VIVO · 1s**: 4 gráficos chiquitos (grilla 2×2) con 1 punto por segundo y
+  ventana de 2 min. El eje Y se auto-ajusta → "zoom" de los micro-movimientos del
+  precio actual. Son efímeros: **no** se guardan a disco.
 - **Por moneda**: una tarjeta de detalle + un gráfico de precio.
   - BTC: flujo BTC/s, promedio y RSSI (viene por MQTT).
   - XMR / GMX / LTC: bid, ask y edad del feed (vienen por WebSocket de Kraken).
@@ -28,6 +31,9 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
   son ~1.440 puntos por gráfico: poca memoria, poca escritura a disco y el
   navegador no se ahoga.
 - Al cargar el historial se hace **downsample** a máx. 600 puntos por gráfico.
+- Los gráficos **EN VIVO (1s)** son livianos: ventana de 2 min = ~120 puntos c/u,
+  y no tocan disco. Si tu feed no actualiza tan seguido, la línea queda escalonada
+  (muestra el último precio conocido); si el feed se cae >30 s, deja de dibujar.
 - Usa solo **nodos nativos** de Node-RED (`file` / `file in`): no hay que
   instalar SQLite ni módulos extra.
 

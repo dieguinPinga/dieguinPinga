@@ -209,6 +209,60 @@
     ]
   },
   {
+    "id": "crypto_live_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "En vivo · cada 1s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "7",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 420,
+    "wires": [
+      [
+        "crypto_live"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_live",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Precio actual (1s)",
+    "func": "// Cada 1 s: precio actual a los graficos \"en vivo\" (efimeros, NO se guardan)\nconst now = Date.now();\nfunction pt(k, sym) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) return null;\n  if (q.ts && (now - q.ts) > 30000) return null;   // feed caido: no dibujar linea plana\n  return { payload: q.price, topic: sym };\n}\nreturn [pt('btc','BTC'), pt('xmr','XMR'), pt('gmx','GMX'), pt('ltc','LTC')];",
+    "outputs": 4,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 400,
+    "y": 420,
+    "wires": [
+      [
+        "crypto_btc_live"
+      ],
+      [
+        "crypto_xmr_live"
+      ],
+      [
+        "crypto_gmx_live"
+      ],
+      [
+        "crypto_ltc_live"
+      ]
+    ]
+  },
+  {
     "id": "crypto_hist_clock",
     "type": "inject",
     "z": "crypto_lite_v3_tab",
@@ -556,6 +610,150 @@
     ]
   },
   {
+    "id": "crypto_btc_live",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "BTC vivo",
+    "group": "crypto_group_live",
+    "order": 1,
+    "width": 6,
+    "height": 3,
+    "label": "BTC · 2 min",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "En vivo...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "2",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#f2a900"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 660,
+    "y": 420,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_xmr_live",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "XMR vivo",
+    "group": "crypto_group_live",
+    "order": 2,
+    "width": 6,
+    "height": 3,
+    "label": "XMR · 2 min",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "En vivo...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "2",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#ff6600"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 660,
+    "y": 460,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_gmx_live",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "GMX vivo",
+    "group": "crypto_group_live",
+    "order": 3,
+    "width": 6,
+    "height": 3,
+    "label": "GMX · 2 min",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "En vivo...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "2",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#3fb950"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 660,
+    "y": 500,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "crypto_ltc_live",
+    "type": "ui_chart",
+    "z": "crypto_lite_v3_tab",
+    "name": "LTC vivo",
+    "group": "crypto_group_live",
+    "order": 4,
+    "width": 6,
+    "height": 3,
+    "label": "LTC · 2 min",
+    "chartType": "line",
+    "legend": "false",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "En vivo...",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": "2",
+    "removeOlderPoints": "",
+    "removeOlderUnit": "60",
+    "cutout": 0,
+    "useOneColor": true,
+    "useUTC": false,
+    "colors": [
+      "#c0c0c0"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 660,
+    "y": 540,
+    "wires": [
+      []
+    ]
+  },
+  {
     "id": "crypto_btc_card",
     "type": "ui_template",
     "z": "crypto_lite_v3_tab",
@@ -838,11 +1036,22 @@
     "className": ""
   },
   {
+    "id": "crypto_group_live",
+    "type": "ui_group",
+    "name": "EN VIVO · 1s (zoom precio actual)",
+    "tab": "crypto_ui_tab",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
     "id": "crypto_group_btc",
     "type": "ui_group",
     "name": "BITCOIN · BTC",
     "tab": "crypto_ui_tab",
-    "order": 2,
+    "order": 3,
     "disp": true,
     "width": "12",
     "collapse": false,
@@ -853,7 +1062,7 @@
     "type": "ui_group",
     "name": "MONERO · XMR",
     "tab": "crypto_ui_tab",
-    "order": 3,
+    "order": 4,
     "disp": true,
     "width": "12",
     "collapse": false,
@@ -864,7 +1073,7 @@
     "type": "ui_group",
     "name": "GMX",
     "tab": "crypto_ui_tab",
-    "order": 4,
+    "order": 5,
     "disp": true,
     "width": "12",
     "collapse": false,
@@ -875,7 +1084,7 @@
     "type": "ui_group",
     "name": "LITECOIN · LTC",
     "tab": "crypto_ui_tab",
-    "order": 5,
+    "order": 6,
     "disp": true,
     "width": "12",
     "collapse": false,
