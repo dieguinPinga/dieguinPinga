@@ -66,6 +66,7 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
 | `cryptoHistBase`    | `cryptohist/`  | Carpeta donde se guardan los `.log`.            |
 | `cryptoViewDays`    | `3`            | Días que se **muestran** en los gráficos al cargar. |
 | `cryptoKeepDays`    | `7`            | Días que se **guardan** en disco.               |
+| `cryptoStaleSec`    | `600`          | Segs sin dato para marcar la moneda como "caída" (gris). |
 
 - ¿Querés ver más días en el gráfico? Subí `cryptoViewDays` y también
   el `removeOlder` de cada nodo `ui_chart` (viene en 3 días). Ojo: más puntos =
@@ -76,7 +77,10 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
 
 ## Notas
 
-- Si un feed no llega, la moneda aparece atenuada con un punto rojo en el panel.
+- Si un feed no llega en `cryptoStaleSec` (10 min por defecto), la moneda
+  aparece atenuada con un punto rojo. Kraken solo manda precio cuando hay
+  operaciones, así que monedas de bajo volumen (GMX, XMR) pueden estar minutos
+  "quietas" sin estar caídas: por eso el umbral es amplio.
 - Kraken pide `GMX/USD`; si tu Kraken no lista ese par, esa tarjeta quedará
   vacía (las otras funcionan igual).
 - Para que el historial sobreviva reinicios **de la Pi**, alcanza con este
