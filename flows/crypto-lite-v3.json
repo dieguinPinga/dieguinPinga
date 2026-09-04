@@ -175,16 +175,16 @@
     "id": "crypto_rest_clock",
     "type": "inject",
     "z": "crypto_lite_v3_tab",
-    "name": "REST ticker · 20s",
+    "name": "REST ticker · 10s",
     "props": [
       {
         "p": "payload"
       }
     ],
-    "repeat": "20",
+    "repeat": "10",
     "crontab": "",
     "once": true,
-    "onceDelay": "10",
+    "onceDelay": "8",
     "topic": "",
     "payload": "",
     "payloadType": "date",
