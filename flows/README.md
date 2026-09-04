@@ -89,11 +89,11 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
   aparece atenuada con un punto rojo. Kraken solo manda precio cuando hay
   operaciones, así que monedas de bajo volumen (GMX, XMR) pueden estar minutos
   "quietas" sin estar caídas: por eso el umbral es amplio.
-- **Latido REST** (nodo *REST · cada 5min*): cada 5 min consulta el último
-  precio de XMR/GMX/LTC por HTTP directo a Kraken. Sirve de respaldo si el
-  WebSocket se corta o si una moneda no opera hace rato → nunca deberían
-  quedar "caídas" por inactividad. Para cambiar la frecuencia, editá el
-  `repeat` de ese inject.
+- **Ticker REST** (nodo *REST ticker · 20s*): cada 20 s trae precio/vol de las
+  4 monedas por HTTP. Es la fuente principal si el WebSocket no llega.
+- **Trades REST** (nodo *REST trades · 60s*): cada 60 s trae las operaciones
+  recientes (con lado compra/venta) por HTTP y alimenta las **barras de presión**
+  sin depender del WebSocket. Ideal si tu red bloquea WebSockets.
 - Kraken pide `GMX/USD`; si tu Kraken no lista ese par, esa tarjeta quedará
   vacía (las otras funcionan igual).
 - **Presión compra/venta**: se calcula de las operaciones reales de Kraken

@@ -175,13 +175,13 @@
     "id": "crypto_rest_clock",
     "type": "inject",
     "z": "crypto_lite_v3_tab",
-    "name": "REST · cada 5min",
+    "name": "REST ticker · 20s",
     "props": [
       {
         "p": "payload"
       }
     ],
-    "repeat": "300",
+    "repeat": "20",
     "crontab": "",
     "once": true,
     "onceDelay": "10",
@@ -234,6 +234,91 @@
     "libs": [],
     "x": 620,
     "y": 340,
+    "wires": []
+  },
+  {
+    "id": "crypto_trades_clock",
+    "type": "inject",
+    "z": "crypto_lite_v3_tab",
+    "name": "REST trades · 60s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "60",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "25",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 150,
+    "y": 820,
+    "wires": [
+      [
+        "crypto_trades_req"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trades_req",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Pedir trades",
+    "func": "// Pide las operaciones recientes de cada par (REST Trades, para la presion)\nconst pairs = [['XBTUSD','btc'], ['XMRUSD','xmr'], ['GMXUSD','gmx'], ['LTCUSD','ltc']];\nconst out = [];\nfor (const [p, key] of pairs) {\n  const since = flow.get('tradesSince_' + key);\n  let url = 'https://api.kraken.com/0/public/Trades?pair=' + p + '&count=1000';\n  if (since) url += '&since=' + since;\n  out.push({ url: url, coin: key });\n}\nreturn [out];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 820,
+    "wires": [
+      [
+        "crypto_trades_http"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trades_http",
+    "type": "http request",
+    "z": "crypto_lite_v3_tab",
+    "name": "Kraken REST Trades",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "url": "",
+    "tls": "",
+    "x": 620,
+    "y": 820,
+    "wires": [
+      [
+        "crypto_trades_parse"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_trades_parse",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "Guardar trades",
+    "func": "// Parsea REST Trades -> rellena trades_<coin> (compra/venta) para la presion\nconst d = msg.payload;\nconst key = msg.coin;\nif (!d || !d.result || !key) return null;\nif (Array.isArray(d.error) && d.error.length) { node.status({fill:'red',shape:'ring',text:'trades err'}); return null; }\nconst res = d.result;\nconst now = Date.now();\n\nlet list = null;\nfor (const kk of Object.keys(res)) { if (kk !== 'last') { list = res[kk]; break; } }\n\nif (Array.isArray(list)) {\n  let arr = flow.get('trades_' + key) || [];\n  for (const tr of list) {\n    const v = Number(tr[1]);\n    const tsec = Number(tr[2]);\n    const s = tr[3];                 // 'b' compra / 's' venta\n    if (Number.isFinite(v) && Number.isFinite(tsec)) arr.push({ t: tsec * 1000, v: v, s: s });\n  }\n  arr = arr.filter(x => x.t >= now - 300000);   // ventana 5 min\n  if (arr.length > 5000) arr = arr.slice(-5000);\n  flow.set('trades_' + key, arr);\n}\nif (res.last) flow.set('tradesSince_' + key, res.last);\nreturn null;",
+    "outputs": 0,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 860,
+    "y": 820,
     "wires": []
   },
   {
