@@ -15,9 +15,13 @@ Archivo importable: [`crypto-lite-v3.json`](./crypto-lite-v3.json)
 - **EN VIVO · 1s**: 4 gráficos chiquitos (grilla 2×2) con 1 punto por segundo y
   ventana de 2 min. El eje Y se auto-ajusta → "zoom" de los micro-movimientos del
   precio actual. Son efímeros: **no** se guardan a disco.
-- **Por moneda**: una tarjeta de detalle + un gráfico de precio.
-  - BTC: flujo BTC/s, promedio y RSSI (viene por MQTT).
-  - XMR / GMX / LTC: bid, ask y edad del feed (vienen por WebSocket de Kraken).
+- **Por moneda**: una tarjeta de detalle enriquecida + un gráfico de precio con
+  **media móvil (EMA)** superpuesta.
+  - Tarjeta: **Mín/Máx** (con barra de rango que marca dónde está el precio hoy),
+    **Δ1h y Δ24h**, y para las de Kraken **Vol 24h + nº de operaciones**.
+  - BTC: además flujo BTC/s, promedio y RSSI (viene por MQTT).
+  - XMR / GMX / LTC: además bid, ask, edad del feed, y **presión compra/venta**
+    (últimos 5 min, barra verde/roja) vía el canal de *trades* de Kraken.
 - **Historial en disco**: 1 punto cada 3 min por moneda, guardado en
   `~/.node-red/cryptohist/<MONEDA>.log` (un JSON por línea). Al arrancar,
   Node-RED recarga ese historial en los gráficos (por defecto muestra 3 días).
@@ -68,6 +72,7 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
 | `cryptoViewDays`    | `3`            | Días que se **muestran** en los gráficos al cargar. |
 | `cryptoKeepDays`    | `7`            | Días que se **guardan** en disco.               |
 | `cryptoStaleSec`    | `600`          | Segs sin dato para marcar la moneda como "caída" (gris). |
+| `cryptoEmaN`        | `20`           | Períodos de la media móvil (EMA). A 3 min/punto ≈ 1 h.  |
 
 - ¿Querés ver más días en el gráfico? Subí `cryptoViewDays` y también
   el `removeOlder` de cada nodo `ui_chart` (viene en 3 días). Ojo: más puntos =
@@ -89,6 +94,15 @@ Editá el nodo function **Set config global** para cambiar el comportamiento:
   `repeat` de ese inject.
 - Kraken pide `GMX/USD`; si tu Kraken no lista ese par, esa tarjeta quedará
   vacía (las otras funcionan igual).
+- **Presión compra/venta**: se calcula de las operaciones reales de Kraken
+  (canal *trades*, últimos 5 min). En monedas de bajo volumen (GMX) puede tardar
+  en tener datos hasta que ocurra alguna operación. **BTC no tiene split** real:
+  el feed MQTT manda un flujo único, así que en BTC se muestra ese flujo como
+  proxy, no compra vs venta.
+- **Vol 24h / operaciones**: vienen en el ticker de Kraken (ticker + REST), sin
+  costo extra. BTC no las trae (su fuente es tu MQTT).
+- La **EMA** se reconstruye desde el historial en disco al arrancar, así que la
+  línea de tendencia aparece completa apenas cargás.
 - Para que el historial sobreviva reinicios **de la Pi**, alcanza con este
   esquema (se guarda en archivos); no depende de la persistencia de contexto de
   Node-RED.

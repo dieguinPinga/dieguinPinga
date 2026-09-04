@@ -4,7 +4,7 @@
     "type": "tab",
     "label": "CRYPTO LITE V3",
     "disabled": false,
-    "info": "Tablero BTC + XMR + GMX + LTC liviano para Raspberry Pi, con guardado de historial en disco."
+    "info": "Tablero BTC + XMR + GMX + LTC liviano para Raspberry Pi, con historial en disco, EMA, min/max, volumen y presion compra/venta."
   },
   {
     "id": "crypto_cfg_inject",
@@ -36,7 +36,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Set config global",
-    "func": "// Config inicial: rutas y ventanas (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 3);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nglobal.set('cryptoStaleSec', 600);            // seg sin dato -> tarjeta gris (feed caido)\nreturn null;",
+    "func": "// Config inicial (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 3);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nglobal.set('cryptoStaleSec', 600);            // seg sin dato -> tarjeta gris (feed caido)\nglobal.set('cryptoEmaN', 20);                 // periodos de la media movil (EMA) del grafico\nreturn null;",
     "outputs": 0,
     "timeout": 0,
     "noerr": 0,
@@ -99,9 +99,29 @@
     "once": true,
     "onceDelay": "3",
     "topic": "",
-    "payload": "{\"event\":\"subscribe\",\"pair\":[\"XMR/USD\",\"GMX/USD\",\"LTC/USD\"],\"subscription\":{\"name\":\"ticker\"}}",
-    "payloadType": "str",
+    "payload": "",
+    "payloadType": "date",
     "x": 160,
+    "y": 220,
+    "wires": [
+      [
+        "crypto_kraken_sub_fn"
+      ]
+    ]
+  },
+  {
+    "id": "crypto_kraken_sub_fn",
+    "type": "function",
+    "z": "crypto_lite_v3_tab",
+    "name": "sub ticker+trade",
+    "func": "// Suscribe ticker + trade (compra/venta) de las 3 monedas\nconst pairs = ['XMR/USD', 'GMX/USD', 'LTC/USD'];\nreturn [[\n  { payload: JSON.stringify({ event: 'subscribe', pair: pairs, subscription: { name: 'ticker' } }) },\n  { payload: JSON.stringify({ event: 'subscribe', pair: pairs, subscription: { name: 'trade' } }) }\n]];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
     "y": 220,
     "wires": [
       [
@@ -116,7 +136,7 @@
     "name": "KRAKEN OUT",
     "server": "",
     "client": "crypto_kraken_ws",
-    "x": 390,
+    "x": 590,
     "y": 220,
     "wires": []
   },
@@ -140,7 +160,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Guardar Kraken",
-    "func": "// Kraken WS -> guarda ultimo ticker de XMR / GMX / LTC en flow context\nlet d;\ntry { d = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload; }\ncatch (e) { return null; }\n\nif (!Array.isArray(d)) {\n  if (d && d.event === 'subscriptionStatus') {\n    node.status({\n      fill: d.status === 'subscribed' ? 'green' : 'red',\n      shape: 'dot',\n      text: (d.pair || '') + ' ' + (d.status || '')\n    });\n  }\n  return null;\n}\n\nif (d.length < 4 || d[2] !== 'ticker') return null;\nconst t = d[1] || {};\nconst pair = String(d[3] || '');\nif (!t.c || !t.c.length) return null;\n\nconst price = Number(t.c[0]);\nif (!Number.isFinite(price) || price <= 0) return null;\n\nconst q = {\n  price: price,\n  bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n  ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n  ts: Date.now()\n};\n\nif      (pair === 'XMR/USD') flow.set('xmr', q);\nelse if (pair === 'GMX/USD') flow.set('gmx', q);\nelse if (pair === 'LTC/USD') flow.set('ltc', q);\nreturn null;",
+    "func": "// Kraken WS: ticker (precio/vol) + trade (compra/venta) -> flow context\nlet d;\ntry { d = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload; }\ncatch (e) { return null; }\n\nif (!Array.isArray(d)) {\n  if (d && d.event === 'subscriptionStatus') {\n    node.status({\n      fill: d.status === 'subscribed' ? 'green' : 'red', shape: 'dot',\n      text: (d.pair || '') + ' ' + ((d.subscription && d.subscription.name) || '') + ' ' + (d.status || '')\n    });\n  }\n  return null;\n}\n\nif (d.length < 4) return null;\nconst chan = d[2];\nconst pair = String(d[3] || '');\nconst key = pair === 'XMR/USD' ? 'xmr' : pair === 'GMX/USD' ? 'gmx' : pair === 'LTC/USD' ? 'ltc' : null;\nif (!key) return null;\nconst now = Date.now();\n\nif (chan === 'ticker') {\n  const t = d[1] || {};\n  if (!t.c || !t.c.length) return null;\n  const price = Number(t.c[0]);\n  if (!Number.isFinite(price) || price <= 0) return null;\n  const prev = flow.get(key) || {};\n  flow.set(key, {\n    price: price,\n    bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n    ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n    vol24:    (t.v && t.v.length > 1) ? Number(t.v[1]) : prev.vol24,\n    trades24: (t.t && t.t.length > 1) ? Number(t.t[1]) : prev.trades24,\n    ts: now\n  });\n} else if (chan === 'trade') {\n  const list = Array.isArray(d[1]) ? d[1] : [];\n  let arr = flow.get('trades_' + key) || [];\n  for (const tr of list) {\n    const v = Number(tr[1]);            // volumen\n    const s = tr[3];                    // 'b' compra / 's' venta\n    if (Number.isFinite(v)) arr.push({ t: now, v: v, s: s });\n  }\n  arr = arr.filter(x => x.t >= now - 300000);   // ventana 5 min\n  if (arr.length > 3000) arr = arr.slice(-3000);\n  flow.set('trades_' + key, arr);\n}\nreturn null;",
     "outputs": 0,
     "timeout": 0,
     "noerr": 0,
@@ -205,7 +225,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Guardar REST",
-    "func": "// Latido REST: toma el ultimo precio de Kraken (aunque el WS este mudo/caido)\nconst d = msg.payload;\nif (!d || !d.result || (Array.isArray(d.error) && d.error.length)) {\n  node.status({ fill: 'red', shape: 'ring', text: 'REST error' });\n  return null;\n}\nconst now = Date.now();\nconst res = d.result;\nlet n = 0;\nfor (const key of Object.keys(res)) {\n  const t = res[key];\n  if (!t || !t.c || !t.c.length) continue;\n  const price = Number(t.c[0]);\n  if (!Number.isFinite(price) || price <= 0) continue;\n  const q = {\n    price: price,\n    bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n    ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n    ts: now\n  };\n  const k = key.toUpperCase();\n  if      (k.indexOf('XMR') >= 0) { flow.set('xmr', q); n++; }\n  else if (k.indexOf('GMX') >= 0) { flow.set('gmx', q); n++; }\n  else if (k.indexOf('LTC') >= 0) { flow.set('ltc', q); n++; }\n}\nnode.status({ fill: 'green', shape: 'dot', text: 'REST ok ' + n + ' · ' + new Date(now).toLocaleTimeString() });\nreturn null;",
+    "func": "// Latido REST: ultimo precio + vol24 de Kraken (aunque el WS este mudo/caido)\nconst d = msg.payload;\nif (!d || !d.result || (Array.isArray(d.error) && d.error.length)) {\n  node.status({ fill: 'red', shape: 'ring', text: 'REST error' });\n  return null;\n}\nconst now = Date.now();\nconst res = d.result;\nlet n = 0;\nfor (const kk of Object.keys(res)) {\n  const t = res[kk];\n  if (!t || !t.c || !t.c.length) continue;\n  const price = Number(t.c[0]);\n  if (!Number.isFinite(price) || price <= 0) continue;\n  const K = kk.toUpperCase();\n  const key = K.indexOf('XMR') >= 0 ? 'xmr' : K.indexOf('GMX') >= 0 ? 'gmx' : K.indexOf('LTC') >= 0 ? 'ltc' : null;\n  if (!key) continue;\n  const prev = flow.get(key) || {};\n  flow.set(key, {\n    price: price,\n    bid: (t.b && t.b.length) ? Number(t.b[0]) : null,\n    ask: (t.a && t.a.length) ? Number(t.a[0]) : null,\n    vol24:    (t.v && t.v.length > 1) ? Number(t.v[1]) : prev.vol24,\n    trades24: (t.t && t.t.length > 1) ? Number(t.t[1]) : prev.trades24,\n    ts: now\n  });\n  n++;\n}\nnode.status({ fill: 'green', shape: 'dot', text: 'REST ok ' + n + ' · ' + new Date(now).toLocaleTimeString() });\nreturn null;",
     "outputs": 0,
     "timeout": 0,
     "noerr": 0,
@@ -234,7 +254,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 380,
+    "y": 400,
     "wires": [
       [
         "crypto_emit"
@@ -246,7 +266,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Emitir tarjetas",
-    "func": "// Cada 5 s: arma el panel resumen + tarjetas de detalle (rapido, sin tocar disco)\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\n\nfunction chg(coin, price) {                 // variacion % vs ~1 h atras\n  const ring = flow.get('hist_' + coin) || [];\n  if (!ring.length) return null;\n  const target = now - 3600000;\n  let ref = ring[0];\n  for (const pt of ring) { if (pt.t <= target) ref = pt; else break; }\n  if (!ref || !Number.isFinite(ref.p) || ref.p === 0) return null;\n  return (price - ref.p) / ref.p * 100;\n}\n\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\nconst sum = {};\nconst cards = {};\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (q && Number.isFinite(q.price)) {\n    const item = {\n      symbol: sym,\n      price:  q.price,\n      change: chg(k, q.price),\n      age:    q.ts ? Math.round((now - q.ts) / 1000) : null,\n      stale:  q.ts ? (now - q.ts > staleMs) : true,\n      bid:    q.bid  != null ? q.bid  : null,\n      ask:    q.ask  != null ? q.ask  : null,\n      flow:   q.flow != null ? q.flow : null,\n      avg:    q.avg  != null ? q.avg  : null,\n      rssi:   q.rssi != null ? q.rssi : null,\n      device: q.device || null\n    };\n    sum[k] = item;\n    cards[k] = { payload: item };\n  } else {\n    sum[k] = null;\n    cards[k] = null;\n  }\n}\n\nreturn [{ payload: sum }, cards.btc, cards.xmr, cards.gmx, cards.ltc];",
+    "func": "// Cada 5 s: panel resumen + tarjetas con min/max, EMA, Δ, vol y presion\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\n\nconst ringOf = k => flow.get('hist_' + k) || [];\n\nfunction chgWin(k, price, ms) {\n  const ring = ringOf(k);\n  if (!ring.length) return null;\n  const target = now - ms;\n  let ref = ring[0];\n  for (const pt of ring) { if (pt.t <= target) ref = pt; else break; }\n  if (!ref || !Number.isFinite(ref.p) || ref.p === 0) return null;\n  return (price - ref.p) / ref.p * 100;\n}\nfunction hilo(k, price) {\n  const ring = ringOf(k);\n  let hi = null, lo = null;\n  for (const pt of ring) { if (hi == null || pt.p > hi) hi = pt.p; if (lo == null || pt.p < lo) lo = pt.p; }\n  if (Number.isFinite(price)) { if (hi == null || price > hi) hi = price; if (lo == null || price < lo) lo = price; }\n  let pos = 50;\n  if (hi != null && lo != null && hi > lo) pos = (price - lo) / (hi - lo) * 100;\n  return { hi: hi, lo: lo, pos: Math.max(0, Math.min(100, pos)) };\n}\nfunction pressure(k) {\n  const arr = flow.get('trades_' + k) || [];\n  let b = 0, s = 0;\n  for (const x of arr) { if (x.s === 'b') b += x.v; else if (x.s === 's') s += x.v; }\n  const tot = b + s;\n  return tot > 0 ? { buy: b, sell: s, buyPct: b / tot * 100 } : { buy: 0, sell: 0, buyPct: null };\n}\n\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\nconst sum = {}, cards = {};\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (q && Number.isFinite(q.price)) {\n    const hl = hilo(k, q.price);\n    const pr = pressure(k);\n    const item = {\n      symbol: sym, price: q.price,\n      change:   chgWin(k, q.price, 3600000),\n      change24: chgWin(k, q.price, 86400000),\n      hi: hl.hi, lo: hl.lo, pos: hl.pos,\n      age:   q.ts ? Math.round((now - q.ts) / 1000) : null,\n      stale: q.ts ? (now - q.ts > staleMs) : true,\n      bid: q.bid != null ? q.bid : null,\n      ask: q.ask != null ? q.ask : null,\n      vol24:    q.vol24    != null ? q.vol24    : null,\n      trades24: q.trades24 != null ? q.trades24 : null,\n      flow: q.flow != null ? q.flow : null,\n      avg:  q.avg  != null ? q.avg  : null,\n      rssi: q.rssi != null ? q.rssi : null,\n      device: q.device || null,\n      buyPct: pr.buyPct, buy: pr.buy, sell: pr.sell\n    };\n    sum[k] = item; cards[k] = { payload: item };\n  } else { sum[k] = null; cards[k] = null; }\n}\nreturn [{ payload: sum }, cards.btc, cards.xmr, cards.gmx, cards.ltc];",
     "outputs": 5,
     "timeout": 0,
     "noerr": 0,
@@ -254,7 +274,7 @@
     "finalize": "",
     "libs": [],
     "x": 390,
-    "y": 380,
+    "y": 400,
     "wires": [
       [
         "crypto_summary"
@@ -291,7 +311,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 420,
+    "y": 460,
     "wires": [
       [
         "crypto_live"
@@ -303,7 +323,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Precio actual (1s)",
-    "func": "// Cada 1 s: precio actual a los graficos \"en vivo\" (efimeros, NO se guardan)\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\nfunction pt(k, sym) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) return null;\n  if (q.ts && (now - q.ts) > staleMs) return null;   // feed caido: no dibujar linea plana\n  return { payload: q.price, topic: sym };\n}\nreturn [pt('btc','BTC'), pt('xmr','XMR'), pt('gmx','GMX'), pt('ltc','LTC')];",
+    "func": "// Cada 1 s: precio actual a los graficos \"en vivo\" (efimeros, NO se guardan)\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\nfunction pt(k, sym) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) return null;\n  if (q.ts && (now - q.ts) > staleMs) return null;\n  return { payload: q.price, topic: sym };\n}\nreturn [pt('btc','BTC'), pt('xmr','XMR'), pt('gmx','GMX'), pt('ltc','LTC')];",
     "outputs": 4,
     "timeout": 0,
     "noerr": 0,
@@ -311,7 +331,7 @@
     "finalize": "",
     "libs": [],
     "x": 400,
-    "y": 420,
+    "y": 460,
     "wires": [
       [
         "crypto_btc_live"
@@ -345,7 +365,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 460,
+    "y": 520,
     "wires": [
       [
         "crypto_historian"
@@ -356,8 +376,8 @@
     "id": "crypto_historian",
     "type": "function",
     "z": "crypto_lite_v3_tab",
-    "name": "Historian (1/min)",
-    "func": "// Cada 3 min: 1 punto por moneda -> grafico + append a disco (varios dias)\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;   // dato viejo: no lo registro\n  const p = q.price;\n\n  // ring en memoria para calcular la variacion (acotado)\n  let ring = flow.get('hist_' + k) || [];\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;                     // 24 h\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(ring.length - 1500);\n  flow.set('hist_' + k, ring);\n\n  // linea a disco (append, 1 JSON por linea) y punto al grafico\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = { payload: p, topic: sym };\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
+    "name": "Historian (1/3min)",
+    "func": "// Cada 3 min: precio + EMA al grafico y append a disco (varios dias)\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst N = Number(global.get('cryptoEmaN')) || 20;\nconst kk = 2 / (N + 1);\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;   // dato viejo: no lo registro\n  const p = q.price;\n\n  let ring = flow.get('hist_' + k) || [];\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(-1500);\n  flow.set('hist_' + k, ring);\n\n  let ema = flow.get('ema_' + k);\n  ema = (ema == null) ? p : (p * kk + ema * (1 - kk));\n  flow.set('ema_' + k, ema);\n\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = [ { payload: p, topic: sym }, { payload: ema, topic: sym + ' EMA' } ];\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
     "outputs": 5,
     "timeout": 0,
     "noerr": 0,
@@ -365,7 +385,7 @@
     "finalize": "",
     "libs": [],
     "x": 400,
-    "y": 460,
+    "y": 520,
     "wires": [
       [
         "crypto_file_write"
@@ -396,7 +416,7 @@
     "overwriteFile": "false",
     "encoding": "utf8",
     "x": 650,
-    "y": 460,
+    "y": 520,
     "wires": [
       []
     ]
@@ -419,7 +439,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 560,
+    "y": 600,
     "wires": [
       [
         "crypto_load_req"
@@ -439,7 +459,7 @@
     "finalize": "",
     "libs": [],
     "x": 380,
-    "y": 560,
+    "y": 600,
     "wires": [
       [
         "crypto_file_read"
@@ -459,7 +479,7 @@
     "encoding": "utf8",
     "allProps": false,
     "x": 590,
-    "y": 560,
+    "y": 600,
     "wires": [
       [
         "crypto_seed"
@@ -471,7 +491,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Sembrar grafico",
-    "func": "// Toma el archivo de una moneda y siembra el grafico con el historial guardado\nconst coin = msg.coin || '?';\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst now = Date.now();\nconst days = Number(global.get('cryptoViewDays')) || 1;   // ventana a mostrar\nconst cut = now - days * 86400000;\n\nconst pts = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t) || !Number.isFinite(o.p)) continue;\n  if (o.t < cut) continue;\n  pts.push({ x: o.t, y: o.p });\n}\nif (!pts.length) return null;\npts.sort((a, b) => a.x - b.x);\n\n// downsample para no ahogar al navegador de la Pi\nconst MAX = 600;\nlet ds = pts;\nif (pts.length > MAX) {\n  const step = Math.ceil(pts.length / MAX);\n  ds = pts.filter((_, i) => i % step === 0);\n}\n\n// tambien reconstruimos el ring para la variacion %\nflow.set('hist_' + coin.toLowerCase(), pts.slice(-1500).map(p => ({ t: p.x, p: p.y })));\n\nmsg.payload = [{ series: [coin], data: [ds], labels: [''] }];\nmsg.topic = coin;\nreturn msg;",
+    "func": "// Siembra el grafico con historial guardado: precio + EMA reconstruida\nconst coin = msg.coin || '?';\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst now = Date.now();\nconst days = Number(global.get('cryptoViewDays')) || 3;\nconst cut = now - days * 86400000;\n\nconst pts = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t) || !Number.isFinite(o.p)) continue;\n  if (o.t < cut) continue;\n  pts.push({ x: o.t, y: o.p });\n}\nif (!pts.length) return null;\npts.sort((a, b) => a.x - b.x);\n\nconst N = Number(global.get('cryptoEmaN')) || 20;\nconst kk = 2 / (N + 1);\nlet ema = null;\nconst emaPts = [];\nfor (const pt of pts) { ema = (ema == null) ? pt.y : (pt.y * kk + ema * (1 - kk)); emaPts.push({ x: pt.x, y: ema }); }\n\nflow.set('ema_' + coin.toLowerCase(), ema);\nflow.set('hist_' + coin.toLowerCase(), pts.slice(-1500).map(p => ({ t: p.x, p: p.y })));\n\n// downsample (mismos indices para precio y EMA)\nconst MAX = 600;\nlet idx = pts.map((_, i) => i);\nif (pts.length > MAX) { const step = Math.ceil(pts.length / MAX); idx = idx.filter(i => i % step === 0); }\nconst dsP = idx.map(i => pts[i]);\nconst dsE = idx.map(i => emaPts[i]);\n\nmsg.payload = [{ series: [coin, coin + ' EMA'], data: [dsP, dsE], labels: ['', ''] }];\nmsg.topic = coin;\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -479,7 +499,7 @@
     "finalize": "",
     "libs": [],
     "x": 790,
-    "y": 560,
+    "y": 600,
     "wires": [
       [
         "crypto_seed_switch"
@@ -519,7 +539,7 @@
     "repair": false,
     "outputs": 4,
     "x": 980,
-    "y": 560,
+    "y": 600,
     "wires": [
       [
         "crypto_btc_chart"
@@ -546,7 +566,7 @@
     ],
     "uncaught": false,
     "x": 590,
-    "y": 620,
+    "y": 660,
     "wires": [
       []
     ]
@@ -569,7 +589,7 @@
     "payload": "",
     "payloadType": "date",
     "x": 160,
-    "y": 700,
+    "y": 740,
     "wires": [
       [
         "crypto_trim_req"
@@ -589,7 +609,7 @@
     "finalize": "",
     "libs": [],
     "x": 380,
-    "y": 700,
+    "y": 740,
     "wires": [
       [
         "crypto_trim_read"
@@ -609,7 +629,7 @@
     "encoding": "utf8",
     "allProps": false,
     "x": 590,
-    "y": 700,
+    "y": 740,
     "wires": [
       [
         "crypto_trim_proc"
@@ -621,7 +641,7 @@
     "type": "function",
     "z": "crypto_lite_v3_tab",
     "name": "Dejar ultimos N dias",
-    "func": "// Deja solo los ultimos N dias en el archivo (evita que crezca sin fin)\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst keep = Number(global.get('cryptoKeepDays')) || 7;\nconst cut = Date.now() - keep * 86400000;\n\nconst kept = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t)) continue;\n  if (o.t < cut) continue;\n  kept.push(JSON.stringify({ t: o.t, p: o.p }));\n}\n// si no cambio la cantidad de lineas utiles, no reescribo\nmsg.payload = kept.join('\\n');\nreturn msg;",
+    "func": "// Deja solo los ultimos N dias en el archivo (evita que crezca sin fin)\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst keep = Number(global.get('cryptoKeepDays')) || 7;\nconst cut = Date.now() - keep * 86400000;\n\nconst kept = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t)) continue;\n  if (o.t < cut) continue;\n  kept.push(JSON.stringify({ t: o.t, p: o.p }));\n}\nmsg.payload = kept.join('\\n');\nreturn msg;",
     "outputs": 1,
     "timeout": 0,
     "noerr": 0,
@@ -629,7 +649,7 @@
     "finalize": "",
     "libs": [],
     "x": 800,
-    "y": 700,
+    "y": 740,
     "wires": [
       [
         "crypto_trim_write"
@@ -648,7 +668,7 @@
     "overwriteFile": "true",
     "encoding": "utf8",
     "x": 1010,
-    "y": 700,
+    "y": 740,
     "wires": [
       []
     ]
@@ -661,15 +681,15 @@
     "name": "Panel 4 monedas",
     "order": 1,
     "width": 12,
-    "height": 4,
-    "format": "<style>\n.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}\n.cl-tile{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px 12px}\n.cl-sym{font-size:12px;color:#8b949e;letter-spacing:1px;text-transform:uppercase}\n.cl-px{font-size:24px;font-weight:700;color:#e6edf3;margin-top:2px;line-height:1.1}\n.cl-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;font-size:12px;color:#8b949e}\n.cl-up{color:#3fb950}.cl-down{color:#f85149}.cl-flat{color:#8b949e}\n.cl-off{opacity:.4}\n.cl-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}\n.cl-dg{background:#3fb950}.cl-dr{background:#f85149}\n.cl-na{color:#8b949e;font-size:20px}\n</style>\n<div class=\"cl-grid\">\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.btc || msg.payload.btc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.btc && !msg.payload.btc.stale)?'cl-dg':'cl-dr'\"></span>Bitcoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.btc\">${{msg.payload.btc.price | number:0}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.btc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.btc\">\n      <span ng-class=\"msg.payload.btc.change>0?'cl-up':(msg.payload.btc.change<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change>=0?'▲':'▼'}} {{msg.payload.btc.change | number:2}}% 1h</span>\n      <span>{{msg.payload.btc.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.xmr || msg.payload.xmr.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.xmr && !msg.payload.xmr.stale)?'cl-dg':'cl-dr'\"></span>Monero</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.xmr\">${{msg.payload.xmr.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.xmr\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.xmr\">\n      <span ng-class=\"msg.payload.xmr.change>0?'cl-up':(msg.payload.xmr.change<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change>=0?'▲':'▼'}} {{msg.payload.xmr.change | number:2}}% 1h</span>\n      <span>{{msg.payload.xmr.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.gmx || msg.payload.gmx.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.gmx && !msg.payload.gmx.stale)?'cl-dg':'cl-dr'\"></span>GMX</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.gmx\">${{msg.payload.gmx.price | number:3}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.gmx\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.gmx\">\n      <span ng-class=\"msg.payload.gmx.change>0?'cl-up':(msg.payload.gmx.change<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change>=0?'▲':'▼'}} {{msg.payload.gmx.change | number:2}}% 1h</span>\n      <span>{{msg.payload.gmx.age}} s</span>\n    </div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.ltc || msg.payload.ltc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.ltc && !msg.payload.ltc.stale)?'cl-dg':'cl-dr'\"></span>Litecoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.ltc\">${{msg.payload.ltc.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.ltc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.ltc\">\n      <span ng-class=\"msg.payload.ltc.change>0?'cl-up':(msg.payload.ltc.change<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change>=0?'▲':'▼'}} {{msg.payload.ltc.change | number:2}}% 1h</span>\n      <span>{{msg.payload.ltc.age}} s</span>\n    </div>\n  </div>\n</div>",
+    "height": 5,
+    "format": "<style>\n.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}\n.cl-tile{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:10px 12px}\n.cl-sym{font-size:12px;color:#8b949e;letter-spacing:1px;text-transform:uppercase}\n.cl-px{font-size:24px;font-weight:700;color:#e6edf3;margin-top:2px;line-height:1.1}\n.cl-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;font-size:12px;color:#8b949e}\n.cl-mm{font-size:11px;color:#6e7681;margin-top:3px}\n.cl-up{color:#3fb950}.cl-down{color:#f85149}.cl-flat{color:#8b949e}\n.cl-off{opacity:.4}\n.cl-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}\n.cl-dg{background:#3fb950}.cl-dr{background:#f85149}\n.cl-na{color:#8b949e;font-size:20px}\n</style>\n<div class=\"cl-grid\">\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.btc || msg.payload.btc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.btc && !msg.payload.btc.stale)?'cl-dg':'cl-dr'\"></span>Bitcoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.btc\">${{msg.payload.btc.price | number:0}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.btc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.btc\">\n      <span ng-class=\"msg.payload.btc.change>0?'cl-up':(msg.payload.btc.change<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change>=0?'▲':'▼'}} {{msg.payload.btc.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.btc.change24>0?'cl-up':(msg.payload.btc.change24<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.btc\">mín ${{msg.payload.btc.lo | number:0}} · máx ${{msg.payload.btc.hi | number:0}} · {{msg.payload.btc.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.xmr || msg.payload.xmr.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.xmr && !msg.payload.xmr.stale)?'cl-dg':'cl-dr'\"></span>Monero</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.xmr\">${{msg.payload.xmr.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.xmr\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.xmr\">\n      <span ng-class=\"msg.payload.xmr.change>0?'cl-up':(msg.payload.xmr.change<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change>=0?'▲':'▼'}} {{msg.payload.xmr.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.xmr.change24>0?'cl-up':(msg.payload.xmr.change24<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.xmr\">mín ${{msg.payload.xmr.lo | number:2}} · máx ${{msg.payload.xmr.hi | number:2}} · {{msg.payload.xmr.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.gmx || msg.payload.gmx.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.gmx && !msg.payload.gmx.stale)?'cl-dg':'cl-dr'\"></span>GMX</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.gmx\">${{msg.payload.gmx.price | number:3}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.gmx\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.gmx\">\n      <span ng-class=\"msg.payload.gmx.change>0?'cl-up':(msg.payload.gmx.change<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change>=0?'▲':'▼'}} {{msg.payload.gmx.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.gmx.change24>0?'cl-up':(msg.payload.gmx.change24<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.gmx\">mín ${{msg.payload.gmx.lo | number:3}} · máx ${{msg.payload.gmx.hi | number:3}} · {{msg.payload.gmx.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.ltc || msg.payload.ltc.stale}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.ltc && !msg.payload.ltc.stale)?'cl-dg':'cl-dr'\"></span>Litecoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.ltc\">${{msg.payload.ltc.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.ltc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.ltc\">\n      <span ng-class=\"msg.payload.ltc.change>0?'cl-up':(msg.payload.ltc.change<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change>=0?'▲':'▼'}} {{msg.payload.ltc.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.ltc.change24>0?'cl-up':(msg.payload.ltc.change24<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.ltc\">mín ${{msg.payload.ltc.lo | number:2}} · máx ${{msg.payload.ltc.hi | number:2}} · {{msg.payload.ltc.age}} s</div>\n  </div>\n</div>",
     "storeOutMessages": true,
     "fwdInMessages": true,
     "resendOnRefresh": true,
     "templateScope": "local",
     "className": "",
     "x": 650,
-    "y": 380,
+    "y": 400,
     "wires": [
       []
     ]
@@ -705,7 +725,7 @@
     "useDifferentColor": false,
     "className": "",
     "x": 660,
-    "y": 420,
+    "y": 440,
     "wires": [
       []
     ]
@@ -741,7 +761,7 @@
     "useDifferentColor": false,
     "className": "",
     "x": 660,
-    "y": 460,
+    "y": 480,
     "wires": [
       []
     ]
@@ -777,7 +797,7 @@
     "useDifferentColor": false,
     "className": "",
     "x": 660,
-    "y": 500,
+    "y": 520,
     "wires": [
       []
     ]
@@ -813,7 +833,7 @@
     "useDifferentColor": false,
     "className": "",
     "x": 660,
-    "y": 540,
+    "y": 560,
     "wires": [
       []
     ]
@@ -826,8 +846,8 @@
     "name": "BTC tarjeta",
     "order": 1,
     "width": 12,
-    "height": 2,
-    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>BTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:0}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Flujo {{msg.payload.flow | number:4}} BTC/s · Prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n</div>",
+    "height": 4,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>BTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:0}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Flujo {{msg.payload.flow | number:4}} BTC/s · Prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span>Mín <b style=\"color:#c9d1d9\">${{msg.payload.lo | number:0}}</b></span>\n    <span style=\"float:right\">Máx <b style=\"color:#c9d1d9\">${{msg.payload.hi | number:0}}</b></span>\n  </div>\n  <div style=\"height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:4px\">\n    <div style=\"position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px\" ng-style=\"{left: msg.payload.pos + '%'}\"></div>\n  </div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span ng-style=\"{color: msg.payload.change>=0?'#3fb950':'#f85149'}\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n    &nbsp;·&nbsp;\n    <span ng-style=\"{color: msg.payload.change24>=0?'#3fb950':'#f85149'}\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    <span style=\"float:right\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n</div>",
     "storeOutMessages": true,
     "fwdInMessages": true,
     "resendOnRefresh": true,
@@ -848,9 +868,9 @@
     "order": 2,
     "width": 12,
     "height": 4,
-    "label": "BTC · precio",
+    "label": "BTC · precio + EMA",
     "chartType": "line",
-    "legend": "false",
+    "legend": "true",
     "xformat": "HH:mm",
     "interpolate": "linear",
     "nodata": "Cargando BTC...",
@@ -861,10 +881,11 @@
     "removeOlderPoints": "",
     "removeOlderUnit": "86400",
     "cutout": 0,
-    "useOneColor": true,
+    "useOneColor": false,
     "useUTC": false,
     "colors": [
-      "#f2a900"
+      "#f2a900",
+      "#58a6ff"
     ],
     "outputs": 1,
     "useDifferentColor": false,
@@ -883,8 +904,8 @@
     "name": "XMR tarjeta",
     "order": 1,
     "width": 12,
-    "height": 2,
-    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>XMR</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "height": 4,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>XMR</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span>Mín <b style=\"color:#c9d1d9\">${{msg.payload.lo | number:2}}</b></span>\n    <span style=\"float:right\">Máx <b style=\"color:#c9d1d9\">${{msg.payload.hi | number:2}}</b></span>\n  </div>\n  <div style=\"height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:4px\">\n    <div style=\"position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px\" ng-style=\"{left: msg.payload.pos + '%'}\"></div>\n  </div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span ng-style=\"{color: msg.payload.change>=0?'#3fb950':'#f85149'}\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n    &nbsp;·&nbsp;\n    <span ng-style=\"{color: msg.payload.change24>=0?'#3fb950':'#f85149'}\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    <span style=\"float:right\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div ng-if=\"msg.payload.buyPct!=null\" style=\"margin-top:8px\">\n    <div style=\"font-size:11px;color:#8b949e\">Presión (5 min): <b style=\"color:#3fb950\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b style=\"color:#f85149\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n    <div style=\"display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:3px;background:#f85149\">\n      <div style=\"background:#3fb950\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div>\n    </div>\n  </div>\n</div>",
     "storeOutMessages": true,
     "fwdInMessages": true,
     "resendOnRefresh": true,
@@ -905,9 +926,9 @@
     "order": 2,
     "width": 12,
     "height": 4,
-    "label": "XMR · precio",
+    "label": "XMR · precio + EMA",
     "chartType": "line",
-    "legend": "false",
+    "legend": "true",
     "xformat": "HH:mm",
     "interpolate": "linear",
     "nodata": "Cargando XMR...",
@@ -918,10 +939,11 @@
     "removeOlderPoints": "",
     "removeOlderUnit": "86400",
     "cutout": 0,
-    "useOneColor": true,
+    "useOneColor": false,
     "useUTC": false,
     "colors": [
-      "#ff6600"
+      "#ff6600",
+      "#58a6ff"
     ],
     "outputs": 1,
     "useDifferentColor": false,
@@ -940,8 +962,8 @@
     "name": "GMX tarjeta",
     "order": 1,
     "width": 12,
-    "height": 2,
-    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>GMX</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:3}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:3}} · Ask {{msg.payload.ask | number:3}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "height": 4,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>GMX</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:3}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:3}} · Ask {{msg.payload.ask | number:3}} · feed {{msg.payload.age}} s</div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span>Mín <b style=\"color:#c9d1d9\">${{msg.payload.lo | number:3}}</b></span>\n    <span style=\"float:right\">Máx <b style=\"color:#c9d1d9\">${{msg.payload.hi | number:3}}</b></span>\n  </div>\n  <div style=\"height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:4px\">\n    <div style=\"position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px\" ng-style=\"{left: msg.payload.pos + '%'}\"></div>\n  </div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span ng-style=\"{color: msg.payload.change>=0?'#3fb950':'#f85149'}\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n    &nbsp;·&nbsp;\n    <span ng-style=\"{color: msg.payload.change24>=0?'#3fb950':'#f85149'}\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    <span style=\"float:right\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div ng-if=\"msg.payload.buyPct!=null\" style=\"margin-top:8px\">\n    <div style=\"font-size:11px;color:#8b949e\">Presión (5 min): <b style=\"color:#3fb950\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b style=\"color:#f85149\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n    <div style=\"display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:3px;background:#f85149\">\n      <div style=\"background:#3fb950\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div>\n    </div>\n  </div>\n</div>",
     "storeOutMessages": true,
     "fwdInMessages": true,
     "resendOnRefresh": true,
@@ -962,9 +984,9 @@
     "order": 2,
     "width": 12,
     "height": 4,
-    "label": "GMX · precio",
+    "label": "GMX · precio + EMA",
     "chartType": "line",
-    "legend": "false",
+    "legend": "true",
     "xformat": "HH:mm",
     "interpolate": "linear",
     "nodata": "Cargando GMX...",
@@ -975,16 +997,17 @@
     "removeOlderPoints": "",
     "removeOlderUnit": "86400",
     "cutout": 0,
-    "useOneColor": true,
+    "useOneColor": false,
     "useUTC": false,
     "colors": [
-      "#3fb950"
+      "#3fb950",
+      "#58a6ff"
     ],
     "outputs": 1,
     "useDifferentColor": false,
     "className": "",
     "x": 650,
-    "y": 300,
+    "y": 340,
     "wires": [
       []
     ]
@@ -997,15 +1020,15 @@
     "name": "LTC tarjeta",
     "order": 1,
     "width": 12,
-    "height": 2,
-    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>LTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n</div>",
+    "height": 4,
+    "format": "<div style=\"padding:8px 10px\">\n  <div style=\"font-size:18px;color:#e6edf3\"><b>LTC</b><span style=\"float:right;font-size:26px\">${{msg.payload.price | number:2}}</span></div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:6px\">Bid {{msg.payload.bid | number:2}} · Ask {{msg.payload.ask | number:2}} · feed {{msg.payload.age}} s</div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span>Mín <b style=\"color:#c9d1d9\">${{msg.payload.lo | number:2}}</b></span>\n    <span style=\"float:right\">Máx <b style=\"color:#c9d1d9\">${{msg.payload.hi | number:2}}</b></span>\n  </div>\n  <div style=\"height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:4px\">\n    <div style=\"position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px\" ng-style=\"{left: msg.payload.pos + '%'}\"></div>\n  </div>\n  <div style=\"font-size:12px;color:#8b949e;margin-top:8px\">\n    <span ng-style=\"{color: msg.payload.change>=0?'#3fb950':'#f85149'}\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n    &nbsp;·&nbsp;\n    <span ng-style=\"{color: msg.payload.change24>=0?'#3fb950':'#f85149'}\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    <span style=\"float:right\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div ng-if=\"msg.payload.buyPct!=null\" style=\"margin-top:8px\">\n    <div style=\"font-size:11px;color:#8b949e\">Presión (5 min): <b style=\"color:#3fb950\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b style=\"color:#f85149\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n    <div style=\"display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:3px;background:#f85149\">\n      <div style=\"background:#3fb950\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div>\n    </div>\n  </div>\n</div>",
     "storeOutMessages": true,
     "fwdInMessages": true,
     "resendOnRefresh": true,
     "templateScope": "local",
     "className": "",
     "x": 650,
-    "y": 340,
+    "y": 380,
     "wires": [
       []
     ]
@@ -1019,9 +1042,9 @@
     "order": 2,
     "width": 12,
     "height": 4,
-    "label": "LTC · precio",
+    "label": "LTC · precio + EMA",
     "chartType": "line",
-    "legend": "false",
+    "legend": "true",
     "xformat": "HH:mm",
     "interpolate": "linear",
     "nodata": "Cargando LTC...",
@@ -1032,16 +1055,17 @@
     "removeOlderPoints": "",
     "removeOlderUnit": "86400",
     "cutout": 0,
-    "useOneColor": true,
+    "useOneColor": false,
     "useUTC": false,
     "colors": [
-      "#c0c0c0"
+      "#c0c0c0",
+      "#58a6ff"
     ],
     "outputs": 1,
     "useDifferentColor": false,
     "className": "",
     "x": 650,
-    "y": 340,
+    "y": 420,
     "wires": [
       []
     ]
