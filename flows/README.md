@@ -4,11 +4,12 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v5.json`](./crypto-lite-v5.json)
-— parte de la base hand-tuned [`crypto-lite-v4.json`](./crypto-lite-v4.json) (layout
-acomodado al monitor) y le agrega **break-even** por moneda: fila de distancia %
-en la tarjeta + línea horizontal amarilla en el gráfico (config `cryptoBreakeven`,
-ej. LTC 54.85). El anterior [`crypto-lite-v3.json`](./crypto-lite-v3.json) queda de referencia.
+Archivo importable (última versión): [`crypto-lite-v6.json`](./crypto-lite-v6.json)
+— sobre [`crypto-lite-v5.json`](./crypto-lite-v5.json) agrega **tick-flash**: cada
+tarjeta parpadea sutil en verde (subió) o rojo (bajó) al cambiar el precio.
+v5 trae **break-even** por moneda (fila % en tarjeta + línea amarilla en el gráfico,
+config `cryptoBreakeven`, ej. LTC 54.85), sobre la base hand-tuned
+[`crypto-lite-v4.json`](./crypto-lite-v4.json). El [`crypto-lite-v3.json`](./crypto-lite-v3.json) queda de referencia.
 
 ---
 
