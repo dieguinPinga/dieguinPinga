@@ -1,0 +1,152 @@
+[
+    {
+        "id": "audiotest_tab",
+        "type": "ui_tab",
+        "name": "🔊 TEST AUDIO",
+        "icon": "volume_up",
+        "order": 9,
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "audiotest_grp",
+        "type": "ui_group",
+        "name": "Probar parlantes",
+        "tab": "audiotest_tab",
+        "order": 1,
+        "disp": true,
+        "width": 6,
+        "collapse": false
+    },
+    {
+        "id": "at_btn_server",
+        "type": "ui_button",
+        "z": "audiotest_flow",
+        "name": "Sonar en el SERVER",
+        "group": "audiotest_grp",
+        "order": 1,
+        "width": 6,
+        "height": 1,
+        "passthru": false,
+        "label": "🔊 Sonar en el SERVER (notebook)",
+        "tooltip": "Reproduce un sonido en la maquina que corre Node-RED",
+        "color": "#ffffff",
+        "bgcolor": "#238636",
+        "className": "",
+        "icon": "",
+        "payload": "play",
+        "payloadType": "str",
+        "topic": "server",
+        "topicType": "str",
+        "x": 170,
+        "y": 100,
+        "wires": [
+            [
+                "at_exec"
+            ]
+        ]
+    },
+    {
+        "id": "at_exec",
+        "type": "exec",
+        "z": "audiotest_flow",
+        "command": "sh -c 'W=/usr/share/sounds/alsa/Front_Center.wav; if command -v paplay >/dev/null 2>&1 && [ -f \"$W\" ]; then paplay \"$W\" && echo OK-paplay; elif command -v aplay >/dev/null 2>&1 && [ -f \"$W\" ]; then aplay \"$W\" && echo OK-aplay; elif command -v speaker-test >/dev/null 2>&1; then speaker-test -t sine -f 1000 -l 1 && echo OK-speaker-test; else echo \"NO-PLAYER: instala pulseaudio-utils o alsa-utils\"; exit 1; fi'",
+        "addpay": false,
+        "append": "",
+        "useSpawn": "false",
+        "timer": "10",
+        "winHide": false,
+        "oldrc": false,
+        "name": "reproducir en server",
+        "x": 440,
+        "y": 100,
+        "wires": [
+            [
+                "at_fmt"
+            ],
+            [
+                "at_fmt"
+            ],
+            [
+                "at_fmt"
+            ]
+        ]
+    },
+    {
+        "id": "at_fmt",
+        "type": "function",
+        "z": "audiotest_flow",
+        "name": "estado",
+        "func": "// exec: salida1=stdout, salida2=stderr, salida3={code,...}\nlet txt = '';\nif (msg.payload && typeof msg.payload === 'object' && 'code' in msg.payload) {\n  const ok = msg.payload.code === 0;\n  txt = (ok ? '✅ sono (rc 0)' : '❌ error rc ' + msg.payload.code) + ' · ' + new Date().toLocaleTimeString();\n  node.status({ fill: ok ? 'green' : 'red', shape: 'dot', text: txt });\n} else {\n  const s = String(msg.payload || '').trim();\n  if (!s) return null;\n  txt = s + ' · ' + new Date().toLocaleTimeString();\n}\nreturn { payload: txt };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 660,
+        "y": 100,
+        "wires": [
+            [
+                "at_status"
+            ]
+        ]
+    },
+    {
+        "id": "at_status",
+        "type": "ui_text",
+        "z": "audiotest_flow",
+        "group": "audiotest_grp",
+        "order": 2,
+        "width": 6,
+        "height": 1,
+        "name": "estado server",
+        "label": "Estado server:",
+        "format": "{{msg.payload}}",
+        "layout": "row-spread",
+        "className": "",
+        "x": 880,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "at_btn_browser",
+        "type": "ui_button",
+        "z": "audiotest_flow",
+        "name": "Sonar en el NAVEGADOR",
+        "group": "audiotest_grp",
+        "order": 3,
+        "width": 6,
+        "height": 1,
+        "passthru": false,
+        "label": "🔔 Sonar en el NAVEGADOR",
+        "tooltip": "Reproduce sonido en el equipo donde ves el dashboard",
+        "color": "#ffffff",
+        "bgcolor": "#1f6feb",
+        "className": "",
+        "icon": "",
+        "payload": "Test de audio, uno, dos, tres.",
+        "payloadType": "str",
+        "topic": "browser",
+        "topicType": "str",
+        "x": 170,
+        "y": 200,
+        "wires": [
+            [
+                "at_audio"
+            ]
+        ]
+    },
+    {
+        "id": "at_audio",
+        "type": "ui_audio",
+        "z": "audiotest_flow",
+        "group": "audiotest_grp",
+        "name": "audio navegador",
+        "voice": "",
+        "always": true,
+        "x": 440,
+        "y": 200,
+        "wires": []
+    }
+]

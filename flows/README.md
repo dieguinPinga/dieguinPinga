@@ -9,6 +9,15 @@ Archivo importable (última versión): [`crypto-lite-v22.json`](./crypto-lite-v2
 (`cryptoBtcMaxJump`, 15%) → un glitch del sensor (ej. 100k) ya no ensucia el histórico.
 Para purgar datos malos existentes, usar [`reset-btc-snippet.json`](./reset-btc-snippet.json).
 
+**Probar los parlantes:** [`audio-test-snippet.json`](./audio-test-snippet.json) — flujo
+autocontenido (crea su propia pestaña **🔊 TEST AUDIO**) con dos botones: uno hace sonar el
+**SERVER** (la notebook que corre Node-RED, vía un nodo `exec` que prueba `paplay`→`aplay`→
+`speaker-test`) y otro suena en el **NAVEGADOR** donde ves el dashboard (nodo `ui_audio`, voz
+del navegador). El botón del server muestra el resultado (`✅ rc 0` o el error) en la tarjeta
+"Estado server". Si el server no suena aunque los parlantes andan, casi siempre es que Node-RED
+corre como servicio sin sesión de audio: instalá `pulseaudio-utils`/`alsa-utils`, o arrancá
+Node-RED desde tu sesión de escritorio.
+
 v21: **BTC = solo MQTT como verdad del precio**, gana el mensaje con **timestamp más nuevo**;
 Kraken/REST ya no tocan el precio de BTC (solo vol24/bid/ask).
 
