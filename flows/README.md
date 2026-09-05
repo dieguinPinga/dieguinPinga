@@ -4,11 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v21.json`](./crypto-lite-v21.json)
-— **BTC = solo MQTT como verdad del precio**: gana el mensaje con **timestamp más nuevo**
-(si llega uno viejo/desordenado se ignora). Kraken/REST **ya no tocan el precio de BTC**;
-solo aportan vol24/bid/ask. Si el sensor se calla, el precio de BTC se congela (y la tarjeta
-envejece/gris) — es lo esperado.
+Archivo importable (última versión): [`crypto-lite-v22.json`](./crypto-lite-v22.json)
+— **filtro anti-outlier en BTC**: rechaza saltos absurdos vs el último precio bueno
+(`cryptoBtcMaxJump`, 15%) → un glitch del sensor (ej. 100k) ya no ensucia el histórico.
+Para purgar datos malos existentes, usar [`reset-btc-snippet.json`](./reset-btc-snippet.json).
+
+v21: **BTC = solo MQTT como verdad del precio**, gana el mensaje con **timestamp más nuevo**;
+Kraken/REST ya no tocan el precio de BTC (solo vol24/bid/ask).
 
 v20: BTC por MQTT primario (Kraken/REST eran respaldo del precio si MQTT callaba >15s).
 
