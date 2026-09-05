@@ -4,10 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v18.json`](./crypto-lite-v18.json)
-— "power pack" para máquina más potente (no Raspi): **historial 1 punto/min** (antes 3 min,
-gráficos más finos), **doble EMA** (lenta 20 + rápida 9) en los 4 gráficos, y **trades a 20s**.
-Nuevo `cryptoEmaFast` (9).
+Archivo importable (última versión): [`crypto-lite-v19.json`](./crypto-lite-v19.json)
+— **WS reactivo**: el WebSocket de Kraken empuja cada tick directo a los gráficos EN VIVO
+(tick-a-tick real cuando el WS conecta; si no, cae al muestreo REST). Más caudal:
+**historial a 30s** y **trades a 10s**.
+
+v18: "power pack" — historial 1 punto/min, **doble EMA** (lenta 20 + rápida 9,
+`cryptoEmaFast`), trades a 20s.
 
 v17: **BTC con 2 decimales** (tarjeta y resumen; antes iba redondeado).
 
