@@ -1,0 +1,68 @@
+[
+    {
+        "id": "reset_btc_inject",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "🧹 Reset BTC (manual)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 170,
+        "y": 900,
+        "wires": [
+            [
+                "reset_btc_fn"
+            ]
+        ]
+    },
+    {
+        "id": "reset_btc_fn",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Reset histórico BTC",
+        "func": "// Borra el historico de BTC (memoria + disco) y limpia los graficos\nflow.set('hist_btc', []);\nflow.set('ema_btc', null);\nflow.set('emaf_btc', null);\nflow.set('live_btc', []);\nflow.set('trades_btc', []);\nflow.set('btcMqttT', 0);\n\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst clearChart = { payload: [] };                          // limpia el grafico (todas las series)\nconst blankFile  = { filename: base + 'BTC.log', payload: '' }; // vacia el archivo en disco\n\nnode.status({ fill: 'blue', shape: 'dot', text: 'BTC reseteado ' + new Date().toLocaleTimeString() });\nreturn [ clearChart, blankFile ];",
+        "outputs": 2,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 900,
+        "wires": [
+            [
+                "0145b2db5e6ee234",
+                "b33dae9625940156"
+            ],
+            [
+                "reset_btc_file"
+            ]
+        ]
+    },
+    {
+        "id": "reset_btc_file",
+        "type": "file",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Vaciar BTC.log",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "true",
+        "encoding": "utf8",
+        "x": 660,
+        "y": 900,
+        "wires": [
+            []
+        ]
+    }
+]
