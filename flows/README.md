@@ -4,11 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v30.json`](./crypto-lite-v30.json)
-— **eje Y de los gráficos EN VIVO ajustado**: el margen dejó de ser fijo ($15 en BTC aplastaba
-la curva cuando el precio se movía centavos) y ahora es **proporcional al rango real** de la
-ventana (18 %) con un piso chico por moneda. Zoom cuando está quieto, se abre solo cuando salta;
-el rango sigue incluyendo Binance/Coinbase para que las 3 líneas entren.
+Archivo importable (última versión): [`crypto-lite-v31.json`](./crypto-lite-v31.json)
+— **márgenes del eje Y aún más ceñidos**: usa el **mínimo y máximo reales** de la ventana con
+apenas **6 %** de aire (antes 18 %) y pisos más chicos, así la curva llena el gráfico. (No se
+pueden clavar `ymin/ymax` exactos porque en node-red-dashboard eso solo va con `ui_control`, que
+borra los puntos cada vez — por eso se usan las series min/max invisibles, bien apretadas.)
+
+v30: **eje Y de los gráficos EN VIVO ajustado**: el margen dejó de ser fijo ($15 en BTC aplastaba
+la curva cuando el precio se movía centavos) y pasó a ser **proporcional al rango real** de la
+ventana con un piso chico por moneda. El rango incluye Binance/Coinbase para que las 3 líneas entren.
 
 v29: **break-even de LTC en 55.57** (línea del gráfico + fila de la tarjeta) y **alarma sonora al
 cruzar la barrera**: cuando el precio de LTC cruza el break-even (para arriba o para abajo) suena
