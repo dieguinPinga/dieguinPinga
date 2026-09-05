@@ -1,0 +1,87 @@
+[
+    {
+        "id": "ticksnd_tab",
+        "type": "ui_tab",
+        "name": "🔊 TICKS SONOROS",
+        "icon": "graphic_eq",
+        "order": 10,
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "ticksnd_grp",
+        "type": "ui_group",
+        "name": "Alertas sonoras de precio",
+        "tab": "ticksnd_tab",
+        "order": 1,
+        "disp": true,
+        "width": 8,
+        "collapse": false
+    },
+    {
+        "id": "ticksnd_tpl",
+        "type": "ui_template",
+        "z": "ticksnd_flow",
+        "group": "ticksnd_grp",
+        "name": "beeper",
+        "order": 1,
+        "width": 8,
+        "height": 4,
+        "format": "<div style=\"font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#e6edf3\">\n  <div style=\"display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap\">\n    <button ng-click=\"unlock()\"\n      ng-style=\"{background: unlocked ? '#238636' : '#30363d'}\"\n      style=\"color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:600\">\n      {{ unlocked ? '🔊 Audio ON' : '🔓 Activar audio' }}\n    </button>\n    <span style=\"opacity:.7;font-size:12px\">Volumen</span>\n    <input type=\"range\" min=\"0\" max=\"100\" ng-model=\"masterPct\" style=\"flex:1;min-width:90px\">\n    <span style=\"width:34px;text-align:right;font-size:12px\">{{masterPct}}%</span>\n  </div>\n  <div style=\"display:flex;gap:8px;flex-wrap:wrap\">\n    <div ng-repeat=\"c in coins\"\n      style=\"display:flex;align-items:center;gap:6px;background:#161b22;border-radius:6px;padding:4px 8px;flex:1;min-width:92px\">\n      <span style=\"border-left:3px solid {{colors[c]}};padding-left:6px;font-weight:700;font-size:12px\">{{c}}</span>\n      <span style=\"width:11px;height:11px;border-radius:50%;display:inline-block;transition:opacity .25s\"\n        ng-style=\"{background: last[c].dir>0 ? '#3fb950' : (last[c].dir<0 ? '#f85149' : '#484f58'), opacity: (last[c].mag||0.12)}\"></span>\n      <span style=\"font-size:12px;margin-left:auto\"\n        ng-style=\"{color: last[c].dir>0 ? '#3fb950' : (last[c].dir<0 ? '#f85149' : '#8b949e')}\">\n        {{ last[c].pct>0 ? '+' : '' }}{{ last[c].pct | number:3 }}%\n      </span>\n    </div>\n  </div>\n  <div style=\"font-size:11px;opacity:.55;margin-top:6px\">\n    Beep proporcional al cambio (volumen = magnitud vs volatilidad 2&nbsp;min) · tono sube = compra, baja = venta\n  </div>\n</div>\n<script>\n(function(scope){\n  scope.coins  = ['BTC','XMR','GMX','LTC'];\n  scope.colors = { BTC:'#f2a900', XMR:'#ff6600', GMX:'#4e9cff', LTC:'#b8b8b8' };\n  scope.last   = {}; scope.coins.forEach(function(c){ scope.last[c] = { dir:0, mag:0, pct:0 }; });\n  scope.masterPct = 60;\n  scope.unlocked  = false;\n\n  var ctx = null, state = {}, lastBeep = {};\n\n  scope.unlock = function(){\n    try {\n      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();\n      if (ctx.state === 'suspended') ctx.resume();\n      scope.unlocked = true;\n      beep(1, 0.45);           // confirmacion audible al activar\n    } catch (e) {}\n  };\n\n  function beep(dir, mag){\n    if (!ctx) return;\n    var master = (scope.masterPct || 0) / 100;\n    if (master <= 0) return;\n    var now = ctx.currentTime;\n    var o = ctx.createOscillator();\n    var g = ctx.createGain();\n    o.type = 'sine';\n    var base = dir > 0 ? 523.25 : 392.00;                 // sube (C5) / baja (G4)\n    o.frequency.setValueAtTime(base, now);\n    o.frequency.exponentialRampToValueAtTime(dir > 0 ? base * 1.5 : base / 1.5, now + 0.15);\n    var vol = master * (0.03 + mag * 0.5);                // magnitud -> volumen (la \"opacidad\")\n    g.gain.setValueAtTime(0.0001, now);\n    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), now + 0.012);\n    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);\n    o.connect(g); g.connect(ctx.destination);\n    o.start(now); o.stop(now + 0.27);\n  }\n\n  scope.$watch('msg', function(m){\n    if (!m || m.payload == null) return;\n    var coin = String(m.topic || '').toUpperCase();\n    if (scope.coins.indexOf(coin) < 0) return;\n    var price = Number(m.payload);\n    if (!isFinite(price) || price <= 0) return;\n\n    var s = state[coin] || (state[coin] = { last:null, ch:[] });\n    if (s.last != null && s.last > 0) {\n      var pct = (price - s.last) / s.last * 100;\n      var a = Math.abs(pct);\n      s.ch.push(a); if (s.ch.length > 120) s.ch.shift();\n      var vol = (s.ch.reduce(function(x,y){ return x+y; }, 0) / s.ch.length) || 0.0001;\n      var mag = Math.min(1, a / (2 * vol));               // normalizado igual que el flash\n      var dir = pct > 0 ? 1 : (pct < 0 ? -1 : 0);\n      scope.last[coin] = { dir:dir, mag: dir === 0 ? 0 : Math.max(0.10, mag), pct:pct };\n      var t = Date.now();\n      if (dir !== 0 && mag > 0.05 && scope.unlocked && (t - (lastBeep[coin] || 0)) > 250) {\n        lastBeep[coin] = t; beep(dir, mag);\n      }\n    }\n    s.last = price;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 640,
+        "y": 140,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "ticksnd_inject",
+        "type": "inject",
+        "z": "ticksnd_flow",
+        "name": "▶ demo (camina precios)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 190,
+        "y": 140,
+        "wires": [
+            [
+                "ticksnd_sim"
+            ]
+        ]
+    },
+    {
+        "id": "ticksnd_sim",
+        "type": "function",
+        "z": "ticksnd_flow",
+        "name": "random walk",
+        "func": "// Simula ticks: camina cada precio, con saltos grandes ocasionales -> beep fuerte\nvar coins = ['BTC','XMR','GMX','LTC'];\nvar base  = { BTC:65000, XMR:150, GMX:30, LTC:80 };\nvar px = context.get('px') || Object.assign({}, base);\nvar out = [];\ncoins.forEach(function(c){\n  var drift = (Math.random() - 0.5) * 0.06;      // +-0.03% tipico\n  var big   = Math.random() < 0.08 ? (Math.random() - 0.5) * 0.6 : 0; // salto ~0.3%\n  var pct = drift + big;\n  px[c] = px[c] * (1 + pct / 100);\n  out.push({ payload: px[c], topic: c });\n});\ncontext.set('px', px);\nreturn [out];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 410,
+        "y": 140,
+        "wires": [
+            [
+                "ticksnd_tpl"
+            ]
+        ]
+    }
+]

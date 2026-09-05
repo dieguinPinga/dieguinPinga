@@ -18,6 +18,19 @@ del navegador). El botón del server muestra el resultado (`✅ rc 0` o el error
 corre como servicio sin sesión de audio: instalá `pulseaudio-utils`/`alsa-utils`, o arrancá
 Node-RED desde tu sesión de escritorio.
 
+**Alertas sonoras de precio (tick-flash sonoro):**
+[`audio-tick-snippet.json`](./audio-tick-snippet.json) — flujo autocontenido (pestaña
+**🔊 TICKS SONOROS**) que convierte cada cambio de precio en un **beep proporcional**, la versión
+audible del tick-flash: **volumen = magnitud** del cambio (normalizada por la volatilidad de los
+últimos 2 min, como la opacidad del parpadeo) y **tono/color = dirección** (sube = beep agudo
++ verde, baja = beep grave + rojo). Usa **Web Audio** dentro de un `ui_template` (no `ui_audio`,
+que solo hace TTS). Trae un **simulador** (inject "▶ demo") para escucharlo al instante.
+- Primero apretá **🔓 Activar audio** (el navegador exige un click para habilitar sonido).
+- Para engancharlo al **precio real**: en el editor, cableá las salidas de tick en vivo del flujo
+  principal hacia el nodo `ui_template` **beeper** — la de *BTC guardar* (`22a9a563f73205fe`) y las
+  4 de *Guardar Kraken* (`942b2551f3443d26`), que ya emiten `{payload: precio, topic: 'BTC'|…}`.
+  Ahí desactivá/borrá el inject "▶ demo".
+
 v21: **BTC = solo MQTT como verdad del precio**, gana el mensaje con **timestamp más nuevo**;
 Kraken/REST ya no tocan el precio de BTC (solo vol24/bid/ask).
 
