@@ -1,0 +1,1378 @@
+[
+    {
+        "id": "8e11dc7905f3f4fc",
+        "type": "tab",
+        "label": "CRYPTO LITE V3",
+        "disabled": false,
+        "info": "Tablero BTC + XMR + GMX + LTC liviano para Raspberry Pi, con historial en disco, EMA, min/max, volumen y presion compra/venta."
+    },
+    {
+        "id": "eef2a41306e4972a",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Config al arrancar",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "0.2",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 60,
+        "wires": [
+            [
+                "5bc91b081f39ce02"
+            ]
+        ]
+    },
+    {
+        "id": "5bc91b081f39ce02",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Set config global",
+        "func": "// Config inicial (editable). Se ejecuta 1 vez al arrancar.\nglobal.set('cryptoHistBase', 'cryptohist/');  // carpeta bajo ~/.node-red/\nglobal.set('cryptoViewDays', 3);              // dias que se muestran en los graficos\nglobal.set('cryptoKeepDays', 7);              // dias que se guardan en disco\nglobal.set('cryptoStaleSec', 600);            // seg sin dato -> tarjeta gris (feed caido)\nglobal.set('cryptoEmaN', 20);                 // EMA lenta (periodos)\nglobal.set('cryptoEmaFast', 9);               // EMA rapida (periodos)\nglobal.set('cryptoBreakeven', { ltc: 54.85 }); // break-even por moneda (editable)\nglobal.set('cryptoGapMin', 10);               // minutos de hueco para CORTAR la linea (apagon)\nglobal.set('cryptoBtcMaxJump', 0.15);         // salto max de BTC vs ultimo precio (0.15 = 15%) -> anti glitch\nreturn null;",
+        "outputs": 0,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 360,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "2b84a5251ac598f6",
+        "type": "mqtt in",
+        "z": "8e11dc7905f3f4fc",
+        "name": "BTC MQTT",
+        "topic": "btc/#",
+        "qos": "0",
+        "datatype": "auto",
+        "broker": "crypto_mqtt_broker",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 150,
+        "y": 140,
+        "wires": [
+            [
+                "22a9a563f73205fe"
+            ]
+        ]
+    },
+    {
+        "id": "22a9a563f73205fe",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "BTC · guardar",
+        "func": "// BTC: SOLO MQTT es la verdad del precio. Gana el timestamp mas nuevo. Rechaza outliers.\n// Ademas guarda binance/coinbase por separado, sus edades, flujo/min y la senal LONG/SHORT.\nlet p = msg.payload;\nif (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { return null; } }\nif (!p || typeof p !== 'object') return null;\n\nconst price = Number(p.price);\nif (!Number.isFinite(price) || price < 1000) return null;\n\n// timestamp del propio mensaje si viene; si no, hora de llegada\nlet mt = Number(p.ts != null ? p.ts : (p.timestamp != null ? p.timestamp : (p.time != null ? p.time : (p.t != null ? p.t : p.epoch))));\nif (!Number.isFinite(mt)) mt = Date.now();\nelse if (mt < 1e12) mt = mt * 1000;\nconst last = flow.get('btcMqttT') || 0;\nif (mt < last) return null;                    // mensaje mas viejo -> ignorar\n\n// filtro anti-outlier: rechazar saltos absurdos vs ultimo precio bueno (glitch del sensor)\nconst prevBtc = flow.get('btc') || {};\nconst lastP = Number(prevBtc.price);\nconst maxJump = Number(global.get('cryptoBtcMaxJump')) || 0.15;\nif (Number.isFinite(lastP) && lastP > 0 && Math.abs(price - lastP) / lastP > maxJump) {\n  node.status({ fill: 'yellow', shape: 'ring', text: 'BTC outlier ignorado: ' + price });\n  return null;\n}\n\nflow.set('btcMqttT', mt);   // aceptado\n\nconst now = Date.now();\nconst flowv = Number(p.flow_btc_s);\nconst flowM = Number(p.flow_btc_m);\nconst rssi  = Number(p.rssi);\n\n// precios por exchange (separados) + frescura de cada feed\nconst bin   = Number(p.binance);\nconst cb    = Number(p.coinbase);\nconst binAge = Number(p.binance_age_ms);\nconst cbAge  = Number(p.coinbase_age_ms);\n\n// senal de trading del propio sensor\nconst sig    = (typeof p.signal === 'string') ? p.signal : null;\nconst sigSrc = (typeof p.signal_source === 'string') ? p.signal_source : null;\nconst sigN   = Number(p.signal_samples);\n\nlet samples = context.get('flowSamples') || [];\nif (Number.isFinite(flowv)) samples.push({ t: now, v: flowv });\nsamples = samples.filter(s => s.t >= now - 300000);\ncontext.set('flowSamples', samples);\nlet avg = null;\nif (samples.length) avg = samples.reduce((a, s) => a + s.v, 0) / samples.length;\n\nflow.set('btc', Object.assign({}, prevBtc, {\n  price: price,\n  binance:  Number.isFinite(bin) ? bin : (prevBtc.binance  != null ? prevBtc.binance  : null),\n  coinbase: Number.isFinite(cb)  ? cb  : (prevBtc.coinbase != null ? prevBtc.coinbase : null),\n  binAge:   Number.isFinite(binAge) ? binAge : null,\n  cbAge:    Number.isFinite(cbAge)  ? cbAge  : null,\n  flow:  Number.isFinite(flowv) ? flowv : null,\n  flowM: Number.isFinite(flowM) ? flowM : null,\n  avg:   avg,\n  rssi:  Number.isFinite(rssi) ? rssi : null,\n  device: p.device || '-',\n  signal:    sig    || (prevBtc.signal    != null ? prevBtc.signal    : null),\n  signalSrc: sigSrc || (prevBtc.signalSrc != null ? prevBtc.signalSrc : null),\n  signalN:   Number.isFinite(sigN) ? sigN : (prevBtc.signalN != null ? prevBtc.signalN : null),\n  ts: now, pxTs: now\n}));\nflow.set('mqttPxTs', now);\n\n// tick real (precio compuesto) al grafico en vivo de BTC; binance/coinbase los dibuja el sampler 1s\nreturn { payload: price, topic: 'BTC' };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 140,
+        "wires": [
+            [
+                "b33dae9625940156",
+                "beeper_tpl"
+            ]
+        ]
+    },
+    {
+        "id": "22f92099d5324fb1",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Kraken · suscribir (60s)",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "60",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "3",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 220,
+        "wires": [
+            [
+                "c714d6422234d262"
+            ]
+        ]
+    },
+    {
+        "id": "c714d6422234d262",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "sub ticker+trade",
+        "func": "// Kraken WS v2: suscribe ticker + trade. En v2 el simbolo de BTC es BTC/USD\nconst symbols = ['BTC/USD', 'XMR/USD', 'GMX/USD', 'LTC/USD'];\nreturn [[\n  { payload: JSON.stringify({ method: 'subscribe', params: { channel: 'ticker', symbol: symbols } }) },\n  { payload: JSON.stringify({ method: 'subscribe', params: { channel: 'trade',  symbol: symbols } }) }\n]];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 220,
+        "wires": [
+            [
+                "0dc6f5fb95bd5218"
+            ]
+        ]
+    },
+    {
+        "id": "0dc6f5fb95bd5218",
+        "type": "websocket out",
+        "z": "8e11dc7905f3f4fc",
+        "name": "KRAKEN OUT",
+        "server": "",
+        "client": "crypto_kraken_ws",
+        "x": 590,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "330cdfbbf1085aba",
+        "type": "websocket in",
+        "z": "8e11dc7905f3f4fc",
+        "name": "KRAKEN IN",
+        "server": "",
+        "client": "crypto_kraken_ws",
+        "x": 150,
+        "y": 280,
+        "wires": [
+            [
+                "942b2551f3443d26"
+            ]
+        ]
+    },
+    {
+        "id": "942b2551f3443d26",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Guardar Kraken",
+        "func": "// Kraken WS v2: ticker + trade. BTC: NO se toca el precio (verdad = MQTT); solo enriquece vol/bid/ask\nlet d;\ntry { d = typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload; }\ncatch (e) { return null; }\nif (!d || typeof d !== 'object') return null;\n\nif (d.method === 'subscribe') {\n  node.status({ fill: d.success ? 'green' : 'red', shape: 'dot',\n    text: 'sub ' + ((d.result && d.result.channel) || '') + ' ' + (d.success ? 'ok' : 'err') });\n  return null;\n}\nconst chan = d.channel;\nif (chan !== 'ticker' && chan !== 'trade') return null;\nconst list = Array.isArray(d.data) ? d.data : [];\nconst now = Date.now();\nconst SYM = { btc: 'BTC', xmr: 'XMR', gmx: 'GMX', ltc: 'LTC' };\nfunction keyOf(sym) {\n  sym = String(sym || '');\n  return sym === 'BTC/USD' ? 'btc' : sym === 'XMR/USD' ? 'xmr' : sym === 'GMX/USD' ? 'gmx' : sym === 'LTC/USD' ? 'ltc' : null;\n}\nconst live = { btc: null, xmr: null, gmx: null, ltc: null };\n\nif (chan === 'ticker') {\n  for (const t of list) {\n    const key = keyOf(t.symbol);\n    if (!key) continue;\n    const price = Number(t.last);\n    if (!Number.isFinite(price) || price <= 0) continue;\n    const prev = flow.get(key) || {};\n    const isBtc = (key === 'btc');\n    const upd = {\n      bid: Number.isFinite(Number(t.bid)) ? Number(t.bid) : (prev.bid != null ? prev.bid : null),\n      ask: Number.isFinite(Number(t.ask)) ? Number(t.ask) : (prev.ask != null ? prev.ask : null),\n      vol24: Number.isFinite(Number(t.volume)) ? Number(t.volume) : prev.vol24,\n      ts: now\n    };\n    if (!isBtc) { upd.price = price; upd.pxTs = now; }   // BTC nunca cambia precio por Kraken\n    flow.set(key, Object.assign({}, prev, upd));\n    flow.set('wslast_' + key, now);\n    if (!isBtc) live[key] = { payload: price, topic: SYM[key] };\n  }\n} else if (chan === 'trade') {\n  const byKey = {};\n  for (const tr of list) {\n    const key = keyOf(tr.symbol);\n    if (!key) continue;\n    const v = Number(tr.qty);\n    if (!Number.isFinite(v)) continue;\n    const s = tr.side === 'buy' ? 'b' : tr.side === 'sell' ? 's' : null;\n    (byKey[key] = byKey[key] || []).push({ t: now, v: v, s: s });\n  }\n  for (const key of Object.keys(byKey)) {\n    let arr = flow.get('trades_' + key) || [];\n    arr = arr.concat(byKey[key]);\n    arr = arr.filter(x => x.t >= now - 300000);\n    if (arr.length > 3000) arr = arr.slice(-3000);\n    flow.set('trades_' + key, arr);\n  }\n}\nreturn [live.btc, live.xmr, live.gmx, live.ltc];",
+        "outputs": 4,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 280,
+        "wires": [
+            [
+                "b33dae9625940156",
+                "beeper_tpl"
+            ],
+            [
+                "84bff0a071ff968a",
+                "beeper_tpl"
+            ],
+            [
+                "a012179fd7ec8be5",
+                "beeper_tpl"
+            ],
+            [
+                "9f1108c867bafc6b",
+                "beeper_tpl"
+            ]
+        ]
+    },
+    {
+        "id": "43b2e094bf034dd3",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "REST ticker · 2s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "2",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "8",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 340,
+        "wires": [
+            [
+                "18388bc814894a12"
+            ]
+        ]
+    },
+    {
+        "id": "18388bc814894a12",
+        "type": "http request",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Kraken REST Ticker",
+        "method": "GET",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "https://api.kraken.com/0/public/Ticker?pair=XBTUSD,XMRUSD,GMXUSD,LTCUSD",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 390,
+        "y": 340,
+        "wires": [
+            [
+                "7fda590b43c980cf"
+            ]
+        ]
+    },
+    {
+        "id": "7fda590b43c980cf",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Guardar REST",
+        "func": "// Latido REST: precio + vol24. BTC: NO se toca el precio (verdad = MQTT)\nconst d = msg.payload;\nif (!d || !d.result || (Array.isArray(d.error) && d.error.length)) {\n  node.status({ fill: 'red', shape: 'ring', text: 'REST error' });\n  return null;\n}\nconst now = Date.now();\nconst res = d.result;\nlet n = 0;\nfor (const kk of Object.keys(res)) {\n  const t = res[kk];\n  if (!t || !t.c || !t.c.length) continue;\n  const price = Number(t.c[0]);\n  if (!Number.isFinite(price) || price <= 0) continue;\n  const K = kk.toUpperCase();\n  const key = K.indexOf('XBT') >= 0 ? 'btc' : K.indexOf('XMR') >= 0 ? 'xmr' : K.indexOf('GMX') >= 0 ? 'gmx' : K.indexOf('LTC') >= 0 ? 'ltc' : null;\n  if (!key) continue;\n  const prev = flow.get(key) || {};\n  const isBtc = (key === 'btc');\n  const upd = {\n    bid: (t.b && t.b.length) ? Number(t.b[0]) : (prev.bid != null ? prev.bid : null),\n    ask: (t.a && t.a.length) ? Number(t.a[0]) : (prev.ask != null ? prev.ask : null),\n    vol24:    (t.v && t.v.length > 1) ? Number(t.v[1]) : prev.vol24,\n    trades24: (t.t && t.t.length > 1) ? Number(t.t[1]) : prev.trades24,\n    ts: now\n  };\n  if (!isBtc) { upd.price = price; upd.pxTs = now; }   // BTC nunca cambia precio por REST\n  flow.set(key, Object.assign({}, prev, upd));\n  n++;\n}\nnode.status({ fill: 'green', shape: 'dot', text: 'REST ok ' + n + ' · ' + new Date(now).toLocaleTimeString() });\nreturn null;",
+        "outputs": 0,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 620,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "c1a710ac8ca2b0ad",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "REST trades · 10s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "10",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "25",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 150,
+        "y": 820,
+        "wires": [
+            [
+                "f3089b15fa03f0e3"
+            ]
+        ]
+    },
+    {
+        "id": "f3089b15fa03f0e3",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Pedir trades",
+        "func": "// Pide las operaciones recientes de cada par (REST Trades, para la presion)\nconst pairs = [['XBTUSD','btc'], ['XMRUSD','xmr'], ['GMXUSD','gmx'], ['LTCUSD','ltc']];\nconst out = [];\nfor (const [p, key] of pairs) {\n  const since = flow.get('tradesSince_' + key);\n  let url = 'https://api.kraken.com/0/public/Trades?pair=' + p + '&count=1000';\n  if (since) url += '&since=' + since;\n  out.push({ url: url, coin: key });\n}\nreturn [out];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 820,
+        "wires": [
+            [
+                "8ca71cde2ba16b9c"
+            ]
+        ]
+    },
+    {
+        "id": "8ca71cde2ba16b9c",
+        "type": "http request",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Kraken REST Trades",
+        "method": "GET",
+        "ret": "obj",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 620,
+        "y": 820,
+        "wires": [
+            [
+                "7fabf8a1657042f0"
+            ]
+        ]
+    },
+    {
+        "id": "7fabf8a1657042f0",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Guardar trades",
+        "func": "// Parsea REST Trades -> rellena trades_<coin> (compra/venta) para la presion\nconst d = msg.payload;\nconst key = msg.coin;\nif (!d || !d.result || !key) return null;\nif (Array.isArray(d.error) && d.error.length) { node.status({fill:'red',shape:'ring',text:'trades err'}); return null; }\nconst res = d.result;\nconst now = Date.now();\n\nlet list = null;\nfor (const kk of Object.keys(res)) { if (kk !== 'last') { list = res[kk]; break; } }\n\nif (Array.isArray(list)) {\n  let arr = flow.get('trades_' + key) || [];\n  for (const tr of list) {\n    const v = Number(tr[1]);\n    const tsec = Number(tr[2]);\n    const s = tr[3];                 // 'b' compra / 's' venta\n    if (Number.isFinite(v) && Number.isFinite(tsec)) arr.push({ t: tsec * 1000, v: v, s: s });\n  }\n  arr = arr.filter(x => x.t >= now - 300000);   // ventana 5 min\n  if (arr.length > 5000) arr = arr.slice(-5000);\n  flow.set('trades_' + key, arr);\n}\nif (res.last) flow.set('tradesSince_' + key, res.last);\nreturn null;",
+        "outputs": 0,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 860,
+        "y": 820,
+        "wires": []
+    },
+    {
+        "id": "0960e33a10194b73",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Tarjetas · cada 1s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "6",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 400,
+        "wires": [
+            [
+                "dbe91afb448a39c6"
+            ]
+        ]
+    },
+    {
+        "id": "dbe91afb448a39c6",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Emitir tarjetas",
+        "func": "// Cada 5 s: panel resumen + tarjetas con min/max, EMA, D, vol, presion y break-even\n// BTC ademas: binance/coinbase por separado, spread, edades y senal LONG/SHORT.\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\nconst bmap = global.get('cryptoBreakeven') || {};\n\nconst ringOf = k => flow.get('hist_' + k) || [];\n\nfunction chgWin(k, price, ms) {\n  const ring = ringOf(k);\n  if (!ring.length) return null;\n  const target = now - ms;\n  let ref = ring[0];\n  for (const pt of ring) { if (pt.t <= target) ref = pt; else break; }\n  if (!ref || !Number.isFinite(ref.p) || ref.p === 0) return null;\n  return (price - ref.p) / ref.p * 100;\n}\nfunction hilo(k, price) {\n  const ring = ringOf(k);\n  let hi = null, lo = null;\n  for (const pt of ring) { if (hi == null || pt.p > hi) hi = pt.p; if (lo == null || pt.p < lo) lo = pt.p; }\n  if (Number.isFinite(price)) { if (hi == null || price > hi) hi = price; if (lo == null || price < lo) lo = price; }\n  let pos = 50;\n  if (hi != null && lo != null && hi > lo) pos = (price - lo) / (hi - lo) * 100;\n  return { hi: hi, lo: lo, pos: Math.max(0, Math.min(100, pos)) };\n}\nfunction pressure(k) {\n  const arr = flow.get('trades_' + k) || [];\n  let b = 0, s = 0;\n  for (const x of arr) { if (x.s === 'b') b += x.v; else if (x.s === 's') s += x.v; }\n  const tot = b + s;\n  return tot > 0 ? { buy: b, sell: s, buyPct: b / tot * 100 } : { buy: 0, sell: 0, buyPct: null };\n}\n\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\nconst decs = { btc: 2, xmr: 2, gmx: 3, ltc: 2 };\nconst cols = { btc: '#f2a900', xmr: '#ff6600', gmx: '#3fb950', ltc: '#c0c0c0' };\nconst sum = {}, cards = {};\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (q && Number.isFinite(q.price)) {\n    const hl = hilo(k, q.price);\n    const pr = pressure(k);\n    const beRaw = Number(bmap[k]);\n    const be = (Number.isFinite(beRaw) && beRaw > 0) ? beRaw : null;\n    const bin = Number(q.binance), cb = Number(q.coinbase);\n    const hasXch = Number.isFinite(bin) && Number.isFinite(cb);\n    const item = {\n      symbol: sym, price: q.price, dec: decs[k], color: cols[k],\n      be: be,\n      bePct:  be ? (q.price - be) / be * 100 : null,       // signo: + arriba / - abajo del BE\n      beRise: be ? (be - q.price) / q.price * 100 : null,   // cuanto debe subir para llegar\n      change:   chgWin(k, q.price, 3600000),\n      change24: chgWin(k, q.price, 86400000),\n      hi: hl.hi, lo: hl.lo, pos: hl.pos,\n      age:   q.ts ? Math.round((now - q.ts) / 1000) : null,\n      stale: q.ts ? (now - q.ts > staleMs) : true,\n      bid: q.bid != null ? q.bid : null,\n      ask: q.ask != null ? q.ask : null,\n      vol24:    q.vol24    != null ? q.vol24    : null,\n      trades24: q.trades24 != null ? q.trades24 : null,\n      flow: q.flow != null ? q.flow : null,\n      flowM: q.flowM != null ? q.flowM : null,\n      avg:  q.avg  != null ? q.avg  : null,\n      rssi: q.rssi != null ? q.rssi : null,\n      device: q.device || null,\n      buyPct: pr.buyPct, buy: pr.buy, sell: pr.sell,\n      // --- exchanges separados (BTC) ---\n      binance:  Number.isFinite(bin) ? bin : null,\n      coinbase: Number.isFinite(cb)  ? cb  : null,\n      binAge:   q.binAge != null ? q.binAge : null,\n      cbAge:    q.cbAge  != null ? q.cbAge  : null,\n      spread:    hasXch ? (cb - bin) : null,\n      spreadPct: hasXch && bin > 0 ? (cb - bin) / bin * 100 : null,\n      signal:    q.signal    != null ? q.signal    : null,\n      signalSrc: q.signalSrc != null ? q.signalSrc : null,\n      signalN:   q.signalN   != null ? q.signalN   : null\n    };\n    sum[k] = item; cards[k] = { payload: item };\n  } else { sum[k] = null; cards[k] = null; }\n}\nreturn [{ payload: sum }, cards.btc, cards.xmr, cards.gmx, cards.ltc];",
+        "outputs": 5,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 390,
+        "y": 400,
+        "wires": [
+            [
+                "01b8711f5ff14458"
+            ],
+            [
+                "70cd746adfc6ad2e"
+            ],
+            [
+                "de3bc9ac41eaec19"
+            ],
+            [
+                "2df750a7029ae49c"
+            ],
+            [
+                "0670ecdf55203eeb"
+            ]
+        ]
+    },
+    {
+        "id": "513a19b4d7ced1fe",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "En vivo · cada 1s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "1",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "7",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 460,
+        "wires": [
+            [
+                "d03aa6221eea6d5f"
+            ]
+        ]
+    },
+    {
+        "id": "d03aa6221eea6d5f",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Precio actual (1s)",
+        "func": "// Cada 1 s: precio + margen fijo por moneda (series invisibles _lo/_hi).\n// BTC: ademas dibuja Binance y Coinbase como lineas propias y ensancha el margen para que entren.\nconst now = Date.now();\nconst staleMs = (Number(global.get('cryptoStaleSec')) || 600) * 1000;\nconst winMs = 120000; // 2 min\nconst padMap = { btc: 15, xmr: 0.5, gmx: 0.02, ltc: 0.4 };  // margen (USD) por moneda; editable\n\nfunction make(k, sym) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) return null;\n  if (q.ts && (now - q.ts) > staleMs) return null;\n  const price = q.price;\n\n  let r = flow.get('live_' + k) || [];\n  r.push({ t: now, p: price });\n  r = r.filter(x => x.t >= now - winMs);\n  flow.set('live_' + k, r);\n\n  let lo = price, hi = price;\n  for (const x of r) { if (x.p < lo) lo = x.p; if (x.p > hi) hi = x.p; }\n\n  // BTC: lineas de exchange + incluirlas en el min/max del margen\n  const extra = [];\n  if (k === 'btc') {\n    const bin = Number(q.binance), cb = Number(q.coinbase);\n    if (Number.isFinite(bin)) { if (bin < lo) lo = bin; if (bin > hi) hi = bin; extra.push({ payload: bin, topic: 'Binance' }); }\n    if (Number.isFinite(cb))  { if (cb  < lo) lo = cb;  if (cb  > hi) hi = cb;  extra.push({ payload: cb,  topic: 'Coinbase' }); }\n  }\n\n  const pad = padMap[k] || (price * 0.0004);\n\n  return [\n    { payload: price,    topic: sym }\n  ].concat(extra, [\n    { payload: lo - pad, topic: sym + ' _lo' },\n    { payload: hi + pad, topic: sym + ' _hi' }\n  ]);\n}\nreturn [make('btc','BTC'), make('xmr','XMR'), make('gmx','GMX'), make('ltc','LTC')];",
+        "outputs": 4,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 460,
+        "wires": [
+            [
+                "b33dae9625940156"
+            ],
+            [
+                "84bff0a071ff968a"
+            ],
+            [
+                "a012179fd7ec8be5"
+            ],
+            [
+                "9f1108c867bafc6b"
+            ]
+        ]
+    },
+    {
+        "id": "b9c1df171e774bfd",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Historial · cada 30s",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "30",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "20",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 520,
+        "wires": [
+            [
+                "d1594aa82bbfd63f"
+            ]
+        ]
+    },
+    {
+        "id": "d1594aa82bbfd63f",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Historian (1/3min)",
+        "func": "// Cada 1 min: precio + EMA lenta + EMA rapida (+ break-even), corta linea en huecos, append a disco\nconst now = Date.now();\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nconst Ns = Number(global.get('cryptoEmaN')) || 20;\nconst Nf = Number(global.get('cryptoEmaFast')) || 9;\nconst ks = 2 / (Ns + 1), kf = 2 / (Nf + 1);\nconst bmap = global.get('cryptoBreakeven') || {};\nconst gapMs = (Number(global.get('cryptoGapMin')) || 10) * 60000;\nconst map = [['btc','BTC'], ['xmr','XMR'], ['gmx','GMX'], ['ltc','LTC']];\n\nconst files = [];\nconst charts = { btc: null, xmr: null, gmx: null, ltc: null };\n\nfor (const [k, sym] of map) {\n  const q = flow.get(k);\n  if (!q || !Number.isFinite(q.price)) continue;\n  if (q.ts && (now - q.ts) > 120000) continue;\n  const p = q.price;\n\n  let ring = flow.get('hist_' + k) || [];\n  const prevT = ring.length ? ring[ring.length - 1].t : null;\n  const gap = (prevT != null) && ((now - prevT) > gapMs);\n  ring.push({ t: now, p: p });\n  const cut = now - 86400000;\n  ring = ring.filter(r => r.t >= cut);\n  if (ring.length > 1500) ring = ring.slice(-1500);\n  flow.set('hist_' + k, ring);\n\n  let es = flow.get('ema_' + k), ef = flow.get('emaf_' + k);\n  if (gap) { es = null; ef = null; }\n  es = (es == null) ? p : (p * ks + es * (1 - ks));\n  ef = (ef == null) ? p : (p * kf + ef * (1 - kf));\n  flow.set('ema_' + k, es);\n  flow.set('emaf_' + k, ef);\n\n  const out = [];\n  if (gap) {\n    out.push({ payload: null, topic: sym });\n    out.push({ payload: null, topic: sym + ' EMA' });\n    out.push({ payload: null, topic: sym + ' EMA9' });\n  }\n  out.push({ payload: p,  topic: sym });\n  out.push({ payload: es, topic: sym + ' EMA' });\n  out.push({ payload: ef, topic: sym + ' EMA9' });\n  const beRaw = Number(bmap[k]);\n  if (Number.isFinite(beRaw) && beRaw > 0) out.push({ payload: beRaw, topic: sym + ' BE' });\n\n  files.push({ filename: base + sym + '.log', payload: JSON.stringify({ t: now, p: p }) });\n  charts[k] = out;\n}\n\nreturn [files, charts.btc, charts.xmr, charts.gmx, charts.ltc];",
+        "outputs": 5,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 520,
+        "wires": [
+            [
+                "cf3a73a52a711aad"
+            ],
+            [
+                "0145b2db5e6ee234"
+            ],
+            [
+                "de51c1536904ba1d"
+            ],
+            [
+                "d3bc01feabd60991"
+            ],
+            [
+                "f36bff87f2036bae"
+            ]
+        ]
+    },
+    {
+        "id": "cf3a73a52a711aad",
+        "type": "file",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Guardar a disco",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": true,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "utf8",
+        "x": 650,
+        "y": 520,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "084ffdadb26f12a7",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Cargar historial",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "4",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 600,
+        "wires": [
+            [
+                "5493e4ba87d89977"
+            ]
+        ]
+    },
+    {
+        "id": "5493e4ba87d89977",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Pedir archivos",
+        "func": "// Pide leer el historial de cada moneda (una vez al arrancar)\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nreturn [ ['BTC','XMR','GMX','LTC'].map(sym => ({ filename: base + sym + '.log', coin: sym })) ];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 600,
+        "wires": [
+            [
+                "bca5aba4e32cd7e0"
+            ]
+        ]
+    },
+    {
+        "id": "bca5aba4e32cd7e0",
+        "type": "file in",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Leer historial",
+        "filename": "filename",
+        "filenameType": "msg",
+        "format": "utf8",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "utf8",
+        "allProps": false,
+        "x": 590,
+        "y": 600,
+        "wires": [
+            [
+                "92ab3cb5bc38df46"
+            ]
+        ]
+    },
+    {
+        "id": "92ab3cb5bc38df46",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Sembrar grafico",
+        "func": "// Siembra: precio + EMA lenta + EMA rapida (+ break-even), cortando en huecos\nconst coin = msg.coin || '?';\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst now = Date.now();\nconst days = Number(global.get('cryptoViewDays')) || 3;\nconst cut = now - days * 86400000;\nconst gapMs = (Number(global.get('cryptoGapMin')) || 10) * 60000;\n\nconst pts = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t) || !Number.isFinite(o.p)) continue;\n  if (o.t < cut) continue;\n  pts.push({ x: o.t, y: o.p });\n}\nif (!pts.length) return null;\npts.sort((a, b) => a.x - b.x);\n\nconst Ns = Number(global.get('cryptoEmaN')) || 20;\nconst Nf = Number(global.get('cryptoEmaFast')) || 9;\nconst ks = 2 / (Ns + 1), kf = 2 / (Nf + 1);\nlet es = null, ef = null;\nconst esPts = [], efPts = [];\nfor (let i = 0; i < pts.length; i++) {\n  if (i > 0 && (pts[i].x - pts[i-1].x) > gapMs) { es = null; ef = null; }\n  es = (es == null) ? pts[i].y : (pts[i].y * ks + es * (1 - ks));\n  ef = (ef == null) ? pts[i].y : (pts[i].y * kf + ef * (1 - kf));\n  esPts.push({ x: pts[i].x, y: es });\n  efPts.push({ x: pts[i].x, y: ef });\n}\n\nflow.set('ema_' + coin.toLowerCase(), es);\nflow.set('emaf_' + coin.toLowerCase(), ef);\nflow.set('hist_' + coin.toLowerCase(), pts.slice(-1500).map(p => ({ t: p.x, p: p.y })));\n\nconst MAX = 600;\nlet idx = pts.map((_, i) => i);\nif (pts.length > MAX) { const step = Math.ceil(pts.length / MAX); idx = idx.filter(i => i % step === 0); }\nlet dsP = idx.map(i => pts[i]);\nlet dsS = idx.map(i => esPts[i]);\nlet dsF = idx.map(i => efPts[i]);\n\nfunction withGaps(arr) {\n  const out = [];\n  for (let i = 0; i < arr.length; i++) {\n    if (i > 0 && (arr[i].x - arr[i-1].x) > gapMs) out.push({ x: arr[i-1].x + 1, y: null });\n    out.push(arr[i]);\n  }\n  if (out.length && (now - out[out.length-1].x) > gapMs) out.push({ x: out[out.length-1].x + 1, y: null });\n  return out;\n}\ndsP = withGaps(dsP); dsS = withGaps(dsS); dsF = withGaps(dsF);\n\nconst series = [coin, coin + ' EMA', coin + ' EMA9'];\nconst data = [dsP, dsS, dsF];\nconst bmap = global.get('cryptoBreakeven') || {};\nconst beRaw = Number(bmap[coin.toLowerCase()]);\nif (Number.isFinite(beRaw) && beRaw > 0) {\n  series.push(coin + ' BE');\n  data.push(idx.map(i => ({ x: pts[i].x, y: beRaw })));\n}\n\nmsg.payload = [{ series: series, data: data, labels: series.map(() => '') }];\nmsg.topic = coin;\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 790,
+        "y": 600,
+        "wires": [
+            [
+                "b3c9b40c75672d9c"
+            ]
+        ]
+    },
+    {
+        "id": "b3c9b40c75672d9c",
+        "type": "switch",
+        "z": "8e11dc7905f3f4fc",
+        "name": "ruta moneda",
+        "property": "coin",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "BTC",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "XMR",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "GMX",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "LTC",
+                "vt": "str"
+            }
+        ],
+        "checkall": "false",
+        "repair": false,
+        "outputs": 4,
+        "x": 990,
+        "y": 620,
+        "wires": [
+            [
+                "0145b2db5e6ee234"
+            ],
+            [
+                "de51c1536904ba1d"
+            ],
+            [
+                "d3bc01feabd60991"
+            ],
+            [
+                "f36bff87f2036bae"
+            ]
+        ]
+    },
+    {
+        "id": "13080d27a09e24c7",
+        "type": "catch",
+        "z": "8e11dc7905f3f4fc",
+        "name": "silenciar (archivo nuevo)",
+        "scope": [
+            "bca5aba4e32cd7e0",
+            "32b8c4716aa0a78f"
+        ],
+        "uncaught": false,
+        "x": 590,
+        "y": 660,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "b3fc712d04f7ec47",
+        "type": "inject",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Recortar · cada 6h",
+        "props": [
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "21600",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "120",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 160,
+        "y": 740,
+        "wires": [
+            [
+                "96cb0e40675fc7ab"
+            ]
+        ]
+    },
+    {
+        "id": "96cb0e40675fc7ab",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Pedir archivos",
+        "func": "// Pide leer cada archivo para recortarlo (retencion en dias)\nconst base = global.get('cryptoHistBase') || 'cryptohist/';\nreturn [ ['BTC','XMR','GMX','LTC'].map(sym => ({ filename: base + sym + '.log', coin: sym })) ];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 380,
+        "y": 740,
+        "wires": [
+            [
+                "32b8c4716aa0a78f"
+            ]
+        ]
+    },
+    {
+        "id": "32b8c4716aa0a78f",
+        "type": "file in",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Leer (recorte)",
+        "filename": "filename",
+        "filenameType": "msg",
+        "format": "utf8",
+        "chunk": false,
+        "sendError": false,
+        "encoding": "utf8",
+        "allProps": false,
+        "x": 590,
+        "y": 740,
+        "wires": [
+            [
+                "ba1c3a5736f8ca18"
+            ]
+        ]
+    },
+    {
+        "id": "ba1c3a5736f8ca18",
+        "type": "function",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Dejar ultimos N dias",
+        "func": "// Deja solo los ultimos N dias en el archivo (evita que crezca sin fin)\nlet txt = msg.payload;\nif (Buffer.isBuffer(txt)) txt = txt.toString('utf8');\nif (typeof txt !== 'string' || !txt.length) return null;\n\nconst keep = Number(global.get('cryptoKeepDays')) || 7;\nconst cut = Date.now() - keep * 86400000;\n\nconst kept = [];\nfor (const ln of txt.split(/\\r?\\n/)) {\n  if (!ln) continue;\n  let o; try { o = JSON.parse(ln); } catch (e) { continue; }\n  if (!o || !Number.isFinite(o.t)) continue;\n  if (o.t < cut) continue;\n  kept.push(JSON.stringify({ t: o.t, p: o.p }));\n}\nmsg.payload = kept.join('\\n');\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 800,
+        "y": 740,
+        "wires": [
+            [
+                "514ac6b68ba2fe5d"
+            ]
+        ]
+    },
+    {
+        "id": "514ac6b68ba2fe5d",
+        "type": "file",
+        "z": "8e11dc7905f3f4fc",
+        "name": "Reescribir",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": true,
+        "createDir": true,
+        "overwriteFile": "true",
+        "encoding": "utf8",
+        "x": 1010,
+        "y": 740,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "01b8711f5ff14458",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "2721b19c6ad45a58",
+        "name": "Panel 4 monedas",
+        "order": 1,
+        "width": 12,
+        "height": 5,
+        "format": "<style>\n.cl-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px}\n.cl-tile{background:#0d1117;border:1px solid #30363d;border-left-width:4px;border-left-style:solid;border-radius:10px;padding:10px 12px}\n.cl-sym{font-size:12px;color:#8b949e;letter-spacing:1px;text-transform:uppercase}\n.cl-px{font-size:24px;font-weight:700;color:#e6edf3;margin-top:2px;line-height:1.1}\n.cl-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;font-size:12px;color:#8b949e}\n.cl-mm{font-size:11px;color:#6e7681;margin-top:3px}\n.cl-up{color:#3fb950}.cl-down{color:#f85149}.cl-flat{color:#8b949e}\n.cl-off{opacity:.4}\n.cl-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:middle}\n.cl-dg{background:#3fb950}.cl-dr{background:#f85149}\n.cl-na{color:#8b949e;font-size:20px}\n.cl-tile{transition:background-color .5s ease-out}\n.cl-fup .cl-px{color:#3fb950}\n.cl-fdn .cl-px{color:#f85149}\n</style>\n<div class=\"cl-grid\">\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.btc || msg.payload.btc.stale, 'cl-fup': fl.btc==='up', 'cl-fdn': fl.btc==='down'}\" ng-style=\"{'background-color': fbg.btc, 'border-left-color': msg.payload.btc.color}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.btc && !msg.payload.btc.stale)?'cl-dg':'cl-dr'\"></span>Bitcoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.btc\">${{msg.payload.btc.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.btc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.btc\">\n      <span ng-class=\"msg.payload.btc.change>0?'cl-up':(msg.payload.btc.change<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change>=0?'▲':'▼'}} {{msg.payload.btc.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.btc.change24>0?'cl-up':(msg.payload.btc.change24<0?'cl-down':'cl-flat')\">{{msg.payload.btc.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.btc\">mín ${{msg.payload.btc.lo | number:2}} · máx ${{msg.payload.btc.hi | number:2}} · {{msg.payload.btc.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.xmr || msg.payload.xmr.stale, 'cl-fup': fl.xmr==='up', 'cl-fdn': fl.xmr==='down'}\" ng-style=\"{'background-color': fbg.xmr, 'border-left-color': msg.payload.xmr.color}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.xmr && !msg.payload.xmr.stale)?'cl-dg':'cl-dr'\"></span>Monero</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.xmr\">${{msg.payload.xmr.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.xmr\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.xmr\">\n      <span ng-class=\"msg.payload.xmr.change>0?'cl-up':(msg.payload.xmr.change<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change>=0?'▲':'▼'}} {{msg.payload.xmr.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.xmr.change24>0?'cl-up':(msg.payload.xmr.change24<0?'cl-down':'cl-flat')\">{{msg.payload.xmr.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.xmr\">mín ${{msg.payload.xmr.lo | number:2}} · máx ${{msg.payload.xmr.hi | number:2}} · {{msg.payload.xmr.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.gmx || msg.payload.gmx.stale, 'cl-fup': fl.gmx==='up', 'cl-fdn': fl.gmx==='down'}\" ng-style=\"{'background-color': fbg.gmx, 'border-left-color': msg.payload.gmx.color}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.gmx && !msg.payload.gmx.stale)?'cl-dg':'cl-dr'\"></span>GMX</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.gmx\">${{msg.payload.gmx.price | number:3}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.gmx\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.gmx\">\n      <span ng-class=\"msg.payload.gmx.change>0?'cl-up':(msg.payload.gmx.change<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change>=0?'▲':'▼'}} {{msg.payload.gmx.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.gmx.change24>0?'cl-up':(msg.payload.gmx.change24<0?'cl-down':'cl-flat')\">{{msg.payload.gmx.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.gmx\">mín ${{msg.payload.gmx.lo | number:3}} · máx ${{msg.payload.gmx.hi | number:3}} · {{msg.payload.gmx.age}} s</div>\n  </div>\n  <div class=\"cl-tile\" ng-class=\"{'cl-off': !msg.payload.ltc || msg.payload.ltc.stale, 'cl-fup': fl.ltc==='up', 'cl-fdn': fl.ltc==='down'}\" ng-style=\"{'background-color': fbg.ltc, 'border-left-color': msg.payload.ltc.color}\">\n    <div class=\"cl-sym\"><span class=\"cl-dot\" ng-class=\"(msg.payload.ltc && !msg.payload.ltc.stale)?'cl-dg':'cl-dr'\"></span>Litecoin</div>\n    <div class=\"cl-px\" ng-if=\"msg.payload.ltc\">${{msg.payload.ltc.price | number:2}}</div>\n    <div class=\"cl-na\" ng-if=\"!msg.payload.ltc\">--</div>\n    <div class=\"cl-row\" ng-if=\"msg.payload.ltc\">\n      <span ng-class=\"msg.payload.ltc.change>0?'cl-up':(msg.payload.ltc.change<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change>=0?'▲':'▼'}} {{msg.payload.ltc.change | number:2}}% 1h</span>\n      <span ng-class=\"msg.payload.ltc.change24>0?'cl-up':(msg.payload.ltc.change24<0?'cl-down':'cl-flat')\">{{msg.payload.ltc.change24 | number:2}}% 24h</span>\n    </div>\n    <div class=\"cl-mm\" ng-if=\"msg.payload.ltc\">mín ${{msg.payload.ltc.lo | number:2}} · máx ${{msg.payload.ltc.hi | number:2}} · {{msg.payload.ltc.age}} s</div>\n  </div>\n</div>\n<script>\n(function(scope){\n  if(!scope) return;\n  scope.fl={btc:'',xmr:'',gmx:'',ltc:''};\n  scope.fbg={btc:'',xmr:'',gmx:'',ltc:''};\n  scope._r={btc:[],xmr:[],gmx:[],ltc:[]};\n  scope._lp={};\n  scope.$watch('msg.payload', function(p){\n    if(!p) return;\n    var now=Date.now();\n    ['btc','xmr','gmx','ltc'].forEach(function(k){\n      var it=p[k]; if(!it||it.price==null) return;\n      var np=it.price;\n      var r=scope._r[k]; r.push({t:now,p:np});\n      scope._r[k]=r=r.filter(function(x){return x.t>=now-120000;});\n      var lp=scope._lp[k];\n      if(lp!=null && np!==lp){\n        var lo=np,hi=np,i;\n        for(i=0;i<r.length;i++){var v=r[i].p; if(v<lo)lo=v; if(v>hi)hi=v;}\n        var ref=Math.max(hi-lo, np*0.0004);\n        var inten=Math.abs(np-lp)/ref; if(inten>1)inten=1; if(inten<0.05)inten=0.05;\n        var a=(inten*0.35).toFixed(3);\n        scope.fl[k]=np>lp?'up':'down';\n        scope.fbg[k]=(np>lp?'rgba(63,185,80,':'rgba(248,81,73,')+a+')';\n        (function(kk){ setTimeout(function(){ scope.fl[kk]=''; scope.fbg[kk]=''; try{scope.$applyAsync();}catch(e){} },260); })(k);\n      }\n      scope._lp[k]=np;\n    });\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 1410,
+        "y": 520,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "b33dae9625940156",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "BTC vivo",
+        "group": "235fc48081a0f98d",
+        "order": 2,
+        "width": 6,
+        "height": "5",
+        "label": "BTC · 2 min",
+        "chartType": "line",
+        "legend": true,
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "En vivo...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "2",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#f2a900",
+            "#26c6da",
+            "#5c7cfa",
+            "#0d1117",
+            "#0d1117"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1460,
+        "y": 300,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "84bff0a071ff968a",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "XMR vivo",
+        "group": "235fc48081a0f98d",
+        "order": 3,
+        "width": 6,
+        "height": "5",
+        "label": "XMR · 2 min",
+        "chartType": "line",
+        "legend": "false",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "En vivo...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "2",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#ff6600",
+            "#0d1117",
+            "#0d1117"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1460,
+        "y": 380,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "a012179fd7ec8be5",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "GMX vivo",
+        "group": "235fc48081a0f98d",
+        "order": 4,
+        "width": 6,
+        "height": "5",
+        "label": "GMX · 2 min",
+        "chartType": "line",
+        "legend": "false",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "En vivo...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "2",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#3fb950",
+            "#0d1117",
+            "#0d1117"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1460,
+        "y": 420,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "9f1108c867bafc6b",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "LTC vivo",
+        "group": "235fc48081a0f98d",
+        "order": 5,
+        "width": 6,
+        "height": "5",
+        "label": "LTC · 2 min",
+        "chartType": "line",
+        "legend": "false",
+        "xformat": "HH:mm:ss",
+        "interpolate": "linear",
+        "nodata": "En vivo...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "2",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "60",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#c0c0c0",
+            "#0d1117",
+            "#0d1117"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1460,
+        "y": 340,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "70cd746adfc6ad2e",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "crypto_group_btc",
+        "name": "BTC tarjeta",
+        "order": 1,
+        "width": 12,
+        "height": 4,
+        "format": "<style>\n.cc{padding:10px 12px;background:#0d1117;border-radius:10px;border-left:5px solid #30363d}\n.cc-head{display:flex;justify-content:space-between;align-items:baseline}\n.cc-sym{font-size:15px;font-weight:700;color:#e6edf3;letter-spacing:.5px}\n.cc-sig{font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;letter-spacing:.5px;margin-left:6px;vertical-align:middle}\n.sig-long{background:rgba(63,185,80,.18);color:#3fb950;border:1px solid rgba(63,185,80,.35)}\n.sig-short{background:rgba(248,81,73,.18);color:#f85149;border:1px solid rgba(248,81,73,.35)}\n.cc-price{font-size:26px;font-weight:700;color:#e6edf3;line-height:1}\n.cc-sub{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:8px}\n.cc-sensor{font-size:11px;color:#6e7681;margin-top:4px}\n.cc-xch{margin-top:10px;border-top:1px solid #21262d;padding-top:8px}\n.cc-xrow{display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#8b949e;margin-top:4px}\n.cc-xrow b{color:#c9d1d9;font-weight:600}\n.cc-xrow .cc-age{font-size:10px;color:#6e7681;min-width:54px;text-align:right}\n.cc-spread b{font-weight:700}\n.dotb,.dotc{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}\n.dotb{background:#26c6da}.dotc{background:#5c7cfa}\n.cc-sigsrc{font-size:10px;color:#6e7681;margin-top:5px}\n.cc-mm{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:12px}\n.cc-mm b{color:#c9d1d9;font-weight:600}\n.cc-bar{height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:5px}\n.cc-bar .mk{position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px}\n.cc-delta{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:12px;color:#8b949e}\n.cc-vol{font-size:11px;color:#6e7681}\n.cc-press{margin-top:12px}\n.cc-press-lbl{font-size:11px;color:#8b949e;margin-bottom:4px}\n.cc-pbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#f85149}\n.cc-pbar .b{background:#3fb950}\n.cc-up{color:#3fb950}.cc-down{color:#f85149}\n.cc{transition:background-color .5s ease-out}\n.cc-fup .cc-price,.cc-fdn .cc-price{transition:color .18s}\n.cc-fup .cc-price{color:#3fb950}\n.cc-fdn .cc-price{color:#f85149}\n</style>\n<div class=\"cc\" ng-class=\"{'cc-fup': flash==='up','cc-fdn': flash==='down'}\" ng-style=\"{'background-color': flashBg, 'border-left-color': msg.payload.color}\">\n  <div class=\"cc-head\">\n    <span class=\"cc-sym\" ng-style=\"{'color': msg.payload.color}\">{{msg.payload.symbol}}<span class=\"cc-sig\" ng-if=\"msg.payload.signal\" ng-class=\"{'sig-long':msg.payload.signal==='LONG','sig-short':msg.payload.signal==='SHORT'}\">{{msg.payload.signal}}</span></span>\n    <span class=\"cc-price\">${{msg.payload.price | number:msg.payload.dec}}</span>\n  </div>\n  <div class=\"cc-sub\">\n    <span>Bid {{msg.payload.bid | number:msg.payload.dec}} · Ask {{msg.payload.ask | number:msg.payload.dec}}</span>\n    <span>feed {{msg.payload.age}} s</span>\n  </div>\n  <div class=\"cc-sensor\" ng-if=\"msg.payload.flow!=null\">Sensor: flujo {{msg.payload.flow | number:4}} BTC/s · /min {{msg.payload.flowM | number:2}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n  <div class=\"cc-xch\" ng-if=\"msg.payload.binance!=null || msg.payload.coinbase!=null\">\n    <div class=\"cc-xrow\" ng-if=\"msg.payload.binance!=null\"><span><span class=\"dotb\"></span>Binance</span><b>${{msg.payload.binance | number:2}}</b><span class=\"cc-age\">{{msg.payload.binAge | number:0}} ms</span></div>\n    <div class=\"cc-xrow\" ng-if=\"msg.payload.coinbase!=null\"><span><span class=\"dotc\"></span>Coinbase</span><b>${{msg.payload.coinbase | number:2}}</b><span class=\"cc-age\">{{msg.payload.cbAge | number:0}} ms</span></div>\n    <div class=\"cc-xrow cc-spread\" ng-if=\"msg.payload.spread!=null\"><span>Spread CB−BIN</span><b ng-class=\"msg.payload.spread>=0?'cc-up':'cc-down'\">${{msg.payload.spread | number:2}} ({{msg.payload.spreadPct>=0?'+':''}}{{msg.payload.spreadPct | number:3}}%)</b></div>\n    <div class=\"cc-sigsrc\" ng-if=\"msg.payload.signalSrc\">señal: {{msg.payload.signalSrc}} · {{msg.payload.signalN}} muestras</div>\n  </div>\n  <div class=\"cc-mm\">\n    <span>Mín <b>${{msg.payload.lo | number:msg.payload.dec}}</b></span>\n    <span>Máx <b>${{msg.payload.hi | number:msg.payload.dec}}</b></span>\n  </div>\n  <div class=\"cc-bar\"><div class=\"mk\" ng-style=\"{left: msg.payload.pos + '%'}\"></div></div>\n  <div class=\"cc-delta\">\n    <span>\n      <span ng-class=\"msg.payload.change>=0?'cc-up':'cc-down'\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n      &nbsp;·&nbsp;\n      <span ng-class=\"msg.payload.change24>=0?'cc-up':'cc-down'\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    </span>\n    <span class=\"cc-vol\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div class=\"cc-press\">\n    <div ng-if=\"msg.payload.buyPct!=null\">\n      <div class=\"cc-press-lbl\">Presión agresiva/taker (5 min): <b class=\"cc-up\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b class=\"cc-down\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n      <div class=\"cc-pbar\"><div class=\"b\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div></div>\n    </div>\n    <div ng-if=\"msg.payload.buyPct==null\" class=\"cc-press-lbl\">Presión agresiva/taker (5 min): sin operaciones aún</div>\n  </div>\n</div>\n<script>\n(function(scope){\n  if(!scope) return;\n  scope.flash=''; scope.flashBg=''; scope._r=[];\n  scope.$watch('msg.payload.price', function(np){\n    if(np==null) return;\n    var now=Date.now();\n    scope._r.push({t:now,p:np});\n    scope._r=scope._r.filter(function(x){return x.t>=now-120000;});\n    var lp=scope._lp;\n    if(lp!=null && np!==lp){\n      var lo=np,hi=np,i;\n      for(i=0;i<scope._r.length;i++){var v=scope._r[i].p; if(v<lo)lo=v; if(v>hi)hi=v;}\n      var ref=Math.max(hi-lo, np*0.0004);\n      var inten=Math.abs(np-lp)/ref; if(inten>1)inten=1; if(inten<0.05)inten=0.05;\n      var a=(inten*0.35).toFixed(3);\n      scope.flash = np>lp?'up':'down';\n      scope.flashBg = (np>lp?'rgba(63,185,80,':'rgba(248,81,73,')+a+')';\n      setTimeout(function(){ scope.flash=''; scope.flashBg=''; try{scope.$applyAsync();}catch(e){} },260);\n    }\n    scope._lp=np;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 690,
+        "y": 80,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "0145b2db5e6ee234",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "BTC",
+        "group": "crypto_group_btc",
+        "order": 2,
+        "width": 12,
+        "height": "6",
+        "label": "BTC · precio + EMA",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm",
+        "interpolate": "linear",
+        "nodata": "Cargando BTC...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "3",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "86400",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#f2a900",
+            "#58a6ff",
+            "#bc8cff",
+            "#e3b341",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1150,
+        "y": 120,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "de3bc9ac41eaec19",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "crypto_group_xmr",
+        "name": "XMR tarjeta",
+        "order": 1,
+        "width": 12,
+        "height": 4,
+        "format": "<style>\n.cc{padding:10px 12px;background:#0d1117;border-radius:10px;border-left:5px solid #30363d}\n.cc-head{display:flex;justify-content:space-between;align-items:baseline}\n.cc-sym{font-size:15px;font-weight:700;color:#e6edf3;letter-spacing:.5px}\n.cc-price{font-size:26px;font-weight:700;color:#e6edf3;line-height:1}\n.cc-sub{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:8px}\n.cc-sensor{font-size:11px;color:#6e7681;margin-top:4px}\n.cc-mm{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:12px}\n.cc-mm b{color:#c9d1d9;font-weight:600}\n.cc-bar{height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:5px}\n.cc-bar .mk{position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px}\n.cc-delta{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:12px;color:#8b949e}\n.cc-vol{font-size:11px;color:#6e7681}\n.cc-press{margin-top:12px}\n.cc-press-lbl{font-size:11px;color:#8b949e;margin-bottom:4px}\n.cc-pbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#f85149}\n.cc-pbar .b{background:#3fb950}\n.cc-up{color:#3fb950}.cc-down{color:#f85149}\n.cc{transition:background-color .5s ease-out}\n.cc-fup .cc-price,.cc-fdn .cc-price{transition:color .18s}\n.cc-fup .cc-price{color:#3fb950}\n.cc-fdn .cc-price{color:#f85149}\n</style>\n<div class=\"cc\" ng-class=\"{'cc-fup': flash==='up','cc-fdn': flash==='down'}\" ng-style=\"{'background-color': flashBg, 'border-left-color': msg.payload.color}\">\n  <div class=\"cc-head\">\n    <span class=\"cc-sym\" ng-style=\"{'color': msg.payload.color}\">{{msg.payload.symbol}}</span>\n    <span class=\"cc-price\">${{msg.payload.price | number:msg.payload.dec}}</span>\n  </div>\n  <div class=\"cc-sub\">\n    <span>Bid {{msg.payload.bid | number:msg.payload.dec}} · Ask {{msg.payload.ask | number:msg.payload.dec}}</span>\n    <span>feed {{msg.payload.age}} s</span>\n  </div>\n  <div class=\"cc-sensor\" ng-if=\"msg.payload.flow!=null\">Sensor: flujo {{msg.payload.flow | number:4}} BTC/s · prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n  <div class=\"cc-mm\">\n    <span>Mín <b>${{msg.payload.lo | number:msg.payload.dec}}</b></span>\n    <span>Máx <b>${{msg.payload.hi | number:msg.payload.dec}}</b></span>\n  </div>\n  <div class=\"cc-bar\"><div class=\"mk\" ng-style=\"{left: msg.payload.pos + '%'}\"></div></div>\n  <div class=\"cc-delta\">\n    <span>\n      <span ng-class=\"msg.payload.change>=0?'cc-up':'cc-down'\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n      &nbsp;·&nbsp;\n      <span ng-class=\"msg.payload.change24>=0?'cc-up':'cc-down'\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    </span>\n    <span class=\"cc-vol\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div class=\"cc-press\">\n    <div ng-if=\"msg.payload.buyPct!=null\">\n      <div class=\"cc-press-lbl\">Presión agresiva/taker (5 min): <b class=\"cc-up\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b class=\"cc-down\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n      <div class=\"cc-pbar\"><div class=\"b\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div></div>\n    </div>\n    <div ng-if=\"msg.payload.buyPct==null\" class=\"cc-press-lbl\">Presión agresiva/taker (5 min): sin operaciones aún</div>\n  </div>\n</div>\n<script>\n(function(scope){\n  if(!scope) return;\n  scope.flash=''; scope.flashBg=''; scope._r=[];\n  scope.$watch('msg.payload.price', function(np){\n    if(np==null) return;\n    var now=Date.now();\n    scope._r.push({t:now,p:np});\n    scope._r=scope._r.filter(function(x){return x.t>=now-120000;});\n    var lp=scope._lp;\n    if(lp!=null && np!==lp){\n      var lo=np,hi=np,i;\n      for(i=0;i<scope._r.length;i++){var v=scope._r[i].p; if(v<lo)lo=v; if(v>hi)hi=v;}\n      var ref=Math.max(hi-lo, np*0.0004);\n      var inten=Math.abs(np-lp)/ref; if(inten>1)inten=1; if(inten<0.05)inten=0.05;\n      var a=(inten*0.35).toFixed(3);\n      scope.flash = np>lp?'up':'down';\n      scope.flashBg = (np>lp?'rgba(63,185,80,':'rgba(248,81,73,')+a+')';\n      setTimeout(function(){ scope.flash=''; scope.flashBg=''; try{scope.$applyAsync();}catch(e){} },260);\n    }\n    scope._lp=np;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 730,
+        "y": 120,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "de51c1536904ba1d",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "XMR",
+        "group": "crypto_group_xmr",
+        "order": 2,
+        "width": 12,
+        "height": "6",
+        "label": "XMR · precio + EMA",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm",
+        "interpolate": "linear",
+        "nodata": "Cargando XMR...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "3",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "86400",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#ff6600",
+            "#58a6ff",
+            "#bc8cff",
+            "#e3b341",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1170,
+        "y": 160,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "2df750a7029ae49c",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "crypto_group_gmx",
+        "name": "GMX tarjeta",
+        "order": 1,
+        "width": 12,
+        "height": 4,
+        "format": "<style>\n.cc{padding:10px 12px;background:#0d1117;border-radius:10px;border-left:5px solid #30363d}\n.cc-head{display:flex;justify-content:space-between;align-items:baseline}\n.cc-sym{font-size:15px;font-weight:700;color:#e6edf3;letter-spacing:.5px}\n.cc-price{font-size:26px;font-weight:700;color:#e6edf3;line-height:1}\n.cc-sub{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:8px}\n.cc-sensor{font-size:11px;color:#6e7681;margin-top:4px}\n.cc-mm{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:12px}\n.cc-mm b{color:#c9d1d9;font-weight:600}\n.cc-bar{height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:5px}\n.cc-bar .mk{position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px}\n.cc-delta{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:12px;color:#8b949e}\n.cc-vol{font-size:11px;color:#6e7681}\n.cc-press{margin-top:12px}\n.cc-press-lbl{font-size:11px;color:#8b949e;margin-bottom:4px}\n.cc-pbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#f85149}\n.cc-pbar .b{background:#3fb950}\n.cc-up{color:#3fb950}.cc-down{color:#f85149}\n.cc{transition:background-color .5s ease-out}\n.cc-fup .cc-price,.cc-fdn .cc-price{transition:color .18s}\n.cc-fup .cc-price{color:#3fb950}\n.cc-fdn .cc-price{color:#f85149}\n</style>\n<div class=\"cc\" ng-class=\"{'cc-fup': flash==='up','cc-fdn': flash==='down'}\" ng-style=\"{'background-color': flashBg, 'border-left-color': msg.payload.color}\">\n  <div class=\"cc-head\">\n    <span class=\"cc-sym\" ng-style=\"{'color': msg.payload.color}\">{{msg.payload.symbol}}</span>\n    <span class=\"cc-price\">${{msg.payload.price | number:msg.payload.dec}}</span>\n  </div>\n  <div class=\"cc-sub\">\n    <span>Bid {{msg.payload.bid | number:msg.payload.dec}} · Ask {{msg.payload.ask | number:msg.payload.dec}}</span>\n    <span>feed {{msg.payload.age}} s</span>\n  </div>\n  <div class=\"cc-sensor\" ng-if=\"msg.payload.flow!=null\">Sensor: flujo {{msg.payload.flow | number:4}} BTC/s · prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n  <div class=\"cc-mm\">\n    <span>Mín <b>${{msg.payload.lo | number:msg.payload.dec}}</b></span>\n    <span>Máx <b>${{msg.payload.hi | number:msg.payload.dec}}</b></span>\n  </div>\n  <div class=\"cc-bar\"><div class=\"mk\" ng-style=\"{left: msg.payload.pos + '%'}\"></div></div>\n  <div class=\"cc-delta\">\n    <span>\n      <span ng-class=\"msg.payload.change>=0?'cc-up':'cc-down'\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n      &nbsp;·&nbsp;\n      <span ng-class=\"msg.payload.change24>=0?'cc-up':'cc-down'\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    </span>\n    <span class=\"cc-vol\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div class=\"cc-press\">\n    <div ng-if=\"msg.payload.buyPct!=null\">\n      <div class=\"cc-press-lbl\">Presión agresiva/taker (5 min): <b class=\"cc-up\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b class=\"cc-down\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n      <div class=\"cc-pbar\"><div class=\"b\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div></div>\n    </div>\n    <div ng-if=\"msg.payload.buyPct==null\" class=\"cc-press-lbl\">Presión agresiva/taker (5 min): sin operaciones aún</div>\n  </div>\n</div>\n<script>\n(function(scope){\n  if(!scope) return;\n  scope.flash=''; scope.flashBg=''; scope._r=[];\n  scope.$watch('msg.payload.price', function(np){\n    if(np==null) return;\n    var now=Date.now();\n    scope._r.push({t:now,p:np});\n    scope._r=scope._r.filter(function(x){return x.t>=now-120000;});\n    var lp=scope._lp;\n    if(lp!=null && np!==lp){\n      var lo=np,hi=np,i;\n      for(i=0;i<scope._r.length;i++){var v=scope._r[i].p; if(v<lo)lo=v; if(v>hi)hi=v;}\n      var ref=Math.max(hi-lo, np*0.0004);\n      var inten=Math.abs(np-lp)/ref; if(inten>1)inten=1; if(inten<0.05)inten=0.05;\n      var a=(inten*0.35).toFixed(3);\n      scope.flash = np>lp?'up':'down';\n      scope.flashBg = (np>lp?'rgba(63,185,80,':'rgba(248,81,73,')+a+')';\n      setTimeout(function(){ scope.flash=''; scope.flashBg=''; try{scope.$applyAsync();}catch(e){} },260);\n    }\n    scope._lp=np;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 750,
+        "y": 160,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "d3bc01feabd60991",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "GMX",
+        "group": "crypto_group_gmx",
+        "order": 2,
+        "width": 12,
+        "height": "6",
+        "label": "GMX · precio + EMA",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm",
+        "interpolate": "linear",
+        "nodata": "Cargando GMX...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "3",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "86400",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#3fb950",
+            "#58a6ff",
+            "#bc8cff",
+            "#e3b341",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1190,
+        "y": 200,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "0670ecdf55203eeb",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "crypto_group_ltc",
+        "name": "LTC tarjeta",
+        "order": 1,
+        "width": 12,
+        "height": 4,
+        "format": "<style>\n.cc{padding:10px 12px;background:#0d1117;border-radius:10px;border-left:5px solid #30363d}\n.cc-head{display:flex;justify-content:space-between;align-items:baseline}\n.cc-sym{font-size:15px;font-weight:700;color:#e6edf3;letter-spacing:.5px}\n.cc-price{font-size:26px;font-weight:700;color:#e6edf3;line-height:1}\n.cc-sub{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:8px}\n.cc-be{display:flex;justify-content:space-between;align-items:baseline;margin-top:10px;padding:6px 9px;background:#161b22;border:1px solid #30363d;border-left:3px solid #e3b341;border-radius:6px;font-size:12px;color:#8b949e}\n.cc-be b{color:#c9d1d9;font-weight:600}\n.cc-be-note{font-size:11px;color:#6e7681}\n.cc-sensor{font-size:11px;color:#6e7681;margin-top:4px}\n.cc-mm{display:flex;justify-content:space-between;font-size:12px;color:#8b949e;margin-top:12px}\n.cc-mm b{color:#c9d1d9;font-weight:600}\n.cc-bar{height:6px;background:#30363d;border-radius:3px;position:relative;margin-top:5px}\n.cc-bar .mk{position:absolute;top:-2px;width:3px;height:10px;background:#58a6ff;border-radius:2px}\n.cc-delta{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;font-size:12px;color:#8b949e}\n.cc-vol{font-size:11px;color:#6e7681}\n.cc-press{margin-top:12px}\n.cc-press-lbl{font-size:11px;color:#8b949e;margin-bottom:4px}\n.cc-pbar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:#f85149}\n.cc-pbar .b{background:#3fb950}\n.cc-up{color:#3fb950}.cc-down{color:#f85149}\n.cc{transition:background-color .5s ease-out}\n.cc-fup .cc-price,.cc-fdn .cc-price{transition:color .18s}\n.cc-fup .cc-price{color:#3fb950}\n.cc-fdn .cc-price{color:#f85149}\n</style>\n<div class=\"cc\" ng-class=\"{'cc-fup': flash==='up','cc-fdn': flash==='down'}\" ng-style=\"{'background-color': flashBg, 'border-left-color': msg.payload.color}\">\n  <div class=\"cc-head\">\n    <span class=\"cc-sym\" ng-style=\"{'color': msg.payload.color}\">{{msg.payload.symbol}}</span>\n    <span class=\"cc-price\">${{msg.payload.price | number:msg.payload.dec}}</span>\n  </div>\n  <div class=\"cc-sub\">\n    <span>Bid {{msg.payload.bid | number:msg.payload.dec}} · Ask {{msg.payload.ask | number:msg.payload.dec}}</span>\n    <span>feed {{msg.payload.age}} s</span>\n  </div>\n  <div class=\"cc-be\" ng-if=\"msg.payload.be!=null\">\n    <span>Break-even <b>${{msg.payload.be | number:msg.payload.dec}}</b></span>\n    <span>\n      <b ng-class=\"msg.payload.bePct>=0?'cc-up':'cc-down'\">{{msg.payload.bePct>=0?'▲ +':'▼ '}}{{msg.payload.bePct | number:2}}%</b>\n      <span class=\"cc-be-note\" ng-if=\"msg.payload.beRise>0\"> · sube +{{msg.payload.beRise | number:2}}% p/llegar</span>\n    </span>\n  </div>\n  <div class=\"cc-sensor\" ng-if=\"msg.payload.flow!=null\">Sensor: flujo {{msg.payload.flow | number:4}} BTC/s · prom {{msg.payload.avg | number:4}} · RSSI {{msg.payload.rssi}} dBm · {{msg.payload.device}}</div>\n  <div class=\"cc-mm\">\n    <span>Mín <b>${{msg.payload.lo | number:msg.payload.dec}}</b></span>\n    <span>Máx <b>${{msg.payload.hi | number:msg.payload.dec}}</b></span>\n  </div>\n  <div class=\"cc-bar\"><div class=\"mk\" ng-style=\"{left: msg.payload.pos + '%'}\"></div></div>\n  <div class=\"cc-delta\">\n    <span>\n      <span ng-class=\"msg.payload.change>=0?'cc-up':'cc-down'\">Δ1h {{msg.payload.change>=0?'+':''}}{{msg.payload.change | number:2}}%</span>\n      &nbsp;·&nbsp;\n      <span ng-class=\"msg.payload.change24>=0?'cc-up':'cc-down'\">Δ24h {{msg.payload.change24>=0?'+':''}}{{msg.payload.change24 | number:2}}%</span>\n    </span>\n    <span class=\"cc-vol\" ng-if=\"msg.payload.vol24!=null\">Vol24 {{msg.payload.vol24 | number:0}} · {{msg.payload.trades24 | number:0}} ops</span>\n  </div>\n  <div class=\"cc-press\">\n    <div ng-if=\"msg.payload.buyPct!=null\">\n      <div class=\"cc-press-lbl\">Presión agresiva/taker (5 min): <b class=\"cc-up\">Compra {{msg.payload.buyPct | number:0}}%</b> · <b class=\"cc-down\">Venta {{100-msg.payload.buyPct | number:0}}%</b></div>\n      <div class=\"cc-pbar\"><div class=\"b\" ng-style=\"{width: msg.payload.buyPct + '%'}\"></div></div>\n    </div>\n    <div ng-if=\"msg.payload.buyPct==null\" class=\"cc-press-lbl\">Presión agresiva/taker (5 min): sin operaciones aún</div>\n  </div>\n</div>\n<script>\n(function(scope){\n  if(!scope) return;\n  scope.flash=''; scope.flashBg=''; scope._r=[];\n  scope.$watch('msg.payload.price', function(np){\n    if(np==null) return;\n    var now=Date.now();\n    scope._r.push({t:now,p:np});\n    scope._r=scope._r.filter(function(x){return x.t>=now-120000;});\n    var lp=scope._lp;\n    if(lp!=null && np!==lp){\n      var lo=np,hi=np,i;\n      for(i=0;i<scope._r.length;i++){var v=scope._r[i].p; if(v<lo)lo=v; if(v>hi)hi=v;}\n      var ref=Math.max(hi-lo, np*0.0004);\n      var inten=Math.abs(np-lp)/ref; if(inten>1)inten=1; if(inten<0.05)inten=0.05;\n      var a=(inten*0.35).toFixed(3);\n      scope.flash = np>lp?'up':'down';\n      scope.flashBg = (np>lp?'rgba(63,185,80,':'rgba(248,81,73,')+a+')';\n      setTimeout(function(){ scope.flash=''; scope.flashBg=''; try{scope.$applyAsync();}catch(e){} },260);\n    }\n    scope._lp=np;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "local",
+        "className": "",
+        "x": 750,
+        "y": 200,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "f36bff87f2036bae",
+        "type": "ui_chart",
+        "z": "8e11dc7905f3f4fc",
+        "name": "LTC",
+        "group": "crypto_group_ltc",
+        "order": 2,
+        "width": 12,
+        "height": "6",
+        "label": "LTC · precio + EMA",
+        "chartType": "line",
+        "legend": "true",
+        "xformat": "HH:mm",
+        "interpolate": "linear",
+        "nodata": "Cargando LTC...",
+        "dot": false,
+        "ymin": "",
+        "ymax": "",
+        "removeOlder": "3",
+        "removeOlderPoints": "",
+        "removeOlderUnit": "86400",
+        "cutout": 0,
+        "useOneColor": false,
+        "useUTC": false,
+        "colors": [
+            "#c0c0c0",
+            "#58a6ff",
+            "#bc8cff",
+            "#e3b341",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000",
+            "#000000"
+        ],
+        "outputs": 1,
+        "useDifferentColor": false,
+        "className": "",
+        "x": 1210,
+        "y": 240,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "crypto_mqtt_broker",
+        "type": "mqtt-broker",
+        "name": "Mosquitto CRYPTO LITE",
+        "broker": "127.0.0.1",
+        "port": "1883",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willPayload": "",
+        "willMsg": {}
+    },
+    {
+        "id": "crypto_kraken_ws",
+        "type": "websocket-client",
+        "path": "wss://ws.kraken.com",
+        "tls": "",
+        "wholemsg": "false",
+        "hb": "0",
+        "subprotocol": ""
+    },
+    {
+        "id": "2721b19c6ad45a58",
+        "type": "ui_group",
+        "name": "RESUMEN",
+        "tab": "crypto_ui_tab",
+        "order": 3,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "235fc48081a0f98d",
+        "type": "ui_group",
+        "name": "EN VIVO · 1s (zoom precio actual)",
+        "tab": "crypto_ui_tab",
+        "order": 4,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "crypto_group_btc",
+        "type": "ui_group",
+        "name": "BITCOIN · BTC",
+        "tab": "crypto_ui_tab",
+        "order": 1,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "crypto_group_xmr",
+        "type": "ui_group",
+        "name": "MONERO · XMR",
+        "tab": "crypto_ui_tab",
+        "order": 6,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "crypto_group_gmx",
+        "type": "ui_group",
+        "name": "GMX",
+        "tab": "crypto_ui_tab",
+        "order": 5,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "crypto_group_ltc",
+        "type": "ui_group",
+        "name": "LITECOIN · LTC",
+        "tab": "crypto_ui_tab",
+        "order": 2,
+        "disp": true,
+        "width": "12",
+        "collapse": false,
+        "className": ""
+    },
+    {
+        "id": "crypto_ui_tab",
+        "type": "ui_tab",
+        "name": "CRYPTO LITE V3",
+        "icon": "dashboard",
+        "order": 1,
+        "disabled": false,
+        "hidden": false
+    },
+    {
+        "id": "6085640b771f912b",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-dashboard": "3.6.0"
+        }
+    },
+    {
+        "id": "crypto_css_black",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "235fc48081a0f98d",
+        "name": "CSS tema oscuro",
+        "order": 9,
+        "width": 0,
+        "height": 0,
+        "format": "<style>\n.nr-dashboard-theme md-card { background-color:#0d1117 !important; }\n.nr-dashboard-theme .nr-dashboard-chart,\n.nr-dashboard-theme .nr-dashboard-chart canvas,\n.nr-dashboard-theme ui-chart,\n.nr-dashboard-theme ui-chart canvas { background-color:#0d1117 !important; }\nbody.nr-dashboard-theme,\n.nr-dashboard-theme #dashboard-container { background-color:#010409 !important; }\n</style>",
+        "storeOutMessages": true,
+        "fwdInMessages": true,
+        "resendOnRefresh": true,
+        "templateScope": "global",
+        "className": "",
+        "x": 1500,
+        "y": 120,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "beeper_tpl",
+        "type": "ui_template",
+        "z": "8e11dc7905f3f4fc",
+        "group": "235fc48081a0f98d",
+        "name": "beeper (ticks sonoros)",
+        "order": 1,
+        "width": 12,
+        "height": 2,
+        "format": "<div style=\"font-family:system-ui,Segoe UI,Roboto,sans-serif;color:#e6edf3\">\n  <div style=\"display:flex;gap:10px;align-items:center;flex-wrap:wrap\">\n    <button ng-click=\"unlock()\"\n      ng-style=\"{background: unlocked ? '#238636' : '#30363d'}\"\n      style=\"color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:600;font-size:13px\">\n      {{ unlocked ? '🔊 Sonido ON' : '🔓 Activar sonido' }}\n    </button>\n    <span style=\"opacity:.7;font-size:12px\">Vol</span>\n    <input type=\"range\" min=\"0\" max=\"100\" ng-model=\"masterPct\" style=\"width:100px\">\n    <span style=\"width:34px;font-size:12px\">{{masterPct}}%</span>\n    <span style=\"opacity:.5;font-size:11px\">▶ prueba · clic en la moneda = silenciar</span>\n    <span ng-repeat=\"c in coins\"\n      style=\"display:flex;align-items:center;gap:5px;background:#161b22;border-radius:6px;padding:3px 6px 3px 8px\">\n      <span style=\"width:9px;height:9px;border-radius:50%;display:inline-block;transition:opacity .25s\"\n        ng-style=\"{background: last[c].dir>0 ? '#3fb950' : (last[c].dir<0 ? '#f85149' : '#484f58'), opacity: muted[c] ? 0.25 : (last[c].mag||0.15)}\"></span>\n      <span ng-click=\"toggle(c)\" style=\"cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px\" ng-style=\"{opacity: muted[c] ? 0.4 : 1}\">\n        <span style=\"font-size:12px;font-weight:700;border-left:3px solid {{colors[c]}};padding-left:5px\">{{c}}</span>\n        <span style=\"font-size:11px;min-width:50px;text-align:right\"\n          ng-style=\"{color: last[c].dir>0 ? '#3fb950' : (last[c].dir<0 ? '#f85149' : '#8b949e')}\">\n          {{ last[c].pct>0 ? '+' : '' }}{{ last[c].pct | number:3 }}%\n        </span>\n        <span ng-if=\"muted[c]\" style=\"font-size:11px\">🔇</span>\n      </span>\n      <button ng-click=\"preview(c)\" title=\"Escuchar {{c}}\"\n        style=\"background:#21262d;color:#e6edf3;border:none;border-radius:4px;padding:1px 6px;cursor:pointer;font-size:11px\">▶</button>\n    </span>\n  </div>\n</div>\n<script>\n(function(scope){\n  scope.coins  = ['BTC','XMR','GMX','LTC'];\n  scope.colors = { BTC:'#f2a900', XMR:'#ff6600', GMX:'#3fb950', LTC:'#c0c0c0' };\n  // voz por moneda: forma de onda (timbre) + frecuencia base (registro)\n  var VOICE = {\n    BTC: { type:'sine',     base:293.66 },  // D4  grave/redondo\n    XMR: { type:'triangle', base:440.00 },  // A4  medio\n    GMX: { type:'square',   base:659.25 },  // E5  agudo/electronico\n    LTC: { type:'sawtooth', base:392.00 }   // G4  aspero\n  };\n  var TIMBRE_GAIN = { sine:1.0, triangle:0.85, square:0.45, sawtooth:0.5 }; // square/saw suenan mas fuerte -> bajar\n  scope.last  = {}; scope.muted = {};\n  scope.coins.forEach(function(c){ scope.last[c] = { dir:0, mag:0, pct:0 }; scope.muted[c] = false; });\n  scope.masterPct = 55;\n  scope.unlocked  = false;\n  try { var mm = JSON.parse(localStorage.getItem('cryptoMute')||'{}'); Object.assign(scope.muted, mm); } catch(e){}\n\n  var ctx = null, state = {}, lastBeep = {};\n\n  scope.toggle = function(c){\n    scope.muted[c] = !scope.muted[c];\n    try { localStorage.setItem('cryptoMute', JSON.stringify(scope.muted)); } catch(e){}\n  };\n  scope.unlock = function(){\n    try {\n      if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();\n      if (ctx.state === 'suspended') ctx.resume();\n      scope.unlocked = true;\n      beep('BTC', 1, 0.4);\n    } catch (e) {}\n  };\n  scope.preview = function(c){\n    if (!scope.unlocked) scope.unlock();\n    beep(c, 1, 0.6);\n    setTimeout(function(){ beep(c, -1, 0.6); }, 320);   // muestra sube y baja\n  };\n  function beep(coin, dir, mag){\n    if (!ctx) return;\n    var master = (scope.masterPct || 0) / 100;\n    if (master <= 0) return;\n    var v = VOICE[coin] || { type:'sine', base:440 };\n    var now = ctx.currentTime;\n    var o = ctx.createOscillator(), g = ctx.createGain();\n    o.type = v.type;\n    o.frequency.setValueAtTime(v.base, now);\n    o.frequency.exponentialRampToValueAtTime(dir > 0 ? v.base * 1.5 : v.base / 1.5, now + 0.15);\n    var vol = master * (0.03 + mag * 0.5) * (TIMBRE_GAIN[v.type] || 1);\n    g.gain.setValueAtTime(0.0001, now);\n    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), now + 0.012);\n    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);\n    o.connect(g); g.connect(ctx.destination);\n    o.start(now); o.stop(now + 0.27);\n  }\n  scope.$watch('msg', function(m){\n    if (!m || m.payload == null) return;\n    var coin = String(m.topic || '').toUpperCase();\n    if (scope.coins.indexOf(coin) < 0) return;      // ignora Binance/Coinbase/_lo/_hi\n    var price = Number(m.payload);\n    if (!isFinite(price) || price <= 0) return;\n\n    var s = state[coin] || (state[coin] = { last:null, ch:[] });\n    if (s.last != null && s.last > 0 && price !== s.last) {\n      var pct = (price - s.last) / s.last * 100;\n      var a = Math.abs(pct);\n      s.ch.push(a); if (s.ch.length > 120) s.ch.shift();\n      var vol = (s.ch.reduce(function(x,y){ return x+y; }, 0) / s.ch.length) || 0.0001;\n      var mag = Math.min(1, a / (2 * vol));\n      var dir = pct > 0 ? 1 : -1;\n      scope.last[coin] = { dir:dir, mag: Math.max(0.12, mag), pct:pct };\n      var t = Date.now();\n      if (mag > 0.05 && scope.unlocked && !scope.muted[coin] && (t - (lastBeep[coin] || 0)) > 250) {\n        lastBeep[coin] = t; beep(coin, dir, mag);\n      }\n    }\n    s.last = price;\n  });\n})(scope);\n</script>",
+        "storeOutMessages": false,
+        "fwdInMessages": true,
+        "resendOnRefresh": false,
+        "templateScope": "local",
+        "className": "",
+        "x": 1100,
+        "y": 700,
+        "wires": [
+            []
+        ]
+    }
+]
