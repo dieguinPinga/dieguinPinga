@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v23.json`](./crypto-lite-v23.json)
-— **aprovecha toda la telemetría MQTT de BTC**: además del precio compuesto ahora usa
+Archivo importable (última versión): [`crypto-lite-v24.json`](./crypto-lite-v24.json)
+— **ticks sonoros integrados**: el beeper (Web Audio) ya viene cableado al feed **real**
+(BTC por MQTT + XMR/GMX/LTC por Kraken), así **cada variación de precio suena**. Vive arriba de
+los gráficos EN VIVO: apretá **🔓 Activar sonido** una vez (el navegador lo exige), regulá el
+volumen y hacé **clic en cada moneda para silenciarla** (se recuerda). El beep es proporcional
+(volumen = magnitud vs volatilidad 2 min; tono agudo+verde = sube, grave+rojo = baja).
+
+v23: **aprovecha toda la telemetría MQTT de BTC**: además del precio compuesto ahora usa
 `binance` y `coinbase` **por separado**, sus edades (`binance_age_ms`/`coinbase_age_ms`),
 `flow_btc_m` y la **señal `LONG/SHORT`** (`signal`/`signal_source`/`signal_samples`) que ya
 mandaba el sensor y se estaban descartando. En el **gráfico BTC en vivo** se ven 3 líneas
