@@ -4,11 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v25.json`](./crypto-lite-v25.json)
-— **una voz por moneda**: cada una suena distinta (timbre + registro) para reconocerla sin mirar —
-BTC *sine* grave (D4), XMR *triangle* (A4), GMX *square* agudo (E5), LTC *sawtooth* (G4). Cada
-tick hace glissando **hacia arriba si sube / hacia abajo si baja**, con volumen proporcional a la
-magnitud. Botón **▶** por moneda para escuchar/aprender cada voz.
+Archivo importable (última versión): [`crypto-lite-v26.json`](./crypto-lite-v26.json)
+— **un instrumento distinto por moneda** (sintetizado con armónicos + envolvente ADSR, no las
+ondas crudas): **BTC 🔔 campana**, **XMR 🪵 marimba**, **GMX 🎸 cuerda pulsada**, **LTC 🎹 órgano**,
+separados por octavas. La dirección es un **gesto de 2 notas** (sube = ascendente / baja =
+descendente) en vez de glissando, mucho más claro. Volumen proporcional a la magnitud. Botón
+**▶** por moneda para escuchar cada instrumento.
+
+v25: una voz por moneda con ondas crudas (sine/triangle/square/sawtooth) + glissando — quedaban
+parecidas entre sí; v26 las reemplaza por instrumentos sintetizados bien distintos.
 
 v24: **ticks sonoros integrados**: el beeper (Web Audio) ya viene cableado al feed **real**
 (BTC por MQTT + XMR/GMX/LTC por Kraken), así **cada variación de precio suena**. Vive arriba de
