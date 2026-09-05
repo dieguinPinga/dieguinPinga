@@ -4,8 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v27.json`](./crypto-lite-v27.json)
-— **sonido activado por default**: viene en ON y se **auto-desbloquea con el primer clic/tecla**
+Archivo importable (última versión): [`crypto-lite-v28.json`](./crypto-lite-v28.json)
+— **el sonido ahora suena parejo en las 4 monedas**: antes el beeper se alimentaba de BTC (MQTT,
+~2/s) y de los ticks esporádicos de Kraken, así que casi solo se escuchaba BTC. Ahora lo alimenta
+el **muestreador de 1s** (tiene el precio de las 4, refrescado por REST cada 2s), con cadencia
+pareja y sin depender del WebSocket. Cada moneda suena cuando **realmente** se mueve.
+
+v27: **sonido activado por default**: viene en ON y se **auto-desbloquea con el primer clic/tecla**
 en cualquier parte de la página (los navegadores no dejan sonar sin una interacción; ya no hace
 falta buscar el botón). El botón pasó a ser ON/OFF (🔊/🔇) y la elección se recuerda.
 
