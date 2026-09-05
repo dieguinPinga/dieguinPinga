@@ -4,8 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v29.json`](./crypto-lite-v29.json)
-— **break-even de LTC en 55.57** (línea del gráfico + fila de la tarjeta) y **alarma sonora al
+Archivo importable (última versión): [`crypto-lite-v30.json`](./crypto-lite-v30.json)
+— **eje Y de los gráficos EN VIVO ajustado**: el margen dejó de ser fijo ($15 en BTC aplastaba
+la curva cuando el precio se movía centavos) y ahora es **proporcional al rango real** de la
+ventana (18 %) con un piso chico por moneda. Zoom cuando está quieto, se abre solo cuando salta;
+el rango sigue incluyendo Binance/Coinbase para que las 3 líneas entren.
+
+v29: **break-even de LTC en 55.57** (línea del gráfico + fila de la tarjeta) y **alarma sonora al
 cruzar la barrera**: cuando el precio de LTC cruza el break-even (para arriba o para abajo) suena
 una **sirena molesta** (onda cuadrada, fuerte) e imposible de confundir con los ticks normales,
 más un cartel ⚠ que dice hacia dónde cruzó. Tiene banda muerta (histéresis) y cooldown para no
