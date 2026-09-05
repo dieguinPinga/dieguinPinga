@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v22.json`](./crypto-lite-v22.json)
-— **filtro anti-outlier en BTC**: rechaza saltos absurdos vs el último precio bueno
+Archivo importable (última versión): [`crypto-lite-v23.json`](./crypto-lite-v23.json)
+— **aprovecha toda la telemetría MQTT de BTC**: además del precio compuesto ahora usa
+`binance` y `coinbase` **por separado**, sus edades (`binance_age_ms`/`coinbase_age_ms`),
+`flow_btc_m` y la **señal `LONG/SHORT`** (`signal`/`signal_source`/`signal_samples`) que ya
+mandaba el sensor y se estaban descartando. En el **gráfico BTC en vivo** se ven 3 líneas
+(compuesto en dorado, Binance en cian, Coinbase en azul, con leyenda); en la **tarjeta BTC**
+hay filas de Binance/Coinbase con su edad, el **spread CB−BIN** ($ y %) y un **badge verde/rojo**
+con la señal.
+
+v22: **filtro anti-outlier en BTC**: rechaza saltos absurdos vs el último precio bueno
 (`cryptoBtcMaxJump`, 15%) → un glitch del sensor (ej. 100k) ya no ensucia el histórico.
 Para purgar datos malos existentes, usar [`reset-btc-snippet.json`](./reset-btc-snippet.json).
 
