@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v28.json`](./crypto-lite-v28.json)
-— **el sonido ahora suena parejo en las 4 monedas**: antes el beeper se alimentaba de BTC (MQTT,
+Archivo importable (última versión): [`crypto-lite-v29.json`](./crypto-lite-v29.json)
+— **break-even de LTC en 55.57** (línea del gráfico + fila de la tarjeta) y **alarma sonora al
+cruzar la barrera**: cuando el precio de LTC cruza el break-even (para arriba o para abajo) suena
+una **sirena molesta** (onda cuadrada, fuerte) e imposible de confundir con los ticks normales,
+más un cartel ⚠ que dice hacia dónde cruzó. Tiene banda muerta (histéresis) y cooldown para no
+repetir en el borde. El valor se edita en el beeper (`var BE = { LTC: 55.57 }`) y en el config
+(`cryptoBreakeven`). La sirena ignora el mute por moneda (siempre te avisa) pero respeta el ON/OFF
+y el volumen general.
+
+v28: **el sonido ahora suena parejo en las 4 monedas**: antes el beeper se alimentaba de BTC (MQTT,
 ~2/s) y de los ticks esporádicos de Kraken, así que casi solo se escuchaba BTC. Ahora lo alimenta
 el **muestreador de 1s** (tiene el precio de las 4, refrescado por REST cada 2s), con cadencia
 pareja y sin depender del WebSocket. Cada moneda suena cuando **realmente** se mueve.
