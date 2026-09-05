@@ -4,8 +4,12 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v26.json`](./crypto-lite-v26.json)
-— **un instrumento distinto por moneda** (sintetizado con armónicos + envolvente ADSR, no las
+Archivo importable (última versión): [`crypto-lite-v27.json`](./crypto-lite-v27.json)
+— **sonido activado por default**: viene en ON y se **auto-desbloquea con el primer clic/tecla**
+en cualquier parte de la página (los navegadores no dejan sonar sin una interacción; ya no hace
+falta buscar el botón). El botón pasó a ser ON/OFF (🔊/🔇) y la elección se recuerda.
+
+v26: **un instrumento distinto por moneda** (sintetizado con armónicos + envolvente ADSR, no las
 ondas crudas): **BTC 🔔 campana**, **XMR 🪵 marimba**, **GMX 🎸 cuerda pulsada**, **LTC 🎹 órgano**,
 separados por octavas. La dirección es un **gesto de 2 notas** (sube = ascendente / baja =
 descendente) en vez de glissando, mucho más claro. Volumen proporcional a la magnitud. Botón
