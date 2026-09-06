@@ -4,12 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v38.json`](./crypto-lite-v38.json)
-— **el escalón del sonido ahora es por PORCENTAJE**, no por USD: cada **0.02% respecto del
-promedio ~1h = una nota** (un solo valor, `STEP_PCT`, igual para las 4 monedas). Así BTC/XMR/GMX/LTC
-tienen la misma sensibilidad relativa sin tener que afinar un $ distinto por cada una. El chip
-ahora muestra el **% sobre el promedio** (que es lo que define el tono). El resto igual que v37
-(suena al cruzar cada escalón: do→re sube / re→do baja).
+Archivo importable (última versión): [`crypto-lite-v39.json`](./crypto-lite-v39.json)
+— **línea de precio actual en los 4 gráficos grandes**: una línea horizontal (blanca) al precio
+de ahora, con el precio en la etiqueta de la leyenda (ej. `BTC ● $79,870`). Para que quede plana
+de ancho completo se cambió el dibujado: el seeder **re-dibuja cada 30 s** (re-lee el histórico en
+disco, así se mantiene la vista de varios días) y el Historian dejó de hacer append a los gráficos
+(sigue guardando a disco y calculando EMA). Nota: node-red-dashboard no permite líneas punteadas
+en el chart, así que va sólida y en color distinto (blanca) para que se distinga.
+
+v38: **escalón del sonido por PORCENTAJE** (0.02% del promedio ~1h = una nota, `STEP_PCT`, igual
+para las 4 monedas); el chip muestra el % sobre el promedio.
 
 v37: **arregla el "tambor"**: do central = promedio corto (~1h, cerca del precio) y el sonido
 dispara solo al cruzar un escalón (antes era por $10 fijo; ahora por %).
