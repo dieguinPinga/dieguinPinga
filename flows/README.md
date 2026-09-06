@@ -4,11 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v35.json`](./crypto-lite-v35.json)
-— **flash mucho más suave**: lo que se veía tan fuerte era que el **número del precio saltaba a
-verde/rojo pleno** en cada tick (una regla CSS fija, sin importar la magnitud). Se sacó ese "flip":
-ahora el número queda blanco en los movimientos chicos y **solo se tiñe (y suave, proporcional)**
-en los más fuertes; el fondo pasó a ser bien tenue (0.04→0.34). Sigue con la referencia percentil 80.
+Archivo importable (última versión): [`crypto-lite-v36.json`](./crypto-lite-v36.json)
+— **sonido = altura de precio (nuevo modelo).** Un **do central (C4)** representa el **promedio del
+chart largo** de cada moneda; **cada paso de precio = un grado** de la escala mayor (BTC $10, XMR
+$0.5, GMX $0.05, LTC $0.1, editables). El **tono absoluto te dice el nivel** (agudo = por encima del
+promedio, grave = por debajo) y cada movimiento suena como un **gesto de notas** de donde estabas a
+donde estás (75000→75010 = do→re "ti‑tu"; 75010→75000 = re→do "tu‑ti"; un salto grande = corridita
+do‑re‑mi‑fa). Cada chip muestra el **grado** actual (♪) y el promedio se recalcula del histórico en
+disco. Se limita a ±2 octavas para no irse de rango.
+
+v35: **flash mucho más suave**: se sacó el "flip" pleno del número del precio; ahora queda blanco en
+los movimientos chicos y solo se tiñe suave en los fuertes; fondo bien tenue. Referencia percentil 80.
 
 v34: **flash con más rango dinámico**: la referencia pasó al **percentil 80** de los cambios
 recientes (no el promedio) para que los movimientos normales no saturen. (Igual el número seguía
