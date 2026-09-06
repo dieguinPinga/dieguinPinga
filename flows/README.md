@@ -4,13 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v37.json`](./crypto-lite-v37.json)
-— **arregla el "tambor" del sonido melódico.** Dos cosas: (1) el do central pasó a ser un
-**promedio corto (~1 h)** en vez del multi‑día, que quedaba tan lejos del precio que el tono se
-pegaba al piso (una nota grave repetida); ahora el tono tiene lugar para moverse. (2) El sonido
-dispara **solo cuando el precio cruza un escalón de $** (cambia el grado), no en cada tick: ahí sí
-toca el gesto do→re subiendo / re→do bajando (corrida más larga si salta varios escalones), y
-mientras zigzaguea dentro del mismo escalón queda en silencio. Escalón editable por moneda (BTC $10).
+Archivo importable (última versión): [`crypto-lite-v38.json`](./crypto-lite-v38.json)
+— **el escalón del sonido ahora es por PORCENTAJE**, no por USD: cada **0.02% respecto del
+promedio ~1h = una nota** (un solo valor, `STEP_PCT`, igual para las 4 monedas). Así BTC/XMR/GMX/LTC
+tienen la misma sensibilidad relativa sin tener que afinar un $ distinto por cada una. El chip
+ahora muestra el **% sobre el promedio** (que es lo que define el tono). El resto igual que v37
+(suena al cruzar cada escalón: do→re sube / re→do baja).
+
+v37: **arregla el "tambor"**: do central = promedio corto (~1h, cerca del precio) y el sonido
+dispara solo al cruzar un escalón (antes era por $10 fijo; ahora por %).
 
 v36: **sonido = altura de precio (modelo).** Do central = promedio; cada paso de precio = un grado
 de la escala mayor; el tono dice el nivel y el gesto la dirección. (El "tambor" se corrigió en v37.)
