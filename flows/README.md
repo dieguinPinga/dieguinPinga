@@ -4,11 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v31.json`](./crypto-lite-v31.json)
-— **márgenes del eje Y aún más ceñidos**: usa el **mínimo y máximo reales** de la ventana con
-apenas **6 %** de aire (antes 18 %) y pisos más chicos, así la curva llena el gráfico. (No se
-pueden clavar `ymin/ymax` exactos porque en node-red-dashboard eso solo va con `ui_control`, que
-borra los puntos cada vez — por eso se usan las series min/max invisibles, bien apretadas.)
+Archivo importable (última versión): [`crypto-lite-v32.json`](./crypto-lite-v32.json)
+— **ajustes de layout**: **RESUMEN** y **EN VIVO** pasan a **16** de ancho (usan el espacio libre
+de la derecha); los 4 gráficos de 1s pasan a **8** de ancho (2×2 llenando el ancho); la **tarjeta
+BTC** sube a alto **7** y la **LTC** a **6** para que no quede la barra de scroll.
+
+v31: **márgenes del eje Y aún más ceñidos**: usa el **mínimo y máximo reales** de la ventana con
+apenas **6 %** de aire y pisos más chicos, así la curva llena el gráfico. (No se pueden clavar
+`ymin/ymax` exactos porque en node-red-dashboard eso solo va con `ui_control`, que borra los
+puntos cada vez — por eso se usan las series min/max invisibles, bien apretadas.)
 
 v30: **eje Y de los gráficos EN VIVO ajustado**: el margen dejó de ser fijo ($15 en BTC aplastaba
 la curva cuando el precio se movía centavos) y pasó a ser **proporcional al rango real** de la
