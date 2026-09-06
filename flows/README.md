@@ -4,14 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v36.json`](./crypto-lite-v36.json)
-— **sonido = altura de precio (nuevo modelo).** Un **do central (C4)** representa el **promedio del
-chart largo** de cada moneda; **cada paso de precio = un grado** de la escala mayor (BTC $10, XMR
-$0.5, GMX $0.05, LTC $0.1, editables). El **tono absoluto te dice el nivel** (agudo = por encima del
-promedio, grave = por debajo) y cada movimiento suena como un **gesto de notas** de donde estabas a
-donde estás (75000→75010 = do→re "ti‑tu"; 75010→75000 = re→do "tu‑ti"; un salto grande = corridita
-do‑re‑mi‑fa). Cada chip muestra el **grado** actual (♪) y el promedio se recalcula del histórico en
-disco. Se limita a ±2 octavas para no irse de rango.
+Archivo importable (última versión): [`crypto-lite-v37.json`](./crypto-lite-v37.json)
+— **arregla el "tambor" del sonido melódico.** Dos cosas: (1) el do central pasó a ser un
+**promedio corto (~1 h)** en vez del multi‑día, que quedaba tan lejos del precio que el tono se
+pegaba al piso (una nota grave repetida); ahora el tono tiene lugar para moverse. (2) El sonido
+dispara **solo cuando el precio cruza un escalón de $** (cambia el grado), no en cada tick: ahí sí
+toca el gesto do→re subiendo / re→do bajando (corrida más larga si salta varios escalones), y
+mientras zigzaguea dentro del mismo escalón queda en silencio. Escalón editable por moneda (BTC $10).
+
+v36: **sonido = altura de precio (modelo).** Do central = promedio; cada paso de precio = un grado
+de la escala mayor; el tono dice el nivel y el gesto la dirección. (El "tambor" se corrigió en v37.)
 
 v35: **flash mucho más suave**: se sacó el "flip" pleno del número del precio; ahora queda blanco en
 los movimientos chicos y solo se tiñe suave en los fuertes; fondo bien tenue. Referencia percentil 80.
