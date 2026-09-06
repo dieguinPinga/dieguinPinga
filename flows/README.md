@@ -4,8 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v39.json`](./crypto-lite-v39.json)
-— **línea de precio actual en los 4 gráficos grandes**: una línea horizontal (blanca) al precio
+Archivo importable (última versión): [`crypto-lite-v40.json`](./crypto-lite-v40.json)
+— **botón "🚨 probar alarma BE"** en los controles de sonido: dispara la sirena + el cartel de
+break‑even al toque, para verificar que anda sin esperar a que LTC cruce 55.57. (La lógica de cruce
+ya estaba OK — simulada con una serie que cruza para arriba y para abajo: dispara en ambos, con
+banda muerta y cooldown.)
+
+v39: **línea de precio actual en los 4 gráficos grandes**: una línea horizontal (blanca) al precio
 de ahora, con el precio en la etiqueta de la leyenda (ej. `BTC ● $79,870`). Para que quede plana
 de ancho completo se cambió el dibujado: el seeder **re-dibuja cada 30 s** (re-lee el histórico en
 disco, así se mantiene la vista de varios días) y el Historian dejó de hacer append a los gráficos
