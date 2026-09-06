@@ -4,11 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v33.json`](./crypto-lite-v33.json)
-— **flash más expresivo + sonido melódico**. El parpadeo verde/rojo ahora se normaliza contra el
-**cambio típico reciente** de cada moneda (media de los últimos ~60 cambios) y usa un rango de
-opacidad bien visible (0.42→0.92): un movimiento chico pero real ya se ve fuerte, uno más grande
-de lo habitual llega al máximo — o sea, **referido a lo que venía pasando**. Y el sonido ahora
+Archivo importable (última versión): [`crypto-lite-v34.json`](./crypto-lite-v34.json)
+— **flash con más rango dinámico**: en v33 quedaba muy intenso para movimientos normales (sobre
+todo BTC, que tiquea seguido). Ahora la referencia es el **percentil 80** de los cambios recientes
+(no el promedio) y el piso bajó: un movimiento chico/normal parpadea **sutil** (~0.12–0.3) y solo
+los que están **entre los más grandes** de lo que viene pasando llegan a fuerte (~0.87). Mismo
+comportamiento en las 4 monedas.
+
+v33: **flash más expresivo + sonido melódico**. El parpadeo verde/rojo se normaliza contra el
+cambio reciente de cada moneda y el sonido
 **camina una escala pentatónica** por moneda con su instrumento: sube el precio → sube un grado
 (do→re→mi…), baja → baja un grado; rachas de suba suenan como melodía ascendente. El botón ▶
 corre la escala del instrumento.
