@@ -4,10 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v32.json`](./crypto-lite-v32.json)
-— **ajustes de layout**: **RESUMEN** y **EN VIVO** pasan a **16** de ancho (usan el espacio libre
-de la derecha); los 4 gráficos de 1s pasan a **8** de ancho (2×2 llenando el ancho); la **tarjeta
-BTC** sube a alto **7** y la **LTC** a **6** para que no quede la barra de scroll.
+Archivo importable (última versión): [`crypto-lite-v33.json`](./crypto-lite-v33.json)
+— **flash más expresivo + sonido melódico**. El parpadeo verde/rojo ahora se normaliza contra el
+**cambio típico reciente** de cada moneda (media de los últimos ~60 cambios) y usa un rango de
+opacidad bien visible (0.42→0.92): un movimiento chico pero real ya se ve fuerte, uno más grande
+de lo habitual llega al máximo — o sea, **referido a lo que venía pasando**. Y el sonido ahora
+**camina una escala pentatónica** por moneda con su instrumento: sube el precio → sube un grado
+(do→re→mi…), baja → baja un grado; rachas de suba suenan como melodía ascendente. El botón ▶
+corre la escala del instrumento.
+
+v32: **ajustes de layout**: **RESUMEN** y **EN VIVO** pasan a **16** de ancho; los 4 gráficos de
+1s pasan a **8** (2×2 llenando el ancho); la **tarjeta BTC** sube a alto **7** y la **LTC** a **6**.
 
 v31: **márgenes del eje Y aún más ceñidos**: usa el **mínimo y máximo reales** de la ventana con
 apenas **6 %** de aire y pisos más chicos, así la curva llena el gráfico. (No se pueden clavar
