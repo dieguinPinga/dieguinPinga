@@ -4,11 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v40.json`](./crypto-lite-v40.json)
-— **botón "🚨 probar alarma BE"** en los controles de sonido: dispara la sirena + el cartel de
-break‑even al toque, para verificar que anda sin esperar a que LTC cruce 55.57. (La lógica de cruce
-ya estaba OK — simulada con una serie que cruza para arriba y para abajo: dispara en ambos, con
-banda muerta y cooldown.)
+Archivo importable (última versión): [`crypto-lite-v41.json`](./crypto-lite-v41.json)
+— **se sacó Litecoin** (tarjeta, gráfico, gráfico en vivo, tile del resumen y su sonido) y **el
+break‑even pasó a Bitcoin en $79,613.63**. Ahora BTC muestra su break‑even como **fila en la tarjeta**
+(% arriba/abajo), **línea dorada en el gráfico** y **alarma sonora al cruzarlo** (con el botón
+🚨 de prueba). El tablero queda con **3 monedas**: BTC, XMR, GMX. (El backend sigue leyendo LTC de
+Kraken pero no se muestra en ningún lado; si querés lo saco del todo.)
+
+v40: **botón "🚨 probar alarma BE"** para disparar la sirena + cartel al toque.
 
 v39: **línea de precio actual en los 4 gráficos grandes**: una línea horizontal (blanca) al precio
 de ahora, con el precio en la etiqueta de la leyenda (ej. `BTC ● $79,870`). Para que quede plana
