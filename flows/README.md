@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v41.json`](./crypto-lite-v41.json)
-— **se sacó Litecoin** (tarjeta, gráfico, gráfico en vivo, tile del resumen y su sonido) y **el
+Archivo importable (última versión): [`crypto-lite-v42.json`](./crypto-lite-v42.json)
+— **el tono ahora mapea el RANGO del gráfico**: el **mínimo ploteado = nota más grave** y el
+**máximo = más aguda**; el precio actual cae en un punto entre medio, así **de oído sabés dónde
+está dentro del rango del día** (grave = cerca del piso, agudo = cerca del techo). La escala se
+estira sola entre el min y el max de lo ploteado (min/max tomados del gráfico grande, ~lo que ves).
+El chip muestra la **posición en el rango** (0%=mínimo, 100%=máximo). Reemplaza el modelo anterior
+(% sobre el promedio).
+
+v41: **se sacó Litecoin** (tarjeta, gráfico, gráfico en vivo, tile del resumen y su sonido) y **el
 break‑even pasó a Bitcoin en $79,613.63**. Ahora BTC muestra su break‑even como **fila en la tarjeta**
 (% arriba/abajo), **línea dorada en el gráfico** y **alarma sonora al cruzarlo** (con el botón
 🚨 de prueba). El tablero queda con **3 monedas**: BTC, XMR, GMX. (El backend sigue leyendo LTC de
