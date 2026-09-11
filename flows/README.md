@@ -4,13 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v42.json`](./crypto-lite-v42.json)
-— **el tono ahora mapea el RANGO del gráfico**: el **mínimo ploteado = nota más grave** y el
-**máximo = más aguda**; el precio actual cae en un punto entre medio, así **de oído sabés dónde
-está dentro del rango del día** (grave = cerca del piso, agudo = cerca del techo). La escala se
-estira sola entre el min y el max de lo ploteado (min/max tomados del gráfico grande, ~lo que ves).
-El chip muestra la **posición en el rango** (0%=mínimo, 100%=máximo). Reemplaza el modelo anterior
-(% sobre el promedio).
+Archivo importable (última versión): [`crypto-lite-v43.json`](./crypto-lite-v43.json)
+— **suena en cada movimiento** (antes sonaba solo al cruzar una "nota", y como el rango es todo el
+gráfico (~$2.900 ÷ 20 notas ≈ $145 por nota) casi nunca cruzaba → largos silencios). Ahora en cada
+tick con movimiento real toca una nota: **tono = posición en el rango** (grave abajo / agudo arriba)
+y **volumen = tamaño del movimiento**; throttle ~500 ms (hasta ~2 notas/seg). Si cruza a otra nota,
+hace el gesto do→re / re→do.
+
+v42: **el tono mapea el RANGO del gráfico**: mínimo ploteado = nota más grave, máximo = más aguda;
+el precio actual cae en un punto entre medio. El chip muestra la **posición en el rango** (0–100%).
 
 v41: **se sacó Litecoin** (tarjeta, gráfico, gráfico en vivo, tile del resumen y su sonido) y **el
 break‑even pasó a Bitcoin en $79,613.63**. Ahora BTC muestra su break‑even como **fila en la tarjeta**
