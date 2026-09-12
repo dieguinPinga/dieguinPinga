@@ -4,9 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v52.json`](./crypto-lite-v52.json)
-— **chart "BTC · histórico (30 días)"** en el grupo BITCOIN, que lee todo el `.log` de disco y
-muestra mucha más antigüedad que el gráfico principal (que va hasta 3 días). Se subió el guardado a
+Archivo importable (última versión): [`crypto-lite-v53.json`](./crypto-lite-v53.json)
+— **histórico (30 días) también para XMR y GMX**: se generalizó el path (lee los 3 `.log`, rutea por
+moneda) y se agregaron los charts **XMR · histórico** y **GMX · histórico** en sus grupos, igual que
+el de BTC (precio + línea de precio actual, downsample a 600, eje con fecha).
+
+v52: **chart "BTC · histórico (30 días)"** que lee todo el `.log` de disco y muestra mucha más
+antigüedad que el principal (hasta 3 días); guardado en disco subido a 30 días. Se subió el guardado a
 **30 días** (`cryptoKeepDays`) y se agregó `cryptoHistDays` (ventana del histórico). Trae precio +
 línea de precio actual + break-even, downsample a 600 puntos, eje X con fecha. Ojo: arranca
 mostrando solo lo ya grabado (~1 día) y se llena hasta 30 días con el tiempo.
