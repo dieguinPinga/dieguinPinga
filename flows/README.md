@@ -4,8 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v45.json`](./crypto-lite-v45.json)
-— **volumen relativo al promedio de las operaciones**: una operación del **tamaño promedio reciente
+Archivo importable (última versión): [`crypto-lite-v46.json`](./crypto-lite-v46.json)
+— **gauge de flujo BTC/min** en el grupo BITCOIN: muestra los BTC transaccionados por minuto
+(`flow_btc_m` del sensor), **suavizado** (EMA ~20 s) y con la **escala relativa a lo reciente** (el
+máximo del arco = pico reciente que decae despacio), con una marca del **promedio** y color por
+nivel (calmo→intenso). Gauge SVG a medida (el nativo no permite escala dinámica).
+
+v45: **volumen relativo al promedio de las operaciones**: una operación del **tamaño promedio reciente
 = volumen estándar**; más chica → más bajo (con un **piso** para que igual se escuche); más grande →
 más fuerte (con techo). Se normaliza contra lo que viene pasando en cada moneda (`ratio =
 cambio_actual / promedio_reciente`, gain 0.28–0.9). El tono sigue siendo la posición en el rango.
