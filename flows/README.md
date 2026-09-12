@@ -4,11 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v49.json`](./crypto-lite-v49.json)
-— **chart de flujo con DOBLE EJE Y** (a medida en SVG, porque node-red-dashboard no soporta doble
-eje): **USD/min a la izquierda** (verde) y **BTC/min a la derecha** (dorado), cada uno con su propia
-escala, muestreo de 60 s. Así las dos líneas se pueden cruzar de verdad. (El de v48 normalizado a %
-quedó descartado.)
+Archivo importable (última versión): [`crypto-lite-v50.json`](./crypto-lite-v50.json)
+— **chart de doble eje a 1 punto/segundo, ventana de 1 minuto**: muestra el contenido del gauge
+(BTC/min y USD/min suavizados) en los últimos 60 s, USD/min a la izquierda (verde) y BTC/min a la
+derecha (dorado), cada uno con su escala; eje X en mm:ss.
+
+v49: **chart de flujo con DOBLE EJE Y** (SVG a medida, node-red-dashboard no soporta doble eje):
+USD/min izq, BTC/min der; v50 lo pasa a 1 pto/s con ventana de 1 min.
 
 v48: chart BTC/min vs USD/min normalizado a % (descartado; v49 lo reemplaza por doble eje real).
 
