@@ -4,11 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v46.json`](./crypto-lite-v46.json)
-— **gauge de flujo BTC/min** en el grupo BITCOIN: muestra los BTC transaccionados por minuto
-(`flow_btc_m` del sensor), **suavizado** (EMA ~20 s) y con la **escala relativa a lo reciente** (el
-máximo del arco = pico reciente que decae despacio), con una marca del **promedio** y color por
-nivel (calmo→intenso). Gauge SVG a medida (el nativo no permite escala dinámica).
+Archivo importable (última versión): [`crypto-lite-v47.json`](./crypto-lite-v47.json)
+— **el gauge de flujo pasa a ser multi‑exchange y muestra BTC + USD**: Node‑RED suma el volumen del
+último minuto de **Binance** (ticker rolling 1 m) + **Coinbase** (candles 60 s) + **Kraken** (del feed
+de trades que ya teníamos), cada 20 s, con **fallback**: si la red del server no deja pasar
+Binance/Coinbase, cae a lo que haya (mínimo Kraken). Muestra el caudal en **BTC/min** (grande) y su
+equivalente en **USD/min** (≈ BTC×precio), y abajo qué **fuentes** están vivas (B/C/K). Sigue
+suavizado (EMA) y con escala relativa a lo reciente.
+
+v46: **gauge de flujo BTC/min** (del `flow_btc_m` del sensor), suavizado y con escala relativa a lo
+reciente. v47 lo reemplaza por el cálculo multi‑exchange de Node‑RED.
 
 v45: **volumen relativo al promedio de las operaciones**: una operación del **tamaño promedio reciente
 = volumen estándar**; más chica → más bajo (con un **piso** para que igual se escuche); más grande →
