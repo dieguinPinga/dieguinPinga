@@ -4,13 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v44.json`](./crypto-lite-v44.json)
-— **un "plu" por CADA cambio de precio**. El sonido dejó de alimentarse del muestreador de 1 s (que
-juntaba varios cambios de ese segundo en uno) y ahora se engancha directo a la fuente **reactiva**
-(MQTT para BTC, WebSocket para XMR/GMX): cada operación real dispara una nota (throttle mínimo de
-40 ms solo como tope de seguridad). El **volumen es fijo** (cada plu se escucha igual, sin importar
-el tamaño) — la info la lleva el **tono** (posición en el rango: grave abajo / agudo arriba). El
-rango (min/max) ahora viaja con cada tick reactivo.
+Archivo importable (última versión): [`crypto-lite-v45.json`](./crypto-lite-v45.json)
+— **volumen relativo al promedio de las operaciones**: una operación del **tamaño promedio reciente
+= volumen estándar**; más chica → más bajo (con un **piso** para que igual se escuche); más grande →
+más fuerte (con techo). Se normaliza contra lo que viene pasando en cada moneda (`ratio =
+cambio_actual / promedio_reciente`, gain 0.28–0.9). El tono sigue siendo la posición en el rango.
+
+v44: **un "plu" por CADA cambio de precio** (fuente reactiva MQTT/WS, no el muestreador de 1 s);
+antes el volumen quedó fijo — v45 lo hace relativo al promedio.
 
 v43: suena en cada movimiento (antes solo al cruzar una nota); tono = posición en el rango.
 
