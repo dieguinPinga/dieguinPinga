@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v55.json`](./crypto-lite-v55.json)
-— **fix del análisis IA (Ollama) que daba "no response from server"**: se **acota la salida** del
+Archivo importable (última versión): [`crypto-lite-v56.json`](./crypto-lite-v56.json)
+— **menos ruido en el log cuando la red falla**: el subscribe del WebSocket de Kraken ahora solo se
+manda si la conexión dio señales de vida hace poco (se marca `krakenUp` en cada mensaje recibido +
+bootstrap de 150 s), así deja de floodear *"WebSocket is not open"* cuando Kraken se cae. Y los
+`http request` de Kraken/Binance/Coinbase pasan a **senderr** (los errores de red van como mensaje,
+no como error rojo), para que no ensucien el debug. **Nota:** si ves el grupo *🤖 ANÁLISIS IA*
+duplicado, es de importar 2 veces — borrá el grupo extra en el editor (ver Notas).
+
+v55: **fix del análisis IA (Ollama) que daba "no response from server"**: se **acota la salida** del
 modelo (`options.num_predict: 220`, `temperature: 0.3`) para que no genere de más y se pase del
 tiempo, y se pone un **timeout de request explícito de 120 s** (`msg.requestTimeout`). Además los
 pedidos de volumen a Binance/Coinbase ahora tienen **timeout corto (8 s)** para que fallen rápido si
