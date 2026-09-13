@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v57.json`](./crypto-lite-v57.json)
-— **fix real del flood "WebSocket is not open"**: en vez de mandar el subscribe a Kraken por un
+Archivo importable (última versión): [`crypto-lite-v58.json`](./crypto-lite-v58.json)
+— **fix del análisis IA por contexto**: `cardsSummary` (y `mktBtcEma`) ahora se guardan **también como
+`global`**, y "Armar prompt IA" lee `flow.get() || global.get()`. Así funciona aunque los nodos hayan
+quedado en tabs/copias distintas (que era por qué la IA no se disparaba: `flow.get` no veía el dato y
+cortaba antes de llamar a Ollama). Además el armado del prompt es más robusto (usa `Number()` para no
+romper con `toFixed` si algún valor viene como string).
+
+v57: **fix real del flood "WebSocket is not open"**: en vez de mandar el subscribe a Kraken por un
 timer "a ciegas" cada 60 s (que fallaba justo en los micro‑cortes/reconexiones), ahora el subscribe
 se dispara **solo cuando llega un mensaje del WS** (Kraken v2 manda `status` al conectar y
 `heartbeat` seguido), o sea cuando el socket está **abierto de verdad** → el envío nunca falla. El
