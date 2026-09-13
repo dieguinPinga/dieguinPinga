@@ -4,8 +4,18 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v63.json`](./crypto-lite-v63.json)
-— **veredicto corto**: una sola frase con el número, sin repetir los datos. Ver v63.
+Archivo importable (última versión): [`crypto-lite-v64.json`](./crypto-lite-v64.json)
+— **el veredicto lo calcula el código, la IA solo redacta** → no más contradicciones. Ver v64.
+
+v64: **fix de raíz de la incoherencia** (el modelo decía VOLÁTIL y después citaba −0.81% / rango 1.23%,
+que son NORMAL). Un modelo de 1.7B no aplica bien los umbrales, así que ahora:
+- **La SITUACIÓN y el SESGO se calculan en código** (`ia_prompt`) con los mismos umbrales
+  (CALMA / NORMAL / VOLÁTIL según la mayor |d1h|, el mayor rango del día % y el flujo ×promedio). La
+  insignia y la flecha salen de ahí → **nunca se contradicen** con los números.
+- **La IA queda solo para redactar** la frase corta (máx 16 palabras) citando la métrica dominante; ya
+  no elige el veredicto. Si Ollama no responde (`senderr:true`), se usa una **frase de respaldo armada
+  en código**, así el panel y la voz **siguen funcionando aunque la IA esté caída**.
+- El panel muestra la frase; la voz dice "Situación X, sesgo Y. <frase>".
 
 v63: **la IA se pasó de larga en v62** (escribía un párrafo y encima repetía la línea "Datos:" con
 todos los precios). Ahora: se le pide **UNA sola frase corta (máx 20 palabras)** citando el número
