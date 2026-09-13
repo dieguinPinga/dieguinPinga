@@ -4,8 +4,12 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v58.json`](./crypto-lite-v58.json)
-— **fix del análisis IA por contexto**: `cardsSummary` (y `mktBtcEma`) ahora se guardan **también como
+Archivo importable (última versión): [`crypto-lite-v59.json`](./crypto-lite-v59.json)
+— **Ollama forzado a CPU** (`options.num_gpu: 0`): en la notebook la GPU colgaba a Ollama (de ahí el
+"no response from server"); en CPU responde. Ese era el fix de fondo del análisis IA. El resto igual
+que v58 (contexto global + prompt robusto).
+
+v58: **fix del análisis IA por contexto**: `cardsSummary` (y `mktBtcEma`) ahora se guardan **también como
 `global`**, y "Armar prompt IA" lee `flow.get() || global.get()`. Así funciona aunque los nodos hayan
 quedado en tabs/copias distintas (que era por qué la IA no se disparaba: `flow.get` no veía el dato y
 cortaba antes de llamar a Ollama). Además el armado del prompt es más robusto (usa `Number()` para no
