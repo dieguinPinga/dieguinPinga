@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v54.json`](./crypto-lite-v54.json)
-— **juez IA local (Ollama)**: cada **5 min** arma un resumen del mercado (precios, Δ1h/Δ24h, rango,
+Archivo importable (última versión): [`crypto-lite-v55.json`](./crypto-lite-v55.json)
+— **fix del análisis IA (Ollama) que daba "no response from server"**: se **acota la salida** del
+modelo (`options.num_predict: 220`, `temperature: 0.3`) para que no genere de más y se pase del
+tiempo, y se pone un **timeout de request explícito de 120 s** (`msg.requestTimeout`). Además los
+pedidos de volumen a Binance/Coinbase ahora tienen **timeout corto (8 s)** para que fallen rápido si
+la red los bloquea (antes quedaban colgados). El resto del juez IA igual que v54.
+
+v54: **juez IA local (Ollama)**: cada **5 min** arma un resumen del mercado (precios, Δ1h/Δ24h, rango,
 presión compra/venta, break-even, flujo BTC/min) y le pregunta a **qwen3:1.7b** (`127.0.0.1:11434`,
 `stream:false`, `think:false`) que diga si la situación es **CALMA/NORMAL/VOLÁTIL**, el sesgo y algo
 notable, en 2 frases. Se muestra en un panel nuevo **🤖 ANÁLISIS IA**. Si Ollama no está corriendo,
