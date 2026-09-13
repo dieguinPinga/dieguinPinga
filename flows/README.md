@@ -4,10 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v53.json`](./crypto-lite-v53.json)
-— **histórico (30 días) también para XMR y GMX**: se generalizó el path (lee los 3 `.log`, rutea por
-moneda) y se agregaron los charts **XMR · histórico** y **GMX · histórico** en sus grupos, igual que
-el de BTC (precio + línea de precio actual, downsample a 600, eje con fecha).
+Archivo importable (última versión): [`crypto-lite-v54.json`](./crypto-lite-v54.json)
+— **juez IA local (Ollama)**: cada **5 min** arma un resumen del mercado (precios, Δ1h/Δ24h, rango,
+presión compra/venta, break-even, flujo BTC/min) y le pregunta a **qwen3:1.7b** (`127.0.0.1:11434`,
+`stream:false`, `think:false`) que diga si la situación es **CALMA/NORMAL/VOLÁTIL**, el sesgo y algo
+notable, en 2 frases. Se muestra en un panel nuevo **🤖 ANÁLISIS IA**. Si Ollama no está corriendo,
+el panel avisa y conserva el último análisis. Requiere Ollama con el modelo `qwen3:1.7b` local.
+
+v53: **histórico (30 días) también para XMR y GMX** (path generalizado, un chart por moneda).
 
 v52: **chart "BTC · histórico (30 días)"** que lee todo el `.log` de disco y muestra mucha más
 antigüedad que el principal (hasta 3 días); guardado en disco subido a 30 días. Se subió el guardado a
