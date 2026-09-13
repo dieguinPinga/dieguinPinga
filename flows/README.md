@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v62.json`](./crypto-lite-v62.json)
-— **la IA ahora cita el número** que justifica el veredicto (nada de "alto/amplio" a secas). Ver v62.
+Archivo importable (última versión): [`crypto-lite-v63.json`](./crypto-lite-v63.json)
+— **veredicto corto**: una sola frase con el número, sin repetir los datos. Ver v63.
+
+v63: **la IA se pasó de larga en v62** (escribía un párrafo y encima repetía la línea "Datos:" con
+todos los precios). Ahora: se le pide **UNA sola frase corta (máx 20 palabras)** citando el número
+clave, con orden explícita de **no copiar la lista de datos**, y `num_predict` bajado a 110 para que no
+divague. Por las dudas, el panel **recorta** cualquier "Datos:…" o reinicio de formato que se cuele y
+**limita el texto a 200 caracteres**. Mantiene la exigencia de citar el número (nada de "alto/amplio"
+sin cifra).
 
 v62: **veredictos con cifras + más explicación**. Antes decía cosas vagas ("rango diario amplio y
 flujo de BTC alto") sin decir cuánto. Ahora:
