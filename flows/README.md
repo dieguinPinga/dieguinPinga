@@ -4,8 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v60.json`](./crypto-lite-v60.json)
-— **el análisis IA ahora habla y reacciona**. Ver v60.
+Archivo importable (última versión): [`crypto-lite-v61.json`](./crypto-lite-v61.json)
+— **IA calibrada**: deja de marcar todo como VOLÁTIL. Ver v61.
+
+v61: **calibración del juez IA** (el problema era que con el mercado calmo —Δ1h de 0.1/0.2/0.5%—
+igual decía **VOLÁTIL** siempre, y se le escapaba el inglés). Ahora el prompt le da **umbrales
+concretos**: CALMA si todas las Δ1h < 0.5%, NORMAL entre 0.5% y 1.5%, y **VOLÁTIL solo** si alguna
+Δ1h supera 1.5% (o hay pico de flujo / rango diario amplio), con la regla "ante la duda, el nivel más
+bajo". Responde en un **formato fijo de 3 líneas en español** (Situación / Sesgo / Notable), que el
+panel **parsea** para pintar la insignia y la flecha; el texto grande muestra solo lo **Notable** (sin
+repetir la situación que ya está en la insignia) y la **voz** dice una frase compuesta
+("Situación normal, sesgo lateral. …"). `temperature` a 0.45 para que no repita tanto.
 
 v60: **IA con voz + reactiva + panel vivo**. Tres cosas nuevas sobre el juez de v59:
 - **Mensajes de voz (TTS)**: el panel lee el veredicto **en voz alta** apenas se actualiza, usando la
