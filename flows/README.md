@@ -4,8 +4,27 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v59.json`](./crypto-lite-v59.json)
-— **Ollama forzado a CPU** (`options.num_gpu: 0`): en la notebook la GPU colgaba a Ollama (de ahí el
+Archivo importable (última versión): [`crypto-lite-v60.json`](./crypto-lite-v60.json)
+— **el análisis IA ahora habla y reacciona**. Ver v60.
+
+v60: **IA con voz + reactiva + panel vivo**. Tres cosas nuevas sobre el juez de v59:
+- **Mensajes de voz (TTS)**: el panel lee el veredicto **en voz alta** apenas se actualiza, usando la
+  voz en español del navegador (`speechSynthesis`). Botón **🔊/🔇** para prender/apagar (se recuerda en
+  `localStorage`) y **▶** para repetir. Si la situación **escala a VOLÁTIL**, la voz avisa con
+  **"¡Atención!"** al frente y un tono más marcado. (La voz suena en la máquina donde se ve el
+  dashboard; requiere una interacción previa en la página, como cualquier audio del navegador.)
+- **Análisis reactivo por evento**: además del análisis **cada 5 min**, un vigía cada 45 s dispara un
+  análisis **extra** cuando pasa algo notable — **cruce del break-even de BTC**, **movimiento fuerte**
+  (Δ1h ≥ 1.5 %) o **pico de flujo** (≥ 2.2× el promedio reciente). Tiene *cooldown* de 90 s para no
+  saturar a Ollama, y el veredicto muestra **⚡ disparado por: …**.
+- **Panel coloreado + historial**: el borde/insignia toma color según la situación
+  (**verde** CALMA · **azul** NORMAL · **rojo** VOLÁTIL), con **flecha de sesgo** (▲ alcista / ▼ bajista
+  / ▶ lateral) y una **lista de los últimos veredictos** con su hora y color.
+
+**IMPORTANTE:** importá **reemplazando** (no "copiar"), si no quedan nodos viejos duplicados. Todo lo
+demás igual que v59 (Ollama en CPU, `num_gpu: 0`).
+
+v59: **Ollama forzado a CPU** (`options.num_gpu: 0`): en la notebook la GPU colgaba a Ollama (de ahí el
 "no response from server"); en CPU responde. Ese era el fix de fondo del análisis IA. El resto igual
 que v58 (contexto global + prompt robusto).
 
