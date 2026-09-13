@@ -4,8 +4,19 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v61.json`](./crypto-lite-v61.json)
-— **IA calibrada**: deja de marcar todo como VOLÁTIL. Ver v61.
+Archivo importable (última versión): [`crypto-lite-v62.json`](./crypto-lite-v62.json)
+— **la IA ahora cita el número** que justifica el veredicto (nada de "alto/amplio" a secas). Ver v62.
+
+v62: **veredictos con cifras + más explicación**. Antes decía cosas vagas ("rango diario amplio y
+flujo de BTC alto") sin decir cuánto. Ahora:
+- El flujo se **calcula ya como ratio** (`Nx el promedio`) y el rango del día como **porcentaje**
+  (`(máx−mín)/precio`), y ambos se le pasan al modelo ya masticados.
+- **Umbrales numéricos también para el rango del día** (VOLÁTIL solo si algún rango > 5% o d1h > 1.5%
+  o flujo > 2.5× el promedio) → deja de marcar VOLÁTIL con un rango normal de 2-3%.
+- La línea **Notable** ahora pide **1-2 frases** y es **obligatorio citar el número** (el % o el
+  "Nx el promedio") que dispara la situación; prohibido "alto/amplio/significativo" sin la cifra al
+  lado. `num_predict` a 220 para que entren las 2 frases; el panel captura la explicación completa aunque
+  venga en varias líneas.
 
 v61: **calibración del juez IA** (el problema era que con el mercado calmo —Δ1h de 0.1/0.2/0.5%—
 igual decía **VOLÁTIL** siempre, y se le escapaba el inglés). Ahora el prompt le da **umbrales
