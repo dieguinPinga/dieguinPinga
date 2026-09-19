@@ -4,8 +4,18 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v64.json`](./crypto-lite-v64.json)
-— **el veredicto lo calcula el código, la IA solo redacta** → no más contradicciones. Ver v64.
+Archivo importable (última versión): [`crypto-lite-v65.json`](./crypto-lite-v65.json)
+— **fix de datos**: un tick glitcheado inflaba el "rango del día" (XMR marcaba ~12% cuando era ~3%). Ver v65.
+
+v65: **rango del día robusto + anti-glitch en las alts**. El veredicto de v64 estaba bien, pero le
+entraba basura: el "rango del día" es el mín/máx del anillo de 24 h y **XMR/GMX/LTC no tenían filtro
+anti-outlier** (solo BTC), así que un único tick fantasma de Kraken (ej. XMR imprimiendo $480) dejaba el
+rango clavado en ~12% por hasta 24 h → VOLÁTIL falso. Dos capas de arreglo:
+- **Filtro anti-outlier también en XMR/GMX/LTC** (`Guardar Kraken`): rechaza ticks que saltan más de 15%
+  (`cryptoAltMaxJump`) contra el último precio bueno → no se vuelve a contaminar.
+- **Mín/máx por percentiles (p2–p98)** en `Emitir tarjetas`: ignora glitches aislados **al instante**, así
+  el rango vuelve a la realidad en el próximo refresco sin esperar a que el tick viejo caduque. (Verificado
+  en simulación: un anillo ~528-538 con un tick a 480 daba 12.08% por min/máx y 3.33% por percentiles.)
 
 v64: **fix de raíz de la incoherencia** (el modelo decía VOLÁTIL y después citaba −0.81% / rango 1.23%,
 que son NORMAL). Un modelo de 1.7B no aplica bien los umbrales, así que ahora:
