@@ -4,8 +4,22 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v65.json`](./crypto-lite-v65.json)
-— **fix de datos**: un tick glitcheado inflaba el "rango del día" (XMR marcaba ~12% cuando era ~3%). Ver v65.
+Archivo importable (última versión): [`crypto-lite-v66.json`](./crypto-lite-v66.json)
+— **fuera break-even de BTC + nueva moneda ZEC (Zcash) desde la API de Orca**. Ver v66.
+
+v66: **se cerró la posición de BTC → se quita el break-even, y se suma ZEC (Zcash) desde Orca**.
+- **Break-even de BTC eliminado**: se saca del config (`cryptoBreakeven`), de la tarjeta de BTC (fila
+  Break-even), del vigía de la IA (ya no dispara por "cruce de break-even") y del beeper (sin alarma ni
+  botón "🚨 probar alarma BE").
+- **ZEC (Zcash) nuevo**: grupo **ZCASH · ZEC** con tarjeta, chart precio+EMA, histórico 30 días, tile en
+  RESUMEN y sonido propio (instrumento **✨ cristal**). También entra al análisis de la IA.
+- **Fuente = API de Orca** (pool ZEC/USDC en Solana): un poll cada 15 s trae **precio y volumen 24h** y
+  alimenta toda la maquinaria genérica (anillo, EMA, min/máx robusto, Δ1h/Δ24h, histórico). El endpoint
+  es configurable en `cryptoOrcaUrl` y el parser es **tolerante** (entiende la forma de Orca y también la
+  de DexScreener), con anti-outlier. ZEC no tiene chart "1s en vivo" ni presión taker porque Orca no da
+  datos por-trade (eso necesita el WS de un exchange); todo lo demás sí.
+- **Nota**: si la notebook no llega a `api.orca.so`, la tarjeta de ZEC queda en gris (feed caído) — se
+  cambia la URL en `cryptoOrcaUrl` (p. ej. a un endpoint de DexScreener del mismo pool) sin tocar nada más.
 
 v65: **rango del día robusto + anti-glitch en las alts**. El veredicto de v64 estaba bien, pero le
 entraba basura: el "rango del día" es el mín/máx del anillo de 24 h y **XMR/GMX/LTC no tenían filtro
