@@ -4,8 +4,20 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v66.json`](./crypto-lite-v66.json)
-— **fuera break-even de BTC + nueva moneda ZEC (Zcash) desde la API de Orca**. Ver v66.
+Archivo importable (última versión): [`crypto-lite-v67.json`](./crypto-lite-v67.json)
+— **IA que avisa cuando algo se sale de lo normal** (banda ±% sobre la media) + **ZEC desde DexScreener**. Ver v67.
+
+v67: **el juicio de la IA pasa a ser por anomalía, no cada 5 min fijos + ZEC ahora sí trae datos**.
+- **"Normal vs no normal"**: el vigía compara cada precio con **su media móvil (EMA)** y una **banda de
+  tolerancia ±X%** (`cryptoIaTolPct`, por defecto 2%). Si el precio **sale de la banda**, dispara un
+  juicio de la IA diciendo qué moneda y cuánto se desvió; mientras está dentro, se queda callado. Solo
+  avisa en la **transición** (cuando cruza la banda), no repite mientras sigue afuera. Se mantiene el
+  pico de flujo BTC como otra señal "fuera de lo normal".
+- **El juicio de rutina cada 5 min pasó a cada 30 min** (`ia_inj`), como latido de fondo; el disparador
+  real es la anomalía. (Si querés cero rutina, se desactiva ese inject.)
+- **ZEC desde DexScreener** (el endpoint que sí funciona, pool `GTHKH…`, en `cryptoZecUrl`): trae
+  **precio, volumen 24h y compras/ventas** → la tarjeta de ZEC ahora también muestra **presión
+  compra/venta**. Poll cada 5 s. El parser entiende la forma de DexScreener y, de fallback, la de Orca.
 
 v66: **se cerró la posición de BTC → se quita el break-even, y se suma ZEC (Zcash) desde Orca**.
 - **Break-even de BTC eliminado**: se saca del config (`cryptoBreakeven`), de la tarjeta de BTC (fila
