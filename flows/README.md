@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v67.json`](./crypto-lite-v67.json)
-— **IA que avisa cuando algo se sale de lo normal** (banda ±% sobre la media) + **ZEC desde DexScreener**. Ver v67.
+Archivo importable (última versión): [`crypto-lite-v68.json`](./crypto-lite-v68.json)
+— **ZEC · 2 min en EN VIVO + grupos reordenados** (más parejo). Ver v68.
+
+v68: **retoques de layout**.
+- **ZEC · 2 min**: faltaba el chart en vivo de ZEC en el grupo EN VIVO. Se agrega (alimentado por el poll
+  de ZEC, ~1 punto cada 5 s) → EN VIVO queda **2×2** (BTC, XMR, GMX, ZEC) sin el hueco que dejaba GMX solo.
+- **Orden de los grupos** más homogéneo y con las monedas contiguas: RESUMEN (1) · EN VIVO (2) ·
+  BITCOIN (3) · MONERO (4) · GMX (5) · ZCASH (6) · ANÁLISIS IA (7). *(Node-RED apila los grupos en
+  cascada según el ancho de la ventana; con este orden y los anchos parejos queda lo más prolijo posible;
+  el grupo de BTC es más alto porque tiene el gauge de flujo y el chart de doble eje.)*
 
 v67: **el juicio de la IA pasa a ser por anomalía, no cada 5 min fijos + ZEC ahora sí trae datos**.
 - **"Normal vs no normal"**: el vigía compara cada precio con **su media móvil (EMA)** y una **banda de
