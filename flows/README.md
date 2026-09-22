@@ -4,8 +4,19 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v70.json`](./crypto-lite-v70.json)
-— **fix del sonido**: XMR/GMX/ZEC hacían una "escalera" de notas; ahora suenan como BTC. Ver v70.
+Archivo importable (última versión): [`crypto-lite-v71.json`](./crypto-lite-v71.json)
+— **sonido de doble tono** (promedio vs actual = volatilidad) + **panel techo/piso del pool ZEC**. Ver v71.
+
+v71: **doble tono + rango de pool ZEC**.
+- **Sonido de dos tonos**: en cada movimiento ahora suenan **dos notas**: primero la del **precio
+  promedio de los últimos 2 min** y después la del **precio actual**. Si están cerca → poca volatilidad
+  (casi la misma nota); si están lejos → se escucha el intervalo. Aplica a todas las monedas (BTC incluido).
+  Se espacian los golpes (300 ms) para que el par no se pise.
+- **ZEC · rango del pool (Orca)**: panel nuevo que muestra dónde está ZEC respecto de tu **techo
+  ($1592.45)** y tu **piso ($1303.8)** del canal de liquidez: barra con la banda "en rango" en verde y un
+  marcador con el precio, estado **EN RANGO ✓ (cobrando fees)** vs **FUERA ↑/↓ (sin fees)**, y cuánto
+  **falta para el techo** y cuánto estás **sobre el piso**. Techo y piso editables en `cryptoZecTecho` /
+  `cryptoZecPiso`. Orden del grupo ZCASH: tarjeta · rango · gauge vol · precio+EMA · histórico.
 
 v70: **fix del sonido "escalera de notas"**. El motor usaba `playRun()` que tocaba **una nota por cada
 grado intermedio** entre la nota previa y la nueva (glissando). BTC casi no lo notaba porque su rango de
