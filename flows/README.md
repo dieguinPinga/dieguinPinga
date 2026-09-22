@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v68.json`](./crypto-lite-v68.json)
-— **ZEC · 2 min en EN VIVO + grupos reordenados** (más parejo). Ver v68.
+Archivo importable (última versión): [`crypto-lite-v69.json`](./crypto-lite-v69.json)
+— **gauge de volumen de ZEC** (5 min, con 1h y 24h). Ver v69.
+
+v69: **gauge de volumen ZEC**. DexScreener ya trae el volumen por ventana (`m5`, `h1`, `h24`); ahora se
+capturan las tres y se agrega un **gauge** (mismo estilo que el de FLUJO BTC) en el grupo ZCASH: la aguja
+marca el **volumen de los últimos 5 min** en USD, relativo a su **máximo reciente** (con marca del
+promedio de 30 min), y abajo muestra **1h** y **24h**. El parser de ZEC emite ahora dos salidas (tick +
+gauge). Orden del grupo ZCASH: tarjeta · gauge · precio+EMA · histórico.
 
 v68: **retoques de layout**.
 - **ZEC · 2 min**: faltaba el chart en vivo de ZEC en el grupo EN VIVO. Se agrega (alimentado por el poll
