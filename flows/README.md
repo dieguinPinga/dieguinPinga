@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v69.json`](./crypto-lite-v69.json)
-— **gauge de volumen de ZEC** (5 min, con 1h y 24h). Ver v69.
+Archivo importable (última versión): [`crypto-lite-v70.json`](./crypto-lite-v70.json)
+— **fix del sonido**: XMR/GMX/ZEC hacían una "escalera" de notas; ahora suenan como BTC. Ver v70.
+
+v70: **fix del sonido "escalera de notas"**. El motor usaba `playRun()` que tocaba **una nota por cada
+grado intermedio** entre la nota previa y la nueva (glissando). BTC casi no lo notaba porque su rango de
+3 días es enorme y el grado casi nunca cambia → una sola nota; pero XMR/GMX/ZEC, con rango más chico
+relativo a sus saltos, cambiaban de varios grados por tick → **escalera**. Ahora en cada movimiento se
+toca **una sola nota al tono actual** (posición en el rango), sin el glissando, así todas las monedas
+suenan parejo como BTC. El volumen sigue reflejando el tamaño del movimiento.
 
 v69: **gauge de volumen ZEC**. DexScreener ya trae el volumen por ventana (`m5`, `h1`, `h24`); ahora se
 capturan las tres y se agrega un **gauge** (mismo estilo que el de FLUJO BTC) en el grupo ZCASH: la aguja
