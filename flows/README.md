@@ -4,8 +4,18 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v71.json`](./crypto-lite-v71.json)
-— **sonido de doble tono** (promedio vs actual = volatilidad) + **panel techo/piso del pool ZEC**. Ver v71.
+Archivo importable (última versión): [`crypto-lite-v72.json`](./crypto-lite-v72.json)
+— **doble tono más útil**: ventana de promedio más larga + separación por desvío real. Ver v72.
+
+v72: **el doble tono ya no suena "siempre igual"**. Dos causas y dos arreglos (baratos, sin librerías):
+- La ventana del promedio (tono 1) era de **2 min** → quedaba pegada al precio actual. Ahora es de
+  **10 min** (`WIN_MS`, editable arriba del script del beeper). Es un simple array + promedio: costo de
+  cómputo ínfimo aunque se agrande.
+- El segundo tono se calculaba "redondeando" a notas sobre el rango de 3 días (enorme), así que promedio
+  y actual caían casi siempre en la **misma nota**. Ahora el **tono 2 se separa del tono 1 según el
+  desvío real** (% actual vs promedio): `SENS_PCT` (por defecto 0.20 % por semitono, editable). Cerca =
+  misma nota (sin volatilidad); cualquier separación se **oye siempre** como intervalo proporcional. El
+  tono 1 sigue marcando "dónde estás en el rango".
 
 v71: **doble tono + rango de pool ZEC**.
 - **Sonido de dos tonos**: en cada movimiento ahora suenan **dos notas**: primero la del **precio
