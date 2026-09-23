@@ -4,8 +4,13 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v75.json`](./crypto-lite-v75.json)
-— **botón para descargar todas las alertas/juicios de la IA** (.txt). Ver v75.
+Archivo importable (última versión): [`crypto-lite-v76.json`](./crypto-lite-v76.json)
+— **fix del arpegio**: ahora va del pasado al presente (última nota = precio actual). Ver v76.
+
+v76: **orden del arpegio corregido**. Antes tocaba actual → 1h → 2h → 4h (de ahora hacia atrás), así que
+subiendo sonaba agudo→grave. Ahora va del promedio **más viejo al más nuevo** (4h → 2h → 1h) y la
+**última nota es el precio actual**: si viene subiendo, la escalera va **grave→agudo** (do-re-mi) y si baja,
+al revés. Se ordena por ventana automáticamente, sin importar cómo esté escrita `cryptoToneWindows`.
 
 v75: **descarga del historial de alertas IA**. En la sección 🤖 ANÁLISIS IA hay un botón **⬇ alertas**
 que baja un `.txt` con **todos los juicios** que ocurrieron (fecha y hora · situación · sesgo · texto ·
