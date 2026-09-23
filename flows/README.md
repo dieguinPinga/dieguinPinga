@@ -4,8 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v76.json`](./crypto-lite-v76.json)
-— **fix del arpegio**: ahora va del pasado al presente (última nota = precio actual). Ver v76.
+Archivo importable (última versión): [`crypto-lite-v77.json`](./crypto-lite-v77.json)
+— **IA: volatilidad relativa** (deja de gritar VOLÁTIL por el 10% habitual de ZEC). Ver v77.
+
+v77: **el juez IA juzga la volatilidad RELATIVA a cada moneda**. Análisis de los reportes: daba VOLÁTIL
+siempre porque el rango diario de ZEC (~10%, que es **normal para ZEC**) superaba el umbral fijo de 5%.
+Ahora cada moneda tiene un **baseline auto-calibrado de su rango habitual** (EMA lenta en `Emitir tarjetas`,
+`rangebase_<moneda>`), y la situación mira el **rango relativo** (`rango ÷ su normal`): **VOLÁTIL** si
+≥ `cryptoVolRelHi` (1.8×), **NORMAL** si ≥ `cryptoVolRelMid` (1.25×), si no **CALMA** — además de d1h y
+pico de flujo. Así ZEC en 10% = "1.0× lo normal" = sin alarma; salta a VOLÁTIL recién si hace algo inusual
+para ZEC. También se sube el **deadzone del sesgo** a 0.5% (antes 0.15%) para que no salte
+alcista/bajista/lateral con movimientos mínimos, y al modelo se le explica qué significa "Nx lo normal".
 
 v76: **orden del arpegio corregido**. Antes tocaba actual → 1h → 2h → 4h (de ahora hacia atrás), así que
 subiendo sonaba agudo→grave. Ahora va del promedio **más viejo al más nuevo** (4h → 2h → 1h) y la
