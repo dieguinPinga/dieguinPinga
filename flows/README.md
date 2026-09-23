@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v72.json`](./crypto-lite-v72.json)
-— **doble tono más útil**: ventana de promedio más larga + separación por desvío real. Ver v72.
+Archivo importable (última versión): [`crypto-lite-v73.json`](./crypto-lite-v73.json)
+— **doble tono como corresponde**: los dos tonos = posición en el rango (actual + promedio de 1 h). Ver v73.
+
+v73: **doble tono según el modelo pedido**. Se vuelve al concepto original: **tono 1 = posición del precio
+ACTUAL** en el rango y **tono 2 = posición del PROMEDIO** en el rango (se descarta el "intervalo por
+desvío" de v72). La clave: el promedio ahora es de **1 hora** y se calcula **en el server desde el
+historial por minuto** (no en un buffer del navegador), así funciona apenas se abre el tablero y sobrevive
+recargas. Ventana editable en `cryptoToneAvgMin` (minutos, por defecto 60). Historian guarda
+`avgwin_<moneda>` cada minuto y los feeders lo pasan al beeper en cada tick.
 
 v72: **el doble tono ya no suena "siempre igual"**. Dos causas y dos arreglos (baratos, sin librerías):
 - La ventana del promedio (tono 1) era de **2 min** → quedaba pegada al precio actual. Ahora es de
