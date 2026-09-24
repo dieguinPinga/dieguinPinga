@@ -4,8 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v77.json`](./crypto-lite-v77.json)
-— **IA: volatilidad relativa** (deja de gritar VOLÁTIL por el 10% habitual de ZEC). Ver v77.
+Archivo importable (última versión): [`crypto-lite-v78.json`](./crypto-lite-v78.json)
+— **IA: también el d1h es relativo por moneda** + redacción sin exagerar. Ver v78.
+
+v78: **completa la volatilidad relativa (ahora el d1h también)**. En v77 el rango ya era relativo, pero el
+**d1h seguía con umbral fijo (1.5%)** → ZEC daba VOLÁTIL con un movimiento horario de 2.32% que es
+**normal para ZEC** (caso 23:53: rango 0.8× lo normal pero igual VOLÁTIL, contradictorio). Ahora cada
+moneda tiene un **baseline de su movimiento horario típico** (`d1hbase_<moneda>`, EMA en `Emitir tarjetas`)
+y la situación usa el **d1h relativo**: VOLÁTIL si ≥ `cryptoDvRelHi` (2.2×), NORMAL si ≥ `cryptoDvRelMid`
+(1.4×). El sesgo se toma de la moneda con mayor movimiento **relativo**. Además, al modelo se le ordena
+**no usar "alta/inusual/significativa" cuando el número dominante es ≤1.3× lo normal**, para que la frase
+no infle un veredicto tranquilo. (Verificado: el caso 23:53 pasa a NORMAL.)
 
 v77: **el juez IA juzga la volatilidad RELATIVA a cada moneda**. Análisis de los reportes: daba VOLÁTIL
 siempre porque el rango diario de ZEC (~10%, que es **normal para ZEC**) superaba el umbral fijo de 5%.
