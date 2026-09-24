@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v80.json`](./crypto-lite-v80.json)
-— **GMX se escucha más**: su instrumento estaba a mitad de volumen. Ver v80.
+Archivo importable (última versión): [`crypto-lite-v81.json`](./crypto-lite-v81.json)
+— **la frase de la IA ya no contradice al veredicto**. Ver v81.
+
+v81: **coherencia frase↔veredicto**. La clasificación quedó bien calibrada, pero en varios VOLÁTIL el
+texto decía "dentro de lo normal / no es alarma" (contradiciendo la insignia) — efecto de la instrucción
+fija de v78 aplicada siempre, hasta con 4-5× lo normal. Ahora la regla de redacción es **condicional al
+veredicto**: si es **VOLÁTIL**, se le exige explicar por qué es **inusual** y se le **prohíbe** decir
+"dentro de lo normal/típico/no es alarma"; si es **CALMA/NORMAL**, puede decir que está dentro de lo
+normal y no debe usar palabras de alarma. Así la frase acompaña a la insignia en vez de contradecirla.
 
 v80: **fix del volumen de GMX en el sonido**. Aclaración: el volumen NO depende del "volumen de dinero";
 se calcula por el tamaño del movimiento en % relativo al promedio reciente de cada moneda (piso 0.28,
