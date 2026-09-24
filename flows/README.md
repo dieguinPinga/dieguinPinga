@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v81.json`](./crypto-lite-v81.json)
-— **la frase de la IA ya no contradice al veredicto**. Ver v81.
+Archivo importable (última versión): [`crypto-lite-v82.json`](./crypto-lite-v82.json)
+— **fix del recorte**: el texto/voz se cortaba a mitad de palabra ("…en el r" → la voz decía "erre"). Ver v82.
+
+v82: **recorte limpio del veredicto**. El texto se cortaba en seco a los 180 caracteres, dejando palabras
+partidas y un "…" que el lector de voz pronunciaba como "erre", perdiéndose el final. Ahora el recorte:
+prefiere terminar en la **primera frase** (hasta el primer punto), y si aún es largo corta **en palabra
+completa** (nunca al medio) y cierra con punto, sin "…". Así la voz lee la frase completa. Además se sube
+`num_predict` a 120 para que el modelo alcance a cerrar la frase por su cuenta.
 
 v81: **coherencia frase↔veredicto**. La clasificación quedó bien calibrada, pero en varios VOLÁTIL el
 texto decía "dentro de lo normal / no es alarma" (contradiciendo la insignia) — efecto de la instrucción
