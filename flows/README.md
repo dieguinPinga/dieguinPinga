@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v78.json`](./crypto-lite-v78.json)
-— **IA: también el d1h es relativo por moneda** + redacción sin exagerar. Ver v78.
+Archivo importable (última versión): [`crypto-lite-v79.json`](./crypto-lite-v79.json)
+— **GMX desde el oráculo de GMX** como 2ª línea (exchange vs GMX). Ver v79.
+
+v79: **precio de GMX desde GMX**. El GMX del tablero venía de un exchange (Kraken WS). Ahora, además, se
+consulta el **oráculo propio de GMX** (`https://arbitrum-api.gmxinfra.io/prices/tickers`, editable en
+`cryptoGmxUrl`, poll 10 s) y se dibuja como **segunda línea** en el chart "GMX · 2 min" (verde = exchange,
+naranja = GMX). El parser toma el token GMX del oráculo y **auto-ajusta la escala** eligiendo la que más se
+parece al precio del exchange (robusto a los decimales de GMX v2). Es fail-soft: si la notebook no llega a
+la API de GMX, la línea naranja simplemente no aparece y queda la del exchange.
 
 v78: **completa la volatilidad relativa (ahora el d1h también)**. En v77 el rango ya era relativo, pero el
 **d1h seguía con umbral fijo (1.5%)** → ZEC daba VOLÁTIL con un movimiento horario de 2.32% que es
