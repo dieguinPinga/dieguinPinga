@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v79.json`](./crypto-lite-v79.json)
-— **GMX desde el oráculo de GMX** como 2ª línea (exchange vs GMX). Ver v79.
+Archivo importable (última versión): [`crypto-lite-v80.json`](./crypto-lite-v80.json)
+— **GMX se escucha más**: su instrumento estaba a mitad de volumen. Ver v80.
+
+v80: **fix del volumen de GMX en el sonido**. Aclaración: el volumen NO depende del "volumen de dinero";
+se calcula por el tamaño del movimiento en % relativo al promedio reciente de cada moneda (piso 0.28,
+techo 0.9). El motivo real de que GMX casi no se oyera: su instrumento tenía la nota fundamental a
+**0.55** de ganancia mientras BTC/XMR/ZEC estaban a **1.0** (sonaba a la mitad), y encima GMX opera poco
+(pocos ticks). Se sube GMX a **1.0** de fundamental (+ armónicos) y decae/resuena un poco más largo, para
+que se escuche a la par. (Sigue sonando solo cuando GMX realmente cambia de precio, que en GMX es menos
+seguido por su baja actividad.)
 
 v79: **precio de GMX desde GMX**. El GMX del tablero venía de un exchange (Kraken WS). Ahora, además, se
 consulta el **oráculo propio de GMX** (`https://arbitrum-api.gmxinfra.io/prices/tickers`, editable en
