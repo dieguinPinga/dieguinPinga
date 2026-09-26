@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v83.json`](./crypto-lite-v83.json)
-— **veredictos IA más largos + panel más alto** y **línea de precio de entrada de ZEC**. Ver v83.
+Archivo importable (última versión): [`crypto-lite-v84.json`](./crypto-lite-v84.json)
+— **fuera el panel de rango de pool ZEC** (posición cerrada) + **ventanas de tono ×5**. Ver v84.
+
+v84: **limpieza + prueba de tonos**.
+- Se cerró la posición de LP de ZEC (cobrar fees dentro del rango), así que se **quita el panel "ZEC ·
+  rango del pool"** (techo/piso): se borra el nodo, la 3ª salida de `orca_parse` vuelve a 2 (tick + gauge),
+  y se sacan `cryptoZecTecho`/`cryptoZecPiso` del config. La **línea de entrada spot ($1445.76) se
+  mantiene**. Grupo ZCASH reordenado: tarjeta · gauge vol · precio+EMA · histórico.
+- **Ventanas de los tonos ×5** para exagerar y probar: `cryptoToneWindows` pasa de `[60,120,240]` (1h/2h/4h)
+  a `[300,600,1200]` (5h/10h/20h). Editable en `Set config global`.
 
 v83: **más texto IA + entrada de ZEC en el chart**.
 - **Texto IA hasta ~el doble**: el veredicto puede ser de **2-3 frases** (`num_predict` 120→220, tope de
