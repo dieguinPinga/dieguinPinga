@@ -4,8 +4,16 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v88.json`](./crypto-lite-v88.json)
-— **rehecho sobre v85 SIN el input que rompía**: nota micro robusta (piano) + entrada 1534 por config. Ver v88.
+Archivo importable (última versión): [`crypto-lite-v89.json`](./crypto-lite-v89.json)
+— **arregla el −738% de ZEC** (referencia de Δ robusta + tope de cordura) y **sube el modelo IA a `qwen3:4b`**. Ver v89.
+
+v89: **fix del Δ imposible (−738%) + modelo IA `qwen3:4b`**. El cálculo de cambio (`chgWin` en *Emitir tarjetas*)
+tomaba **un solo punto** del historial como referencia; si ese tick venía glitcheado (ej. un precio de ZEC
+corrupto), el Δ salía disparado (−738%). Ahora la referencia es la **mediana de los ~5 puntos más cercanos**
+al momento objetivo (un tick corrupto ya no la mueve) y hay un **tope de cordura** que **descarta** el Δ si es
+imposible (>60% en 1h, >200% en 24h) en vez de mostrarlo. Esto blinda `change`, `change24` **y** la calibración
+`d1hbase`. Además, el juez IA pasa de `qwen3:1.7b` a **`qwen3:4b`** (`Armar prompt IA`) para reducir artefactos
+(alguna palabra en chino, fugas del prompt, verborragia). Sigue en CPU (`num_gpu:0`).
 
 v88: **reset de rama**. El input de entrada editable (v86) congelaba las señales al tocar "Fijar", así que
 el usuario retrocedió a v85. v88 parte de **v85** y suma **solo** la nota micro robusta de v87 (promedio
