@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v85.json`](./crypto-lite-v85.json)
-— **nota final "micro"** en el arpegio: posición del precio en su rango de los últimos 2 min. Ver v85.
+Archivo importable (última versión): [`crypto-lite-v86.json`](./crypto-lite-v86.json)
+— **entrada de ZEC editable desde el dashboard** (input de texto) + default 1534. Ver v86.
+
+v86: **precio de entrada de ZEC editable desde la UI**. En el grupo ZCASH hay un **input** para escribir el
+precio de entrada y un botón **Fijar** (y "usar precio actual"); muestra el precio actual y el **P&L%** vs la
+entrada. Al fijarlo, mueve la **línea de entrada** del chart (precio+EMA e histórico) y **persiste a disco**
+(`cryptohist/entries.json`), así sobrevive reinicios; al arrancar se **carga del disco** (override del
+default). Default corregido a **1534**. Editable también por config (`cryptoEntry`) como antes.
 
 v85: **5ª nota (micro) en el arpegio de sonido**. Además de las notas de los promedios (macro: 5h/10h/20h)
 y el precio actual (todas sobre el rango de 3 días), se agrega una **nota FINAL** que usa el **rango de los
