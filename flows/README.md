@@ -4,8 +4,14 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v84.json`](./crypto-lite-v84.json)
-— **fuera el panel de rango de pool ZEC** (posición cerrada) + **ventanas de tono ×5**. Ver v84.
+Archivo importable (última versión): [`crypto-lite-v85.json`](./crypto-lite-v85.json)
+— **nota final "micro"** en el arpegio: posición del precio en su rango de los últimos 2 min. Ver v85.
+
+v85: **5ª nota (micro) en el arpegio de sonido**. Además de las notas de los promedios (macro: 5h/10h/20h)
+y el precio actual (todas sobre el rango de 3 días), se agrega una **nota FINAL** que usa el **rango de los
+últimos 2 minutos** (min/max) como escala y ubica ahí el precio actual: orienta en el **micro** de cada
+moneda (si en los últimos 2 min está cerca de su techo = agudo, o de su piso = grave). Va después de una
+**pausa** para distinguirla del resto. Es client-side (buffer de 2 min en el beeper).
 
 v84: **limpieza + prueba de tonos**.
 - Se cerró la posición de LP de ZEC (cobrar fees dentro del rango), así que se **quita el panel "ZEC ·
