@@ -4,8 +4,20 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v89.json`](./crypto-lite-v89.json)
-— **arregla el −738% de ZEC** (referencia de Δ robusta + tope de cordura) y **sube el modelo IA a `qwen3:4b`**. Ver v89.
+Archivo importable (última versión): [`crypto-lite-v90.json`](./crypto-lite-v90.json)
+— **sanea la prosa de la IA** (mata cifras imposibles como −260%/−738% que el modelo *inventa* en el texto) y
+**arregla el TTS que no terminaba de leer** (lee por frases encoladas). Ver v90.
+
+v90: **saneado de la salida de la IA + fix del TTS**. Dos cosas que quedaban después de v89:
+1. **Cifras imposibles en el texto** (ej. "ZEC bajó −260%"). Ojo: **no** es el mismo bug que v89. v89 le puso
+   tope al *cálculo*, así que el prompt ya no lleva números locos — pero el modelo **igual los inventa en la
+   prosa**. Ahora `Extraer análisis IA` **sanea el texto**: descarta oraciones con % imposible (>80%), borra el
+   andamiaje del prompt que se filtra ("Nx lo normal", "SITUACION=", "el veredicto ya está calculado…") y quita
+   caracteres no-latinos (alguna palabra en chino). Los decimales (10.51) se preservan. Si queda vacío, cae a un
+   resumen del veredicto calculado.
+2. **El TTS no terminaba de leer**: `qwen3:4b` es más verboso y Chrome corta los `speechSynthesis` largos a los
+   ~15s. Ahora `Análisis IA` **parte el texto en frases y las encola** (más un keepalive pause/resume contra el
+   bug de Chrome), así lee el veredicto completo.
 
 v89: **fix del Δ imposible (−738%) + modelo IA `qwen3:4b`**. El cálculo de cambio (`chgWin` en *Emitir tarjetas*)
 tomaba **un solo punto** del historial como referencia; si ese tick venía glitcheado (ej. un precio de ZEC
