@@ -4,8 +4,17 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v82.json`](./crypto-lite-v82.json)
-— **fix del recorte**: el texto/voz se cortaba a mitad de palabra ("…en el r" → la voz decía "erre"). Ver v82.
+Archivo importable (última versión): [`crypto-lite-v83.json`](./crypto-lite-v83.json)
+— **veredictos IA más largos + panel más alto** y **línea de precio de entrada de ZEC**. Ver v83.
+
+v83: **más texto IA + entrada de ZEC en el chart**.
+- **Texto IA hasta ~el doble**: el veredicto puede ser de **2-3 frases** (`num_predict` 120→220, tope de
+  recorte 200→400 caracteres, siempre cerrando en palabra completa). El **panel IA** pasa a más alto
+  (h7→10) para que se lea completo sin recortes.
+- **Precio de entrada de ZEC = 1445.76**: se agrega `cryptoEntry` (editable) y se dibuja como **línea
+  horizontal cian** en el chart de ZEC **precio+EMA** y en el **histórico 30 días**, junto a la línea del
+  precio actual, para comparar de un vistazo (por encima = en ganancia, por debajo = en pérdida). El patrón
+  es genérico: se le puede poner entrada a cualquier moneda agregándola a `cryptoEntry`.
 
 v82: **recorte limpio del veredicto**. El texto se cortaba en seco a los 180 caracteres, dejando palabras
 partidas y un "…" que el lector de voz pronunciaba como "erre", perdiéndose el final. Ahora el recorte:
