@@ -4,8 +4,15 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v87.json`](./crypto-lite-v87.json)
-— **nota micro robusta**: promedio = centro del "teclado", rango por percentiles (sin ruido de spikes). Ver v87.
+Archivo importable (última versión): [`crypto-lite-v88.json`](./crypto-lite-v88.json)
+— **rehecho sobre v85 SIN el input que rompía**: nota micro robusta (piano) + entrada 1534 por config. Ver v88.
+
+v88: **reset de rama**. El input de entrada editable (v86) congelaba las señales al tocar "Fijar", así que
+el usuario retrocedió a v85. v88 parte de **v85** y suma **solo** la nota micro robusta de v87 (promedio
+recortado = centro del "teclado", ancho por percentiles p10/p90 suavizado — el concepto del piano con el
+promedio en el medio), **sin** el panel de input de v86. La entrada de ZEC queda en **1534** por config
+(`cryptoEntry`, línea en el chart; se cambia editando el nodo, sin panel interactivo). v86 y v87 quedan como
+ramas descartadas.
 
 v87: **nota micro (final) reformulada**. Antes usaba el min/max crudo de 2 min → un solo pico ensanchaba la
 escala y metía ruido. Ahora: el **centro del teclado = promedio recortado** de los últimos 2 min (ignora el
