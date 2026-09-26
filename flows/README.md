@@ -4,9 +4,19 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v90.json`](./crypto-lite-v90.json)
-— **sanea la prosa de la IA** (mata cifras imposibles como −260%/−738% que el modelo *inventa* en el texto) y
-**arregla el TTS que no terminaba de leer** (lee por frases encoladas). Ver v90.
+Archivo importable (última versión): [`crypto-lite-v91.json`](./crypto-lite-v91.json)
+— **reordena el tablero**: RESUMEN y EN VIVO como banners a todo el ancho, **4 columnas de moneda parejas**
+(BTC · XMR · GMX · ZEC) con cada tarjeta+gráficos juntos, mini-gráficas *vivo* alineadas sobre cada moneda, y
+ANÁLISIS IA como banner inferior. Pensado para ver a ~67% de zoom. Ver v91.
+
+v91: **layout ordenado y agrupado por moneda**. Antes los banners (RESUMEN, EN VIVO) estaban en ancho 16 y las
+monedas en 12, así que el acomodo *masonry* de Node-RED las desparramaba en columnas distintas. Ahora:
+RESUMEN (arriba) y ANÁLISIS IA (abajo) son **banners a todo el ancho (w48 = 4 columnas)**; EN VIVO es una **tira
+superior** con las 4 mini-gráficas de 1s en **w12 cada una, alineadas justo encima de su moneda**; y BTC · XMR ·
+GMX · ZEC quedan como **4 columnas parejas de w12**, cada una con su tarjeta, precio+EMA e histórico juntos.
+Diseñado para verse a **~67% de zoom del navegador** (ancho suficiente para las 4 columnas; si la ventana es más
+angosta, las monedas se reacomodan en 3+1 o 2×2 sin romperse). Solo cambia el orden/ancho de grupos y widgets;
+no toca la lógica.
 
 v90: **saneado de la salida de la IA + fix del TTS**. Dos cosas que quedaban después de v89:
 1. **Cifras imposibles en el texto** (ej. "ZEC bajó −260%"). Ojo: **no** es el mismo bug que v89. v89 le puso
