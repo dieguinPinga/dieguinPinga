@@ -4,11 +4,13 @@ Requiere `@flowfuse/node-red-dashboard`.
 
 | Archivo | Uso |
 |---|---|
-| **`btc-zec-todo.flow.json`** | **Todo junto: una solapa de Node-RED y una página de dashboard (`/btc-zec-live/live`) con LIVE + FLOW.** |
+| **`BTC-ZEC-IMPORTAR.json`** | **EL QUE HAY QUE IMPORTAR.** Una solapa + una página (`/btc-zec-live/todo`) con LIVE + FLOW. Se puede importar en un Node-RED limpio o encima de las solapas viejas (si pregunta por nodos existentes: *Reemplazar*, son idénticos). |
+| `btc-zec-todo.flow.json` | **Todo junto: una solapa de Node-RED y una página de dashboard (`/btc-zec-live/live`) con LIVE + FLOW.** |
 | `btc-zec-live.flow.json` | Flow completo: solapas **LIVE** y **FLOW**. Importar en una instancia vacía. |
 | `btc-zec-flow.tab.json` | Sólo la solapa **FLOW**. Importar en una instancia que ya tiene LIVE desplegada (reutiliza sus nodos de configuración). |
 | `src/flow/accumulator.js` | Código del nodo Function "FLOW · Acumulador agresivo 1 s". |
 | `src/flow/template.vue` | Plantilla del dashboard FLOW (se genera una por activo). |
+| `build-import.js` | Genera `BTC-ZEC-IMPORTAR.json` (IDs nuevos salvo dashboard, tema y conexiones, que se reutilizan). |
 | `build-single-tab.js` | Genera `btc-zec-todo.flow.json` uniendo LIVE + FLOW en una solapa y una página. |
 | `build-flow-tab.js` | Regenera los dos JSON desde `src/flow/`. No modifica los nodos de LIVE. |
 | `test/accumulator.test.js` | Prueba del acumulador: clasificación, conservación de trades, trades tardíos, 500 trades/s. |
@@ -16,6 +18,7 @@ Requiere `@flowfuse/node-red-dashboard`.
 ```
 node node-red/build-flow-tab.js
 node node-red/build-single-tab.js
+node node-red/build-import.js
 node node-red/test/accumulator.test.js
 ```
 
