@@ -4,10 +4,18 @@ Tablero liviano para Raspberry Pi lentas. Muestra las 4 monedas en un panel
 resumen + una tarjeta y un gráfico por moneda, y **guarda los precios en disco
 para poder ver varios días de historial** (aguanta reinicios de Node-RED).
 
-Archivo importable (última versión): [`crypto-lite-v91.json`](./crypto-lite-v91.json)
-— **reordena el tablero**: RESUMEN y EN VIVO como banners a todo el ancho, **4 columnas de moneda parejas**
-(BTC · XMR · GMX · ZEC) con cada tarjeta+gráficos juntos, mini-gráficas *vivo* alineadas sobre cada moneda, y
-ANÁLISIS IA como banner inferior. Pensado para ver a ~67% de zoom. Ver v91.
+Archivo importable (última versión): [`crypto-lite-v92.json`](./crypto-lite-v92.json)
+— **amplía el rango de notas del sonido**: de 21 a **33 escalones** (55–1319 Hz) para que haya más tonos
+distintos y menos probabilidad de que suenen iguales. Parte de **v90** (el layout de v91 quedó descartado). Ver v92.
+
+v92: **rango de notas más amplio**. El motor de sonido mapea la posición del precio a un "grado" de escala mayor
+entre `LOWDEG` y `HIGHDEG`. Estaba en −10..+10 = **21 escalones** (~98–698 Hz): con el mercado tranquilo varios
+precios caían en el mismo escalón → misma nota. Ahora es **−16..+16 = 33 escalones** (~55–1319 Hz), +57% de
+resolución, así se separan más las notas (macro y micro). Nota honesta: en mercados muy planos las notas *macro*
+(promedios sobre el rango de 3 días) igual pueden converger **por diseño** —ahí la nota que siempre se mueve es
+la **micro** (últimos 2 min)—; si se quiere que las macro sean más sensibles, se puede acercar su rango a una
+ventana más corta (queda como opción). **v91 descartada** (el reordenamiento del tablero se veía más desordenado;
+se volvió al layout de v90).
 
 v91: **layout ordenado y agrupado por moneda**. Antes los banners (RESUMEN, EN VIVO) estaban en ancho 16 y las
 monedas en 12, así que el acomodo *masonry* de Node-RED las desparramaba en columnas distintas. Ahora:
