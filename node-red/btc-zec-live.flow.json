@@ -1,0 +1,660 @@
+[
+  {
+    "id": "ead59d1fb172c92a",
+    "type": "tab",
+    "label": "BTC + ZEC · LIVE",
+    "disabled": false,
+    "info": "FLOW COMPLETO AUTÓNOMO. BTC Binance + Coinbase, ZEC Binance. Todos los WebSockets, parsers, conexiones, temporizadores, página, grupos y tema están incluidos. No importar parches adicionales. Retención 120 s, cada trade recibido, sin indicadores. Requiere @flowfuse/node-red-dashboard."
+  },
+  {
+    "id": "b12dc5781b4d9e20",
+    "type": "ui-base",
+    "name": "BTC + ZEC · LIVE",
+    "path": "/btc-zec-live",
+    "appIcon": "",
+    "includeClientData": true,
+    "acceptsClientConfig": [
+      "ui-template"
+    ],
+    "showPathInSidebar": false,
+    "headerContent": "page",
+    "navigationStyle": "default",
+    "titleBarStyle": "default",
+    "showReconnectNotification": true,
+    "showDisconnectNotification": true,
+    "notificationDisplayTime": 3,
+    "allowInstall": false
+  },
+  {
+    "id": "a17c8d1199aa6270",
+    "type": "ui-theme",
+    "name": "BTC ZEC · tema propio",
+    "colors": {
+      "surface": "#ffffff",
+      "primary": "#b8750b",
+      "bgPage": "#eef2f6",
+      "groupBg": "#101821",
+      "groupOutline": "#273442"
+    },
+    "sizes": {
+      "density": "default",
+      "pagePadding": "12px",
+      "groupGap": "12px",
+      "groupBorderRadius": "8px",
+      "widgetGap": "12px"
+    }
+  },
+  {
+    "id": "1f74d393c0f09613",
+    "type": "ui-page",
+    "name": "BTC + ZEC · LIVE",
+    "ui": "b12dc5781b4d9e20",
+    "path": "/live",
+    "icon": "show_chart",
+    "layout": "grid",
+    "theme": "a17c8d1199aa6270",
+    "order": 1,
+    "className": "",
+    "visible": "true",
+    "disabled": "false",
+    "breakpoints": [
+      {
+        "name": "Default",
+        "px": 0,
+        "cols": 3
+      },
+      {
+        "name": "Tablet",
+        "px": 576,
+        "cols": 6
+      },
+      {
+        "name": "Desktop",
+        "px": 1024,
+        "cols": 12
+      }
+    ]
+  },
+  {
+    "id": "43ac40e76e01c418",
+    "type": "ui-group",
+    "name": "BTC",
+    "page": "1f74d393c0f09613",
+    "width": 12,
+    "height": 1,
+    "order": 1,
+    "showTitle": false,
+    "className": "",
+    "visible": true,
+    "disabled": false,
+    "groupType": "default"
+  },
+  {
+    "id": "e4354bbccf441970",
+    "type": "websocket-client",
+    "path": "wss://stream.binance.com:9443/ws/btcusdt@trade",
+    "tls": "",
+    "wholemsg": "false",
+    "hb": "",
+    "subprotocol": "",
+    "headers": []
+  },
+  {
+    "id": "4bdadb82af428a3b",
+    "type": "websocket in",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC · Binance @trade",
+    "server": "",
+    "client": "e4354bbccf441970",
+    "x": 180,
+    "y": 140,
+    "wires": [
+      [
+        "a8029f3811ba43c9"
+      ]
+    ]
+  },
+  {
+    "id": "a8029f3811ba43c9",
+    "type": "function",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC Binance · Parse + RAM 120 s + trades/s",
+    "func": "const source = 'binance';\nif (msg.topic === 'live:pull' && msg.payload?.source !== source) return null;\n// Function node body. BTCUSDT is replaced when building the import.\n// Private RAM only: not flow/global context, disk, or per-client capture.\nconst symbol = 'BTCUSDT';\nconst now = Date.now();\nif (!globalThis.__btcZecLive) globalThis.__btcZecLive = {\n    epoch: now.toString(36) + Math.random().toString(36).slice(2),\n    rows: new Map(), seq: 0, arrivals: [], arrivalHead: 0,\n    latest: null, lastRx: 0, ws: 'Esperando conexión',\n    market: 'Disponibilidad pendiente de comprobar', invalid: 0,\n    segment: 0, lastId: null, gaps: 0, lastPrune: 0\n};\nconst s = globalThis.__btcZecLive;\n// Only application data messages emitted by the native WebSocket input count as WS messages.\n// Ping/pong frames, HTTP checks, status events, UI requests and purge ticks are excluded.\nif (!s.audit) s.audit = {\n    startMs: now, wsTotal: 0, wsTimes: [], wsHead: 0,\n    tradeMessages: 0, controls: 0, ignored: 0, malformed: 0,\n    rejectedTrades: 0, accepted: 0, retained: 0, expiredOnArrival: 0,\n    samePrice: 0, sameTimestamp: 0, nonIncreasingId: 0,\n    heartbeatLastId: null, heartbeatRx: 0, lastWsRx: 0,\n    lastReject: '', previousPrice: null, previousTimestamp: null,\n    seenTimes: [], seenHead: 0\n};\nconst audit = s.audit;\nconst isWs = msg._session?.type === 'websocket';\nfunction auditPrune() {\n    while (audit.wsHead < audit.wsTimes.length && audit.wsTimes[audit.wsHead] <= now - 1000) audit.wsHead++;\n    while (audit.seenHead < audit.seenTimes.length && audit.seenTimes[audit.seenHead] <= now - 1000) audit.seenHead++;\n    if (audit.wsHead > 2048 || audit.wsHead === audit.wsTimes.length) {\n        audit.wsTimes = audit.wsTimes.slice(audit.wsHead); audit.wsHead = 0;\n    }\n    if (audit.seenHead > 2048 || audit.seenHead === audit.seenTimes.length) {\n        audit.seenTimes = audit.seenTimes.slice(audit.seenHead); audit.seenHead = 0;\n    }\n}\nauditPrune();\nif (isWs) {\n    audit.wsTotal++;\n    audit.wsTimes.push(now);\n    audit.lastWsRx = now;\n}\nfunction auditSnapshot() {\n    return {\n        startMs: audit.startMs, snapshotMs: now,\n        wsMessagesPerSecond: audit.wsTimes.length - audit.wsHead,\n        tradesInMessagesPerSecond: audit.seenTimes.length - audit.seenHead,\n        capturedTradesPerSecond: s.arrivals.length,\n        wsMessagesTotal: audit.wsTotal, tradeMessagesTotal: audit.tradeMessages,\n        controlMessagesTotal: audit.controls, ignoredMessagesTotal: audit.ignored,\n        malformedMessagesTotal: audit.malformed, rejectedTradesTotal: audit.rejectedTrades,\n        acceptedTradesTotal: audit.accepted, retainedTradesTotal: audit.retained,\n        expiredOnArrivalTotal: audit.expiredOnArrival,\n        capturedTrades2m: s.rows.size,\n        samePriceAcceptedTotal: audit.samePrice, sameTimestampAcceptedTotal: audit.sameTimestamp,\n        nonIncreasingIdTotal: audit.nonIncreasingId,\n        heartbeatLastId: audit.heartbeatLastId, heartbeatRx: audit.heartbeatRx,\n        lastWsRx: audit.lastWsRx, lastReject: audit.lastReject,\n        messageBalance: audit.wsTotal - audit.tradeMessages - audit.controls - audit.ignored - audit.malformed,\n        captureBalance: audit.tradeMessages - audit.accepted - audit.rejectedTrades,\n        retentionBalance: audit.accepted - audit.retained - audit.expiredOnArrival\n    };\n}\n\nfunction prune() {\n    for (const [key, row] of s.rows) if (row[1] < now - 120000) s.rows.delete(key);\n    while (s.arrivalHead < s.arrivals.length && s.arrivals[s.arrivalHead] <= now - 1000) s.arrivalHead++;\n    if (s.arrivalHead) { s.arrivals = s.arrivals.slice(s.arrivalHead); s.arrivalHead = 0; }\n    s.lastPrune = now;\n}\nif (now - s.lastPrune >= 250 || msg.topic === 'live:pull') prune();\nif (msg.status) {\n    const st = msg.status;\n    s.ws = st.event === 'connect' || st.fill === 'green' ? 'Conectado' : 'Desconectado / reconectando';\n    if (s.ws !== 'Conectado') s.segment++;\n    return null;\n}\nif (msg.error) {\n    if (msg.error.source && msg.error.source.type === 'http request') s.market = 'No se pudo verificar el mercado (red/API)';\n    else { s.ws = 'Error WebSocket / reconectando'; s.segment++; }\n    return null;\n}\nif (msg.topic === 'exchange-check') {\n    let body = msg.payload;\n    try { if (typeof body === 'string') body = JSON.parse(body); } catch (_) { body = null; }\n    if (msg.statusCode === 200 && body && Array.isArray(body.symbols)) {\n        const found = body.symbols.find(x => x.symbol === symbol);\n        s.market = !found ? symbol + ' NO DISPONIBLE en Binance' :\n            found.status !== 'TRADING' || found.isSpotTradingAllowed === false ? symbol + ' NO OPERATIVO: ' + found.status :\n            symbol + ' disponible · Binance Spot';\n    } else if (body && body.code === -1121) s.market = symbol + ' NO DISPONIBLE en Binance';\n    else s.market = 'Disponibilidad NO VERIFICADA · HTTP ' + (msg.statusCode || 'error');\n    return null;\n}\nif (msg.topic === 'live:tick') return null;\nif (msg.topic === 'live:pull') {\n    // Only reply to the requesting dashboard client, never broadcast snapshots.\n    if (!msg._client || !msg._client.socketId) return null;\n    const req = msg.payload || {};\n    const first = s.rows.size ? s.rows.keys().next().value : s.seq + 1;\n    const reset = req.epoch !== s.epoch || !Number.isSafeInteger(req.after) || req.after > s.seq;\n    let after = reset ? first - 1 : Math.max(req.after, first - 1);\n    const expiredBeforeRead = !reset && req.after < first - 1;\n    const rows = [];\n    // Bounded transport chunk, not a cap on the capture buffer or a sample.\n    const stop = s.seq;\n    while (after < stop && rows.length < 2000) {\n        const row = s.rows.get(++after);\n        if (row) rows.push([row[0], row[1], Number(row[2]), row[6]]);\n    }\n    return {\n        _client: msg._client,\n        topic: 'live:data',\n        payload: {\n            source, total: s.seq, lastId: s.lastId, audit: auditSnapshot(), token: req.token, epoch: s.epoch, reset, after,\n            more: after < stop, expiredBeforeRead, now, rows,\n            price: s.latest, tps: s.arrivals.length, points: s.rows.size,\n            lastRx: s.lastRx, ws: s.ws, market: s.market,\n            invalid: s.invalid, gaps: s.gaps\n        }\n    };\n}\n// No non-WS input is parsed as a trade. Maintenance paths have already returned.\nif (!isWs) return null;\nlet trade;\ntry {\n    trade = Buffer.isBuffer(msg.payload) ? JSON.parse(msg.payload.toString()) :\n        typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;\n} catch (_) { s.invalid++; audit.malformed++; audit.lastReject='JSON inválido'; return null; }\n\nif (trade?.e === 'trade' && trade.s === symbol) {\n    audit.tradeMessages++; audit.seenTimes.push(now);\n} else if (trade?.e === 'serverShutdown') { audit.controls++; }\nelse { audit.ignored++; }\n\nif (trade && trade.e === 'serverShutdown') { s.ws = 'Binance anuncia reinicio de conexión'; s.segment++; return null; }\nif (!trade || trade.e !== 'trade' || trade.s !== symbol ||\n    !Number.isSafeInteger(trade.T) || !Number.isSafeInteger(trade.t) ||\n    !(Number(trade.p) > 0) || !Number.isFinite(Number(trade.p)) ||\n    !(Number(trade.q) > 0) || !Number.isFinite(Number(trade.q)) || typeof trade.m !== 'boolean') {\n    s.invalid++;\n    if (trade?.e === 'trade' && trade.s === symbol) {\n        audit.rejectedTrades++; audit.lastReject='Trade con timestamp, ID, precio, cantidad o lado inválido';\n    }\n    return null;\n}\naudit.accepted++;\nif (audit.previousPrice !== null && Number(audit.previousPrice) === Number(trade.p)) audit.samePrice++;\nif (audit.previousTimestamp === trade.T) audit.sameTimestamp++;\nif (s.lastId !== null && trade.t <= s.lastId) audit.nonIncreasingId++;\naudit.previousPrice = trade.p; audit.previousTimestamp = trade.T;\nif (trade.T >= now - 120000) audit.retained++;\nelse audit.expiredOnArrival++;\ns.arrivals.push(now);\ns.lastRx = now;\ns.ws = 'Conectado';\n// Gap detection is informational. No inferred trades, backfill, or signals.\nif (s.lastId !== null && trade.t > s.lastId + 1) { s.gaps++; s.segment++; }\ns.lastId = Math.max(s.lastId === null ? trade.t : s.lastId, trade.t);\ns.latest = trade.p;\n// Sequence keys retain distinct trades with exactly the same timestamp.\n// RAM row: [sequence, tradeTimeMs, rawPrice, rawQuantity, buyerIsMaker, tradeId, segment].\nconst seq = ++s.seq;\nif (trade.T >= now - 120000) s.rows.set(seq, [seq, trade.T, trade.p, trade.q, trade.m, trade.t, s.segment]);\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "globalThis.__btcZecLive = null;",
+    "finalize": "globalThis.__btcZecLive = null;",
+    "libs": [],
+    "x": 540,
+    "y": 140,
+    "wires": [
+      [
+        "e37d00df70ee266e"
+      ]
+    ]
+  },
+  {
+    "id": "e37d00df70ee266e",
+    "type": "ui-template",
+    "z": "ead59d1fb172c92a",
+    "group": "43ac40e76e01c418",
+    "page": "",
+    "ui": "",
+    "name": "BTC · Binance + Coinbase · PRECIO LIVE · 2 MIN",
+    "order": 1,
+    "width": 12,
+    "height": 10,
+    "head": "",
+    "format": "<template>\n  <section class=\"bzlive-card\">\n    <h3>BTC · BINANCE + COINBASE · PRECIO LIVE · 2 MIN</h3>\n    <div style=\"display:flex;gap:28px;flex-wrap:wrap\">\n      <div v-for=\"v in feeds\" :key=\"v.key\" style=\"flex:1;min-width:260px\">\n        <b :style=\"{color:v.color}\">● {{ v.label }}</b>\n        <div class=\"bzlive-metrics\" style=\"margin-top:8px;gap:20px\">\n          <div>Precio actual <strong>{{ v.price }}</strong></div>\n          <div>Trades/s <strong>{{ v.tps }}</strong></div>\n          <div>Puntos 2m <strong>{{ v.points }}</strong></div>\n        </div>\n        <div class=\"bzlive-state\">{{ v.state }}</div>\n        <small>Total recibido: {{ v.total }} · Último ID: {{ v.lastId }} · Hace {{ v.age }} ms · {{ v.auditLine }}</small>\n      </div>\n    </div>\n    <p style=\"font-size:11px;color:#aebecb;margin:8px 0\">Precios nativos: Binance en USDT; Coinbase en USD. Sin conversión ni promedio entre exchanges.</p>\n    <canvas ref=\"chart\" @mousemove=\"hover\" @mouseleave=\"tip = ''\" style=\"width:100%;height:280px;display:block\" aria-label=\"Trades BTC de Binance y Coinbase en los últimos 120 segundos\"></canvas>\n    <div class=\"bzlive-tip\">{{ tip || 'Tiempo local · HH:mm:ss.SSS · Una línea por exchange' }}</div>\n    <small>{{ detail }}</small>\n  </section>\n</template>\n<script>\nexport default {\n  data() {\n    return { feeds: [\n      {key:'binance',label:'Binance · BTC/USDT',color:'#f5b544'},\n      {key:'coinbase',label:'Coinbase · BTC/USD',color:'#66a3ff'}\n    ].map(v=>({...v,price:'—',tps:'—',points:'—',state:'Esperando Node-RED…',total:'—',lastId:'—',age:'—',auditLine:''})),\n    detail:'',tip:'' }\n  },\n  mounted() {\n    this.live = { active:true, fps:20, lastFrame:0, feeds:{} };\n    for(const v of this.feeds) this.live.feeds[v.key] = {\n      rows:[],epoch:'',after:0,waiting:false,requested:0,token:'',\n      clock:Date.now(),anchor:performance.now(),lastReply:0,received:null,warning:false\n    };\n    this.receiveLive = msg=>this.receive(msg);\n    this.$socket.on('msg-input:'+this.id,this.receiveLive);\n    this.pollTimer=setInterval(()=>this.pull(),50);\n    this.frameTimer=setInterval(()=>this.draw(),50);\n    this.visibilityLive=()=>{\n      for(const f of Object.values(this.live.feeds)) { f.rows=[]; f.epoch=''; f.after=0; f.token=''; f.waiting=false; }\n      if(!document.hidden)this.pull();\n    };\n    document.addEventListener('visibilitychange',this.visibilityLive);\n    this.pull();\n  },\n  unmounted() {\n    this.live.active=false;\n    clearInterval(this.pollTimer); clearInterval(this.frameTimer);\n    this.$socket.off('msg-input:'+this.id,this.receiveLive);\n    document.removeEventListener('visibilitychange',this.visibilityLive);\n    this.live.feeds={};\n  },\n  methods: {\n    pull() {\n      const s=this.live;\n      if(!s?.active || document.hidden || !this.$socket.connected)return;\n      for(const source of Object.keys(s.feeds)) {\n        const f=s.feeds[source];\n        if(f.waiting && performance.now()-f.requested<3000)continue;\n        f.waiting=true;f.requested=performance.now();\n        f.token=this.id+':'+source+':'+Math.random().toString(36).slice(2);\n        this.send({topic:'live:pull',payload:{source,epoch:f.epoch,after:f.after,token:f.token}});\n      }\n    },\n    receive(msg) {\n      const s=this.live,p=msg?.payload,f=s?.feeds[p?.source];\n      if(!s?.active || !f || msg.topic!=='live:data' || p.token!==f.token)return;\n      f.waiting=false;\n      if(p.reset || p.epoch!==f.epoch)f.rows=[];\n      f.epoch=p.epoch;f.after=p.after;f.clock=p.now;f.anchor=performance.now();f.lastReply=f.anchor;\n      f.received={...p,rows:[]};\n      if(p.expiredBeforeRead)f.warning=true;\n      if(!document.hidden)for(const row of p.rows)f.rows.push(row);\n      for(let i=Math.max(1,f.rows.length-p.rows.length);i<f.rows.length;i++) {\n        if(f.rows[i][1]<f.rows[i-1][1]){f.rows.sort((a,b)=>a[1]-b[1] || a[0]-b[0]);break;}\n      }\n      const v=this.feeds.find(v=>v.key===p.source);\n      v.price=p.price==null?'—':Number(p.price).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:8});\n      v.tps=p.tps;v.points=p.points;v.total=p.total;v.lastId=p.lastId??'—';\n    },\n    time(t) {\n      const d=new Date(t), pad=(n,k=2)=>String(n).padStart(k,'0');\n      return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())+'.'+pad(d.getMilliseconds(),3);\n    },\n    draw() {\n      const s=this.live;\n      if(!s?.active || document.hidden)return;\n      const start=performance.now();\n      if(start-s.lastFrame<1000/s.fps-1)return;\n      s.lastFrame=start;\n      const clocks=Object.values(s.feeds).filter(f=>f.lastReply).sort((a,b)=>b.lastReply-a.lastReply);\n      const now=clocks.length?clocks[0].clock+start-clocks[0].anchor:Date.now(),cutoff=now-120000;\n      const notes=[];\n      let total=0,min=Infinity,max=-Infinity;\n      for(const v of this.feeds) {\n        const f=s.feeds[v.key],p=f.received;\n        let drop=0;while(drop<f.rows.length && f.rows[drop][1]<cutoff)drop++;\n        if(drop)f.rows=f.rows.slice(drop);\n        total+=f.rows.length;\n        for(const row of f.rows)if(row[1]<=now){min=Math.min(min,row[2]);max=Math.max(max,row[2]);}\n        if(!this.$socket.connected || !f.lastReply || start-f.lastReply>3000){\n          v.auditLine='Auditoría sin respuesta';v.state='SIN RESPUESTA DE NODE-RED';v.tps='—';v.points='—';v.age='—';\n        }else{\n          const age=p.lastRx?Math.max(0,Math.floor(now-p.lastRx)):Infinity;\n          v.age=Number.isFinite(age)?age:'—';\n          v.state=p.market+' · '+p.ws+(age>5000?' · SIN TRADES RECIENTES (último precio)':' · LIVE');\n          if(p.more)notes.push(v.key+': cargando pendientes');\n          if(p.gaps)notes.push(v.key+': '+p.gaps+' saltos de ID');\n          if(p.invalid)notes.push(v.key+': '+p.invalid+' mensajes inválidos');\n          if(f.warning)notes.push(v.key+': datos expirados antes de llegar al navegador');\n        }\n      }\n      this.detail=total.toLocaleString()+' puntos en navegador · '+s.fps+' FPS máx.'+(notes.length?' · '+notes.join(' · '):'');\n      const canvas=this.$refs.chart;\n      if(!canvas)return;\n      const w=Math.floor(canvas.clientWidth),h=280,dpr=window.devicePixelRatio||1;\n      if(w<100)return;\n      if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}\n      const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);\n      c.fillStyle='#101821';c.fillRect(0,0,w,h);\n      const left=82,right=w-12,top=14,bottom=h-34;\n      if(!Number.isFinite(min)){min=0.99;max=1.01;}\n      const pad=Math.max((max-min)*0.08,Math.abs(max)*0.0000001,0.00000001);min-=pad;max+=pad;\n      const x=t=>left+(t-cutoff)/120000*(right-left), y=v=>bottom-(v-min)/(max-min)*(bottom-top);\n      s.plot={left,right,cutoff,now};c.font='11px system-ui';c.lineWidth=1;\n      for(let i=0;i<=4;i++){\n        const yy=top+(bottom-top)*i/4;\n        c.strokeStyle='#273442';c.beginPath();c.moveTo(left,yy);c.lineTo(right,yy);c.stroke();\n        c.fillStyle='#aebecb';c.textAlign='right';\n        if(total)c.fillText((max-(max-min)*i/4).toFixed(Math.min(8,Math.max(2,Math.ceil(-Math.log10(max-min))+2))),left-7,yy+4);\n      }\n      const ticks=w>650?4:2;\n      for(let i=0;i<=ticks;i++){\n        c.fillStyle='#aebecb';c.textAlign=i===0?'left':i===ticks?'right':'center';\n        c.fillText(this.time(cutoff+120000*i/ticks),left+(right-left)*i/ticks,h-11);\n      }\n      c.save();c.beginPath();c.rect(left,top,right-left,bottom-top);c.clip();\n      // Separate paths: no line joins one exchange to the other.\n      for(const v of this.feeds){\n        c.strokeStyle=v.color;c.lineWidth=1.25;c.beginPath();let prev=null;let rendered=0;\n        for(const row of s.feeds[v.key].rows){\n          if(row[1]>now)continue;\n          rendered++;\n          if(!prev || prev[3]!==row[3])c.moveTo(x(row[1]),y(row[2]));\n          else c.lineTo(x(row[1]),y(row[2]));\n          prev=row;\n        }\n        c.stroke();\n        const feed=s.feeds[v.key],a=feed.received?.audit;\n        feed.rendered=rendered;\n        if(a && this.$socket.connected && start-feed.lastReply<=3000) {\n          v.auditLine='WS msg/s: '+a.wsMessagesPerSecond+' · Trades/s: '+a.tradesInMessagesPerSecond+\n            ' · Capturados 2m: '+a.capturedTrades2m+' · Renderizados: '+rendered+\n            ' · Rechazados: '+a.rejectedTradesTotal+' · Llegaron vencidos: '+a.expiredOnArrivalTotal;\n        }\n        if(prev){c.fillStyle=v.color;c.beginPath();c.arc(x(prev[1]),y(prev[2]),2,0,Math.PI*2);c.fill();}\n      }\n      c.restore();\n      if(!total){c.fillStyle='#aebecb';c.textAlign='center';c.fillText('Sin trades en los últimos 120 segundos',w/2,h/2);}\n      const elapsed=performance.now()-start;\n      if(elapsed>25&&s.fps>2)s.fps=Math.max(2,Math.floor(s.fps/2));\n      else if(elapsed<8&&s.fps<20)s.fps=Math.min(20,s.fps+1);\n    },\n    hover(event) {\n      const s=this.live,g=s.plot;if(!g)return;\n      const px=event.clientX-this.$refs.chart.getBoundingClientRect().left,t=g.cutoff+(px-g.left)/(g.right-g.left)*120000;\n      const tips=[];\n      for(const v of this.feeds){\n        const a=s.feeds[v.key].rows;if(!a.length)continue;\n        let lo=0,hi=a.length;while(lo<hi){const mid=(lo+hi)>>>1;if(a[mid][1]<t)lo=mid+1;else hi=mid;}\n        let k=Math.min(lo,a.length-1);if(k>0&&Math.abs(a[k-1][1]-t)<Math.abs(a[k][1]-t))k--;\n        tips.push(v.label+' · '+this.time(a[k][1])+' · '+a[k][2]);\n      }\n      this.tip=tips.join(' | ');\n    }\n  }\n}\n</script>\n<style>\n.bzlive-card { background:#101821; color:#e2edf5; padding:14px; border-radius:8px; font-family:system-ui,sans-serif; }\n.bzlive-card h3 { font-size:15px; margin:0 0 12px; font-weight:600; }\n.bzlive-metrics { display:flex; gap:28px; flex-wrap:wrap; font-size:12px; color:#aebecb; }\n.bzlive-metrics strong { display:block; color:#fff; font-size:22px; font-variant-numeric:tabular-nums; }\n.bzlive-state { margin:10px 0 4px; font-size:12px; color:#c8d7e3; }\n.bzlive-tip { min-height:20px; font-size:11px; color:#aebecb; }\n.bzlive-card small { font-size:11px; color:#aebecb; }\n</style>\n",
+    "storeOutMessages": false,
+    "passthru": false,
+    "resendOnRefresh": false,
+    "templateScope": "local",
+    "className": "",
+    "x": 950,
+    "y": 140,
+    "wires": [
+      [
+        "a8029f3811ba43c9",
+        "5f7801de203394c7"
+      ]
+    ]
+  },
+  {
+    "id": "85fc86aaa8cf8fe8",
+    "type": "status",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC · Estado conexión",
+    "scope": [
+      "4bdadb82af428a3b"
+    ],
+    "x": 190,
+    "y": 195,
+    "wires": [
+      [
+        "a8029f3811ba43c9"
+      ]
+    ]
+  },
+  {
+    "id": "940a8ae0d9b7feff",
+    "type": "http request",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC · Verificar mercado Binance",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "https://api.binance.com/api/v3/exchangeInfo?symbol=BTCUSDT",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "requestTimeout": "15000",
+    "x": 210,
+    "y": 250,
+    "wires": [
+      [
+        "a8029f3811ba43c9"
+      ]
+    ]
+  },
+  {
+    "id": "28b11157a670d5de",
+    "type": "catch",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC · Fallos de fuente",
+    "scope": [
+      "4bdadb82af428a3b",
+      "940a8ae0d9b7feff"
+    ],
+    "uncaught": false,
+    "x": 210,
+    "y": 305,
+    "wires": [
+      [
+        "a8029f3811ba43c9"
+      ]
+    ]
+  },
+  {
+    "id": "f10ac727ac1a99c4",
+    "type": "ui-group",
+    "name": "ZEC",
+    "page": "1f74d393c0f09613",
+    "width": 12,
+    "height": 1,
+    "order": 2,
+    "showTitle": false,
+    "className": "",
+    "visible": true,
+    "disabled": false,
+    "groupType": "default"
+  },
+  {
+    "id": "04eab09e2202cc64",
+    "type": "websocket-client",
+    "path": "wss://stream.binance.com:9443/ws/zecusdt@trade",
+    "tls": "",
+    "wholemsg": "false",
+    "hb": "",
+    "subprotocol": "",
+    "headers": []
+  },
+  {
+    "id": "a36cf76b8ff48237",
+    "type": "websocket in",
+    "z": "ead59d1fb172c92a",
+    "name": "ZEC · Binance @trade",
+    "server": "",
+    "client": "04eab09e2202cc64",
+    "x": 180,
+    "y": 420,
+    "wires": [
+      [
+        "998c168d9cede13e"
+      ]
+    ]
+  },
+  {
+    "id": "998c168d9cede13e",
+    "type": "function",
+    "z": "ead59d1fb172c92a",
+    "name": "ZEC · Parse + RAM 120 s + trades/s",
+    "func": "if(msg.topic==='live:pull' && msg.payload?.source!=='binance') return null;\n// Function node body. ZECUSDT is replaced when building the import.\n// Private RAM only: not flow/global context, disk, or per-client capture.\nconst symbol = 'ZECUSDT';\nconst now = Date.now();\nif (!globalThis.__btcZecLive) globalThis.__btcZecLive = {\n    epoch: now.toString(36) + Math.random().toString(36).slice(2),\n    rows: new Map(), seq: 0, arrivals: [], arrivalHead: 0,\n    latest: null, lastRx: 0, ws: 'Esperando conexión',\n    market: 'Disponibilidad pendiente de comprobar', invalid: 0,\n    segment: 0, lastId: null, gaps: 0, lastPrune: 0\n};\nconst s = globalThis.__btcZecLive;\n// Only application data messages emitted by the native WebSocket input count as WS messages.\n// Ping/pong frames, HTTP checks, status events, UI requests and purge ticks are excluded.\nif (!s.audit) s.audit = {\n    startMs: now, wsTotal: 0, wsTimes: [], wsHead: 0,\n    tradeMessages: 0, controls: 0, ignored: 0, malformed: 0,\n    rejectedTrades: 0, accepted: 0, retained: 0, expiredOnArrival: 0,\n    samePrice: 0, sameTimestamp: 0, nonIncreasingId: 0,\n    heartbeatLastId: null, heartbeatRx: 0, lastWsRx: 0,\n    lastReject: '', previousPrice: null, previousTimestamp: null,\n    seenTimes: [], seenHead: 0\n};\nconst audit = s.audit;\nconst isWs = msg._session?.type === 'websocket';\nfunction auditPrune() {\n    while (audit.wsHead < audit.wsTimes.length && audit.wsTimes[audit.wsHead] <= now - 1000) audit.wsHead++;\n    while (audit.seenHead < audit.seenTimes.length && audit.seenTimes[audit.seenHead] <= now - 1000) audit.seenHead++;\n    if (audit.wsHead > 2048 || audit.wsHead === audit.wsTimes.length) {\n        audit.wsTimes = audit.wsTimes.slice(audit.wsHead); audit.wsHead = 0;\n    }\n    if (audit.seenHead > 2048 || audit.seenHead === audit.seenTimes.length) {\n        audit.seenTimes = audit.seenTimes.slice(audit.seenHead); audit.seenHead = 0;\n    }\n}\nauditPrune();\nif (isWs) {\n    audit.wsTotal++;\n    audit.wsTimes.push(now);\n    audit.lastWsRx = now;\n}\nfunction auditSnapshot() {\n    return {\n        startMs: audit.startMs, snapshotMs: now,\n        wsMessagesPerSecond: audit.wsTimes.length - audit.wsHead,\n        tradesInMessagesPerSecond: audit.seenTimes.length - audit.seenHead,\n        capturedTradesPerSecond: s.arrivals.length,\n        wsMessagesTotal: audit.wsTotal, tradeMessagesTotal: audit.tradeMessages,\n        controlMessagesTotal: audit.controls, ignoredMessagesTotal: audit.ignored,\n        malformedMessagesTotal: audit.malformed, rejectedTradesTotal: audit.rejectedTrades,\n        acceptedTradesTotal: audit.accepted, retainedTradesTotal: audit.retained,\n        expiredOnArrivalTotal: audit.expiredOnArrival,\n        capturedTrades2m: s.rows.size,\n        samePriceAcceptedTotal: audit.samePrice, sameTimestampAcceptedTotal: audit.sameTimestamp,\n        nonIncreasingIdTotal: audit.nonIncreasingId,\n        heartbeatLastId: audit.heartbeatLastId, heartbeatRx: audit.heartbeatRx,\n        lastWsRx: audit.lastWsRx, lastReject: audit.lastReject,\n        messageBalance: audit.wsTotal - audit.tradeMessages - audit.controls - audit.ignored - audit.malformed,\n        captureBalance: audit.tradeMessages - audit.accepted - audit.rejectedTrades,\n        retentionBalance: audit.accepted - audit.retained - audit.expiredOnArrival\n    };\n}\n\nfunction prune() {\n    for (const [key, row] of s.rows) if (row[1] < now - 120000) s.rows.delete(key);\n    while (s.arrivalHead < s.arrivals.length && s.arrivals[s.arrivalHead] <= now - 1000) s.arrivalHead++;\n    if (s.arrivalHead) { s.arrivals = s.arrivals.slice(s.arrivalHead); s.arrivalHead = 0; }\n    s.lastPrune = now;\n}\nif (now - s.lastPrune >= 250 || msg.topic === 'live:pull') prune();\nif (msg.status) {\n    const st = msg.status;\n    s.ws = st.event === 'connect' || st.fill === 'green' ? 'Conectado' : 'Desconectado / reconectando';\n    if (s.ws !== 'Conectado') s.segment++;\n    return null;\n}\nif (msg.error) {\n    if (msg.error.source && msg.error.source.type === 'http request') s.market = 'No se pudo verificar el mercado (red/API)';\n    else { s.ws = 'Error WebSocket / reconectando'; s.segment++; }\n    return null;\n}\nif (msg.topic === 'exchange-check') {\n    let body = msg.payload;\n    try { if (typeof body === 'string') body = JSON.parse(body); } catch (_) { body = null; }\n    if (msg.statusCode === 200 && body && Array.isArray(body.symbols)) {\n        const found = body.symbols.find(x => x.symbol === symbol);\n        s.market = !found ? symbol + ' NO DISPONIBLE en Binance' :\n            found.status !== 'TRADING' || found.isSpotTradingAllowed === false ? symbol + ' NO OPERATIVO: ' + found.status :\n            symbol + ' disponible · Binance Spot';\n    } else if (body && body.code === -1121) s.market = symbol + ' NO DISPONIBLE en Binance';\n    else s.market = 'Disponibilidad NO VERIFICADA · HTTP ' + (msg.statusCode || 'error');\n    return null;\n}\nif (msg.topic === 'live:tick') return null;\nif (msg.topic === 'live:pull') {\n    // Only reply to the requesting dashboard client, never broadcast snapshots.\n    if (!msg._client || !msg._client.socketId) return null;\n    const req = msg.payload || {};\n    const first = s.rows.size ? s.rows.keys().next().value : s.seq + 1;\n    const reset = req.epoch !== s.epoch || !Number.isSafeInteger(req.after) || req.after > s.seq;\n    let after = reset ? first - 1 : Math.max(req.after, first - 1);\n    const expiredBeforeRead = !reset && req.after < first - 1;\n    const rows = [];\n    // Bounded transport chunk, not a cap on the capture buffer or a sample.\n    const stop = s.seq;\n    while (after < stop && rows.length < 2000) {\n        const row = s.rows.get(++after);\n        if (row) rows.push([row[0], row[1], Number(row[2]), row[6]]);\n    }\n    return {\n        _client: msg._client,\n        topic: 'live:data',\n        payload: {\n            audit: auditSnapshot(), source:'binance', total:s.seq, lastId:s.lastId, token: req.token, epoch: s.epoch, reset, after,\n            more: after < stop, expiredBeforeRead, now, rows,\n            price: s.latest, tps: s.arrivals.length, points: s.rows.size,\n            lastRx: s.lastRx, ws: s.ws, market: s.market,\n            invalid: s.invalid, gaps: s.gaps\n        }\n    };\n}\n// No non-WS input is parsed as a trade. Maintenance paths have already returned.\nif (!isWs) return null;\nlet trade;\ntry {\n    trade = Buffer.isBuffer(msg.payload) ? JSON.parse(msg.payload.toString()) :\n        typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;\n} catch (_) { s.invalid++; audit.malformed++; audit.lastReject='JSON inválido'; return null; }\n\nif (trade?.e === 'trade' && trade.s === symbol) {\n    audit.tradeMessages++; audit.seenTimes.push(now);\n} else if (trade?.e === 'serverShutdown') { audit.controls++; }\nelse { audit.ignored++; }\n\nif (trade && trade.e === 'serverShutdown') { s.ws = 'Binance anuncia reinicio de conexión'; s.segment++; return null; }\nif (!trade || trade.e !== 'trade' || trade.s !== symbol ||\n    !Number.isSafeInteger(trade.T) || !Number.isSafeInteger(trade.t) ||\n    !(Number(trade.p) > 0) || !Number.isFinite(Number(trade.p)) ||\n    !(Number(trade.q) > 0) || !Number.isFinite(Number(trade.q)) || typeof trade.m !== 'boolean') {\n    s.invalid++;\n    if (trade?.e === 'trade' && trade.s === symbol) {\n        audit.rejectedTrades++; audit.lastReject='Trade con timestamp, ID, precio, cantidad o lado inválido';\n    }\n    return null;\n}\naudit.accepted++;\nif (audit.previousPrice !== null && Number(audit.previousPrice) === Number(trade.p)) audit.samePrice++;\nif (audit.previousTimestamp === trade.T) audit.sameTimestamp++;\nif (s.lastId !== null && trade.t <= s.lastId) audit.nonIncreasingId++;\naudit.previousPrice = trade.p; audit.previousTimestamp = trade.T;\nif (trade.T >= now - 120000) audit.retained++;\nelse audit.expiredOnArrival++;\ns.arrivals.push(now);\ns.lastRx = now;\ns.ws = 'Conectado';\n// Gap detection is informational. No inferred trades, backfill, or signals.\nif (s.lastId !== null && trade.t > s.lastId + 1) { s.gaps++; s.segment++; }\ns.lastId = Math.max(s.lastId === null ? trade.t : s.lastId, trade.t);\ns.latest = trade.p;\n// Sequence keys retain distinct trades with exactly the same timestamp.\n// RAM row: [sequence, tradeTimeMs, rawPrice, rawQuantity, buyerIsMaker, tradeId, segment].\nconst seq = ++s.seq;\nif (trade.T >= now - 120000) s.rows.set(seq, [seq, trade.T, trade.p, trade.q, trade.m, trade.t, s.segment]);\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "globalThis.__btcZecLive = null;",
+    "finalize": "globalThis.__btcZecLive = null;",
+    "libs": [],
+    "x": 540,
+    "y": 420,
+    "wires": [
+      [
+        "e243abee3bed6749"
+      ]
+    ]
+  },
+  {
+    "id": "e243abee3bed6749",
+    "type": "ui-template",
+    "z": "ead59d1fb172c92a",
+    "group": "f10ac727ac1a99c4",
+    "page": "",
+    "ui": "",
+    "name": "ZEC · Binance + GMX · PRECIO LIVE · 2 MIN",
+    "order": 1,
+    "width": 12,
+    "height": 10,
+    "head": "",
+    "format": "<template>\n  <section class=\"bzlive-card\">\n    <h3>ZEC · BINANCE + GMX · PRECIO LIVE · 2 MIN</h3>\n    <div style=\"display:flex;gap:28px;flex-wrap:wrap\">\n      <div v-for=\"v in feeds\" :key=\"v.key\" style=\"flex:1;min-width:260px\">\n        <b :style=\"{color:v.color}\">● {{ v.label }}</b>\n        <div class=\"bzlive-metrics\" style=\"margin-top:8px;gap:20px\">\n          <div>Precio actual <strong>{{ v.price }}</strong></div>\n          <div>{{ v.key==='gmx' ? 'Consultas HTTP' : 'Trades/s' }} <strong>{{ v.tps }}</strong></div>\n          <div>Puntos 2m <strong>{{ v.points }}</strong></div>\n        </div>\n        <div class=\"bzlive-state\">{{ v.state }}</div>\n        <small>Total recibido: {{ v.total }} · {{ v.key==='gmx' ? 'Muestra' : 'Último ID' }}: {{ v.lastId }} · Hace {{ v.age }} ms · {{ v.auditLine }}</small>\n      </div>\n    </div>\n    <p style=\"font-size:11px;color:#aebecb;margin:8px 0\">Precios nativos: Binance en USDT; GMX en USD. GMX: punto medio del rango mínimo–máximo, consultado cada 2 s; no son trades ni un promedio temporal.</p>\n    <canvas ref=\"chart\" @mousemove=\"hover\" @mouseleave=\"tip = ''\" style=\"width:100%;height:280px;display:block\" aria-label=\"Trades ZEC de Binance y GMX en los últimos 120 segundos\"></canvas>\n    <div class=\"bzlive-tip\">{{ tip || 'Tiempo local · HH:mm:ss.SSS · Una línea por exchange' }}</div>\n    <small>{{ detail }}</small>\n  </section>\n</template>\n<script>\nexport default {\n  data() {\n    return { feeds: [\n      {key:'binance',label:'Binance · ZEC/USDT',color:'#55c6be'},\n      {key:'gmx',label:'GMX · ZEC/USD · Oráculo',color:'#b8a1ff'}\n    ].map(v=>({...v,price:'—',tps:'—',points:'—',state:'Esperando Node-RED…',total:'—',lastId:'—',age:'—',auditLine:''})),\n    detail:'',tip:'' }\n  },\n  mounted() {\n    this.live = { active:true, fps:20, lastFrame:0, feeds:{} };\n    for(const v of this.feeds) this.live.feeds[v.key] = {\n      rows:[],epoch:'',after:0,waiting:false,requested:0,token:'',\n      clock:Date.now(),anchor:performance.now(),lastReply:0,received:null,warning:false\n    };\n    this.receiveLive = msg=>this.receive(msg);\n    this.$socket.on('msg-input:'+this.id,this.receiveLive);\n    this.pollTimer=setInterval(()=>this.pull(),50);\n    this.frameTimer=setInterval(()=>this.draw(),50);\n    this.visibilityLive=()=>{\n      for(const f of Object.values(this.live.feeds)) { f.rows=[]; f.epoch=''; f.after=0; f.token=''; f.waiting=false; }\n      if(!document.hidden)this.pull();\n    };\n    document.addEventListener('visibilitychange',this.visibilityLive);\n    this.pull();\n  },\n  unmounted() {\n    this.live.active=false;\n    clearInterval(this.pollTimer); clearInterval(this.frameTimer);\n    this.$socket.off('msg-input:'+this.id,this.receiveLive);\n    document.removeEventListener('visibilitychange',this.visibilityLive);\n    this.live.feeds={};\n  },\n  methods: {\n    pull() {\n      const s=this.live;\n      if(!s?.active || document.hidden || !this.$socket.connected)return;\n      for(const source of Object.keys(s.feeds)) {\n        const f=s.feeds[source];\n        if(f.waiting && performance.now()-f.requested<3000)continue;\n        f.waiting=true;f.requested=performance.now();\n        f.token=this.id+':'+source+':'+Math.random().toString(36).slice(2);\n        this.send({topic:'live:pull',payload:{source,epoch:f.epoch,after:f.after,token:f.token}});\n      }\n    },\n    receive(msg) {\n      const s=this.live,p=msg?.payload,f=s?.feeds[p?.source];\n      if(!s?.active || !f || msg.topic!=='live:data' || p.token!==f.token)return;\n      f.waiting=false;\n      if(p.reset || p.epoch!==f.epoch)f.rows=[];\n      f.epoch=p.epoch;f.after=p.after;f.clock=p.now;f.anchor=performance.now();f.lastReply=f.anchor;\n      f.received={...p,rows:[]};\n      if(p.expiredBeforeRead)f.warning=true;\n      if(!document.hidden)for(const row of p.rows)f.rows.push(row);\n      for(let i=Math.max(1,f.rows.length-p.rows.length);i<f.rows.length;i++) {\n        if(f.rows[i][1]<f.rows[i-1][1]){f.rows.sort((a,b)=>a[1]-b[1] || a[0]-b[0]);break;}\n      }\n      const v=this.feeds.find(v=>v.key===p.source);\n      v.price=p.price==null?'—':Number(p.price).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:8});\n      v.tps=p.source==='gmx'?'cada 2 s':p.tps;v.points=p.points;v.total=p.total;v.lastId=p.lastId??'—';\n    },\n    time(t) {\n      const d=new Date(t), pad=(n,k=2)=>String(n).padStart(k,'0');\n      return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds())+'.'+pad(d.getMilliseconds(),3);\n    },\n    draw() {\n      const s=this.live;\n      if(!s?.active || document.hidden)return;\n      const start=performance.now();\n      if(start-s.lastFrame<1000/s.fps-1)return;\n      s.lastFrame=start;\n      const clocks=Object.values(s.feeds).filter(f=>f.lastReply).sort((a,b)=>b.lastReply-a.lastReply);\n      const now=clocks.length?clocks[0].clock+start-clocks[0].anchor:Date.now(),cutoff=now-120000;\n      const notes=[];\n      let total=0,min=Infinity,max=-Infinity;\n      for(const v of this.feeds) {\n        const f=s.feeds[v.key],p=f.received;\n        let drop=0;while(drop<f.rows.length && f.rows[drop][1]<cutoff)drop++;\n        if(drop)f.rows=f.rows.slice(drop);\n        total+=f.rows.length;\n        for(const row of f.rows)if(row[1]<=now){min=Math.min(min,row[2]);max=Math.max(max,row[2]);}\n        if(!this.$socket.connected || !f.lastReply || start-f.lastReply>3000){\n          v.auditLine='Auditoría sin respuesta';v.state='SIN RESPUESTA DE NODE-RED';v.tps='—';v.points='—';v.age='—';\n        }else{\n          const age=p.lastRx?Math.max(0,Math.floor(now-p.lastRx)):Infinity;\n          v.age=Number.isFinite(age)?age:'—';\n          v.state=p.source==='gmx' ? p.market+' · '+p.ws+((age>10000 || now-p.oracleAt>10000)?' · DATO ATRASADO':'') : p.market+' · '+p.ws+(age>5000?' · SIN TRADES RECIENTES (último precio)':' · LIVE');\n          if(p.more)notes.push(v.key+': cargando pendientes');\n          if(p.gaps)notes.push(v.key+': '+p.gaps+' saltos de ID');\n          if(p.invalid)notes.push(v.key+': '+p.invalid+' mensajes inválidos');\n          if(f.warning)notes.push(v.key+': datos expirados antes de llegar al navegador');\n        }\n      }\n      this.detail=total.toLocaleString()+' puntos en navegador · '+s.fps+' FPS máx.'+(notes.length?' · '+notes.join(' · '):'');\n      const canvas=this.$refs.chart;\n      if(!canvas)return;\n      const w=Math.floor(canvas.clientWidth),h=280,dpr=window.devicePixelRatio||1;\n      if(w<100)return;\n      if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);}\n      const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);\n      c.fillStyle='#101821';c.fillRect(0,0,w,h);\n      const left=82,right=w-12,top=14,bottom=h-34;\n      if(!Number.isFinite(min)){min=0.99;max=1.01;}\n      const pad=Math.max((max-min)*0.08,Math.abs(max)*0.0000001,0.00000001);min-=pad;max+=pad;\n      const x=t=>left+(t-cutoff)/120000*(right-left), y=v=>bottom-(v-min)/(max-min)*(bottom-top);\n      s.plot={left,right,cutoff,now};c.font='11px system-ui';c.lineWidth=1;\n      for(let i=0;i<=4;i++){\n        const yy=top+(bottom-top)*i/4;\n        c.strokeStyle='#273442';c.beginPath();c.moveTo(left,yy);c.lineTo(right,yy);c.stroke();\n        c.fillStyle='#aebecb';c.textAlign='right';\n        if(total)c.fillText((max-(max-min)*i/4).toFixed(Math.min(8,Math.max(2,Math.ceil(-Math.log10(max-min))+2))),left-7,yy+4);\n      }\n      const ticks=w>650?4:2;\n      for(let i=0;i<=ticks;i++){\n        c.fillStyle='#aebecb';c.textAlign=i===0?'left':i===ticks?'right':'center';\n        c.fillText(this.time(cutoff+120000*i/ticks),left+(right-left)*i/ticks,h-11);\n      }\n      c.save();c.beginPath();c.rect(left,top,right-left,bottom-top);c.clip();\n      // Separate paths: no line joins one exchange to the other.\n      for(const v of this.feeds){\n        c.strokeStyle=v.color;c.lineWidth=1.25;c.beginPath();let prev=null;let rendered=0;\n        for(const row of s.feeds[v.key].rows){\n          if(row[1]>now)continue;\n          rendered++;\n          if(!prev || prev[3]!==row[3])c.moveTo(x(row[1]),y(row[2]));\n          else c.lineTo(x(row[1]),y(row[2]));\n          prev=row;\n        }\n        c.stroke();\n        const feed=s.feeds[v.key],a=feed.received?.audit;\n        feed.rendered=rendered;\n        if(v.key==='gmx') v.auditLine='Muestras HTTP en ventana: '+(feed.received?.points??0)+' · Renderizados: '+rendered+' · Sin contador de trades';\n        if(a && this.$socket.connected && start-feed.lastReply<=3000) {\n          v.auditLine='WS msg/s: '+a.wsMessagesPerSecond+' · Trades/s: '+a.tradesInMessagesPerSecond+\n            ' · Capturados 2m: '+a.capturedTrades2m+' · Renderizados: '+rendered+\n            ' · Rechazados: '+a.rejectedTradesTotal+' · Llegaron vencidos: '+a.expiredOnArrivalTotal;\n        }\n        if(prev){c.fillStyle=v.color;c.beginPath();c.arc(x(prev[1]),y(prev[2]),2,0,Math.PI*2);c.fill();}\n      }\n      c.restore();\n      if(!total){c.fillStyle='#aebecb';c.textAlign='center';c.fillText('Sin trades en los últimos 120 segundos',w/2,h/2);}\n      const elapsed=performance.now()-start;\n      if(elapsed>25&&s.fps>2)s.fps=Math.max(2,Math.floor(s.fps/2));\n      else if(elapsed<8&&s.fps<20)s.fps=Math.min(20,s.fps+1);\n    },\n    hover(event) {\n      const s=this.live,g=s.plot;if(!g)return;\n      const px=event.clientX-this.$refs.chart.getBoundingClientRect().left,t=g.cutoff+(px-g.left)/(g.right-g.left)*120000;\n      const tips=[];\n      for(const v of this.feeds){\n        const a=s.feeds[v.key].rows;if(!a.length)continue;\n        let lo=0,hi=a.length;while(lo<hi){const mid=(lo+hi)>>>1;if(a[mid][1]<t)lo=mid+1;else hi=mid;}\n        let k=Math.min(lo,a.length-1);if(k>0&&Math.abs(a[k-1][1]-t)<Math.abs(a[k][1]-t))k--;\n        tips.push(v.label+' · '+this.time(a[k][1])+' · '+a[k][2]);\n      }\n      this.tip=tips.join(' | ');\n    }\n  }\n}\n</script>\n<style>\n.bzlive-card { background:#101821; color:#e2edf5; padding:14px; border-radius:8px; font-family:system-ui,sans-serif; }\n.bzlive-card h3 { font-size:15px; margin:0 0 12px; font-weight:600; }\n.bzlive-metrics { display:flex; gap:28px; flex-wrap:wrap; font-size:12px; color:#aebecb; }\n.bzlive-metrics strong { display:block; color:#fff; font-size:22px; font-variant-numeric:tabular-nums; }\n.bzlive-state { margin:10px 0 4px; font-size:12px; color:#c8d7e3; }\n.bzlive-tip { min-height:20px; font-size:11px; color:#aebecb; }\n.bzlive-card small { font-size:11px; color:#aebecb; }\n</style>\n",
+    "storeOutMessages": false,
+    "passthru": false,
+    "resendOnRefresh": false,
+    "templateScope": "local",
+    "className": "",
+    "x": 950,
+    "y": 420,
+    "wires": [
+      [
+        "998c168d9cede13e",
+        "90a0face00000003"
+      ]
+    ]
+  },
+  {
+    "id": "c619271eef2e356f",
+    "type": "status",
+    "z": "ead59d1fb172c92a",
+    "name": "ZEC · Estado conexión",
+    "scope": [
+      "a36cf76b8ff48237"
+    ],
+    "x": 190,
+    "y": 475,
+    "wires": [
+      [
+        "998c168d9cede13e"
+      ]
+    ]
+  },
+  {
+    "id": "40617ee00c9a1e9c",
+    "type": "http request",
+    "z": "ead59d1fb172c92a",
+    "name": "ZEC · Verificar mercado Binance",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "https://api.binance.com/api/v3/exchangeInfo?symbol=ZECUSDT",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "requestTimeout": "15000",
+    "x": 210,
+    "y": 530,
+    "wires": [
+      [
+        "998c168d9cede13e"
+      ]
+    ]
+  },
+  {
+    "id": "c7b4e85af309d193",
+    "type": "catch",
+    "z": "ead59d1fb172c92a",
+    "name": "ZEC · Fallos de fuente",
+    "scope": [
+      "a36cf76b8ff48237",
+      "40617ee00c9a1e9c"
+    ],
+    "uncaught": false,
+    "x": 210,
+    "y": 585,
+    "wires": [
+      [
+        "998c168d9cede13e"
+      ]
+    ]
+  },
+  {
+    "id": "db375c8d55249dff",
+    "type": "inject",
+    "z": "ead59d1fb172c92a",
+    "name": "Purgar RAM cada 250 ms (no muestrea)",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.25",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.1,
+    "topic": "live:tick",
+    "x": 580,
+    "y": 730,
+    "wires": [
+      [
+        "a8029f3811ba43c9",
+        "998c168d9cede13e",
+        "90a0face00000003"
+      ]
+    ]
+  },
+  {
+    "id": "b2393531e5717d8c",
+    "type": "inject",
+    "z": "ead59d1fb172c92a",
+    "name": "Verificar mercados al iniciar / cada 5 min",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "300",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 1,
+    "topic": "exchange-check",
+    "x": 260,
+    "y": 670,
+    "wires": [
+      [
+        "940a8ae0d9b7feff",
+        "40617ee00c9a1e9c"
+      ]
+    ]
+  },
+  {
+    "id": "4e70c108401f1c5d",
+    "type": "comment",
+    "z": "ead59d1fb172c92a",
+    "name": "FLOW COMPLETO · BTC Binance + Coinbase / ZEC Binance · /btc-zec-live/live",
+    "info": "Archivo único, todo conectado. No requiere ESP32, MQTT ni cables manuales. BTC: Binance BTCUSDT @trade + Coinbase BTC-USD matches. ZEC: Binance ZECUSDT @trade. Cada trade recibido se retiene en RAM 120 s. USD y USDT se muestran por separado, sin conversión. No combinar con los parches anteriores. No modificar CRYPTO LITE V3.",
+    "x": 550,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "9965aeb9360bee46",
+    "type": "websocket-client",
+    "path": "wss://ws-feed.exchange.coinbase.com",
+    "tls": "",
+    "wholemsg": "false",
+    "hb": "20",
+    "subprotocol": "",
+    "headers": []
+  },
+  {
+    "id": "1e384a39c86c6068",
+    "type": "websocket in",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC · Coinbase matches",
+    "server": "",
+    "client": "9965aeb9360bee46",
+    "x": 180,
+    "y": 850,
+    "wires": [
+      [
+        "5f7801de203394c7"
+      ]
+    ]
+  },
+  {
+    "id": "cd5f9ae4254f0736",
+    "type": "websocket out",
+    "z": "ead59d1fb172c92a",
+    "name": "Coinbase · Suscribir",
+    "server": "",
+    "client": "9965aeb9360bee46",
+    "x": 950,
+    "y": 920,
+    "wires": []
+  },
+  {
+    "id": "a00eb47dc23fac56",
+    "type": "status",
+    "z": "ead59d1fb172c92a",
+    "name": "Coinbase · Conexión / reconexión",
+    "scope": [
+      "1e384a39c86c6068"
+    ],
+    "x": 210,
+    "y": 920,
+    "wires": [
+      [
+        "16a8a3e6b662d0ce",
+        "5f7801de203394c7"
+      ]
+    ]
+  },
+  {
+    "id": "16a8a3e6b662d0ce",
+    "type": "function",
+    "z": "ead59d1fb172c92a",
+    "name": "Al conectar → matches BTC-USD",
+    "func": "if (msg.status?.event !== 'connect' && msg.status?.fill !== 'green') return null;\nreturn {payload: JSON.stringify({type:'subscribe',product_ids:['BTC-USD'],channels:['matches','heartbeat']})};",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 570,
+    "y": 920,
+    "wires": [
+      [
+        "cd5f9ae4254f0736"
+      ]
+    ]
+  },
+  {
+    "id": "5f7801de203394c7",
+    "type": "function",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC Coinbase · Parse + RAM 120 s + trades/s",
+    "func": "const source = 'coinbase';\nif (msg.topic === 'live:pull' && msg.payload?.source !== source) return null;\n// Function node body. BTC-USD is replaced when building the import.\n// Private RAM only: not flow/global context, disk, or per-client capture.\nconst symbol = 'BTC-USD';\nconst now = Date.now();\nif (!globalThis.__btcZecLive) globalThis.__btcZecLive = {\n    epoch: now.toString(36) + Math.random().toString(36).slice(2),\n    rows: new Map(), seq: 0, arrivals: [], arrivalHead: 0,\n    latest: null, lastRx: 0, ws: 'Esperando conexión',\n    market: 'Coinbase BTC/USD · esperando suscripción', invalid: 0,\n    segment: 0, lastId: null, gaps: 0, lastPrune: 0\n};\nconst s = globalThis.__btcZecLive;\n// Only application data messages emitted by the native WebSocket input count as WS messages.\n// Ping/pong frames, HTTP checks, status events, UI requests and purge ticks are excluded.\nif (!s.audit) s.audit = {\n    startMs: now, wsTotal: 0, wsTimes: [], wsHead: 0,\n    tradeMessages: 0, controls: 0, ignored: 0, malformed: 0,\n    rejectedTrades: 0, accepted: 0, retained: 0, expiredOnArrival: 0,\n    samePrice: 0, sameTimestamp: 0, nonIncreasingId: 0,\n    heartbeatLastId: null, heartbeatRx: 0, lastWsRx: 0,\n    lastReject: '', previousPrice: null, previousTimestamp: null,\n    seenTimes: [], seenHead: 0\n};\nconst audit = s.audit;\nconst isWs = msg._session?.type === 'websocket';\nfunction auditPrune() {\n    while (audit.wsHead < audit.wsTimes.length && audit.wsTimes[audit.wsHead] <= now - 1000) audit.wsHead++;\n    while (audit.seenHead < audit.seenTimes.length && audit.seenTimes[audit.seenHead] <= now - 1000) audit.seenHead++;\n    if (audit.wsHead > 2048 || audit.wsHead === audit.wsTimes.length) {\n        audit.wsTimes = audit.wsTimes.slice(audit.wsHead); audit.wsHead = 0;\n    }\n    if (audit.seenHead > 2048 || audit.seenHead === audit.seenTimes.length) {\n        audit.seenTimes = audit.seenTimes.slice(audit.seenHead); audit.seenHead = 0;\n    }\n}\nauditPrune();\nif (isWs) {\n    audit.wsTotal++;\n    audit.wsTimes.push(now);\n    audit.lastWsRx = now;\n}\nfunction auditSnapshot() {\n    return {\n        startMs: audit.startMs, snapshotMs: now,\n        wsMessagesPerSecond: audit.wsTimes.length - audit.wsHead,\n        tradesInMessagesPerSecond: audit.seenTimes.length - audit.seenHead,\n        capturedTradesPerSecond: s.arrivals.length,\n        wsMessagesTotal: audit.wsTotal, tradeMessagesTotal: audit.tradeMessages,\n        controlMessagesTotal: audit.controls, ignoredMessagesTotal: audit.ignored,\n        malformedMessagesTotal: audit.malformed, rejectedTradesTotal: audit.rejectedTrades,\n        acceptedTradesTotal: audit.accepted, retainedTradesTotal: audit.retained,\n        expiredOnArrivalTotal: audit.expiredOnArrival,\n        capturedTrades2m: s.rows.size,\n        samePriceAcceptedTotal: audit.samePrice, sameTimestampAcceptedTotal: audit.sameTimestamp,\n        nonIncreasingIdTotal: audit.nonIncreasingId,\n        heartbeatLastId: audit.heartbeatLastId, heartbeatRx: audit.heartbeatRx,\n        lastWsRx: audit.lastWsRx, lastReject: audit.lastReject,\n        messageBalance: audit.wsTotal - audit.tradeMessages - audit.controls - audit.ignored - audit.malformed,\n        captureBalance: audit.tradeMessages - audit.accepted - audit.rejectedTrades,\n        retentionBalance: audit.accepted - audit.retained - audit.expiredOnArrival\n    };\n}\n\nfunction prune() {\n    for (const [key, row] of s.rows) if (row[1] < now - 120000) s.rows.delete(key);\n    while (s.arrivalHead < s.arrivals.length && s.arrivals[s.arrivalHead] <= now - 1000) s.arrivalHead++;\n    if (s.arrivalHead) { s.arrivals = s.arrivals.slice(s.arrivalHead); s.arrivalHead = 0; }\n    s.lastPrune = now;\n}\nif (now - s.lastPrune >= 250 || msg.topic === 'live:pull') prune();\nif (msg.status) {\n    const st = msg.status;\n    s.ws = st.event === 'connect' || st.fill === 'green' ? 'Conectado' : 'Desconectado / reconectando';\n    if (s.ws !== 'Conectado') s.segment++;\n    return null;\n}\nif (msg.error) {\n    if (msg.error.source && msg.error.source.type === 'http request') s.market = 'No se pudo verificar el mercado (red/API)';\n    else { s.ws = 'Error WebSocket / reconectando'; s.segment++; }\n    return null;\n}\nif (msg.topic === 'exchange-check') {\n    let body = msg.payload;\n    try { if (typeof body === 'string') body = JSON.parse(body); } catch (_) { body = null; }\n    if (msg.statusCode === 200 && body && Array.isArray(body.symbols)) {\n        const found = body.symbols.find(x => x.symbol === symbol);\n        s.market = !found ? symbol + ' NO DISPONIBLE en Binance' :\n            found.status !== 'TRADING' || found.isSpotTradingAllowed === false ? symbol + ' NO OPERATIVO: ' + found.status :\n            symbol + ' disponible · Binance Spot';\n    } else if (body && body.code === -1121) s.market = symbol + ' NO DISPONIBLE en Binance';\n    else s.market = 'Disponibilidad NO VERIFICADA · HTTP ' + (msg.statusCode || 'error');\n    return null;\n}\nif (msg.topic === 'live:tick') return null;\nif (msg.topic === 'live:pull') {\n    // Only reply to the requesting dashboard client, never broadcast snapshots.\n    if (!msg._client || !msg._client.socketId) return null;\n    const req = msg.payload || {};\n    const first = s.rows.size ? s.rows.keys().next().value : s.seq + 1;\n    const reset = req.epoch !== s.epoch || !Number.isSafeInteger(req.after) || req.after > s.seq;\n    let after = reset ? first - 1 : Math.max(req.after, first - 1);\n    const expiredBeforeRead = !reset && req.after < first - 1;\n    const rows = [];\n    // Bounded transport chunk, not a cap on the capture buffer or a sample.\n    const stop = s.seq;\n    while (after < stop && rows.length < 2000) {\n        const row = s.rows.get(++after);\n        if (row) rows.push([row[0], row[1], Number(row[2]), row[6]]);\n    }\n    return {\n        _client: msg._client,\n        topic: 'live:data',\n        payload: {\n            source, total: s.seq, lastId: s.lastId, audit: auditSnapshot(), token: req.token, epoch: s.epoch, reset, after,\n            more: after < stop, expiredBeforeRead, now, rows,\n            price: s.latest, tps: s.arrivals.length, points: s.rows.size,\n            lastRx: s.lastRx, ws: s.ws, market: s.market,\n            invalid: s.invalid, gaps: s.gaps\n        }\n    };\n}\n// No non-WS input is parsed as a trade. Maintenance paths have already returned.\nif (!isWs) return null;\nlet trade;\ntry {\n    trade = Buffer.isBuffer(msg.payload) ? JSON.parse(msg.payload.toString()) :\n        typeof msg.payload === 'string' ? JSON.parse(msg.payload) : msg.payload;\n} catch (_) { s.invalid++; audit.malformed++; audit.lastReject='JSON inválido'; return null; }\n\nif (trade?.type === 'match' && trade.product_id === 'BTC-USD') {\n    audit.tradeMessages++; audit.seenTimes.push(now);\n} else if (['heartbeat','subscriptions','last_match','error'].includes(trade?.type)) {\n    audit.controls++;\n    if (trade.type === 'heartbeat') { audit.heartbeatLastId = trade.last_trade_id ?? null; audit.heartbeatRx = now; }\n} else { audit.ignored++; }\n\n// Coinbase control messages are never counted as trades.\nif (trade?.type === 'error') {\n    s.market = 'Coinbase ERROR: ' + String(trade.message || 'suscripción rechazada').slice(0,180);\n    s.segment++;\n    return null;\n}\nif (trade?.type === 'subscriptions') {\n    const ok = Array.isArray(trade.channels) && trade.channels.some(c => c.name === 'matches' && c.product_ids?.includes('BTC-USD'));\n    s.market = ok ? 'Coinbase BTC/USD · matches suscrito' : 'Coinbase: suscripción matches NO confirmada';\n    return null;\n}\nif (trade?.type === 'heartbeat' || trade?.type === 'last_match') return null;\nif (trade?.type !== 'match' || trade.product_id !== 'BTC-USD') { s.invalid++; return null; }\n// Date.parse alone truncates fractional milliseconds. Retain the remaining fraction.\nconst rawTime = trade.time;\nconst fraction = typeof rawTime === 'string' && rawTime.match(/\\.(\\d+)Z$/);\nconst timeMs = Date.parse(rawTime) + (fraction ? Number('0.' + fraction[1]) * 1000 % 1 : 0);\nif (trade.side !== 'buy' && trade.side !== 'sell') { s.invalid++; audit.rejectedTrades++; audit.lastReject='match.side inválido'; return null; }\ntrade = {\n    e: 'trade', s: 'BTC-USD', T: timeMs, t: trade.trade_id,\n    p: trade.price, q: trade.size,\n    m: trade.side === 'buy', // Coinbase match.side is the maker side.\n    rawTime\n};\n\nif (trade && trade.e === 'serverShutdown') { s.ws = 'Binance anuncia reinicio de conexión'; s.segment++; return null; }\nif (!trade || trade.e !== 'trade' || trade.s !== symbol ||\n    !Number.isFinite(trade.T) || !Number.isSafeInteger(trade.t) ||\n    !(Number(trade.p) > 0) || !Number.isFinite(Number(trade.p)) ||\n    !(Number(trade.q) > 0) || !Number.isFinite(Number(trade.q)) || typeof trade.m !== 'boolean') {\n    s.invalid++;\n    if (trade?.e === 'trade' && trade.s === symbol) {\n        audit.rejectedTrades++; audit.lastReject='Trade con timestamp, ID, precio, cantidad o lado inválido';\n    }\n    return null;\n}\naudit.accepted++;\nif (audit.previousPrice !== null && Number(audit.previousPrice) === Number(trade.p)) audit.samePrice++;\nif (audit.previousTimestamp === trade.T) audit.sameTimestamp++;\nif (s.lastId !== null && trade.t <= s.lastId) audit.nonIncreasingId++;\naudit.previousPrice = trade.p; audit.previousTimestamp = trade.T;\nif (trade.T >= now - 120000) audit.retained++;\nelse audit.expiredOnArrival++;\ns.arrivals.push(now);\ns.lastRx = now;\ns.ws = 'Conectado';\n// Gap detection is informational. No inferred trades, backfill, or signals.\nif (s.lastId !== null && trade.t > s.lastId + 1) { s.gaps++; s.segment++; }\ns.lastId = Math.max(s.lastId === null ? trade.t : s.lastId, trade.t);\ns.latest = trade.p;\n// Sequence keys retain distinct trades with exactly the same timestamp.\n// RAM row: [sequence, tradeTimeMs, rawPrice, rawQuantity, buyerIsMaker, tradeId, segment].\nconst seq = ++s.seq;\nif (trade.T >= now - 120000) s.rows.set(seq, [seq, trade.T, trade.p, trade.q, trade.m, trade.t, s.segment, trade.rawTime]);\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "globalThis.__btcZecLive = null;",
+    "finalize": "globalThis.__btcZecLive = null;",
+    "libs": [],
+    "x": 570,
+    "y": 850,
+    "wires": [
+      [
+        "e37d00df70ee266e"
+      ]
+    ]
+  },
+  {
+    "id": "4b20298b207db2ea",
+    "type": "inject",
+    "z": "ead59d1fb172c92a",
+    "name": "Coinbase · Purgar RAM 250 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.25",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 0.1,
+    "topic": "live:tick",
+    "x": 200,
+    "y": 990,
+    "wires": [
+      [
+        "5f7801de203394c7"
+      ]
+    ]
+  },
+  {
+    "id": "956c2fb654912d8b",
+    "type": "catch",
+    "z": "ead59d1fb172c92a",
+    "name": "Coinbase · Error de fuente",
+    "scope": [
+      "1e384a39c86c6068",
+      "cd5f9ae4254f0736"
+    ],
+    "uncaught": false,
+    "x": 560,
+    "y": 990,
+    "wires": [
+      [
+        "5f7801de203394c7"
+      ]
+    ]
+  },
+  {
+    "id": "a1c03a63b92de4fc",
+    "type": "comment",
+    "z": "ead59d1fb172c92a",
+    "name": "BTC: amarillo Binance USDT / azul Coinbase USD · fuentes directas",
+    "info": "Archivo único, todo conectado. No requiere ESP32, MQTT ni cables manuales. BTC: Binance BTCUSDT @trade + Coinbase BTC-USD matches. ZEC: Binance ZECUSDT @trade. Cada trade recibido se retiene en RAM 120 s. USD y USDT se muestran por separado, sin conversión. No combinar con los parches anteriores. No modificar CRYPTO LITE V3.",
+    "x": 570,
+    "y": 1060,
+    "wires": []
+  },
+  {
+    "id": "90a0face00000001",
+    "type": "inject",
+    "z": "ead59d1fb172c92a",
+    "name": "GMX · Cotización ZEC cada 2 s",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "topic": "gmx:fetch",
+    "repeat": "2",
+    "once": true,
+    "onceDelay": 1,
+    "crontab": "",
+    "x": 220,
+    "y": 1180,
+    "wires": [
+      [
+        "90a0face00000002"
+      ]
+    ]
+  },
+  {
+    "id": "90a0face00000002",
+    "type": "http request",
+    "z": "ead59d1fb172c92a",
+    "name": "GMX Arbitrum · precios de oráculo",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "https://arbitrum-api.gmxinfra.io/prices/tickers",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "requestTimeout": "1800",
+    "x": 550,
+    "y": 1180,
+    "wires": [
+      [
+        "90a0face00000003"
+      ]
+    ]
+  },
+  {
+    "id": "90a0face00000003",
+    "type": "function",
+    "z": "ead59d1fb172c92a",
+    "name": "GMX · ZEC/USD · Oráculo + RAM 120 s",
+    "func": "const clock=Date.now();\nif(!globalThis.gmxHistory) globalThis.gmxHistory={epoch:Math.random().toString(36),seq:0,rows:[],segment:0,previousAt:0};\nconst h=globalThis.gmxHistory;\nh.rows=h.rows.filter(r=>r[1]>=clock-120000);\nif(msg.topic==='live:tick') return null;\nif(msg.topic==='live:pull') {\n    if(msg.payload?.source!=='gmx'||!msg._client?.socketId)return null;\n    const req=msg.payload,q=globalThis.gmxQuote||{},reset=req.epoch!==h.epoch||!Number.isSafeInteger(req.after)||req.after>h.seq;\n    const first=h.rows.length?Math.min(...h.rows.map(r=>r[0])):h.seq+1;\n    const after=reset?0:req.after;\n    return {_client:msg._client,topic:'live:data',payload:{source:'gmx',token:req.token,epoch:h.epoch,reset,after:h.seq,\n        more:false,expiredBeforeRead:!reset&&after<first-1,now:clock,rows:h.rows.filter(r=>r[0]>after),\n        price:q.rawMin?(Number(q.rawMin)/1e22+Number(q.rawMax)/1e22)/2:null,\n        tps:null,points:h.rows.length,total:h.seq,lastId:h.seq,lastRx:q.rx||0,oracleAt:q.at||0,\n        market:'GMX Arbitrum · ZEC/USD · HTTP cada 2 s',ws:q.status||'Esperando GMX',invalid:0,gaps:0}};\n}\nif(msg.topic!=='gmx:fetch'&&!msg.error)return null;\nconst result=(function(msg,node){\n// ZEC synthetic, Arbitrum /tokens: decimals=8. Contract-unit prices / 10^(30-8).\n// Preserve the API's min/max range; no invented last-trade price or temporal average.\nconst now=Date.now();\nif(!globalThis.gmxQuote) globalThis.gmxQuote={status:'Esperando GMX…',rx:0,at:0};\nlet s=globalThis.gmxQuote;\nif(msg.topic==='gmx:pull') {\n    if(!msg._client?.socketId) return null;\n    const p={...s};\n    if(p.rx && (now-p.rx>10000 || now-p.at>10000)) p.status='DATO ATRASADO · última cotización';\n    return {_client:msg._client,topic:'gmx:quote',payload:p};\n}\nif(msg.topic!=='gmx:fetch' && !msg.error) return null;\ntry {\n    if(msg.error) throw Error(msg.error.message||'Fallo de red');\n    if(Number(msg.statusCode)!==200) throw Error('HTTP '+msg.statusCode);\n    let rows=msg.payload;\n    if(typeof rows==='string') rows=JSON.parse(rows);\n    if(!Array.isArray(rows)) throw Error('Formato de respuesta desconocido');\n    const t=rows.find(x=>x.tokenSymbol==='ZEC'&&x.tokenAddress?.toLowerCase()==='0x6eabbaa3278556dc5b19c034dc26c0eab60d65b5');\n    if(!t) throw Error('ZEC no disponible en GMX Arbitrum');\n    if(!/^\\d+$/.test(t.minPrice)||!/^\\d+$/.test(t.maxPrice)) throw Error('Precio inválido');\n    const lo=BigInt(t.minPrice),hi=BigInt(t.maxPrice);\n    if(lo<=0n||hi<lo) throw Error('Rango inválido');\n    const at=Number(t.timestamp)*1000;\n    if(!Number.isFinite(at)||at<=0||at>now+10000) throw Error('Timestamp inválido');\n    function decimal(v) {\n        const text=v.toString().padStart(23,'0');\n        return text.slice(0,-22)+'.'+text.slice(-22,-16);\n    }\n    s={min:decimal(lo),max:decimal(hi),rawMin:t.minPrice,rawMax:t.maxPrice,rx:now,at,\n        status:now-at>10000?'DATO ATRASADO · última cotización':'HTTP OK · '+new Date(at).toISOString()};\n    globalThis.gmxQuote=s;\n    node.status({fill:now-at>10000?'yellow':'green',shape:'dot',text:'ZEC '+s.min+' – '+s.max+' USD'});\n} catch(e) {\n    s.status='ERROR GMX: '+e.message+' · última cotización disponible';\n    node.status({fill:'red',shape:'ring',text:e.message});\n}\nreturn {topic:'gmx:quote',payload:{...s}};\n\n})(msg,node);\nconst q=result?.payload;\nif(q?.rawMin && !q.status.startsWith('ERROR')) {\n    // One observation per successful HTTP response, including repeated prices/timestamps.\n    // Exchange oracle timestamp, not an invented trade timestamp. Errors break the path.\n    if(h.previousAt && (q.at-h.previousAt>10000 || q.at<h.previousAt))h.segment++;\n    h.previousAt=q.at;\n    const row=[++h.seq,q.at,(Number(q.rawMin)/1e22+Number(q.rawMax)/1e22)/2,h.segment];\n    if(q.at>=clock-120000)h.rows.push(row);\n    h.rows.sort((a,b)=>a[1]-b[1]||a[0]-b[0]);\n} else h.segment++;\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 940,
+    "y": 1180,
+    "wires": [
+      [
+        "e243abee3bed6749"
+      ]
+    ]
+  },
+  {
+    "id": "90a0face00000004",
+    "type": "catch",
+    "z": "ead59d1fb172c92a",
+    "name": "GMX · Error HTTP",
+    "scope": [
+      "90a0face00000002"
+    ],
+    "uncaught": false,
+    "x": 550,
+    "y": 1240,
+    "wires": [
+      [
+        "90a0face00000003"
+      ]
+    ]
+  }
+]
