@@ -1,4 +1,19 @@
-# PRRR Market Data — Etapa 1 / 1b / 1c
+# PRRR Market Data — Etapas 1 → 2
+
+**Versión actual: `prrr-market-data-stage2.json`** (generador `tools/build-prrr-stage2.js`). Contiene la etapa 1c intacta más el módulo de la etapa 2. Al importar, elegir **Replace**.
+
+## Etapa 2 — Normalizador temporal 1 s + memoria 30 min
+```
+MD STREAM (RAW, intacto) ─→ NORMALIZADOR 1 s ─→ MEMORIA 1 s (RAM, 1800 × 4) ─→ BUCKETS 1s → (persistencia / indicadores futuros)
+                                                                           └→ vista MEMORIA / NORMALIZADOR
+```
+* **Reloj común:** `local_receive_timestamp` (el reloj de la notebook). Todos los activos se alinean en los mismos segundos exactos `[t, t+1000)`. Un segundo se cierra 500 ms después de terminar, como margen para la cola interna. Un trade que llega después del cierre se cuenta como **tardío**; nunca se mueve a otro segundo.
+* **Bucket** (una fila plana por activo y segundo): `t, open, high, low, close, trades, events, vol_usd, buy_usd, sell_usd, delta_usd, unknown_side_usd, exchanges, sources, spot_trades, perp_trades, synthetic, status`.
+* **Lado sin determinar:** suma a `vol_usd` y `unknown_side_usd`, nunca a BUY ni SELL.
+* **Segundo sin trades:** OHLC = último precio conocido, contadores en 0, `synthetic: true` y `status: "no_trade"`. Si todavía no hubo ningún precio, `status: "no_price"` y OHLC en `null`.
+* **Memoria:** `global.get('md_mem_1s','memory').series[SYM] = { size:1800, buf, idx, count }`, un buffer circular que nunca crece.
+* **Único cambio a la etapa 1c:** el link out `MD STREAM →` suma un destino (el normalizador). Adquisición, core y visualización quedan igual.
+
 
 **Versión actual: `prrr-market-data-stage1c.json`** (generador `tools/build-prrr-stage1c.js`). Conserva todos los IDs de nodo de 1b: al importar, elegir **Replace**.
 
