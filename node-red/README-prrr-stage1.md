@@ -1,6 +1,16 @@
 # PRRR Market Data — Etapas 1 → 2
 
-**Versión actual: `prrr-market-data-stage2.json`** (generador `tools/build-prrr-stage2.js`). Contiene la etapa 1c intacta más el módulo de la etapa 2. Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage2b.json`** (generador `tools/build-prrr-stage2.js`). Es la etapa 2 más la autoescala dinámica del eje Y. Al importar, elegir **Replace**.
+
+## 2b — Autoescala dinámica del eje Y (sólo presentación)
+* **Escala:** min/max de los puntos **visibles** en la ventana de 5 min, tomando sólo las series con datos actuales, más 10% de padding.
+* **Series stale** (último trade hace más de 60 s): se dibujan atenuadas, con "(stale)" en la leyenda, y no definen la escala.
+* **Cambios de escala:** expansión inmediata si aparece un precio fuera de rango. Cuando un extremo viejo sale de la ventana, la escala se contrae suavemente (exponencial, τ = 1,5 s).
+* **Rango mínimo:** 0,002% del precio (BTC ≈ 1,2 USD), para que un precio quieto no genere una escala degenerada.
+* **Alcance:** cambian sólo los 6 `ui_template` de gráficos. RAW, core, buckets y memoria quedan idénticos.
+
+
+**Etapa 2: `prrr-market-data-stage2.json`**. Contiene la etapa 1c intacta más el módulo de la etapa 2.
 
 ## Etapa 2 — Normalizador temporal 1 s + memoria 30 min
 ```

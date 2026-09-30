@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Genera node-red/prrr-market-data-stage2.json (flow importable en Node-RED).
+// Genera node-red/prrr-market-data-stage2b.json (flow importable en Node-RED).
+// 2b = etapa 2 + autoescala dinámica del eje Y en los gráficos canvas (sólo presentación).
 // Etapa 2 = etapa 1c intacta + NORMALIZADOR TEMPORAL 1 s + MEMORIA 30 min (módulo aditivo).
 // Etapa 1c = 1b + más fuentes reales para GMX/XMR (perpetuos, Bitget, Hyperliquid) + dashboard 2×2.
 // Mismos IDs que las etapas anteriores: al importar elegir "Replace".
@@ -1052,7 +1053,11 @@ const SRC_COLORS = {
   TOTAL: '#1f77b4', BTC: '#ff7f0e', ZEC: '#2ca02c', GMX: '#d62728', XMR: '#9467bd',
 };
 function chartTpl(domId, opts) {
-  const cfg = Object.assign({ windowMs: 300000, maxPts: 1500, step: true, ymin0: false, title: '' }, opts);
+  const cfg = Object.assign({ windowMs: 300000, maxPts: 1500, step: true, ymin0: false, title: '',
+    staleMs: 60000,     // serie sin trades hace más de esto: no define la escala (se dibuja atenuada)
+    padPct: 0.10,       // padding arriba y abajo
+    shrinkMs: 1500      // constante de tiempo de la contracción suave (la expansión es inmediata)
+  }, opts);
   return `<style>
 #${domId}{position:relative;width:100%;height:100%;display:flex;flex-direction:column}
 #${domId} .lg{font:11px monospace;line-height:1.3;min-height:15px}
@@ -1066,7 +1071,7 @@ function chartTpl(domId, opts) {
 (function (scope) {
   var ID = ${JSON.stringify(domId)}, CFG = ${JSON.stringify(cfg)}, COL = ${JSON.stringify(SRC_COLORS)};
   var EXTRA = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
-  var st = { s: {}, order: [], now: 0, raf: 0 };
+  var st = { s: {}, order: [], now: 0, raf: 0, yLo: null, yHi: null, lastDraw: 0, staleKey: '' };
   function root() { return document.getElementById(ID); }
   function color(name) { return COL[name] || EXTRA[st.order.indexOf(name) % EXTRA.length]; }
   function sched() { if (!st.raf) st.raf = requestAnimationFrame(draw); }
@@ -1075,7 +1080,8 @@ function chartTpl(domId, opts) {
   function legend() {
     var r = root(); if (!r) return;
     var h = '';
-    st.order.forEach(function (n) { h += '<span><i style="background:' + color(n) + '"></i>' + n + '</span>'; });
+    var sl = st.staleKey ? st.staleKey.split(',') : [];
+    st.order.forEach(function (n) { var sv = sl.indexOf(n) >= 0; h += '<span' + (sv ? ' style="opacity:.45" title="sin trades recientes: no define la escala"' : '') + '><i style="background:' + color(n) + '"></i>' + n + (sv ? ' (stale)' : '') + '</span>'; });
     r.querySelector('.lg').innerHTML = h || (CFG.title ? '' : '<span>esperando trades…</span>');
   }
   function draw() {
@@ -1088,19 +1094,41 @@ function chartTpl(domId, opts) {
     var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
     var fg = getComputedStyle(r).color || '#888';
     var tmax = st.now || Date.now(), tmin = tmax - CFG.windowMs;
-    var lo = Infinity, hi = -Infinity;
+    // --- Autoescala Y (sólo presentación): min/max de los datos VISIBLES de series con datos actuales ---
+    var lo = Infinity, hi = -Infinity, alo = Infinity, ahi = -Infinity, stale = {};
     st.order.forEach(function (n) {
       var d = st.s[n];
-      var k = 0; while (k < d.length - 1 && d[k + 1][0] < tmin) k++;   // conserva 1 punto previo a la ventana (continuidad del escalón)
+      var k = 0; while (k < d.length && d[k][0] < tmin) k++;           // lo que salió de la ventana deja de existir para la vista
       if (k > 0) d.splice(0, k);
-      for (var i = 0; i < d.length; i++) { var y = d[i][1]; if (y < lo) lo = y; if (y > hi) hi = y; }
+      if (!d.length) return;
+      var fresh = tmax - d[d.length - 1][0] <= CFG.staleMs;
+      if (!fresh) stale[n] = true;
+      for (var i = 0; i < d.length; i++) {
+        var y = d[i][1];
+        if (y < alo) alo = y; if (y > ahi) ahi = y;
+        if (fresh) { if (y < lo) lo = y; if (y > hi) hi = y; }
+      }
     });
+    if (!isFinite(lo)) { lo = alo; hi = ahi; }                        // todas stale: usar igualmente lo visible
+    var sk = Object.keys(stale).sort().join(','); if (sk !== st.staleKey) { st.staleKey = sk; legend(); }
     var L = 62, R = 8, T = 6, B = 18, pw = W - L - R, ph = H - T - B;
     g.font = '10px monospace'; g.fillStyle = fg; g.strokeStyle = fg;
-    if (!isFinite(lo)) { g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 14); g.globalAlpha = 1; return; }
+    if (!isFinite(lo)) { st.yLo = st.yHi = null; g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 14); g.globalAlpha = 1; return; }
     if (CFG.ymin0) lo = Math.min(0, lo);
-    if (hi - lo < Math.abs(hi) * 1e-4 || hi === lo) { var c = (hi + lo) / 2, e = Math.max(Math.abs(c) * 5e-4, 1e-6); lo = c - e; hi = c + e; }
-    var pad = (hi - lo) * 0.06; lo -= CFG.ymin0 && lo >= 0 ? 0 : pad; hi += pad;
+    var ctr = (hi + lo) / 2, minSpan = CFG.ymin0 ? 1 : Math.max(Math.abs(ctr) * 2e-5, 1e-9);   // p.ej. BTC 60000 → rango mínimo 1.2 USD
+    if (hi - lo < minSpan) { lo = ctr - minSpan / 2; hi = ctr + minSpan / 2; if (CFG.ymin0 && lo < 0 && ahi >= 0) { hi -= lo; lo = 0; } }
+    var pad = (hi - lo) * CFG.padPct;
+    var tLo = CFG.ymin0 && lo >= 0 ? lo : lo - pad, tHi = hi + pad;
+    // expandir inmediatamente; contraer suave (exponencial) cuando un extremo viejo sale de la ventana
+    var nowMs = (window.performance && performance.now()) || Date.now();
+    var dt = st.lastDraw ? Math.min(nowMs - st.lastDraw, 1000) : 1000; st.lastDraw = nowMs;
+    var a = 1 - Math.exp(-dt / CFG.shrinkMs);
+    if (st.yLo === null || tLo < st.yLo) st.yLo = tLo; else st.yLo += (tLo - st.yLo) * a;
+    if (st.yHi === null || tHi > st.yHi) st.yHi = tHi; else st.yHi += (tHi - st.yHi) * a;
+    var eps = (tHi - tLo) * 0.002;
+    var animating = Math.abs(st.yLo - tLo) > eps || Math.abs(st.yHi - tHi) > eps;
+    if (!animating) { st.yLo = tLo; st.yHi = tHi; }
+    lo = st.yLo; hi = st.yHi;
     var X = function (t) { return L + (t - tmin) / (tmax - tmin) * pw; }, Y = function (v) { return T + (hi - v) / (hi - lo) * ph; };
     g.globalAlpha = .18; g.lineWidth = 1; g.beginPath();
     for (var q = 0; q <= 4; q++) { var yy = T + ph * q / 4; g.moveTo(L, yy); g.lineTo(L + pw, yy); }
@@ -1112,6 +1140,7 @@ function chartTpl(domId, opts) {
     g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();
     st.order.forEach(function (n) {
       var d = st.s[n]; if (!d.length) return;
+      g.globalAlpha = stale[n] ? 0.35 : 1;                              // stale: se ve, pero no define la escala
       g.strokeStyle = color(n); g.fillStyle = color(n); g.beginPath();
       var px = X(d[0][0]), py = Y(d[0][1]); g.moveTo(px, py);
       for (var i = 1; i < d.length; i++) {
@@ -1122,12 +1151,13 @@ function chartTpl(domId, opts) {
       g.stroke();
       g.beginPath(); g.arc(px, py, 2.2, 0, 6.283); g.fill();          // último dato real (sin extender el precio hacia adelante)
     });
-    g.restore();
+    g.restore(); g.globalAlpha = 1;
+    if (animating) sched();                                             // sigue contrayendo cuadro a cuadro hasta converger
   }
   scope.$watch('msg', function (m) {
     if (!m || !m.payload) return;
     var p = m.payload;
-    if (p.reset) { st.s = {}; st.order = []; legend(); }
+    if (p.reset) { st.s = {}; st.order = []; st.yLo = st.yHi = null; st.staleKey = ''; legend(); }
     if (p.now) st.now = p.now;
     var pts = p.pts || [], newSeries = false;
     for (var i = 0; i < pts.length; i++) {
@@ -1608,6 +1638,6 @@ for (const g of editorGroups) {
 const all = [...nodes.filter((n) => n.type === 'subflow' || n.z === SF), ...nodes.filter((n) => n.type === 'tab'), ...editorGroups,
   ...nodes.filter((n) => n.type !== 'subflow' && n.z !== SF && n.type !== 'tab')];
 
-const outFile = path.join(__dirname, '..', 'prrr-market-data-stage2.json');
+const outFile = path.join(__dirname, '..', 'prrr-market-data-stage2b.json');
 fs.writeFileSync(outFile, JSON.stringify(all, null, 2) + '\n');
 console.log('OK', all.length, 'nodos ->', outFile);
