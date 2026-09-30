@@ -1,6 +1,16 @@
 # PRRR Market Data — Etapas 1 → 2
 
-**Versión actual: `prrr-market-data-stage2c.json`** (generador `tools/build-prrr-stage2c.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage2d.json`** (generador `tools/build-prrr-stage2d.js`). Al importar, elegir **Replace**.
+
+## 2d — MERCADO a pantalla completa (sólo layout)
+* **Capa fija:** MERCADO es una capa `position: fixed` de `left:0` a `right:0` (100vw), debajo de la barra superior. Tiene `display:grid; grid-template-columns: repeat(4, minmax(0,1fr))`.
+  * No depende de clases ni del ancho de los grupos del Dashboard. Ningún contenedor padre puede limitar su ancho, y tapa cualquier otro grupo que hubiera en la pestaña.
+* **Columna:** cada una contiene nombre + precio, datos compactos, chart de precio (72 %) y Δ BUY−SELL USD (28 %).
+* **Medido en 1920×1080 con Edge 67 %** (viewport 2866×1350): la grilla ocupa 0 → 2866 px y cada columna mide 707 px. Los 4 charts de precio miden 689×778 y los 4 Δ 689×287.
+* **Sin cambios:** backend y DIAGNÓSTICO.
+
+
+**2c: `prrr-market-data-stage2c.json`** (generador `tools/build-prrr-stage2c.js`).
 
 ## 2c — Pestañas MERCADO y DIAGNÓSTICO (sólo presentación)
 * **MERCADO**: diseñada para 1920×1080 con Edge al 67 %, que da un viewport CSS de ≈ 2866×1350.
