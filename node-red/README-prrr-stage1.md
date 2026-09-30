@@ -1,6 +1,21 @@
 # PRRR Market Data — Etapas 1 → 2
 
-**Versión actual: `prrr-market-data-stage2b.json`** (generador `tools/build-prrr-stage2.js`). Es la etapa 2 más la autoescala dinámica del eje Y. Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage2c.json`** (generador `tools/build-prrr-stage2c.js`). Al importar, elegir **Replace**.
+
+## 2c — Pestañas MERCADO y DIAGNÓSTICO (sólo presentación)
+* **MERCADO**: diseñada para 1920×1080 con Edge al 67 %, que da un viewport CSS de ≈ 2866×1350.
+  * Un único widget con grilla CSS propia de 4 columnas iguales (`repeat(4, minmax(0,1fr))`), que nunca hace wrap. Ocupa el 100 % del ancho y del alto visibles.
+  * **Fila 1:** BTC | ZEC | GMX | XMR. Cada columna tiene nombre, precio, último trade (fuente, BUY/SELL, edad, ev/s, trades/min), exchanges compactos y el chart PRRR de precio con autoescala Y.
+  * **Fila 2:** Δ BUY−SELL USD · 60 s por activo.
+  * Medido en ese escenario: los 4 charts de precio miden 687×706 px CSS y los 4 deltas 687×348, sin scroll horizontal.
+  * Un multiplexor junta los mensajes de cada ciclo de render en 1 solo envío al navegador.
+* **DIAGNÓSTICO**: es la pestaña anterior, con throughput/frescura, mercados, controles, métricas técnicas y la tabla de la memoria.
+* **Nodos convertidos:** los viejos widgets de precio, tarjeta y delta pasaron a ser nodos `change` que etiquetan mensajes para MERCADO, con los mismos IDs.
+* **Grupos que quedan huérfanos al importar con Replace:** `prrr_ui_g_zec`, `prrr_ui_g_gmx` y `prrr_ui_g_xmr` quedan como config nodes sin uso (no se muestran). Se pueden borrar desde el panel de configuración de Node-RED.
+* **Sin cambios:** backend, RAW, core, buckets, memoria y cálculo del delta.
+
+
+**2b: `prrr-market-data-stage2b.json`** (generador `tools/build-prrr-stage2.js`).
 
 ## 2b — Autoescala dinámica del eje Y (sólo presentación)
 * **Escala:** min/max de los puntos **visibles** en la ventana de 5 min, tomando sólo las series con datos actuales, más 10% de padding.
