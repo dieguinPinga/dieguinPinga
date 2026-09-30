@@ -1,0 +1,4096 @@
+[
+  {
+    "id": "prrr_sf_wsconn",
+    "type": "subflow",
+    "name": "PRRR WS Connector",
+    "info": "Cliente WebSocket genérico con reconexión (backoff exponencial 1s→30s), watchdog de datos viejos (STALE_MS), ping de aplicación opcional y habilitación on/off por mensaje.\n\n**Entrada**: `{topic:\"enable\", payload:true|false}` o `{topic:\"reconnect\"}`.\n\n**Salida 1**: frame crudo `{payload:string, t_recv:ms, exchange}`.\n\n**Salida 2**: estado cada 1 s `{topic:\"ws_status\", payload:{state, reconnects, frames, bytes, lastMsgAge, lastError}}`.\n\nRequiere el módulo npm `ws` (Node-RED lo instala solo la primera vez: `functionExternalModules: true`).",
+    "category": "",
+    "in": [
+      {
+        "x": 60,
+        "y": 80,
+        "wires": [
+          {
+            "id": "prrr_sf_fn"
+          }
+        ]
+      }
+    ],
+    "out": [
+      {
+        "x": 460,
+        "y": 60,
+        "wires": [
+          {
+            "id": "prrr_sf_fn",
+            "port": 0
+          }
+        ]
+      },
+      {
+        "x": 460,
+        "y": 100,
+        "wires": [
+          {
+            "id": "prrr_sf_fn",
+            "port": 1
+          }
+        ]
+      }
+    ],
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "meta": {},
+    "color": "#E2D96E",
+    "icon": "font-awesome/fa-plug",
+    "inputLabels": [
+      "control (enable / reconnect)"
+    ],
+    "outputLabels": [
+      "frames crudos",
+      "ws_status"
+    ],
+    "status": {
+      "x": 460,
+      "y": 140,
+      "wires": [
+        {
+          "id": "prrr_sf_fn",
+          "port": 2
+        }
+      ]
+    }
+  },
+  {
+    "id": "prrr_sf_fn",
+    "type": "function",
+    "z": "prrr_sf_wsconn",
+    "name": "WS client (ws)",
+    "func": "// Control: {topic:'enable', payload:true|false}  |  {topic:'reconnect'}\nconst C = context.get('C', 'memory');\nif (!C) return null;\nconst topic = String(msg.topic || 'enable').toLowerCase();\nif (topic === 'reconnect') {\n    if (C.enabled) {\n        if (C.rcTimer) { clearTimeout(C.rcTimer); C.rcTimer = null; }\n        C.lastError = 'reconexión manual';\n        C.drop();\n        C.reconnects++;\n        C.attempt = 0;\n        C.connect();\n    }\n} else {\n    let v = msg.payload;\n    if (typeof v === 'string') v = /^(true|on|1|enable|enabled)$/i.test(v.trim());\n    v = !!v;\n    if (v && !C.enabled) {\n        C.enabled = true; C.attempt = 0; C.lastError = '';\n        C.connect();\n    } else if (!v && C.enabled) {\n        C.enabled = false;\n        if (C.rcTimer) { clearTimeout(C.rcTimer); C.rcTimer = null; }\n        C.drop();\n        C.lastError = '';\n    }\n}\nconst en = global.get('prrr_ws_enabled', 'memory') || {};\nen[C.cfg.exchange] = C.enabled;\nglobal.set('prrr_ws_enabled', en, 'memory');\nC.pushStatus();\nreturn null;",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== Conector WebSocket genérico =====\n// Se configura con las variables de entorno de cada instancia del subflow.\n// Salida 1: frames crudos {payload:string, t_recv, exchange}\n// Salida 2: estado cada 1 s {topic:'ws_status', payload:{...}}\n// Salida 3: status visual de la instancia\n// Arranca habilitado salvo que antes se lo haya apagado (estado guardado en global 'prrr_ws_enabled').\nlet subs = [];\ntry { subs = JSON.parse(env.get('SUBSCRIBE') || '[]'); } catch (e) { node.error('SUBSCRIBE no es JSON válido'); }\nif (!Array.isArray(subs)) subs = [subs];\nconst cfg = {\n    exchange: env.get('EXCHANGE') || 'unknown',\n    url: env.get('WS_URL') || '',\n    subs: subs,\n    pingMs: Number(env.get('PING_MS')) || 0,\n    pingPayload: env.get('PING_PAYLOAD') || '',\n    staleMs: Number(env.get('STALE_MS')) || 30000,\n    ignore: env.get('IGNORE_TEXT') || ''\n};\nconst C = {\n    cfg: cfg, ws: null, enabled: false, connected: false, stopped: false,\n    reconnects: 0, attempt: 0, frames: 0, bytes: 0,\n    lastMsgAt: 0, lastPingAt: 0, lastError: '', lastState: '',\n    rcTimer: null, timer: null\n};\n\n// __NOW_S__ / __NOW_MS__ en SUBSCRIBE o PING_PAYLOAD se reemplazan por la hora actual (Gate lo pide)\nC.fill = function (s) {\n    if (s.indexOf('__NOW_') < 0) return s;\n    const t = Date.now();\n    return s.split('__NOW_MS__').join(String(t)).split('__NOW_S__').join(String(Math.floor(t / 1000)));\n};\n\nC.state = function () {\n    if (!C.enabled) return 'off';\n    if (C.connected) return 'connected';\n    return C.ws ? 'connecting' : 'down';\n};\n\nC.pushStatus = function () {\n    const now = Date.now();\n    const st = C.state();\n    const p = {\n        exchange: cfg.exchange, state: st, enabled: C.enabled, connected: C.connected,\n        reconnects: C.reconnects, frames: C.frames, bytes: C.bytes,\n        lastMsgAge: C.lastMsgAt ? now - C.lastMsgAt : null,\n        lastError: C.lastError, url: cfg.url\n    };\n    C.frames = 0; C.bytes = 0;\n    let vis = null;\n    const txt = st + ' · rc ' + C.reconnects;\n    if (txt !== C.lastState) {\n        C.lastState = txt;\n        const fill = st === 'connected' ? 'green' : st === 'off' ? 'grey' : st === 'connecting' ? 'yellow' : 'red';\n        vis = { payload: { fill: fill, shape: C.connected ? 'dot' : 'ring', text: txt } };\n    }\n    node.send([null, { topic: 'ws_status', exchange: cfg.exchange, payload: p }, vis], false);\n};\n\nC.drop = function () {                    // cierra el socket actual sin disparar reconexión\n    const ws = C.ws;\n    C.ws = null; C.connected = false;\n    if (ws) {\n        ws.removeAllListeners();\n        ws.on('error', function () {});   // nunca dejar un 'error' sin listener (tumbaría Node-RED)\n        try { ws.terminate(); } catch (e) {}\n    }\n};\n\nC.scheduleReconnect = function () {\n    if (C.stopped || !C.enabled || C.rcTimer) return;\n    const delay = Math.min(30000, 1000 * Math.pow(2, C.attempt)) + Math.floor(Math.random() * 500);\n    C.attempt = Math.min(C.attempt + 1, 5);\n    C.reconnects++;\n    C.rcTimer = setTimeout(function () { C.rcTimer = null; C.connect(); }, delay);\n};\n\nC.connect = function () {\n    if (C.stopped || !C.enabled || C.ws) return;\n    if (!cfg.url) { C.lastError = 'WS_URL vacío'; return; }\n    let ws;\n    try {\n        ws = new WS(cfg.url, { perMessageDeflate: false, handshakeTimeout: 10000, maxPayload: 32 * 1024 * 1024 });\n    } catch (e) {\n        C.lastError = String(e.message || e);\n        C.scheduleReconnect();\n        return;\n    }\n    C.ws = ws;\n    ws.on('open', function () {\n        if (C.ws !== ws) return;\n        C.connected = true;\n        C.lastMsgAt = C.lastPingAt = Date.now();\n        C.lastError = '';\n        for (const s of cfg.subs) {\n            try { ws.send(C.fill(typeof s === 'string' ? s : JSON.stringify(s))); }\n            catch (e) { C.lastError = 'subscribe: ' + e.message; }\n        }\n        C.pushStatus();\n    });\n    ws.on('message', function (data) {\n        const t = Date.now();              // timestamp local lo antes posible\n        if (C.ws !== ws) return;\n        C.lastMsgAt = t; C.frames++; C.bytes += data.length;\n        C.attempt = 0;                     // hay datos: resetea el backoff\n        const s = data.toString();\n        if (cfg.ignore && s === cfg.ignore) return;\n        node.send([{ topic: 'raw', exchange: cfg.exchange, t_recv: t, payload: s }, null, null], false);\n    });\n    ws.on('ping', function () { C.lastMsgAt = Date.now(); });   // ws responde pong solo\n    ws.on('pong', function () { C.lastMsgAt = Date.now(); });\n    ws.on('error', function (e) { C.lastError = String((e && e.message) || e); });\n    ws.on('close', function (code) {\n        if (C.ws !== ws) return;\n        C.ws = null; C.connected = false;\n        if (!C.lastError) C.lastError = 'close ' + code;\n        C.pushStatus();\n        C.scheduleReconnect();\n    });\n};\n\nC.tick = function () {                    // watchdog + ping + status, cada 1 s\n    const now = Date.now();\n    if (C.ws && C.connected) {\n        if (now - C.lastMsgAt > cfg.staleMs) {\n            C.lastError = 'stale: ' + (now - C.lastMsgAt) + ' ms sin datos';\n            C.drop();\n            C.scheduleReconnect();\n        } else if (cfg.pingMs && now - C.lastPingAt >= cfg.pingMs) {\n            C.lastPingAt = now;\n            try { if (cfg.pingPayload) C.ws.send(C.fill(cfg.pingPayload)); else C.ws.ping(); } catch (e) {}\n        }\n    }\n    C.pushStatus();\n};\n\nC.timer = setInterval(C.tick, 1000);\ncontext.set('C', C, 'memory');\n// Recordar on/off entre redeploys parciales (el inject de autostart sólo corre al iniciar el flow completo)\nconst want = (global.get('prrr_ws_enabled', 'memory') || {})[cfg.exchange];\nif (want !== false) { C.enabled = true; C.connect(); }\nC.pushStatus();",
+    "finalize": "const C = context.get('C', 'memory');\nif (C) {\n    C.stopped = true; C.enabled = false;\n    clearInterval(C.timer);\n    if (C.rcTimer) clearTimeout(C.rcTimer);\n    C.drop();\n}\ncontext.set('C', undefined, 'memory');",
+    "libs": [
+      {
+        "var": "WS",
+        "module": "ws"
+      }
+    ],
+    "x": 250,
+    "y": 100,
+    "wires": [
+      [],
+      [],
+      []
+    ]
+  },
+  {
+    "id": "prrr_tab_main",
+    "type": "tab",
+    "label": "PRRR Market Data (BTC · ZEC · GMX · XMR)",
+    "disabled": false,
+    "info": "Etapa 1: adquisición de trades individuales BTC/ZEC por WebSocket directo desde varios exchanges, formato normalizado común, métricas de caudal/frescura y dashboard.\n\nConsumir el stream normalizado desde otros flows con un **link in** conectado a `MD STREAM →`.\n\nContexto global disponible: `md_stats` (métricas de la última ventana de 1 s) y `md_ring` (últimos 5000 trades por símbolo, buffer circular)."
+  },
+  {
+    "id": "prrr_grp_binance",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Binance — BTCUSDT, ZECUSDT, GMXUSDT",
+    "style": {
+      "label": true,
+      "stroke": "#3f93cf",
+      "fill": "#3f93cf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_binance_autostart",
+      "prrr_binance_switch",
+      "prrr_binance_ws",
+      "prrr_binance_norm",
+      "prrr_binance_linkout"
+    ],
+    "x": 50,
+    "y": 95,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_coinbase",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Coinbase — BTC-USD, ZEC-USD",
+    "style": {
+      "label": true,
+      "stroke": "#ff7f0e",
+      "fill": "#ff7f0e",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_coinbase_autostart",
+      "prrr_coinbase_switch",
+      "prrr_coinbase_ws",
+      "prrr_coinbase_norm",
+      "prrr_coinbase_linkout"
+    ],
+    "x": 50,
+    "y": 205,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_kraken",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Kraken — BTC/USD, ZEC/USD, GMX/USD, XMR/USD",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_kraken_autostart",
+      "prrr_kraken_switch",
+      "prrr_kraken_ws",
+      "prrr_kraken_norm",
+      "prrr_kraken_linkout"
+    ],
+    "x": 50,
+    "y": 315,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_okx",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "OKX — BTC-USDT, ZEC-USDT, GMX-USDT",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_okx_autostart",
+      "prrr_okx_switch",
+      "prrr_okx_ws",
+      "prrr_okx_norm",
+      "prrr_okx_linkout"
+    ],
+    "x": 50,
+    "y": 425,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bybit",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bybit — BTCUSDT, ZECUSDT, GMXUSDT",
+    "style": {
+      "label": true,
+      "stroke": "#9467bd",
+      "fill": "#9467bd",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bybit_autostart",
+      "prrr_bybit_switch",
+      "prrr_bybit_ws",
+      "prrr_bybit_norm",
+      "prrr_bybit_linkout"
+    ],
+    "x": 50,
+    "y": 535,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bitfinex",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex — tBTCUSD, tZECUSD, tXMRUSD",
+    "style": {
+      "label": true,
+      "stroke": "#8c564b",
+      "fill": "#8c564b",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bitfinex_autostart",
+      "prrr_bitfinex_switch",
+      "prrr_bitfinex_ws",
+      "prrr_bitfinex_norm",
+      "prrr_bitfinex_linkout"
+    ],
+    "x": 50,
+    "y": 645,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_gate",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Gate — GMX_USDT, XMR_USDT",
+    "style": {
+      "label": true,
+      "stroke": "#e377c2",
+      "fill": "#e377c2",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_gate_autostart",
+      "prrr_gate_switch",
+      "prrr_gate_ws",
+      "prrr_gate_norm",
+      "prrr_gate_linkout"
+    ],
+    "x": 50,
+    "y": 755,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_poloniex",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Poloniex — XMR_USDT",
+    "style": {
+      "label": true,
+      "stroke": "#17becf",
+      "fill": "#17becf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_poloniex_autostart",
+      "prrr_poloniex_switch",
+      "prrr_poloniex_ws",
+      "prrr_poloniex_norm",
+      "prrr_poloniex_linkout"
+    ],
+    "x": 50,
+    "y": 865,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_binance_perp",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Binance Perp — GMXUSDT, XMRUSDT (USDⓈ-M perpetual)",
+    "style": {
+      "label": true,
+      "stroke": "#3f93cf",
+      "fill": "#3f93cf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_binance_perp_autostart",
+      "prrr_binance_perp_switch",
+      "prrr_binance_perp_ws",
+      "prrr_binance_perp_norm",
+      "prrr_binance_perp_linkout"
+    ],
+    "x": 50,
+    "y": 975,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bybit_perp",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bybit Perp — GMXUSDT, XMRUSDT (linear perpetual)",
+    "style": {
+      "label": true,
+      "stroke": "#ff7f0e",
+      "fill": "#ff7f0e",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bybit_perp_autostart",
+      "prrr_bybit_perp_switch",
+      "prrr_bybit_perp_ws",
+      "prrr_bybit_perp_norm",
+      "prrr_bybit_perp_linkout"
+    ],
+    "x": 50,
+    "y": 1085,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bitget",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bitget — GMXUSDT (spot)",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bitget_autostart",
+      "prrr_bitget_switch",
+      "prrr_bitget_ws",
+      "prrr_bitget_norm",
+      "prrr_bitget_linkout"
+    ],
+    "x": 50,
+    "y": 1195,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bitget_perp",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bitget Perp — GMXUSDT, XMRUSDT (USDT-M perpetual)",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bitget_perp_autostart",
+      "prrr_bitget_perp_switch",
+      "prrr_bitget_perp_ws",
+      "prrr_bitget_perp_norm",
+      "prrr_bitget_perp_linkout"
+    ],
+    "x": 50,
+    "y": 1305,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_kraken_perp",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Kraken Futures — PF_GMXUSD, PF_XMRUSD (perpetual)",
+    "style": {
+      "label": true,
+      "stroke": "#9467bd",
+      "fill": "#9467bd",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_kraken_perp_autostart",
+      "prrr_kraken_perp_switch",
+      "prrr_kraken_perp_ws",
+      "prrr_kraken_perp_norm",
+      "prrr_kraken_perp_linkout"
+    ],
+    "x": 50,
+    "y": 1415,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_hyperliquid",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Hyperliquid — XMR (perpetual USDC)",
+    "style": {
+      "label": true,
+      "stroke": "#8c564b",
+      "fill": "#8c564b",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_hyperliquid_autostart",
+      "prrr_hyperliquid_switch",
+      "prrr_hyperliquid_ws",
+      "prrr_hyperliquid_norm",
+      "prrr_hyperliquid_linkout"
+    ],
+    "x": 50,
+    "y": 1525,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_core",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "MD CORE — bus común, métricas, buffer circular, reloj de UI",
+    "style": {
+      "label": true,
+      "stroke": "#555555",
+      "fill": "#555555",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_link_bus_in",
+      "prrr_tick",
+      "prrr_core",
+      "prrr_comment_core"
+    ],
+    "x": 1000,
+    "y": 215,
+    "w": 490,
+    "h": 200
+  },
+  {
+    "id": "prrr_grp_ui",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Dashboard (render desacoplado)",
+    "style": {
+      "label": true,
+      "stroke": "#1f77b4",
+      "fill": "#1f77b4",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_ui_card_btc",
+      "prrr_ui_chart_btc",
+      "prrr_ui_card_zec",
+      "prrr_ui_chart_zec",
+      "prrr_ui_card_gmx",
+      "prrr_ui_chart_gmx",
+      "prrr_ui_card_xmr",
+      "prrr_ui_chart_xmr",
+      "prrr_ui_mkt_mux",
+      "prrr_ui_mkt",
+      "prrr_ui_chart_evs",
+      "prrr_ui_chart_fresh",
+      "prrr_ui_table",
+      "prrr_ui_tech"
+    ],
+    "x": 1600,
+    "y": 155,
+    "w": 890,
+    "h": 300
+  },
+  {
+    "id": "prrr_grp_out",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Salida para etapas futuras (indicadores se enganchan acá)",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_stream_out",
+      "prrr_example_in",
+      "prrr_example_dbg"
+    ],
+    "x": 1580,
+    "y": 75,
+    "w": 690,
+    "h": 80
+  },
+  {
+    "id": "prrr_grp_ctl",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Controles globales",
+    "style": {
+      "label": true,
+      "stroke": "#7f7f7f",
+      "fill": "#7f7f7f",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_render_init",
+      "prrr_ui_render",
+      "prrr_ui_reset",
+      "prrr_ui_reconnect"
+    ],
+    "x": 50,
+    "y": 1695,
+    "w": 500,
+    "h": 180
+  },
+  {
+    "id": "prrr_grp_err",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Errores",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_catch",
+      "prrr_catch_dbg"
+    ],
+    "x": 60,
+    "y": 1885,
+    "w": 470,
+    "h": 80
+  },
+  {
+    "id": "prrr_grp_s2",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "ETAPA 2 — NORMALIZADOR TEMPORAL 1 s → MEMORIA 30 min (RAM)",
+    "style": {
+      "label": true,
+      "stroke": "#e377c2",
+      "fill": "#e377c2",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_s2_stream_in",
+      "prrr_s2_tick",
+      "prrr_s2_norm",
+      "prrr_s2_mem",
+      "prrr_s2_buckets_out",
+      "prrr_s2_example_in",
+      "prrr_s2_example_dbg",
+      "prrr_s2_ui",
+      "prrr_s2_ui_table",
+      "prrr_s2_ui_d_btc",
+      "prrr_s2_ui_d_zec",
+      "prrr_s2_ui_d_gmx",
+      "prrr_s2_ui_d_xmr",
+      "prrr_s2_comment"
+    ],
+    "x": 60,
+    "y": 2015,
+    "w": 1490,
+    "h": 300
+  },
+  {
+    "id": "prrr_grp_plot",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "PLOT FEEDER — representación (min/máx/último por intervalo + historial de gráficos)",
+    "style": {
+      "label": true,
+      "stroke": "#17becf",
+      "fill": "#17becf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_plot_in",
+      "prrr_plot_tick",
+      "prrr_plot_feeder"
+    ],
+    "x": 60,
+    "y": 2255,
+    "w": 610,
+    "h": 140
+  },
+  {
+    "id": "prrr_ui_tab_mkt",
+    "type": "ui_tab",
+    "name": "MERCADO",
+    "icon": "fa-line-chart",
+    "order": 1,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "prrr_ui_tab",
+    "type": "ui_tab",
+    "name": "DIAGNÓSTICO",
+    "icon": "fa-stethoscope",
+    "order": 2,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "prrr_ui_g_thr",
+    "type": "ui_group",
+    "name": "Throughput / frescura (1 s)",
+    "tab": "prrr_ui_tab",
+    "order": 5,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_perf",
+    "type": "ui_group",
+    "name": "Mercados escuchados: par exacto · canal · trades/min reales",
+    "tab": "prrr_ui_tab",
+    "order": 6,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_ctrl",
+    "type": "ui_group",
+    "name": "Controles WebSocket",
+    "tab": "prrr_ui_tab",
+    "order": 7,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_tech",
+    "type": "ui_group",
+    "name": "Métricas técnicas",
+    "tab": "prrr_ui_tab",
+    "order": 8,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_binance_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart binance = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_switch"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Binance on/off",
+    "label": "Binance",
+    "tooltip": "Habilita / deshabilita el WebSocket de Binance",
+    "group": "prrr_ui_g_ctrl",
+    "order": 1,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_ws"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Binance WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "binance"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/zecusdt@trade/gmxusdt@trade&timeUnit=MICROSECOND"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_norm"
+      ],
+      [
+        "prrr_binance_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar binance",
+    "func": "// Binance spot @trade (trades individuales, no aggTrade).\n// timeUnit=MICROSECOND => T en microsegundos. m=true => el comprador es maker => agresor SELL.\nconst MAP = { BTCUSDT: ['BTC', 'USDT'], ZECUSDT: ['ZEC', 'USDT'], GMXUSDT: ['GMX', 'USDT'] };\nconst EX = 'binance';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nconst d = o && o.data ? o.data : o;\nif (!d || d.e !== 'trade') return null;            // respuestas de suscripción, etc.\nconst m = MAP[d.s];\nif (!m) return null;\nconst price = +d.p, qty = +d.q, T = +d.T;\nif (!(price > 0) || !(qty >= 0) || !(T > 0)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: d.s, exchange: EX, kind: 'trade',\n    price: price, quantity: qty, side: d.m ? 'SELL' : 'BUY', trade_id: d.t,\n    exchange_timestamp: T > 1e14 ? T / 1000 : T,    // ms epoch (con decimales si viene en µs)\n    exchange_ts_raw: d.T,                            // valor original sin tocar\n    local_receive_timestamp: msg.t_recv,\n    raw: d\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 140,
+    "wires": [
+      [
+        "prrr_binance_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "binance → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 160,
+    "wires": [],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_coinbase_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart coinbase = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_switch"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Coinbase on/off",
+    "label": "Coinbase",
+    "tooltip": "Habilita / deshabilita el WebSocket de Coinbase",
+    "group": "prrr_ui_g_ctrl",
+    "order": 2,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_ws"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Coinbase WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "coinbase"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws-feed.exchange.coinbase.com"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"type\":\"subscribe\",\"product_ids\":[\"BTC-USD\"],\"channels\":[\"matches\",\"heartbeat\"]},{\"type\":\"subscribe\",\"product_ids\":[\"ZEC-USD\"],\"channels\":[\"matches\",\"heartbeat\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_norm"
+      ],
+      [
+        "prrr_coinbase_linkout"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar coinbase",
+    "func": "// Coinbase Exchange feed, canal \"matches\" (trades individuales, time con µs).\n// \"side\" es el lado del MAKER => el agresor es el opuesto.\nconst MAP = { 'BTC-USD': ['BTC', 'USD'], 'ZEC-USD': ['ZEC', 'USD'] };\nconst EX = 'coinbase';\nfunction isoToMs(s) {                 // ISO8601 con fracción de µs/ns -> ms epoch con decimales\n    const ms = Date.parse(s);\n    if (!isFinite(ms)) return NaN;\n    const f = /\\.(\\d+)/.exec(s);\n    return (f && f[1].length > 3) ? ms + Number('0.' + f[1].slice(3)) : ms;\n}\nlet d;\ntry { d = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!d) return null;\nif (d.type === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + d.message + ' ' + (d.reason || '') };\nif (d.type !== 'match') return null;   // heartbeat, subscriptions, last_match (trade viejo previo a suscribir)\nconst m = MAP[d.product_id];\nif (!m) return null;\nconst price = +d.price, qty = +d.size, ts = isoToMs(d.time);\nif (!(price > 0) || !(qty >= 0) || !isFinite(ts)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: d.product_id, exchange: EX, kind: 'trade',\n    price: price, quantity: qty, side: d.side === 'sell' ? 'BUY' : (d.side === 'buy' ? 'SELL' : null),\n    trade_id: d.trade_id,\n    exchange_timestamp: ts, exchange_ts_raw: d.time,\n    local_receive_timestamp: msg.t_recv,\n    raw: d\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 250,
+    "wires": [
+      [
+        "prrr_coinbase_linkout"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "coinbase → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 270,
+    "wires": [],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_kraken_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart kraken = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_switch"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Kraken on/off",
+    "label": "Kraken",
+    "tooltip": "Habilita / deshabilita el WebSocket de Kraken",
+    "group": "prrr_ui_g_ctrl",
+    "order": 3,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_ws"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Kraken WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "kraken"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.kraken.com/v2"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"BTC/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"ZEC/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"GMX/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"XMR/USD\"],\"snapshot\":false}}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_norm"
+      ],
+      [
+        "prrr_kraken_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar kraken",
+    "func": "// Kraken WS v2, canal \"trade\". side = lado del taker (agresor). timestamp RFC3339 con µs.\nconst MAP = { 'BTC/USD': ['BTC', 'USD'], 'ZEC/USD': ['ZEC', 'USD'], 'GMX/USD': ['GMX', 'USD'], 'XMR/USD': ['XMR', 'USD'] };\nconst EX = 'kraken';\nfunction isoToMs(s) {\n    const ms = Date.parse(s);\n    if (!isFinite(ms)) return NaN;\n    const f = /\\.(\\d+)/.exec(s);\n    return (f && f[1].length > 3) ? ms + Number('0.' + f[1].slice(3)) : ms;\n}\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.method === 'subscribe' && o.success === false) return { topic: 'md_err', exchange: EX, payload: 'subscribe: ' + (o.error || '') };\nif (o.channel !== 'trade' || o.type !== 'update' || !Array.isArray(o.data)) return null;  // heartbeat, status, snapshot\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.symbol];\n    if (!m) continue;\n    const price = +d.price, qty = +d.qty, ts = isoToMs(d.timestamp);\n    if (!(price > 0) || !(qty >= 0) || !isFinite(ts)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.symbol, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.trade_id,\n        exchange_timestamp: ts, exchange_ts_raw: d.timestamp,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 360,
+    "wires": [
+      [
+        "prrr_kraken_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "kraken → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 380,
+    "wires": [],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_okx_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart okx = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_switch"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "OKX on/off",
+    "label": "OKX",
+    "tooltip": "Habilita / deshabilita el WebSocket de OKX",
+    "group": "prrr_ui_g_ctrl",
+    "order": 4,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_ws"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "OKX WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "okx"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.okx.com:8443/ws/v5/business"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"BTC-USDT\"}]},{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"ZEC-USDT\"}]},{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"GMX-USDT\"}]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "ping"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": "pong"
+      }
+    ],
+    "x": 600,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_norm"
+      ],
+      [
+        "prrr_okx_linkout"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar okx",
+    "func": "// OKX v5 canal \"trades-all\" (trades individuales). side = lado del taker. ts en ms.\nconst MAP = { 'BTC-USDT': ['BTC', 'USDT'], 'ZEC-USDT': ['ZEC', 'USDT'], 'GMX-USDT': ['GMX', 'USDT'] };\nconst EX = 'okx';\nif (msg.payload === 'pong') return null;\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + o.code + ' ' + o.msg };\nif (!o.arg || !Array.isArray(o.data)) return null;       // event subscribe, etc.\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.instId];\n    if (!m) continue;\n    const price = +d.px, qty = +d.sz, ts = +d.ts;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.instId, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.tradeId,\n        exchange_timestamp: ts, exchange_ts_raw: d.ts,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 470,
+    "wires": [
+      [
+        "prrr_okx_linkout"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "okx → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 490,
+    "wires": [],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_bybit_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bybit = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_switch"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bybit on/off",
+    "label": "Bybit",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bybit",
+    "group": "prrr_ui_g_ctrl",
+    "order": 5,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_ws"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bybit WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bybit"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://stream.bybit.com/v5/public/spot"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[\"publicTrade.BTCUSDT\"]},{\"op\":\"subscribe\",\"args\":[\"publicTrade.ZECUSDT\"]},{\"op\":\"subscribe\",\"args\":[\"publicTrade.GMXUSDT\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"op\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_norm"
+      ],
+      [
+        "prrr_bybit_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bybit",
+    "func": "// Bybit v5 spot \"publicTrade\". S = lado del taker (Buy/Sell). T en ms.\nconst MAP = { BTCUSDT: ['BTC', 'USDT'], ZECUSDT: ['ZEC', 'USDT'], GMXUSDT: ['GMX', 'USDT'] };\nconst EX = 'bybit';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.op) {                                               // respuestas subscribe / pong\n    if (o.success === false) return { topic: 'md_err', exchange: EX, payload: 'op ' + o.op + ': ' + (o.ret_msg || '') };\n    return null;\n}\nif (typeof o.topic !== 'string' || o.topic.indexOf('publicTrade.') !== 0 || !Array.isArray(o.data)) return null;\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.s];\n    if (!m) continue;\n    const price = +d.p, qty = +d.v, ts = +d.T;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.s, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.S === 'Buy' ? 'BUY' : (d.S === 'Sell' ? 'SELL' : null),\n        trade_id: d.i,\n        exchange_timestamp: ts, exchange_ts_raw: d.T,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 580,
+    "wires": [
+      [
+        "prrr_bybit_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bybit → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 600,
+    "wires": [],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bitfinex_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bitfinex = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_switch"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex on/off",
+    "label": "Bitfinex",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bitfinex",
+    "group": "prrr_ui_g_ctrl",
+    "order": 6,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_ws"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bitfinex"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://api-pub.bitfinex.com/ws/2"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tBTCUSD\"},{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tZECUSD\"},{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tXMRUSD\"}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_norm"
+      ],
+      [
+        "prrr_bitfinex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bitfinex",
+    "func": "// Bitfinex WS v2 canal \"trades\". Se usa sólo \"te\" (trade executed, llega antes que \"tu\").\n// [chanId,\"te\",[ID,MTS,AMOUNT,PRICE]]  AMOUNT>0 => agresor BUY, <0 => SELL.\nconst MAP = { tBTCUSD: ['BTC', 'USD'], tZECUSD: ['ZEC', 'USD'], tXMRUSD: ['XMR', 'USD'] };\nconst EX = 'bitfinex';\nlet chans = context.get('chans') || {};\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!Array.isArray(o)) {\n    if (!o) return null;\n    if (o.event === 'info' && o.version) { chans = {}; context.set('chans', chans); }  // nueva conexión\n    else if (o.event === 'subscribed' && o.channel === 'trades') { chans[o.chanId] = o.symbol; context.set('chans', chans); }\n    else if (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + o.code + ' ' + o.msg };\n    return null;\n}\nif (o[1] !== 'te' || !Array.isArray(o[2])) return null;   // hb, snapshot, tu\nconst sym = chans[o[0]];\nconst m = MAP[sym];\nif (!m) return null;\nconst t = o[2];\nconst amount = +t[2], price = +t[3], ts = +t[1];\nif (!(price > 0) || !isFinite(amount) || !(ts > 0)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: sym, exchange: EX, kind: 'trade',\n    price: price, quantity: Math.abs(amount), side: amount > 0 ? 'BUY' : (amount < 0 ? 'SELL' : null),\n    trade_id: t[0],\n    exchange_timestamp: ts, exchange_ts_raw: t[1],\n    local_receive_timestamp: msg.t_recv,\n    raw: t\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 690,
+    "wires": [
+      [
+        "prrr_bitfinex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bitfinex → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 710,
+    "wires": [],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_gate_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart gate = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_switch"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Gate on/off",
+    "label": "Gate",
+    "tooltip": "Habilita / deshabilita el WebSocket de Gate",
+    "group": "prrr_ui_g_ctrl",
+    "order": 7,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_ws"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Gate WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "gate"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://api.gateio.ws/ws/v4/"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[\"{\\\"time\\\":__NOW_S__,\\\"channel\\\":\\\"spot.trades\\\",\\\"event\\\":\\\"subscribe\\\",\\\"payload\\\":[\\\"GMX_USDT\\\"]}\",\"{\\\"time\\\":__NOW_S__,\\\"channel\\\":\\\"spot.trades\\\",\\\"event\\\":\\\"subscribe\\\",\\\"payload\\\":[\\\"XMR_USDT\\\"]}\"]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "15000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"time\":__NOW_S__,\"channel\":\"spot.ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_norm"
+      ],
+      [
+        "prrr_gate_linkout"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar gate",
+    "func": "// Gate.io WS v4 canal \"spot.trades\" (trades individuales). side = lado del taker.\n// create_time_ms viene como string con fracción de ms (\"1606292218213.4578\").\nconst MAP = { GMX_USDT: ['GMX', 'USDT'], XMR_USDT: ['XMR', 'USDT'] };\nconst EX = 'gate';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.error) return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + JSON.stringify(o.error).slice(0, 160) };\nif (o.channel !== 'spot.trades' || o.event !== 'update' || !o.result) return null;   // subscribe ack, spot.pong\nconst list = Array.isArray(o.result) ? o.result : [o.result];\nconst out = [];\nfor (const d of list) {\n    const m = MAP[d.currency_pair];\n    if (!m) continue;\n    const price = +d.price, qty = +d.amount;\n    const ts = d.create_time_ms != null ? +d.create_time_ms : (+d.create_time) * 1000;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.currency_pair, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.id,\n        exchange_timestamp: ts, exchange_ts_raw: d.create_time_ms != null ? d.create_time_ms : d.create_time,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 800,
+    "wires": [
+      [
+        "prrr_gate_linkout"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "gate → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 820,
+    "wires": [],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_poloniex_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart poloniex = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_switch"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Poloniex on/off",
+    "label": "Poloniex",
+    "tooltip": "Habilita / deshabilita el WebSocket de Poloniex",
+    "group": "prrr_ui_g_ctrl",
+    "order": 8,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_ws"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Poloniex WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "poloniex"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.poloniex.com/ws/public"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"event\":\"subscribe\",\"channel\":[\"trades\"],\"symbols\":[\"XMR_USDT\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"event\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_norm"
+      ],
+      [
+        "prrr_poloniex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar poloniex",
+    "func": "// Poloniex WS v3 canal \"trades\". takerSide = lado del agresor. createTime en ms.\nconst MAP = { XMR_USDT: ['XMR', 'USDT'] };\nconst EX = 'poloniex';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + (o.message || JSON.stringify(o)).slice(0, 160) };\nif (o.channel !== 'trades' || !Array.isArray(o.data)) return null;   // subscribe ack, pong\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.symbol];\n    if (!m) continue;\n    const price = +d.price, qty = +d.quantity, ts = +d.createTime;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.symbol, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.takerSide === 'buy' ? 'BUY' : (d.takerSide === 'sell' ? 'SELL' : null),\n        trade_id: d.id,\n        exchange_timestamp: ts, exchange_ts_raw: d.createTime,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 910,
+    "wires": [
+      [
+        "prrr_poloniex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "poloniex → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 930,
+    "wires": [],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_binance_perp_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart binance-perp = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1040,
+    "wires": [
+      [
+        "prrr_binance_perp_switch"
+      ]
+    ],
+    "g": "prrr_grp_binance_perp"
+  },
+  {
+    "id": "prrr_binance_perp_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Binance Perp on/off",
+    "label": "Binance Perp",
+    "tooltip": "Habilita / deshabilita el WebSocket de Binance Perp",
+    "group": "prrr_ui_g_ctrl",
+    "order": 9,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1040,
+    "wires": [
+      [
+        "prrr_binance_perp_ws"
+      ]
+    ],
+    "g": "prrr_grp_binance_perp"
+  },
+  {
+    "id": "prrr_binance_perp_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Binance Perp WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "binance-perp"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://fstream.binance.com/market/stream?streams=gmxusdt@aggTrade/xmrusdt@aggTrade"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "60000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 1040,
+    "wires": [
+      [
+        "prrr_binance_perp_norm"
+      ],
+      [
+        "prrr_binance_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance_perp"
+  },
+  {
+    "id": "prrr_binance_perp_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar binance-perp",
+    "func": "// Binance USDⓈ-M perpetual, stream @aggTrade.\n// OJO: aggTrade agrupa los fills con igual precio y lado agresor. trade_count = l - f + 1 = fills reales dentro del evento.\nconst MAP = { GMXUSDT: ['GMX', 'USDT'], XMRUSDT: ['XMR', 'USDT'] };\nconst EX = 'binance', SRC = 'binance-perp';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nconst d = o && o.data ? o.data : o;\nif (!d || d.e !== 'aggTrade') return null;\nconst m = MAP[d.s];\nif (!m) return null;\nconst price = +d.p, qty = +d.q, T = +d.T;\nif (!(price > 0) || !(qty >= 0) || !(T > 0)) return { topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: d.s, exchange: EX, source: SRC, market_type: 'perp', kind: 'trade',\n    aggregated: true, trade_count: (d.l - d.f + 1) || 1,\n    price: price, quantity: qty, side: d.m ? 'SELL' : 'BUY', trade_id: d.a,\n    exchange_timestamp: T, exchange_ts_raw: d.T,\n    local_receive_timestamp: msg.t_recv,\n    raw: d\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1020,
+    "wires": [
+      [
+        "prrr_binance_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance_perp"
+  },
+  {
+    "id": "prrr_binance_perp_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "binance-perp → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1040,
+    "wires": [],
+    "g": "prrr_grp_binance_perp"
+  },
+  {
+    "id": "prrr_bybit_perp_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bybit-perp = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1150,
+    "wires": [
+      [
+        "prrr_bybit_perp_switch"
+      ]
+    ],
+    "g": "prrr_grp_bybit_perp"
+  },
+  {
+    "id": "prrr_bybit_perp_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bybit Perp on/off",
+    "label": "Bybit Perp",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bybit Perp",
+    "group": "prrr_ui_g_ctrl",
+    "order": 10,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1150,
+    "wires": [
+      [
+        "prrr_bybit_perp_ws"
+      ]
+    ],
+    "g": "prrr_grp_bybit_perp"
+  },
+  {
+    "id": "prrr_bybit_perp_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bybit Perp WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bybit-perp"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://stream.bybit.com/v5/public/linear"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[\"publicTrade.GMXUSDT\"]},{\"op\":\"subscribe\",\"args\":[\"publicTrade.XMRUSDT\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"op\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 1150,
+    "wires": [
+      [
+        "prrr_bybit_perp_norm"
+      ],
+      [
+        "prrr_bybit_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit_perp"
+  },
+  {
+    "id": "prrr_bybit_perp_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bybit-perp",
+    "func": "// Bybit v5 linear perpetual \"publicTrade\" (trades individuales). S = lado del taker. v en unidades del activo.\nconst MAP = { GMXUSDT: ['GMX', 'USDT'], XMRUSDT: ['XMR', 'USDT'] };\nconst EX = 'bybit', SRC = 'bybit-perp';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.op) {\n    if (o.success === false) return { topic: 'md_err', exchange: SRC, payload: 'op ' + o.op + ': ' + (o.ret_msg || '') };\n    return null;\n}\nif (typeof o.topic !== 'string' || o.topic.indexOf('publicTrade.') !== 0 || !Array.isArray(o.data)) return null;\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.s];\n    if (!m) continue;\n    const price = +d.p, qty = +d.v, ts = +d.T;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.s, exchange: EX, source: SRC, market_type: 'perp', kind: 'trade',\n        price: price, quantity: qty, side: d.S === 'Buy' ? 'BUY' : (d.S === 'Sell' ? 'SELL' : null),\n        trade_id: d.i,\n        exchange_timestamp: ts, exchange_ts_raw: d.T,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1130,
+    "wires": [
+      [
+        "prrr_bybit_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit_perp"
+  },
+  {
+    "id": "prrr_bybit_perp_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bybit-perp → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1150,
+    "wires": [],
+    "g": "prrr_grp_bybit_perp"
+  },
+  {
+    "id": "prrr_bitget_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bitget = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1260,
+    "wires": [
+      [
+        "prrr_bitget_switch"
+      ]
+    ],
+    "g": "prrr_grp_bitget"
+  },
+  {
+    "id": "prrr_bitget_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bitget on/off",
+    "label": "Bitget",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bitget",
+    "group": "prrr_ui_g_ctrl",
+    "order": 11,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1260,
+    "wires": [
+      [
+        "prrr_bitget_ws"
+      ]
+    ],
+    "g": "prrr_grp_bitget"
+  },
+  {
+    "id": "prrr_bitget_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bitget WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bitget"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.bitget.com/v2/ws/public"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[{\"instType\":\"SPOT\",\"channel\":\"trade\",\"instId\":\"GMXUSDT\"}]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "25000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "ping"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "60000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": "pong"
+      }
+    ],
+    "x": 600,
+    "y": 1260,
+    "wires": [
+      [
+        "prrr_bitget_norm"
+      ],
+      [
+        "prrr_bitget_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitget"
+  },
+  {
+    "id": "prrr_bitget_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bitget",
+    "func": "// Bitget WS v2 canal \"trade\" (SPOT). side = lado del taker. Se ignora el snapshot inicial (trades previos a suscribir).\nconst MAP = { GMXUSDT: ['GMX', 'USDT'] };\nconst EX = 'bitget', SRC = 'bitget', MT = 'spot';\nif (msg.payload === 'pong') return null;\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: SRC, payload: 'exchange: ' + o.code + ' ' + o.msg };\nif (o.event || !o.arg || o.arg.channel !== 'trade' || o.action !== 'update' || !Array.isArray(o.data)) return null;\nconst m = MAP[o.arg.instId];\nif (!m) return null;\nconst out = [];\nfor (const d of o.data) {\n    const price = +d.price, qty = +d.size, ts = +d.ts;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: o.arg.instId, exchange: EX, source: SRC, market_type: MT, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.tradeId,\n        exchange_timestamp: ts, exchange_ts_raw: d.ts,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1240,
+    "wires": [
+      [
+        "prrr_bitget_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitget"
+  },
+  {
+    "id": "prrr_bitget_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bitget → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1260,
+    "wires": [],
+    "g": "prrr_grp_bitget"
+  },
+  {
+    "id": "prrr_bitget_perp_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bitget-perp = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1370,
+    "wires": [
+      [
+        "prrr_bitget_perp_switch"
+      ]
+    ],
+    "g": "prrr_grp_bitget_perp"
+  },
+  {
+    "id": "prrr_bitget_perp_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bitget Perp on/off",
+    "label": "Bitget Perp",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bitget Perp",
+    "group": "prrr_ui_g_ctrl",
+    "order": 12,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1370,
+    "wires": [
+      [
+        "prrr_bitget_perp_ws"
+      ]
+    ],
+    "g": "prrr_grp_bitget_perp"
+  },
+  {
+    "id": "prrr_bitget_perp_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bitget Perp WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bitget-perp"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.bitget.com/v2/ws/public"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[{\"instType\":\"USDT-FUTURES\",\"channel\":\"trade\",\"instId\":\"GMXUSDT\"}]},{\"op\":\"subscribe\",\"args\":[{\"instType\":\"USDT-FUTURES\",\"channel\":\"trade\",\"instId\":\"XMRUSDT\"}]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "25000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "ping"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "60000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": "pong"
+      }
+    ],
+    "x": 600,
+    "y": 1370,
+    "wires": [
+      [
+        "prrr_bitget_perp_norm"
+      ],
+      [
+        "prrr_bitget_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitget_perp"
+  },
+  {
+    "id": "prrr_bitget_perp_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bitget-perp",
+    "func": "// Bitget WS v2 canal \"trade\" (USDT-FUTURES). side = lado del taker. Se ignora el snapshot inicial (trades previos a suscribir).\nconst MAP = { GMXUSDT: ['GMX', 'USDT'], XMRUSDT: ['XMR', 'USDT'] };\nconst EX = 'bitget', SRC = 'bitget-perp', MT = 'perp';\nif (msg.payload === 'pong') return null;\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: SRC, payload: 'exchange: ' + o.code + ' ' + o.msg };\nif (o.event || !o.arg || o.arg.channel !== 'trade' || o.action !== 'update' || !Array.isArray(o.data)) return null;\nconst m = MAP[o.arg.instId];\nif (!m) return null;\nconst out = [];\nfor (const d of o.data) {\n    const price = +d.price, qty = +d.size, ts = +d.ts;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: o.arg.instId, exchange: EX, source: SRC, market_type: MT, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.tradeId,\n        exchange_timestamp: ts, exchange_ts_raw: d.ts,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1350,
+    "wires": [
+      [
+        "prrr_bitget_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitget_perp"
+  },
+  {
+    "id": "prrr_bitget_perp_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bitget-perp → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1370,
+    "wires": [],
+    "g": "prrr_grp_bitget_perp"
+  },
+  {
+    "id": "prrr_kraken_perp_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart kraken-perp = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1480,
+    "wires": [
+      [
+        "prrr_kraken_perp_switch"
+      ]
+    ],
+    "g": "prrr_grp_kraken_perp"
+  },
+  {
+    "id": "prrr_kraken_perp_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Kraken Futures on/off",
+    "label": "Kraken Futures",
+    "tooltip": "Habilita / deshabilita el WebSocket de Kraken Futures",
+    "group": "prrr_ui_g_ctrl",
+    "order": 13,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1480,
+    "wires": [
+      [
+        "prrr_kraken_perp_ws"
+      ]
+    ],
+    "g": "prrr_grp_kraken_perp"
+  },
+  {
+    "id": "prrr_kraken_perp_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Kraken Futures WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "kraken-perp"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://futures.kraken.com/ws/v1"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"event\":\"subscribe\",\"feed\":\"trade\",\"product_ids\":[\"PF_GMXUSD\"]},{\"event\":\"subscribe\",\"feed\":\"trade\",\"product_ids\":[\"PF_XMRUSD\"]},{\"event\":\"subscribe\",\"feed\":\"heartbeat\"}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 1480,
+    "wires": [
+      [
+        "prrr_kraken_perp_norm"
+      ],
+      [
+        "prrr_kraken_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken_perp"
+  },
+  {
+    "id": "prrr_kraken_perp_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar kraken-perp",
+    "func": "// Kraken Futures WS v1, feed \"trade\" (trades individuales). side = lado del taker. qty en unidades del activo (PF_ lineal).\nconst MAP = { PF_GMXUSD: ['GMX', 'USD'], PF_XMRUSD: ['XMR', 'USD'] };\nconst EX = 'kraken', SRC = 'kraken-perp';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error' || o.event === 'alert') return { topic: 'md_err', exchange: SRC, payload: 'exchange: ' + (o.message || JSON.stringify(o)).slice(0, 160) };\nif (o.feed !== 'trade' || !o.product_id) return null;   // trade_snapshot (histórico), heartbeat, info, subscribed\nconst m = MAP[o.product_id];\nif (!m) return null;\nconst price = +o.price, qty = +o.qty, ts = +o.time;\nif (!(price > 0) || !(qty >= 0) || !(ts > 0)) return { topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: o.product_id, exchange: EX, source: SRC, market_type: 'perp', kind: 'trade',\n    price: price, quantity: qty, side: o.side === 'buy' ? 'BUY' : (o.side === 'sell' ? 'SELL' : null),\n    trade_id: o.uid, fill_type: o.type,\n    exchange_timestamp: ts, exchange_ts_raw: o.time,\n    local_receive_timestamp: msg.t_recv,\n    raw: o\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1460,
+    "wires": [
+      [
+        "prrr_kraken_perp_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken_perp"
+  },
+  {
+    "id": "prrr_kraken_perp_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "kraken-perp → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1480,
+    "wires": [],
+    "g": "prrr_grp_kraken_perp"
+  },
+  {
+    "id": "prrr_hyperliquid_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart hyperliquid = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 1590,
+    "wires": [
+      [
+        "prrr_hyperliquid_switch"
+      ]
+    ],
+    "g": "prrr_grp_hyperliquid"
+  },
+  {
+    "id": "prrr_hyperliquid_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Hyperliquid on/off",
+    "label": "Hyperliquid",
+    "tooltip": "Habilita / deshabilita el WebSocket de Hyperliquid",
+    "group": "prrr_ui_g_ctrl",
+    "order": 14,
+    "width": 3,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 1590,
+    "wires": [
+      [
+        "prrr_hyperliquid_ws"
+      ]
+    ],
+    "g": "prrr_grp_hyperliquid"
+  },
+  {
+    "id": "prrr_hyperliquid_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Hyperliquid WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "hyperliquid"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://api.hyperliquid.xyz/ws"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"XMR\"}}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"method\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "75000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 1590,
+    "wires": [
+      [
+        "prrr_hyperliquid_norm"
+      ],
+      [
+        "prrr_hyperliquid_linkout"
+      ]
+    ],
+    "g": "prrr_grp_hyperliquid"
+  },
+  {
+    "id": "prrr_hyperliquid_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar hyperliquid",
+    "func": "// Hyperliquid WS canal \"trades\" (trades individuales). side: \"B\" = agresor compra, \"A\" = agresor vende.\nconst MAP = { XMR: ['XMR', 'USDC'] };\nconst EX = 'hyperliquid', SRC = 'hyperliquid';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: SRC, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.channel === 'error') return { topic: 'md_err', exchange: SRC, payload: 'exchange: ' + String(o.data).slice(0, 160) };\nif (o.channel !== 'trades' || !Array.isArray(o.data)) return null;   // subscriptionResponse, pong\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.coin];\n    if (!m) continue;\n    const price = +d.px, qty = +d.sz, ts = +d.time;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: SRC, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.coin, exchange: EX, source: SRC, market_type: 'perp', kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'B' ? 'BUY' : (d.side === 'A' ? 'SELL' : null),\n        trade_id: d.tid,\n        exchange_timestamp: ts, exchange_ts_raw: d.time,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 1570,
+    "wires": [
+      [
+        "prrr_hyperliquid_linkout"
+      ]
+    ],
+    "g": "prrr_grp_hyperliquid"
+  },
+  {
+    "id": "prrr_hyperliquid_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "hyperliquid → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 1590,
+    "wires": [],
+    "g": "prrr_grp_hyperliquid"
+  },
+  {
+    "id": "prrr_link_bus_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "MD BUS",
+    "links": [
+      "prrr_binance_linkout",
+      "prrr_coinbase_linkout",
+      "prrr_kraken_linkout",
+      "prrr_okx_linkout",
+      "prrr_bybit_linkout",
+      "prrr_bitfinex_linkout",
+      "prrr_gate_linkout",
+      "prrr_poloniex_linkout",
+      "prrr_binance_perp_linkout",
+      "prrr_bybit_perp_linkout",
+      "prrr_bitget_linkout",
+      "prrr_bitget_perp_linkout",
+      "prrr_kraken_perp_linkout",
+      "prrr_hyperliquid_linkout"
+    ],
+    "x": 1120,
+    "y": 320,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick UI 50 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.05",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.5",
+    "topic": "tick",
+    "x": 1140,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_core",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "MD CORE (stats · ring · render)",
+    "func": "// ===== MD CORE =====\n// Entradas: trades normalizados (topic 'trade'), 'ws_status', 'md_err', 'tick', 'render_ms', 'reset'.\n// Salida 1 = stream normalizado (1 msg por trade, sin agregar).\n// Salidas 2..5 charts (BTC,ZEC,GMX,XMR) · 6..9 tarjetas · 10 tabla fuentes · 11 chart ev/s · 12 chart frescura · 13 métricas técnicas.\n// Nada se inventa: los gráficos sólo reciben un punto cuando llegó un trade nuevo de esa fuente.\nconst S = context.get('S', 'memory');\nconst now = Date.now();\nconst topic = msg.topic;\nconst N = S.symbols.length;\nconst NOUT = 5 + 2 * N;\n\nfunction newWin() { return { n: 0, bySym: {}, fillsBySym: {}, frames: 0, latSum: 0, latN: 0, latMin: Infinity, latMax: -Infinity, pipeSum: 0, pipeMax: 0 }; }\nfunction getEx(name) {\n    let e = S.ex[name];\n    if (!e) {\n        e = S.ex[name] = { name: name, state: '?', reconnects: 0, lastError: '', lastMsgAge: null, parseErrors: 0, lastParseError: '', total: 0, last: {}, w: newWin(), m1: {} };\n        for (const sy of S.symbols) e.m1[sy] = { b: new Array(60).fill(0), i: 0, sum: 0, n: 0 };\n    }\n    return e;\n}\n\n// ---------------- camino caliente: 1 trade ----------------\nif (topic === 'trade') {\n    const t = msg.payload;\n    const e = getEx(t.source || t.exchange);\n    const w = e.w;\n    const pipe = now - t.local_receive_timestamp;          // cola interna de Node-RED (sin depender del reloj del exchange)\n    const lat = t.local_receive_timestamp - t.exchange_timestamp; // exchange -> notebook (depende de sincronía NTP)\n    w.n++; e.total++; S.totalEvents++;\n    w.bySym[t.symbol] = (w.bySym[t.symbol] || 0) + 1;\n    w.fillsBySym[t.symbol] = (w.fillsBySym[t.symbol] || 0) + (t.trade_count || 1);\n    w.pipeSum += pipe; if (pipe > w.pipeMax) w.pipeMax = pipe;\n    if (isFinite(lat)) { w.latSum += lat; w.latN++; if (lat < w.latMin) w.latMin = lat; if (lat > w.latMax) w.latMax = lat; }\n    let L = e.last[t.symbol];\n    if (!L) L = e.last[t.symbol] = {};\n    L.price = t.price; L.qty = t.quantity; L.side = t.side; L.tRecv = t.local_receive_timestamp; L.tEx = t.exchange_timestamp; L.quote = t.quote; L.dirty = true;\n    let y = S.sym[t.symbol];\n    if (!y) y = S.sym[t.symbol] = { w: 0, total: 0 };\n    y.w++; y.total++; y.price = t.price; y.ex = t.source || t.exchange; y.side = t.side; y.tRecv = t.local_receive_timestamp; y.dirty = true;\n    let r = S.ring[t.symbol];\n    if (!r) r = S.ring[t.symbol] = { size: S.ringSize, buf: new Array(S.ringSize), idx: 0, count: 0 };\n    r.buf[r.idx] = t; r.idx = (r.idx + 1) % r.size; if (r.count < r.size) r.count++;\n    const o = new Array(NOUT).fill(null); o[0] = msg;\n    return o;\n}\n\nif (topic === 'ws_status') {\n    const p = msg.payload || {};\n    const e = getEx(p.exchange || msg.exchange);\n    e.state = p.state; e.reconnects = p.reconnects; e.lastError = p.lastError || '';\n    e.lastMsgAge = p.lastMsgAge; e.w.frames += (p.frames || 0);\n    return null;\n}\n\nif (topic === 'md_err') {\n    const e = getEx(msg.exchange || '?');\n    e.parseErrors++; e.lastParseError = String(msg.payload).slice(0, 200);\n    return null;\n}\n\nif (topic === 'render_ms') {\n    const v = Number(msg.payload);\n    if (v >= 50 && v <= 10000) S.renderMs = v;\n    return null;\n}\n\nif (topic === 'reset') {\n    S.peak = { TOTAL: 0 }; S.totalEvents = 0; S.t0 = now;\n    S.lag = { max: 0, sum: 0, n: 0 };\n    for (const k in S.ex) {\n        const e = S.ex[k];\n        e.total = 0; e.parseErrors = 0; e.lastParseError = '';\n        for (const sy of S.symbols) e.m1[sy] = { b: new Array(60).fill(0), i: 0, sum: 0, n: 0 };\n    }\n    for (const k in S.sym) S.sym[k].total = 0;\n    const o = new Array(NOUT).fill(null);\n    for (let i = 0; i < N; i++) o[1 + i] = { payload: { reset: true, now: now } };\n    o[2 + 2 * N] = { payload: { reset: true, now: now } }; o[3 + 2 * N] = { payload: { reset: true, now: now } };\n    return o;\n}\n\nif (topic !== 'tick') return null;\n\n// ---------------- reloj de UI (tick cada S.tickMs) ----------------\nif (S.lastTick) {\n    const lag = Math.max(0, now - S.lastTick - S.tickMs);   // retraso del event loop + cola de mensajes\n    S.lag.sum += lag; S.lag.n++; if (lag > S.lag.max) S.lag.max = lag;\n}\nS.lastTick = now;\nconst OUT_TABLE = 1 + 2 * N, OUT_EVS = 2 + 2 * N, OUT_FRESH = 3 + 2 * N, OUT_TECH = 4 + 2 * N;\nconst out = new Array(NOUT).fill(null);\nconst fmtP = (p) => p == null ? '—' : (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(3) : p.toPrecision(5));\nconst fmt = (v, d) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);\nconst fmtAge = (ms) => ms < 1000 ? Math.round(ms) + ' ms' : ms < 60000 ? (ms / 1000).toFixed(1) + ' s' : ms < 3600000 ? Math.floor(ms / 60000) + ' min' : '>1 h';\nconst perMinOf = (e, sy) => e && e.m1[sy] ? e.m1[sy].sum : 0;\n\n// Render de gráficos + tarjetas (a S.renderMs, independiente de la tasa de trades)\nif (now - S.lastRender >= S.renderMs - S.tickMs / 2) {\n    S.lastRender = now;\n    S.symbols.forEach(function (sym, i) {\n        const pts = [];\n        const perEx = [];\n        let symMin = 0;\n        const srcs = S.expected[sym].slice();\n        for (const k in S.ex) if (S.ex[k].last[sym] && srcs.indexOf(k) < 0) srcs.push(k);\n        for (const k of srcs) {\n            const e = S.ex[k];\n            const L = e ? e.last[sym] : null;\n            const meta = S.meta[k] || {};\n            const pm = perMinOf(e, sym);\n            symMin += pm;\n            if (L && L.dirty) { pts.push({ s: k, x: L.tRecv, y: L.price }); L.dirty = false; }   // último trade real de la fuente en este ciclo\n            perEx.push({ ex: k, perp: meta.type === 'perp', price: L ? fmtP(L.price) : '—', side: L ? L.side : null,\n                age: L ? fmtAge(now - L.tRecv) : 'sin trades', pm: pm, off: !e || e.state === 'off' });\n        }\n        out[1 + i] = { payload: { now: now, pts: pts } };   // 1 mensaje = 1 redibujado (el eje de tiempo avanza aunque no haya trades)\n        const y = S.sym[sym];\n        out[1 + N + i] = { payload: {\n            symbol: sym, price: y ? fmtP(y.price) : '—', exchange: y ? y.ex : '—', side: y ? y.side : null,\n            age: y ? fmtAge(now - y.tRecv) : '—', evs: S.symRate ? fmt(S.symRate[sym] || 0, 1) : '—',\n            perMin: symMin, perEx: perEx\n        } };\n    });\n}\n\n// Estadísticas cada 1 s\nif (now - S.lastStats >= 1000) {\n    const dt = (now - S.lastStats) / 1000;\n    S.lastStats = now;\n    const rows = [], tech = [];\n    let tot = 0, latSum = 0, latN = 0, pipeMaxAll = 0;\n    const symTot = {}, symMin = {};\n    const names = Object.keys(S.meta).concat(Object.keys(S.ex).filter(function (k) { return !S.meta[k]; }));\n    for (const k of names) {\n        const e = getEx(k), w = e.w, meta = S.meta[k] || { exchange: k, type: '?', feed: '?', markets: {} };\n        tot += w.n; latSum += w.latSum; latN += w.latN;\n        if (w.pipeMax > pipeMaxAll) pipeMaxAll = w.pipeMax;\n        for (const s in w.bySym) symTot[s] = (symTot[s] || 0) + w.bySym[s];\n        const syms = S.symbols.map(function (sy) {\n            const b = e.m1[sy];                       // ventana deslizante de 60 s (fills reales)\n            const c = w.fillsBySym[sy] || 0;\n            b.sum += c - b.b[b.i]; b.b[b.i] = c; b.i = (b.i + 1) % 60; if (b.n < 60) b.n++;\n            symMin[sy] = (symMin[sy] || 0) + b.sum;\n            const L = e.last[sy], mk = meta.markets[sy];\n            if (!mk && !L) return { sym: sy, on: false };\n            return { sym: sy, on: true, market: mk || '?', evs: fmt((w.bySym[sy] || 0) / dt, 1), pm: b.sum,\n                partial: b.n < 60, price: L ? fmtP(L.price) : '—', age: L ? fmtAge(now - L.tRecv) : 'sin trades' };\n        });\n        rows.push({ ex: k, exchange: meta.exchange, type: meta.type, feed: meta.feed, state: e.state, reconnects: e.reconnects,\n            evs: fmt(w.n / dt, 1), syms: syms, lastMsgAge: e.lastMsgAge == null ? '—' : fmt(e.lastMsgAge / 1000, 1) });\n        tech.push({ ex: k, state: e.state, fps: fmt(w.frames / dt, 1), evs: fmt(w.n / dt, 1),\n            latAvg: w.latN ? fmt(w.latSum / w.latN, 0) : '—', latMin: w.latN ? fmt(w.latMin, 0) : '—', latMax: w.latN ? fmt(w.latMax, 0) : '—',\n            pipeAvg: w.n ? fmt(w.pipeSum / w.n, 1) : '—', pipeMax: w.n ? fmt(w.pipeMax, 0) : '—',\n            errs: e.parseErrors, total: e.total, reconnects: e.reconnects, err: e.lastError || e.lastParseError || '' });\n        e.w = newWin();\n    }\n    const totEvs = tot / dt;\n    S.symRate = {};\n    for (const s of S.symbols) S.symRate[s] = (symTot[s] || 0) / dt;\n    for (const s in symTot) if (!(s in S.symRate)) S.symRate[s] = symTot[s] / dt;\n    if (totEvs > S.peak.TOTAL) S.peak.TOTAL = totEvs;\n    for (const s in S.symRate) if (!(S.peak[s] >= S.symRate[s])) S.peak[s] = S.symRate[s];\n    const lagAvg = S.lag.n ? S.lag.sum / S.lag.n : 0, lagMax = S.lag.max;\n    S.lag = { max: 0, sum: 0, n: 0 };\n    const summary = {\n        totEvs: fmt(totEvs, 1), peakTot: fmt(S.peak.TOTAL, 1),\n        syms: S.symbols.map(function (sy) { return { sym: sy, evs: fmt(S.symRate[sy] || 0, 1), peak: fmt(S.peak[sy] || 0, 1), pm: symMin[sy] || 0 }; }),\n        total: S.totalEvents, uptime: Math.round((now - S.t0) / 1000),\n        lagAvg: fmt(lagAvg, 1), lagMax: fmt(lagMax, 0), pipeMax: fmt(pipeMaxAll, 0),\n        latAvg: latN ? fmt(latSum / latN, 0) : '—', renderMs: S.renderMs\n    };\n    // Tabla de mercados: un bloque por instrumento, una fila por mercado escuchado, ordenado por caudal real (trades/min)\n    const blocks = S.symbols.map(function (sy) {\n        const list = [];\n        for (const r of rows) {\n            const c = r.syms[S.symbols.indexOf(sy)];\n            if (c && c.on) list.push({ ex: r.ex, type: r.type, feed: r.feed, state: r.state, market: c.market, pm: c.pm, partial: c.partial, evs: c.evs, price: c.price, age: c.age });\n        }\n        list.sort(function (a, b) { return b.pm - a.pm || (a.ex < b.ex ? -1 : 1); });\n        return { sym: sy, pm: symMin[sy] || 0, evs: fmt(S.symRate[sy] || 0, 1), rows: list };\n    });\n    out[OUT_TABLE] = { payload: { blocks: blocks } };\n    out[OUT_TECH] = { payload: { rows: tech, summary: summary } };\n    out[OUT_EVS] = { payload: { now: now, pts: [{ s: 'TOTAL', x: now, y: +totEvs.toFixed(2) }].concat(\n        S.symbols.map(function (sy) { return { s: sy, x: now, y: +(S.symRate[sy] || 0).toFixed(2) }; })) } };\n    const fr = [\n        { s: 'lag event-loop máx', x: now, y: lagMax },\n        { s: 'cola Node-RED máx', x: now, y: pipeMaxAll }\n    ];\n    if (latN) fr.push({ s: 'exchange→local prom', x: now, y: Math.round(latSum / latN) });\n    out[OUT_FRESH] = { payload: { now: now, pts: fr } };\n    global.set('md_stats', { t: now, dt: dt, totEvs: totEvs, symRate: S.symRate, perMin: symMin, lagAvg: lagAvg, lagMax: lagMax, pipeMax: pipeMaxAll, rows: rows, tech: tech }, 'memory');\n}\nreturn out;",
+    "outputs": 13,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== MD CORE: estado en memoria (nunca crece sin límite) =====\nconst RING_SIZE = 5000;          // últimos N trades por símbolo (buffer circular, sin cambios desde etapa 1)\nconst META = {\"binance\":{\"exchange\":\"binance\",\"type\":\"spot\",\"feed\":\"@trade\",\"markets\":{\"BTC\":\"BTCUSDT\",\"ZEC\":\"ZECUSDT\",\"GMX\":\"GMXUSDT\"}},\"coinbase\":{\"exchange\":\"coinbase\",\"type\":\"spot\",\"feed\":\"matches\",\"markets\":{\"BTC\":\"BTC-USD\",\"ZEC\":\"ZEC-USD\"}},\"kraken\":{\"exchange\":\"kraken\",\"type\":\"spot\",\"feed\":\"trade (v2)\",\"markets\":{\"BTC\":\"BTC/USD\",\"ZEC\":\"ZEC/USD\",\"GMX\":\"GMX/USD\",\"XMR\":\"XMR/USD\"}},\"okx\":{\"exchange\":\"okx\",\"type\":\"spot\",\"feed\":\"trades-all\",\"markets\":{\"BTC\":\"BTC-USDT\",\"ZEC\":\"ZEC-USDT\",\"GMX\":\"GMX-USDT\"}},\"bybit\":{\"exchange\":\"bybit\",\"type\":\"spot\",\"feed\":\"publicTrade\",\"markets\":{\"BTC\":\"BTCUSDT\",\"ZEC\":\"ZECUSDT\",\"GMX\":\"GMXUSDT\"}},\"bitfinex\":{\"exchange\":\"bitfinex\",\"type\":\"spot\",\"feed\":\"trades (te)\",\"markets\":{\"BTC\":\"tBTCUSD\",\"ZEC\":\"tZECUSD\",\"XMR\":\"tXMRUSD\"}},\"gate\":{\"exchange\":\"gate\",\"type\":\"spot\",\"feed\":\"spot.trades\",\"markets\":{\"GMX\":\"GMX_USDT\",\"XMR\":\"XMR_USDT\"}},\"poloniex\":{\"exchange\":\"poloniex\",\"type\":\"spot\",\"feed\":\"trades\",\"markets\":{\"XMR\":\"XMR_USDT\"}},\"binance-perp\":{\"exchange\":\"binance\",\"type\":\"perp\",\"feed\":\"@aggTrade*\",\"markets\":{\"GMX\":\"GMXUSDT\",\"XMR\":\"XMRUSDT\"}},\"bybit-perp\":{\"exchange\":\"bybit\",\"type\":\"perp\",\"feed\":\"publicTrade\",\"markets\":{\"GMX\":\"GMXUSDT\",\"XMR\":\"XMRUSDT\"}},\"bitget\":{\"exchange\":\"bitget\",\"type\":\"spot\",\"feed\":\"trade\",\"markets\":{\"GMX\":\"GMXUSDT\"}},\"bitget-perp\":{\"exchange\":\"bitget\",\"type\":\"perp\",\"feed\":\"trade\",\"markets\":{\"GMX\":\"GMXUSDT\",\"XMR\":\"XMRUSDT\"}},\"kraken-perp\":{\"exchange\":\"kraken\",\"type\":\"perp\",\"feed\":\"trade\",\"markets\":{\"GMX\":\"PF_GMXUSD\",\"XMR\":\"PF_XMRUSD\"}},\"hyperliquid\":{\"exchange\":\"hyperliquid\",\"type\":\"perp\",\"feed\":\"trades\",\"markets\":{\"XMR\":\"XMR\"}}};           // fuentes configuradas: exchange, tipo (spot/perp), canal y par exacto por símbolo\nconst S = {\n    t0: Date.now(),\n    tickMs: 50,                  // período del inject \"tick\"\n    renderMs: 500,               // frecuencia de render UI (ajustable desde el dashboard)\n    lastRender: 0, lastStats: Date.now(), lastTick: 0,\n    lag: { max: 0, sum: 0, n: 0 },\n    ex: {}, sym: {},\n    totalEvents: 0,\n    peak: { TOTAL: 0 },\n    ring: {}, ringSize: RING_SIZE,\n    symbols: ['BTC', 'ZEC', 'GMX', 'XMR'],   // instrumentos con gráfico propio (el orden = salidas del nodo)\n    meta: META, expected: {}\n};\nfor (const sy of S.symbols) S.expected[sy] = Object.keys(META).filter(function (k) { return !!META[k].markets[sy]; });\ncontext.set('S', S, 'memory');\nglobal.set('md_ring', S.ring, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "stream normalizado",
+      "chart BTC",
+      "chart ZEC",
+      "chart GMX",
+      "chart XMR",
+      "card BTC",
+      "card ZEC",
+      "card GMX",
+      "card XMR",
+      "tabla fuentes",
+      "chart ev/s",
+      "chart frescura",
+      "métricas técnicas"
+    ],
+    "x": 1360,
+    "y": 340,
+    "wires": [
+      [
+        "prrr_stream_out"
+      ],
+      [
+        "prrr_ui_chart_btc"
+      ],
+      [
+        "prrr_ui_chart_zec"
+      ],
+      [
+        "prrr_ui_chart_gmx"
+      ],
+      [
+        "prrr_ui_chart_xmr"
+      ],
+      [
+        "prrr_ui_card_btc"
+      ],
+      [
+        "prrr_ui_card_zec"
+      ],
+      [
+        "prrr_ui_card_gmx"
+      ],
+      [
+        "prrr_ui_card_xmr"
+      ],
+      [
+        "prrr_ui_table"
+      ],
+      [
+        "prrr_ui_chart_evs"
+      ],
+      [
+        "prrr_ui_chart_fresh"
+      ],
+      [
+        "prrr_ui_tech"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_comment_core",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "Formato común del trade (msg.payload)",
+    "info": "```\n{\n  symbol: \"BTC\" | \"ZEC\" | \"GMX\" | \"XMR\",\n  quote: \"USD\" | \"USDT\" | \"USDC\",\n  market: par nativo del exchange,\n  exchange: \"binance\" | \"coinbase\" | \"kraken\" | \"okx\" | \"bybit\" | \"bitfinex\" | \"gate\" | \"poloniex\" | \"bitget\" | \"hyperliquid\",\n  source: fuente = exchange o exchange-perp (ej. \"binance-perp\"),\n  market_type: \"spot\" | \"perp\",\n  kind: \"trade\",\n  price: Number,\n  quantity: Number (unidades del activo),\n  side: \"BUY\" | \"SELL\" | null   // lado del AGRESOR (taker)\n  trade_id,\n  aggregated / trade_count: sólo Binance perp (@aggTrade agrupa fills),\n  exchange_timestamp: ms epoch (Number, puede tener decimales = µs),\n  exchange_ts_raw: timestamp original sin tocar,\n  local_receive_timestamp: ms epoch al recibir el frame WS,\n  raw: objeto original del exchange\n}\n```\nCada evento conserva su exchange y su fuente. No hay agregación ni promedios antes del core.",
+    "x": 1330,
+    "y": 260,
+    "wires": [],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_ui_card_btc",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "card BTC → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "card",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "BTC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1720,
+    "y": 200,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_chart_btc",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "precio BTC (core, sin uso: lo reemplaza PLOT feeder)",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "chart_core",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "BTC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1920,
+    "y": 200,
+    "wires": [
+      []
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_card_zec",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "card ZEC → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "card",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "ZEC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1720,
+    "y": 240,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_chart_zec",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "precio ZEC (core, sin uso: lo reemplaza PLOT feeder)",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "chart_core",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "ZEC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1920,
+    "y": 240,
+    "wires": [
+      []
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_card_gmx",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "card GMX → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "card",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "GMX",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1720,
+    "y": 280,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_chart_gmx",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "precio GMX (core, sin uso: lo reemplaza PLOT feeder)",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "chart_core",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "GMX",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1920,
+    "y": 280,
+    "wires": [
+      []
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_card_xmr",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "card XMR → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "card",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "XMR",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1720,
+    "y": 320,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_chart_xmr",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "precio XMR (core, sin uso: lo reemplaza PLOT feeder)",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "chart_core",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "XMR",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1920,
+    "y": 320,
+    "wires": [
+      []
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_ui_g_btc",
+    "type": "ui_group",
+    "name": "MERCADO",
+    "tab": "prrr_ui_tab_mkt",
+    "order": 1,
+    "disp": false,
+    "width": "6",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_mkt_mux",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "MERCADO mux (1 msg por ciclo de render)",
+    "func": "// Entradas etiquetadas por los nodos \"→ MERCADO\": msg.topic = 'chart' | 'card' | 'delta', msg.sym = activo.\n// Los puntos de precio se ACUMULAN entre envíos (no se pierde ningún punto); tarjetas y deltas: último valor.\n// Se envía 1 msg ~20 ms después del primer mensaje del ciclo → 1 redibujado por ciclo de render.\nlet B = context.get('B');\nif (!B) { B = { charts: {}, cards: {}, deltas: {}, pending: false }; context.set('B', B); }\nconst sym = msg.sym, p = msg.payload;\nif (!sym || !p) return null;\nif (msg.topic === 'chart') {\n    let c = B.charts[sym];\n    if (!c || p.reset) c = B.charts[sym] = { now: p.now, pts: [], reset: !!p.reset };\n    c.now = p.now; if (p.plotMs) c.plotMs = p.plotMs;\n    if (p.pts && p.pts.length) c.pts = c.pts.concat(p.pts);\n} else if (msg.topic === 'card') B.cards[sym] = p;\nelse if (msg.topic === 'delta') B.deltas[sym] = p;\nif (!B.pending) {\n    B.pending = true;\n    setTimeout(function () {\n        const out = { payload: { charts: B.charts, cards: B.cards, deltas: B.deltas } };\n        B.charts = {}; B.cards = {}; B.deltas = {}; B.pending = false;\n        node.send(out);\n    }, 20);\n}\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 2150,
+    "y": 260,
+    "wires": [
+      [
+        "prrr_ui_mkt"
+      ]
+    ],
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      [
+        "prrr_core",
+        "prrr_plot_feeder"
+      ]
+    ],
+    "id": "prrr_ui_mkt",
+    "name": "MERCADO (capa fija 100vw: 4 columnas precio + Δ)",
+    "group": "prrr_ui_g_btc",
+    "order": 1,
+    "width": 6,
+    "height": 1,
+    "format": "<style>\n/* MERCADO = capa fija a pantalla completa (100vw) debajo de la barra superior; ningún padre limita su ancho. */\n#prrr_mkt{position:fixed;left:0;right:0;bottom:0;top:48px;width:100vw;max-width:none;margin:0;box-sizing:border-box;padding:4px 8px 8px 8px;z-index:50;\n  display:flex;flex-direction:column;gap:6px;overflow:hidden;font-family:monospace}\n#prrr_mkt .bar{flex:none;height:34px;display:flex;align-items:center;gap:18px;font-size:14px;white-space:nowrap;overflow:hidden}\n#prrr_mkt .bar .grp{display:flex;align-items:center;gap:4px}\n#prrr_mkt .bar button{font:inherit;font-size:13px;padding:3px 9px;border:1px solid rgba(128,128,128,.5);border-radius:3px;background:transparent;color:inherit;cursor:pointer}\n#prrr_mkt .bar button.on{background:#1f77b4;border-color:#1f77b4;color:#fff}\n#prrr_mkt .bar button.pz.on{background:#e6a700;border-color:#e6a700}\n#prrr_mkt .bar .hint{opacity:.65;font-size:12px}\n#prrr_mkt .bar .st{font-weight:bold}\n#prrr_mkt .bar .st.live{color:#27ae60}#prrr_mkt .bar .st.paused{color:#e6a700}\n#prrr_mkt .grid4{flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:minmax(0,1fr);gap:8px}\n#prrr_mkt .col{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid rgba(128,128,128,.3);border-radius:4px;padding:6px 8px;box-sizing:border-box}\n#prrr_mkt .hd{display:flex;align-items:baseline;gap:10px;white-space:nowrap;overflow:hidden;height:42px;flex:none}\n#prrr_mkt .sym{font-size:22px;font-weight:bold}\n#prrr_mkt .px{font-size:34px;font-weight:bold;line-height:1.1}\n#prrr_mkt .meta{font-size:15px;opacity:.85;overflow:hidden;text-overflow:ellipsis}\n#prrr_mkt .up{color:#27ae60}#prrr_mkt .dn{color:#e74c3c}\n#prrr_mkt .ex{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px 8px;margin-top:5px;font-size:14px;line-height:1.25;height:76px;overflow:hidden;align-content:start;flex:none}\n#prrr_mkt .ex .c{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-left:3px solid #888;padding-left:4px}\n#prrr_mkt .ex .c.st{opacity:.45}\n#prrr_mkt .ex .n{opacity:.8}\n#prrr_mkt .lg{font-size:13px;line-height:18px;margin-top:5px;height:36px;overflow:hidden;flex:none}\n#prrr_mkt .lg span{margin-right:11px;white-space:nowrap;display:inline-block}\n#prrr_mkt .lg i{display:inline-block;width:12px;height:4px;margin-right:3px;vertical-align:middle}\n#prrr_mkt .pcv{flex:72 1 0;position:relative;min-height:0;margin-top:2px}\n#prrr_mkt .pcv .hist{position:absolute;left:90px;top:8px;font-size:12px;opacity:.75;pointer-events:none}\n#prrr_mkt .dwrap{flex:28 1 0;display:flex;flex-direction:column;min-height:0;border-top:1px solid rgba(128,128,128,.35);margin-top:6px;padding-top:4px}\n#prrr_mkt .dcv{flex:1;position:relative;min-height:0}\n#prrr_mkt canvas{position:absolute;left:0;top:0;width:100%;height:100%}\n#prrr_mkt .dhd{font-size:14px;white-space:nowrap;overflow:hidden}\n</style>\n<div id=\"prrr_mkt\">\n  <div class=\"bar\">\n    <span class=\"grp\"><b>Ventana visible</b>\n      <button data-w=\"300000\">5 min</button><button data-w=\"900000\">15 min</button><button data-w=\"3600000\">1 h</button><button data-w=\"14400000\">4 h</button></span>\n    <span class=\"grp\"><b>Ploteo</b>\n      <button data-p=\"100\">100 ms</button><button data-p=\"250\">250 ms</button><button data-p=\"500\">500 ms</button><button data-p=\"1000\">1000 ms</button>\n      <span class=\"hint\">= cada cuánto se envían puntos (min · máx · último del intervalo: no se pierden picos) · <span class=\"rd\"></span></span></span>\n    <span class=\"grp\"><button class=\"pz\">⏸ Pausar</button><button class=\"lv\">● Volver a vivo</button></span>\n    <span class=\"st live\">EN VIVO</span>\n    <span class=\"hint\">Δ BUY−SELL: siempre los últimos 60 s (buckets de 1 s), independiente de la ventana</span>\n  </div>\n  <div class=\"grid4\">\n  <div class=\"col\" id=\"mkt_BTC\">\n    <div class=\"hd\"><span class=\"sym\">BTC</span><span class=\"px\">—</span><span class=\"meta\">esperando trades…</span></div>\n    <div class=\"ex\"></div>\n    <div class=\"lg\"></div>\n    <div class=\"pcv\"><canvas></canvas><div class=\"hist\"></div></div>\n    <div class=\"dwrap\" id=\"mktd_BTC\"><div class=\"dhd\"><b>BTC</b> Δ BUY−SELL USD · últimos 60 s</div><div class=\"dcv\"><canvas></canvas></div></div>\n  </div>\n  <div class=\"col\" id=\"mkt_ZEC\">\n    <div class=\"hd\"><span class=\"sym\">ZEC</span><span class=\"px\">—</span><span class=\"meta\">esperando trades…</span></div>\n    <div class=\"ex\"></div>\n    <div class=\"lg\"></div>\n    <div class=\"pcv\"><canvas></canvas><div class=\"hist\"></div></div>\n    <div class=\"dwrap\" id=\"mktd_ZEC\"><div class=\"dhd\"><b>ZEC</b> Δ BUY−SELL USD · últimos 60 s</div><div class=\"dcv\"><canvas></canvas></div></div>\n  </div>\n  <div class=\"col\" id=\"mkt_GMX\">\n    <div class=\"hd\"><span class=\"sym\">GMX</span><span class=\"px\">—</span><span class=\"meta\">esperando trades…</span></div>\n    <div class=\"ex\"></div>\n    <div class=\"lg\"></div>\n    <div class=\"pcv\"><canvas></canvas><div class=\"hist\"></div></div>\n    <div class=\"dwrap\" id=\"mktd_GMX\"><div class=\"dhd\"><b>GMX</b> Δ BUY−SELL USD · últimos 60 s</div><div class=\"dcv\"><canvas></canvas></div></div>\n  </div>\n  <div class=\"col\" id=\"mkt_XMR\">\n    <div class=\"hd\"><span class=\"sym\">XMR</span><span class=\"px\">—</span><span class=\"meta\">esperando trades…</span></div>\n    <div class=\"ex\"></div>\n    <div class=\"lg\"></div>\n    <div class=\"pcv\"><canvas></canvas><div class=\"hist\"></div></div>\n    <div class=\"dwrap\" id=\"mktd_XMR\"><div class=\"dhd\"><b>XMR</b> Δ BUY−SELL USD · últimos 60 s</div><div class=\"dcv\"><canvas></canvas></div></div>\n  </div>\n  </div>\n</div>\n<script>\n(function (scope) {\n  var SYMS = [\"BTC\",\"ZEC\",\"GMX\",\"XMR\"], COL = {\"binance\":\"#f0b90b\",\"binance-perp\":\"#b8860b\",\"coinbase\":\"#1652f0\",\"kraken\":\"#7132f5\",\"kraken-perp\":\"#b39ddb\",\"okx\":\"#607d8b\",\"bybit\":\"#f7a600\",\"bybit-perp\":\"#ff6f00\",\"bitfinex\":\"#16b157\",\"gate\":\"#e53935\",\"poloniex\":\"#00897b\",\"bitget\":\"#00bcd4\",\"bitget-perp\":\"#006064\",\"hyperliquid\":\"#97fce4\",\"TOTAL\":\"#1f77b4\",\"BTC\":\"#ff7f0e\",\"ZEC\":\"#2ca02c\",\"GMX\":\"#d62728\",\"XMR\":\"#9467bd\"};\n  var CFG = { staleMs: 60000, padPct: 0.10, shrinkMs: 1500,\n              tiers: { A: { slotMs: 250, cap: 3600 }, B: { slotMs: 5000, cap: 2880 } } };   // igual que el servidor\n  var EXTRA = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];\n  // Historial de ploteo del navegador: vive en window → sobrevive a cambios de pestaña del Dashboard\n  var G = window.__prrrPlot || (window.__prrrPlot = { series: {}, order: {}, now: 0, plotMs: 250, snapAsked: false });\n  var UI = window.__prrrUI || (window.__prrrUI = { windowMs: 900000, paused: false, frozenAt: 0 });\n  try { var w0 = +localStorage.getItem('prrr_window_ms'); if ([300000, 900000, 3600000, 14400000].indexOf(w0) >= 0 && !window.__prrrUIinit) UI.windowMs = w0; } catch (e) {}\n  window.__prrrUIinit = true;\n  SYMS.forEach(function (s) { if (!G.series[s]) { G.series[s] = {}; G.order[s] = []; } });\n\n  function $(id) { return document.getElementById(id); }\n  function esc(s) { return String(s == null ? '' : s).replace(/[&<>\"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' }[c]; }); }\n  function fmtY(v, span) { var d = span >= 100 ? 0 : span >= 1 ? 2 : span >= 0.01 ? 4 : 6; return v.toFixed(d); }\n  function two(n) { return ('0' + n).slice(-2); }\n  function fmtT(t, secs) { var d = new Date(t); return two(d.getHours()) + ':' + two(d.getMinutes()) + (secs ? ':' + two(d.getSeconds()) : ''); }\n  function fmtDur(ms) { var m = Math.floor(ms / 60000); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m >= 1 ? m + ' min' : Math.round(ms / 1000) + ' s'; }\n  function fmtU(v) { var a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toFixed(0); }\n  function fit(cv, box) {\n    var W = box.clientWidth, H = box.clientHeight; if (W < 10 || H < 10) return null;\n    var dpr = window.devicePixelRatio || 1;\n    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }\n    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);\n    return { g: g, W: W, H: H };\n  }\n  // ---------- historial por serie: 2 niveles, typed arrays de tamaño fijo ----------\n  function newTier(d) { return { slotMs: d.slotMs, cap: d.cap, idx: new Float64Array(d.cap).fill(-1), lo: new Float64Array(d.cap), hi: new Float64Array(d.cap), last: new Float64Array(d.cap) }; }\n  function getSer(sym, src) {\n    var S = G.series[sym][src];\n    if (!S) { S = G.series[sym][src] = { A: newTier(CFG.tiers.A), B: newTier(CFG.tiers.B), lastT: 0, first: Infinity }; G.order[sym].push(src); }\n    return S;\n  }\n  function tadd(T, t, y, isLast) {\n    var s = Math.floor(t / T.slotMs), k = s % T.cap;\n    if (T.idx[k] !== s) { T.idx[k] = s; T.lo[k] = y; T.hi[k] = y; T.last[k] = y; }\n    else { if (y < T.lo[k]) T.lo[k] = y; if (y > T.hi[k]) T.hi[k] = y; if (isLast) T.last[k] = y; }\n  }\n  function ingest(sym, pts) {\n    for (var i = 0; i < pts.length; i++) {\n      var q = pts[i], S = getSer(sym, q.s), isLast = q.x >= S.lastT;\n      tadd(S.A, q.x, q.y, isLast); tadd(S.B, q.x, q.y, isLast);\n      if (isLast) S.lastT = q.x;\n      if (q.x < S.first) S.first = q.x;\n    }\n  }\n  function loadSnapshot(snap) {\n    SYMS.forEach(function (sym) {\n      var src = snap.syms[sym] || {};\n      Object.keys(src).forEach(function (name) {\n        var o = src[name], S = getSer(sym, name);\n        ['A', 'B'].forEach(function (tn) {\n          var T = S[tn], a = o[tn] || [];\n          for (var i = 0; i < a.length; i += 4) {\n            var s = a[i], k = s % T.cap;\n            if (T.idx[k] > s) continue;                   // ya hay algo más nuevo del navegador\n            T.idx[k] = s; T.lo[k] = a[i + 1]; T.hi[k] = a[i + 2]; T.last[k] = a[i + 3];\n            var t = s * T.slotMs; if (t < S.first) S.first = t;\n          }\n        });\n        if (o.lastT > S.lastT) S.lastT = o.lastT;\n      });\n    });\n    if (snap.now > G.now) G.now = snap.now;\n  }\n\n  // ---------- gráfico de precio ----------\n  function PriceChart(sym) {\n    var root = $('mkt_' + sym), self = this;\n    this.yLo = null; this.yHi = null; this.lastDraw = 0; this.staleKey = null; this.raf = 0; this.win = 0; this.buf = {};\n    this.color = function (n) { return COL[n] || EXTRA[G.order[sym].indexOf(n) % EXTRA.length]; };\n    this.sched = function () { if (!self.raf) self.raf = requestAnimationFrame(function () { self.raf = 0; self.draw(); }); };\n    this.legend = function (stale) {\n      var h = '';\n      G.order[sym].forEach(function (n) { var sv = !!stale[n]; h += '<span' + (sv ? ' style=\"opacity:.4\"' : '') + '><i style=\"background:' + self.color(n) + '\"></i>' + esc(n) + (sv ? ' (stale)' : '') + '</span>'; });\n      root.querySelector('.lg').innerHTML = h;\n    };\n    this.draw = function () {\n      var t0 = performance.now();\n      var r = fit(root.querySelector('.pcv canvas'), root.querySelector('.pcv')); if (!r) return;\n      var g = r.g, W = r.W, H = r.H, fg = getComputedStyle(root).color || '#888';\n      var L = 82, R = 8, T = 8, B = 22, pw = Math.max(10, Math.floor(W - L - R)), ph = H - T - B;\n      var win = UI.windowMs, tmax = UI.paused ? UI.frozenAt : G.now, tmin = tmax - win;\n      if (self.win !== win) { self.win = win; self.yLo = self.yHi = null; }\n      // nivel de detalle: A (250 ms) si cubre el rango visible; si no, B (5 s)\n      var A = CFG.tiers.A, tier = (win <= A.slotMs * A.cap && tmin >= G.now - A.slotMs * (A.cap - 2)) ? 'A' : 'B';\n      var msPerCol = win / pw, gapMs = Math.max(CFG.staleMs, 3 * CFG.tiers[tier].slotMs, 3 * msPerCol);\n      // 1) agregación por columna de píxel: min / max / último (nunca más puntos que la resolución útil)\n      var lo = Infinity, hi = -Infinity, alo = Infinity, ahi = -Infinity, stale = {}, earliest = Infinity, anyData = false;\n      var srcs = G.order[sym], cols = {};\n      for (var si = 0; si < srcs.length; si++) {\n        var n = srcs[si], S = G.series[sym][n], Tt = S[tier];\n        var b = self.buf[n]; if (!b || b.lo.length !== pw) b = self.buf[n] = { lo: new Float64Array(pw), hi: new Float64Array(pw), last: new Float64Array(pw), has: new Uint8Array(pw) };\n        b.has.fill(0);\n        var s0 = Math.floor(tmin / Tt.slotMs), s1 = Math.floor(tmax / Tt.slotMs), cnt = 0, lastT = -Infinity;\n        if (s1 - s0 + 1 > Tt.cap) s0 = s1 - Tt.cap + 1;\n        for (var s = s0; s <= s1; s++) {\n          var k = s % Tt.cap; if (Tt.idx[k] !== s) continue;\n          var tc = s * Tt.slotMs + Tt.slotMs / 2; if (tc > tmax) tc = tmax;\n          var c = Math.floor((tc - tmin) / msPerCol); if (c < 0) continue; if (c >= pw) c = pw - 1;\n          var l = Tt.lo[k], h = Tt.hi[k], z = Tt.last[k];\n          if (!b.has[c]) { b.has[c] = 1; b.lo[c] = l; b.hi[c] = h; b.last[c] = z; }\n          else { if (l < b.lo[c]) b.lo[c] = l; if (h > b.hi[c]) b.hi[c] = h; b.last[c] = z; }\n          cnt++; lastT = s * Tt.slotMs;\n          if (s * Tt.slotMs < earliest) earliest = Math.max(s * Tt.slotMs, tmin);\n        }\n        if (!cnt) continue;\n        anyData = true; cols[n] = b;\n        var fresh = Math.min(S.lastT, tmax) >= tmax - CFG.staleMs && lastT >= tmax - CFG.staleMs - Tt.slotMs;\n        if (!fresh) stale[n] = true;\n        for (var c2 = 0; c2 < pw; c2++) if (b.has[c2]) {\n          if (b.lo[c2] < alo) alo = b.lo[c2]; if (b.hi[c2] > ahi) ahi = b.hi[c2];\n          if (fresh) { if (b.lo[c2] < lo) lo = b.lo[c2]; if (b.hi[c2] > hi) hi = b.hi[c2]; }\n        }\n      }\n      var sk = Object.keys(stale).sort().join(',') + '|' + srcs.length; if (sk !== self.staleKey) { self.staleKey = sk; self.legend(stale); }\n      var hist = root.querySelector('.hist');\n      g.font = '13px monospace'; g.fillStyle = fg; g.strokeStyle = fg;\n      if (!anyData) { self.yLo = self.yHi = null; hist.textContent = ''; g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 36); g.globalAlpha = 1; return; }\n      if (!isFinite(lo)) { lo = alo; hi = ahi; }\n      // historial menor que la ventana: se muestra lo disponible, sin rellenar hacia atrás\n      hist.textContent = (earliest > tmin + Math.max(2 * msPerCol, 2000)) ? 'historial disponible: ' + fmtDur(tmax - earliest) + ' de ' + fmtDur(win) : '';\n      // 2) autoescala Y (visible, sin stale, ±10 %, expande ya / contrae suave)\n      var ctr = (hi + lo) / 2, minSpan = Math.max(Math.abs(ctr) * 2e-5, 1e-9);\n      if (hi - lo < minSpan) { lo = ctr - minSpan / 2; hi = ctr + minSpan / 2; }\n      var pad = (hi - lo) * CFG.padPct, tLo = lo - pad, tHi = hi + pad;\n      var nowMs = performance.now(), dt = self.lastDraw ? Math.min(nowMs - self.lastDraw, 1000) : 1000; self.lastDraw = nowMs;\n      var a = 1 - Math.exp(-dt / CFG.shrinkMs);\n      if (self.yLo === null || tLo < self.yLo) self.yLo = tLo; else self.yLo += (tLo - self.yLo) * a;\n      if (self.yHi === null || tHi > self.yHi) self.yHi = tHi; else self.yHi += (tHi - self.yHi) * a;\n      var eps = (tHi - tLo) * 0.002, animating = Math.abs(self.yLo - tLo) > eps || Math.abs(self.yHi - tHi) > eps;\n      if (!animating) { self.yLo = tLo; self.yHi = tHi; }\n      lo = self.yLo; hi = self.yHi;\n      var Y = function (v) { return T + (hi - v) / (hi - lo) * ph; };\n      // 3) ejes\n      g.globalAlpha = .18; g.lineWidth = 1; g.beginPath();\n      for (var q = 0; q <= 5; q++) { var yy = T + ph * q / 5; g.moveTo(L, yy); g.lineTo(L + pw, yy); }\n      for (var q2 = 0; q2 <= 6; q2++) { var xx = L + pw * q2 / 6; g.moveTo(xx, T); g.lineTo(xx, T + ph); }\n      g.stroke(); g.globalAlpha = .8;\n      g.textAlign = 'right'; for (var q3 = 0; q3 <= 5; q3++) { var v = hi - (hi - lo) * q3 / 5; g.fillText(fmtY(v, hi - lo), L - 4, T + ph * q3 / 5 + 4); }\n      g.textAlign = 'center'; for (var q4 = 0; q4 <= 6; q4++) { var tt = tmin + win * q4 / 6; g.fillText(fmtT(tt, win <= 900000), Math.min(Math.max(L + pw * q4 / 6, L + 30), L + pw - 30), H - 5); }\n      // 4) series: por columna, rango vertical min–máx + escalón desde el último anterior; huecos largos = corte\n      g.lineWidth = 1.5; g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();\n      for (var sj = 0; sj < srcs.length; sj++) {\n        var nm = srcs[sj], bb = cols[nm]; if (!bb) continue;\n        g.globalAlpha = stale[nm] ? 0.35 : 1; g.strokeStyle = self.color(nm); g.fillStyle = self.color(nm);\n        g.beginPath();\n        var prevC = -1, prevY = 0, lx = 0, ly = 0;\n        for (var cc = 0; cc < pw; cc++) {\n          if (!bb.has[cc]) continue;\n          var x = L + cc + 0.5, yl = Y(bb.lo[cc]), yh = Y(bb.hi[cc]), yz = Y(bb.last[cc]);\n          if (prevC < 0 || (cc - prevC) * msPerCol > gapMs) g.moveTo(x, yz);\n          else g.lineTo(x, prevY);\n          if (yh !== yl) { g.lineTo(x, yh); g.lineTo(x, yl); }\n          g.lineTo(x, yz);\n          prevC = cc; prevY = yz; lx = x; ly = yz;\n        }\n        g.stroke();\n        g.beginPath(); g.arc(lx, ly, 2.4, 0, 6.283); g.fill();        // último dato real (no se extiende hacia adelante)\n      }\n      g.restore(); g.globalAlpha = 1;\n      window.__prrrDrawMs = (window.__prrrDrawMs || 0) * 0.9 + (performance.now() - t0) * 0.1;   // medición de costo\n      if (animating) self.sched();\n    };\n  }\n\n  // ---------- Δ BUY−SELL 60 s ----------\n  function DeltaChart(sym) {\n    var root = $('mktd_' + sym), self = this; this.data = null; this.raf = 0;\n    this.sched = function () { if (!self.raf) self.raf = requestAnimationFrame(function () { self.raf = 0; self.draw(); }); };\n    this.feed = function (p) { self.data = p; if (!UI.paused) self.sched(); };\n    this.draw = function () {\n      var data = self.data; if (!data) return;\n      root.querySelector('.dhd').innerHTML = '<b>' + sym + '</b> Δ BUY−SELL USD · últimos 60 s (buckets 1 s) · último <b>' + esc(data.last || '—') + '</b>';\n      var r = fit(root.querySelector('.dcv canvas'), root.querySelector('.dcv')); if (!r) return;\n      var g = r.g, W = r.W, H = r.H, fg = getComputedStyle(root).color || '#888';\n      var pts = data.pts || [], mx = 0;\n      for (var i = 0; i < pts.length; i++) mx = Math.max(mx, Math.abs(pts[i].v));\n      var L = 64, T = 4, B = 4, pw = W - L - 4, ph = H - T - B, mid = T + ph / 2;\n      g.font = '13px monospace'; g.fillStyle = fg; g.strokeStyle = fg; g.globalAlpha = .7; g.textAlign = 'right';\n      g.fillText(mx ? '+' + fmtU(mx) : '0', L - 4, T + 12); g.fillText(mx ? '-' + fmtU(mx) : '0', L - 4, T + ph - 2);\n      g.globalAlpha = .3; g.beginPath(); g.moveTo(L, mid); g.lineTo(L + pw, mid); g.stroke(); g.globalAlpha = 1;\n      var bw = pw / 60;\n      for (var j = 0; j < pts.length; j++) {\n        var p = pts[j], x = L + (60 - pts.length + j) * bw;\n        if (p.syn) { g.fillStyle = '#9e9e9e'; g.globalAlpha = .6; g.fillRect(x + bw * .3, mid - 1, Math.max(1, bw * .4), 2); g.globalAlpha = 1; continue; }\n        var h = mx ? Math.abs(p.v) / mx * (ph / 2) : 0;\n        g.fillStyle = p.v >= 0 ? '#27ae60' : '#e74c3c';\n        g.fillRect(x + 1, p.v >= 0 ? mid - h : mid, Math.max(1, bw - 2), Math.max(1, h));\n      }\n    };\n  }\n\n  // ---------- cabecera + exchanges ----------\n  function card(sym, p) {\n    var root = $('mkt_' + sym); if (!root || !p) return;\n    var cls = p.side === 'BUY' ? 'up' : p.side === 'SELL' ? 'dn' : '';\n    var px = root.querySelector('.px'); px.textContent = p.price; px.className = 'px ' + cls;\n    root.querySelector('.meta').innerHTML = esc(p.exchange) + ' · <b class=\"' + cls + '\">' + esc(p.side || '?') + '</b> · edad ' + esc(p.age) + ' · <b>' + esc(p.evs) + '</b> ev/s · <b>' + esc(p.perMin) + '</b> trades/min';\n    var h = '';\n    (p.perEx || []).forEach(function (e) {\n      var c = e.side === 'BUY' ? 'up' : e.side === 'SELL' ? 'dn' : '';\n      h += '<div class=\"c' + (e.off || !e.pm ? ' st' : '') + '\" style=\"border-left-color:' + (COL[e.ex] || '#888') + '\" title=\"' + esc(e.ex) + ': ' + e.pm + ' trades en 60 s\">'\n        + '<span class=\"n\">' + esc(e.ex) + '</span> <b>' + e.pm + '</b><span class=\"n\">/m</span><br><b class=\"' + c + '\">' + esc(e.price) + '</b> <span class=\"n\">' + esc(e.age) + '</span></div>';\n    });\n    root.querySelector('.ex').innerHTML = h;\n  }\n\n  // ---------- controles compartidos ----------\n  var P = {}, D = {}, lastAll = 0, pendAll = 0;\n  // Redibujado limitado por resolución útil: nunca más seguido que el ploteo, y como máximo cada 1 s\n  // cuando 1 píxel representa varios segundos (p.ej. 4 h: 1 px ≈ 21 s). Los datos se ingieren igual.\n  function redrawMs() {\n    var c = $('mkt_' + SYMS[0]), w = c ? Math.max(200, c.querySelector('.pcv').clientWidth - 90) : 600;\n    return Math.max(G.plotMs, Math.min(1000, UI.windowMs / w / 4));\n  }\n  function drawAll(force) {\n    var now = performance.now(), iv = redrawMs();\n    if (!force && now - lastAll < iv - 5) { if (!pendAll) pendAll = setTimeout(function () { pendAll = 0; drawAll(true); }, iv - (now - lastAll)); return; }\n    lastAll = now; SYMS.forEach(function (s) { if (P[s]) P[s].sched(); });\n    var hint = $('prrr_mkt') && $('prrr_mkt').querySelector('.rd'); if (hint) hint.textContent = 'redibujo cada ' + Math.round(iv) + ' ms';\n  }\n  function bar() {\n    var el = $('prrr_mkt'); if (!el) return;\n    el.querySelectorAll('button[data-w]').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-w') === UI.windowMs); });\n    el.querySelectorAll('button[data-p]').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-p') === G.plotMs); });\n    el.querySelector('.pz').classList.toggle('on', UI.paused);\n    var st = el.querySelector('.st');\n    st.className = 'st ' + (UI.paused ? 'paused' : 'live');\n    st.textContent = UI.paused ? 'PAUSADO · vista fija en ' + fmtT(UI.frozenAt, true) + ' (los datos siguen entrando)' : 'EN VIVO';\n  }\n  function wire() {\n    var el = $('prrr_mkt'); if (!el || el.__wired) return; el.__wired = true;\n    el.querySelectorAll('button[data-w]').forEach(function (b) { b.addEventListener('click', function () {\n      UI.windowMs = +b.getAttribute('data-w'); try { localStorage.setItem('prrr_window_ms', UI.windowMs); } catch (e) {} bar(); drawAll(true); }); });\n    el.querySelectorAll('button[data-p]').forEach(function (b) { b.addEventListener('click', function () {\n      scope.send({ topic: 'render_ms', payload: +b.getAttribute('data-p') }); }); });\n    el.querySelector('.pz').addEventListener('click', function () {\n      if (!UI.paused) { UI.paused = true; UI.frozenAt = G.now; } else { UI.paused = false; }\n      bar(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); });\n    el.querySelector('.lv').addEventListener('click', function () {\n      UI.paused = false; bar(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); });\n  }\n  function place() {\n    var el = $('prrr_mkt'); if (!el) return;\n    var tb = document.querySelector('md-toolbar'), top = 0;\n    if (tb) { var r = tb.getBoundingClientRect(); if (r.bottom > 0 && r.bottom < window.innerHeight / 3) top = Math.round(r.bottom); }\n    el.style.top = top + 'px';\n    if (!el.style.background) {\n      var bg = '', cands = [document.querySelector('md-content'), document.body, document.documentElement];\n      for (var i = 0; i < cands.length && !bg; i++) { if (!cands[i]) continue; var c = getComputedStyle(cands[i]).backgroundColor; if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') bg = c; }\n      el.style.background = bg || '#ffffff';\n    }\n  }\n  function init() {\n    SYMS.forEach(function (s) { if (!P[s] && $('mkt_' + s)) { P[s] = new PriceChart(s); D[s] = new DeltaChart(s); } });\n    wire(); bar();\n    if (!G.snapAsked) { G.snapAsked = true; scope.send({ topic: 'snapshot_req' }); }   // página nueva: pedir historial al servidor\n  }\n  scope.$watch('msg', function (m) {\n    if (!m || !m.payload) return;\n    init();\n    var b = m.payload;\n    if (b.snapshot) { loadSnapshot(b.snapshot); drawAll(true); return; }\n    var plotChanged = false;\n    SYMS.forEach(function (s) {\n      var c = b.charts && b.charts[s];\n      if (c) {\n        if (c.now > G.now) G.now = c.now;\n        if (c.plotMs && c.plotMs !== G.plotMs) { G.plotMs = c.plotMs; plotChanged = true; }\n        if (c.pts && c.pts.length) ingest(s, c.pts);        // se ingiere siempre, aun en pausa\n      }\n      if (b.cards && b.cards[s]) card(s, b.cards[s]);\n      if (b.deltas && b.deltas[s] && D[s]) D[s].feed(b.deltas[s]);\n    });\n    if (plotChanged) bar();\n    if (!UI.paused) drawAll();\n  });\n  var onRes = function () { place(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); };\n  window.addEventListener('resize', onRes);\n  scope.$on('$destroy', function () { window.removeEventListener('resize', onRes); });\n  setTimeout(function () { init(); onRes(); }, 0);\n  setTimeout(onRes, 500);\n})(scope);\n</script>",
+    "x": 2360,
+    "y": 260,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_evs",
+    "name": "Eventos/s (canvas)",
+    "group": "prrr_ui_g_thr",
+    "order": 1,
+    "width": 12,
+    "height": 5,
+    "format": "<div style=\"font:12px monospace;opacity:.8\">Eventos/s (1 s) — últimos 15 min</div><div style=\"height:calc(100% - 16px)\"><style>\n#prrr_cv_evs{position:relative;width:100%;height:100%;display:flex;flex-direction:column}\n#prrr_cv_evs .lg{font:11px monospace;line-height:1.3;min-height:15px}\n#prrr_cv_evs .lg span{display:inline-block;margin-right:10px;white-space:nowrap}\n#prrr_cv_evs .lg i{display:inline-block;width:10px;height:3px;margin-right:4px;vertical-align:middle}\n#prrr_cv_evs .cv{flex:1;position:relative;min-height:0}\n#prrr_cv_evs canvas{position:absolute;left:0;top:0;width:100%;height:100%}\n</style>\n<div id=\"prrr_cv_evs\"><div class=\"lg\"></div><div class=\"cv\"><canvas></canvas></div></div>\n<script>\n(function (scope) {\n  var ID = \"prrr_cv_evs\", CFG = {\"windowMs\":900000,\"maxPts\":1000,\"step\":false,\"ymin0\":true,\"title\":\"x\",\"staleMs\":60000,\"padPct\":0.1,\"shrinkMs\":1500}, COL = {\"binance\":\"#f0b90b\",\"binance-perp\":\"#b8860b\",\"coinbase\":\"#1652f0\",\"kraken\":\"#7132f5\",\"kraken-perp\":\"#b39ddb\",\"okx\":\"#607d8b\",\"bybit\":\"#f7a600\",\"bybit-perp\":\"#ff6f00\",\"bitfinex\":\"#16b157\",\"gate\":\"#e53935\",\"poloniex\":\"#00897b\",\"bitget\":\"#00bcd4\",\"bitget-perp\":\"#006064\",\"hyperliquid\":\"#97fce4\",\"TOTAL\":\"#1f77b4\",\"BTC\":\"#ff7f0e\",\"ZEC\":\"#2ca02c\",\"GMX\":\"#d62728\",\"XMR\":\"#9467bd\"};\n  var EXTRA = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];\n  var st = { s: {}, order: [], now: 0, raf: 0, yLo: null, yHi: null, lastDraw: 0, staleKey: '' };\n  function root() { return document.getElementById(ID); }\n  function color(name) { return COL[name] || EXTRA[st.order.indexOf(name) % EXTRA.length]; }\n  function sched() { if (!st.raf) st.raf = requestAnimationFrame(draw); }\n  function fmtY(v, span) { var d = span >= 100 ? 0 : span >= 1 ? 2 : span >= 0.01 ? 4 : 6; return v.toFixed(d); }\n  function fmtT(t) { var d = new Date(t); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2); }\n  function legend() {\n    var r = root(); if (!r) return;\n    var h = '';\n    var sl = st.staleKey ? st.staleKey.split(',') : [];\n    st.order.forEach(function (n) { var sv = sl.indexOf(n) >= 0; h += '<span' + (sv ? ' style=\"opacity:.45\" title=\"sin trades recientes: no define la escala\"' : '') + '><i style=\"background:' + color(n) + '\"></i>' + n + (sv ? ' (stale)' : '') + '</span>'; });\n    r.querySelector('.lg').innerHTML = h || (CFG.title ? '' : '<span>esperando trades…</span>');\n  }\n  function draw() {\n    st.raf = 0;\n    var r = root(); if (!r) return;\n    var cv = r.querySelector('canvas'), box = r.querySelector('.cv');\n    var W = box.clientWidth, H = box.clientHeight; if (W < 10 || H < 10) return;\n    var dpr = window.devicePixelRatio || 1;\n    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }\n    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);\n    var fg = getComputedStyle(r).color || '#888';\n    var tmax = st.now || Date.now(), tmin = tmax - CFG.windowMs;\n    // --- Autoescala Y (sólo presentación): min/max de los datos VISIBLES de series con datos actuales ---\n    var lo = Infinity, hi = -Infinity, alo = Infinity, ahi = -Infinity, stale = {};\n    st.order.forEach(function (n) {\n      var d = st.s[n];\n      var k = 0; while (k < d.length && d[k][0] < tmin) k++;           // lo que salió de la ventana deja de existir para la vista\n      if (k > 0) d.splice(0, k);\n      if (!d.length) return;\n      var fresh = tmax - d[d.length - 1][0] <= CFG.staleMs;\n      if (!fresh) stale[n] = true;\n      for (var i = 0; i < d.length; i++) {\n        var y = d[i][1];\n        if (y < alo) alo = y; if (y > ahi) ahi = y;\n        if (fresh) { if (y < lo) lo = y; if (y > hi) hi = y; }\n      }\n    });\n    if (!isFinite(lo)) { lo = alo; hi = ahi; }                        // todas stale: usar igualmente lo visible\n    var sk = Object.keys(stale).sort().join(','); if (sk !== st.staleKey) { st.staleKey = sk; legend(); }\n    var L = 62, R = 8, T = 6, B = 18, pw = W - L - R, ph = H - T - B;\n    g.font = '10px monospace'; g.fillStyle = fg; g.strokeStyle = fg;\n    if (!isFinite(lo)) { st.yLo = st.yHi = null; g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 14); g.globalAlpha = 1; return; }\n    if (CFG.ymin0) lo = Math.min(0, lo);\n    var ctr = (hi + lo) / 2, minSpan = CFG.ymin0 ? 1 : Math.max(Math.abs(ctr) * 2e-5, 1e-9);   // p.ej. BTC 60000 → rango mínimo 1.2 USD\n    if (hi - lo < minSpan) { lo = ctr - minSpan / 2; hi = ctr + minSpan / 2; if (CFG.ymin0 && lo < 0 && ahi >= 0) { hi -= lo; lo = 0; } }\n    var pad = (hi - lo) * CFG.padPct;\n    var tLo = CFG.ymin0 && lo >= 0 ? lo : lo - pad, tHi = hi + pad;\n    // expandir inmediatamente; contraer suave (exponencial) cuando un extremo viejo sale de la ventana\n    var nowMs = (window.performance && performance.now()) || Date.now();\n    var dt = st.lastDraw ? Math.min(nowMs - st.lastDraw, 1000) : 1000; st.lastDraw = nowMs;\n    var a = 1 - Math.exp(-dt / CFG.shrinkMs);\n    if (st.yLo === null || tLo < st.yLo) st.yLo = tLo; else st.yLo += (tLo - st.yLo) * a;\n    if (st.yHi === null || tHi > st.yHi) st.yHi = tHi; else st.yHi += (tHi - st.yHi) * a;\n    var eps = (tHi - tLo) * 0.002;\n    var animating = Math.abs(st.yLo - tLo) > eps || Math.abs(st.yHi - tHi) > eps;\n    if (!animating) { st.yLo = tLo; st.yHi = tHi; }\n    lo = st.yLo; hi = st.yHi;\n    var X = function (t) { return L + (t - tmin) / (tmax - tmin) * pw; }, Y = function (v) { return T + (hi - v) / (hi - lo) * ph; };\n    g.globalAlpha = .18; g.lineWidth = 1; g.beginPath();\n    for (var q = 0; q <= 4; q++) { var yy = T + ph * q / 4; g.moveTo(L, yy); g.lineTo(L + pw, yy); }\n    for (var q2 = 0; q2 <= 5; q2++) { var xx = L + pw * q2 / 5; g.moveTo(xx, T); g.lineTo(xx, T + ph); }\n    g.stroke(); g.globalAlpha = .75;\n    g.textAlign = 'right'; for (var q3 = 0; q3 <= 4; q3++) { var v = hi - (hi - lo) * q3 / 4; g.fillText(fmtY(v, hi - lo), L - 4, T + ph * q3 / 4 + 3); }\n    g.textAlign = 'center'; for (var q4 = 0; q4 <= 5; q4++) { var tt = tmin + (tmax - tmin) * q4 / 5; g.fillText(fmtT(tt), Math.min(Math.max(L + pw * q4 / 5, L + 24), L + pw - 24), H - 5); }\n    g.globalAlpha = 1; g.lineWidth = 1.4;\n    g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();\n    st.order.forEach(function (n) {\n      var d = st.s[n]; if (!d.length) return;\n      g.globalAlpha = stale[n] ? 0.35 : 1;                              // stale: se ve, pero no define la escala\n      g.strokeStyle = color(n); g.fillStyle = color(n); g.beginPath();\n      var px = X(d[0][0]), py = Y(d[0][1]); g.moveTo(px, py);\n      for (var i = 1; i < d.length; i++) {\n        var nx = X(d[i][0]), ny = Y(d[i][1]);\n        if (CFG.step) g.lineTo(nx, py);\n        g.lineTo(nx, ny); px = nx; py = ny;\n      }\n      g.stroke();\n      g.beginPath(); g.arc(px, py, 2.2, 0, 6.283); g.fill();          // último dato real (sin extender el precio hacia adelante)\n    });\n    g.restore(); g.globalAlpha = 1;\n    if (animating) sched();                                             // sigue contrayendo cuadro a cuadro hasta converger\n  }\n  scope.$watch('msg', function (m) {\n    if (!m || !m.payload) return;\n    var p = m.payload;\n    if (p.reset) { st.s = {}; st.order = []; st.yLo = st.yHi = null; st.staleKey = ''; legend(); }\n    if (p.now) st.now = p.now;\n    var pts = p.pts || [], newSeries = false;\n    for (var i = 0; i < pts.length; i++) {\n      var q = pts[i], d = st.s[q.s];\n      if (!d) { d = st.s[q.s] = []; st.order.push(q.s); newSeries = true; }\n      if (d.length && q.x < d[d.length - 1][0]) continue;          // descarta fuera de orden\n      d.push([q.x, q.y]);\n      if (d.length > CFG.maxPts) d.splice(0, d.length - CFG.maxPts);\n    }\n    if (newSeries) legend();\n    sched();\n  });\n  var onRes = function () { sched(); };\n  window.addEventListener('resize', onRes);\n  scope.$on('$destroy', function () { window.removeEventListener('resize', onRes); if (st.raf) cancelAnimationFrame(st.raf); });\n  setTimeout(function () { legend(); sched(); }, 0);\n})(scope);\n</script></div>",
+    "x": 1720,
+    "y": 380,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_fresh",
+    "name": "Frescura (canvas)",
+    "group": "prrr_ui_g_thr",
+    "order": 2,
+    "width": 12,
+    "height": 5,
+    "format": "<div style=\"font:12px monospace;opacity:.8\">Frescura (ms): lag event-loop · cola Node-RED · exchange→local — últimos 15 min</div><div style=\"height:calc(100% - 16px)\"><style>\n#prrr_cv_fresh{position:relative;width:100%;height:100%;display:flex;flex-direction:column}\n#prrr_cv_fresh .lg{font:11px monospace;line-height:1.3;min-height:15px}\n#prrr_cv_fresh .lg span{display:inline-block;margin-right:10px;white-space:nowrap}\n#prrr_cv_fresh .lg i{display:inline-block;width:10px;height:3px;margin-right:4px;vertical-align:middle}\n#prrr_cv_fresh .cv{flex:1;position:relative;min-height:0}\n#prrr_cv_fresh canvas{position:absolute;left:0;top:0;width:100%;height:100%}\n</style>\n<div id=\"prrr_cv_fresh\"><div class=\"lg\"></div><div class=\"cv\"><canvas></canvas></div></div>\n<script>\n(function (scope) {\n  var ID = \"prrr_cv_fresh\", CFG = {\"windowMs\":900000,\"maxPts\":1000,\"step\":false,\"ymin0\":true,\"title\":\"x\",\"staleMs\":60000,\"padPct\":0.1,\"shrinkMs\":1500}, COL = {\"binance\":\"#f0b90b\",\"binance-perp\":\"#b8860b\",\"coinbase\":\"#1652f0\",\"kraken\":\"#7132f5\",\"kraken-perp\":\"#b39ddb\",\"okx\":\"#607d8b\",\"bybit\":\"#f7a600\",\"bybit-perp\":\"#ff6f00\",\"bitfinex\":\"#16b157\",\"gate\":\"#e53935\",\"poloniex\":\"#00897b\",\"bitget\":\"#00bcd4\",\"bitget-perp\":\"#006064\",\"hyperliquid\":\"#97fce4\",\"TOTAL\":\"#1f77b4\",\"BTC\":\"#ff7f0e\",\"ZEC\":\"#2ca02c\",\"GMX\":\"#d62728\",\"XMR\":\"#9467bd\"};\n  var EXTRA = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];\n  var st = { s: {}, order: [], now: 0, raf: 0, yLo: null, yHi: null, lastDraw: 0, staleKey: '' };\n  function root() { return document.getElementById(ID); }\n  function color(name) { return COL[name] || EXTRA[st.order.indexOf(name) % EXTRA.length]; }\n  function sched() { if (!st.raf) st.raf = requestAnimationFrame(draw); }\n  function fmtY(v, span) { var d = span >= 100 ? 0 : span >= 1 ? 2 : span >= 0.01 ? 4 : 6; return v.toFixed(d); }\n  function fmtT(t) { var d = new Date(t); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2); }\n  function legend() {\n    var r = root(); if (!r) return;\n    var h = '';\n    var sl = st.staleKey ? st.staleKey.split(',') : [];\n    st.order.forEach(function (n) { var sv = sl.indexOf(n) >= 0; h += '<span' + (sv ? ' style=\"opacity:.45\" title=\"sin trades recientes: no define la escala\"' : '') + '><i style=\"background:' + color(n) + '\"></i>' + n + (sv ? ' (stale)' : '') + '</span>'; });\n    r.querySelector('.lg').innerHTML = h || (CFG.title ? '' : '<span>esperando trades…</span>');\n  }\n  function draw() {\n    st.raf = 0;\n    var r = root(); if (!r) return;\n    var cv = r.querySelector('canvas'), box = r.querySelector('.cv');\n    var W = box.clientWidth, H = box.clientHeight; if (W < 10 || H < 10) return;\n    var dpr = window.devicePixelRatio || 1;\n    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }\n    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);\n    var fg = getComputedStyle(r).color || '#888';\n    var tmax = st.now || Date.now(), tmin = tmax - CFG.windowMs;\n    // --- Autoescala Y (sólo presentación): min/max de los datos VISIBLES de series con datos actuales ---\n    var lo = Infinity, hi = -Infinity, alo = Infinity, ahi = -Infinity, stale = {};\n    st.order.forEach(function (n) {\n      var d = st.s[n];\n      var k = 0; while (k < d.length && d[k][0] < tmin) k++;           // lo que salió de la ventana deja de existir para la vista\n      if (k > 0) d.splice(0, k);\n      if (!d.length) return;\n      var fresh = tmax - d[d.length - 1][0] <= CFG.staleMs;\n      if (!fresh) stale[n] = true;\n      for (var i = 0; i < d.length; i++) {\n        var y = d[i][1];\n        if (y < alo) alo = y; if (y > ahi) ahi = y;\n        if (fresh) { if (y < lo) lo = y; if (y > hi) hi = y; }\n      }\n    });\n    if (!isFinite(lo)) { lo = alo; hi = ahi; }                        // todas stale: usar igualmente lo visible\n    var sk = Object.keys(stale).sort().join(','); if (sk !== st.staleKey) { st.staleKey = sk; legend(); }\n    var L = 62, R = 8, T = 6, B = 18, pw = W - L - R, ph = H - T - B;\n    g.font = '10px monospace'; g.fillStyle = fg; g.strokeStyle = fg;\n    if (!isFinite(lo)) { st.yLo = st.yHi = null; g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 14); g.globalAlpha = 1; return; }\n    if (CFG.ymin0) lo = Math.min(0, lo);\n    var ctr = (hi + lo) / 2, minSpan = CFG.ymin0 ? 1 : Math.max(Math.abs(ctr) * 2e-5, 1e-9);   // p.ej. BTC 60000 → rango mínimo 1.2 USD\n    if (hi - lo < minSpan) { lo = ctr - minSpan / 2; hi = ctr + minSpan / 2; if (CFG.ymin0 && lo < 0 && ahi >= 0) { hi -= lo; lo = 0; } }\n    var pad = (hi - lo) * CFG.padPct;\n    var tLo = CFG.ymin0 && lo >= 0 ? lo : lo - pad, tHi = hi + pad;\n    // expandir inmediatamente; contraer suave (exponencial) cuando un extremo viejo sale de la ventana\n    var nowMs = (window.performance && performance.now()) || Date.now();\n    var dt = st.lastDraw ? Math.min(nowMs - st.lastDraw, 1000) : 1000; st.lastDraw = nowMs;\n    var a = 1 - Math.exp(-dt / CFG.shrinkMs);\n    if (st.yLo === null || tLo < st.yLo) st.yLo = tLo; else st.yLo += (tLo - st.yLo) * a;\n    if (st.yHi === null || tHi > st.yHi) st.yHi = tHi; else st.yHi += (tHi - st.yHi) * a;\n    var eps = (tHi - tLo) * 0.002;\n    var animating = Math.abs(st.yLo - tLo) > eps || Math.abs(st.yHi - tHi) > eps;\n    if (!animating) { st.yLo = tLo; st.yHi = tHi; }\n    lo = st.yLo; hi = st.yHi;\n    var X = function (t) { return L + (t - tmin) / (tmax - tmin) * pw; }, Y = function (v) { return T + (hi - v) / (hi - lo) * ph; };\n    g.globalAlpha = .18; g.lineWidth = 1; g.beginPath();\n    for (var q = 0; q <= 4; q++) { var yy = T + ph * q / 4; g.moveTo(L, yy); g.lineTo(L + pw, yy); }\n    for (var q2 = 0; q2 <= 5; q2++) { var xx = L + pw * q2 / 5; g.moveTo(xx, T); g.lineTo(xx, T + ph); }\n    g.stroke(); g.globalAlpha = .75;\n    g.textAlign = 'right'; for (var q3 = 0; q3 <= 4; q3++) { var v = hi - (hi - lo) * q3 / 4; g.fillText(fmtY(v, hi - lo), L - 4, T + ph * q3 / 4 + 3); }\n    g.textAlign = 'center'; for (var q4 = 0; q4 <= 5; q4++) { var tt = tmin + (tmax - tmin) * q4 / 5; g.fillText(fmtT(tt), Math.min(Math.max(L + pw * q4 / 5, L + 24), L + pw - 24), H - 5); }\n    g.globalAlpha = 1; g.lineWidth = 1.4;\n    g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();\n    st.order.forEach(function (n) {\n      var d = st.s[n]; if (!d.length) return;\n      g.globalAlpha = stale[n] ? 0.35 : 1;                              // stale: se ve, pero no define la escala\n      g.strokeStyle = color(n); g.fillStyle = color(n); g.beginPath();\n      var px = X(d[0][0]), py = Y(d[0][1]); g.moveTo(px, py);\n      for (var i = 1; i < d.length; i++) {\n        var nx = X(d[i][0]), ny = Y(d[i][1]);\n        if (CFG.step) g.lineTo(nx, py);\n        g.lineTo(nx, ny); px = nx; py = ny;\n      }\n      g.stroke();\n      g.beginPath(); g.arc(px, py, 2.2, 0, 6.283); g.fill();          // último dato real (sin extender el precio hacia adelante)\n    });\n    g.restore(); g.globalAlpha = 1;\n    if (animating) sched();                                             // sigue contrayendo cuadro a cuadro hasta converger\n  }\n  scope.$watch('msg', function (m) {\n    if (!m || !m.payload) return;\n    var p = m.payload;\n    if (p.reset) { st.s = {}; st.order = []; st.yLo = st.yHi = null; st.staleKey = ''; legend(); }\n    if (p.now) st.now = p.now;\n    var pts = p.pts || [], newSeries = false;\n    for (var i = 0; i < pts.length; i++) {\n      var q = pts[i], d = st.s[q.s];\n      if (!d) { d = st.s[q.s] = []; st.order.push(q.s); newSeries = true; }\n      if (d.length && q.x < d[d.length - 1][0]) continue;          // descarta fuera de orden\n      d.push([q.x, q.y]);\n      if (d.length > CFG.maxPts) d.splice(0, d.length - CFG.maxPts);\n    }\n    if (newSeries) legend();\n    sched();\n  });\n  var onRes = function () { sched(); };\n  window.addEventListener('resize', onRes);\n  scope.$on('$destroy', function () { window.removeEventListener('resize', onRes); if (st.raf) cancelAnimationFrame(st.raf); });\n  setTimeout(function () { legend(); sched(); }, 0);\n})(scope);\n</script></div>",
+    "x": 1920,
+    "y": 380,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_table",
+    "name": "Tabla mercados (pares, trades/min)",
+    "group": "prrr_ui_g_perf",
+    "order": 1,
+    "width": 24,
+    "height": 8,
+    "format": "<style>\n.prrr-mk{display:flex;flex-wrap:wrap;gap:6px 14px;font-family:monospace;font-size:11.5px}\n.prrr-mk .blk{flex:1 1 calc(50% - 14px);min-width:0;overflow:hidden}\n.prrr-mk .ttl{font-size:13px;margin:2px 0}\n.prrr-mk table{width:100%;border-collapse:collapse}\n.prrr-mk th,.prrr-mk td{padding:1px 5px;text-align:right;border-bottom:1px solid rgba(128,128,128,.22);white-space:nowrap}\n.prrr-mk th{opacity:.75;font-weight:bold}\n.prrr-mk .l{text-align:left}\n.prrr-mk .perp{color:#8e7cc3;font-weight:bold}\n.prrr-mk .off{color:#888;text-decoration:line-through}.prrr-mk .connecting{color:#e6a700}.prrr-mk .down{color:#e74c3c}\n.prrr-mk .zero{opacity:.45}\n.prrr-mk .note{flex-basis:100%;opacity:.7;font-size:11px}\n</style>\n<div class=\"prrr-mk\" ng-if=\"msg.payload\">\n  <div class=\"blk\" ng-repeat=\"b in msg.payload.blocks track by b.sym\">\n    <div class=\"ttl\"><b>{{b.sym}}</b> · {{b.rows.length}} mercados · <b>{{b.pm}}</b> trades/min · {{b.evs}} ev/s</div>\n    <table>\n      <tr><th class=\"l\">fuente</th><th class=\"l\">tipo</th><th class=\"l\">par exacto</th><th class=\"l\">canal</th><th>trades/min</th><th>ev/s</th><th>último</th><th>edad</th></tr>\n      <tr ng-repeat=\"r in b.rows track by r.ex\" ng-class=\"{'zero': !r.pm}\">\n        <td class=\"l\" ng-class=\"r.state\" title=\"WS: {{r.state}}\"><b>{{r.ex}}</b></td><td class=\"l\" ng-class=\"{'perp': r.type==='perp'}\">{{r.type}}</td>\n        <td class=\"l\">{{r.market}}</td><td class=\"l\">{{r.feed}}</td>\n        <td><b>{{r.pm}}</b><span ng-if=\"r.partial\">*</span></td><td>{{r.evs}}</td><td>{{r.price}}</td><td>{{r.age}}</td>\n      </tr>\n    </table>\n  </div>\n  <div class=\"note\">trades/min = trades reales (fills) en los últimos 60 s · * = ventana aún incompleta · * en canal: binance-perp usa @aggTrade, 1 evento puede agrupar varios fills (se cuentan los fills reales) · fuente en rojo/amarillo/tachada = WS caído/conectando/apagado · nada se interpola ni se repite</div>\n</div>\n<div ng-if=\"!msg.payload\" style=\"font-family:monospace\">esperando estadísticas…</div>",
+    "x": 1720,
+    "y": 420,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_tech",
+    "name": "Métricas técnicas",
+    "group": "prrr_ui_g_tech",
+    "order": 1,
+    "width": 24,
+    "height": 7,
+    "format": "<style>\n.prrr-t{width:100%;border-collapse:collapse;font-family:monospace;font-size:12px}\n.prrr-t th,.prrr-t td{padding:2px 6px;text-align:right;border-bottom:1px solid rgba(128,128,128,.25);white-space:nowrap}\n.prrr-t th{font-weight:bold;opacity:.8}\n.prrr-t .l{text-align:left}\n.prrr-t .connected{color:#27ae60;font-weight:bold}.prrr-t .off{color:#888}\n.prrr-t .connecting{color:#e6a700}.prrr-t .down{color:#e74c3c;font-weight:bold}\n.prrr-t .err{color:#e67e22;max-width:420px;overflow:hidden;text-overflow:ellipsis}\n.prrr-sum{font-family:monospace;font-size:13px;margin:2px 0 6px 0}\n.prrr-sum span{display:inline-block;margin-right:18px}\n</style>\n<div ng-if=\"msg.payload\" style=\"overflow-x:auto\">\n<div class=\"prrr-sum\">\n  <span><b>TOTAL</b> {{msg.payload.summary.totEvs}} ev/s (pico {{msg.payload.summary.peakTot}})</span>\n  <span ng-repeat=\"y in msg.payload.summary.syms track by y.sym\"><b>{{y.sym}}</b> {{y.evs}} ev/s · {{y.pm}} trades/min (pico {{y.peak}} ev/s)</span>\n</div>\n<div class=\"prrr-sum\">\n  <span><b>lag event-loop</b> {{msg.payload.summary.lagAvg}} / {{msg.payload.summary.lagMax}} ms (prom/máx)</span>\n  <span><b>cola NR máx</b> {{msg.payload.summary.pipeMax}} ms</span>\n  <span><b>exch→local prom</b> {{msg.payload.summary.latAvg}} ms</span>\n  <span><b>render</b> {{msg.payload.summary.renderMs}} ms</span>\n  <span><b>eventos</b> {{msg.payload.summary.total}} en {{msg.payload.summary.uptime}} s</span>\n</div>\n<table class=\"prrr-t\">\n<tr>\n  <th class=\"l\">Fuente</th><th class=\"l\">WS</th><th>reconex</th><th>frames/s</th><th>ev/s</th>\n  <th>exch→local ms prom/mín/máx</th><th>cola NR ms prom/máx</th><th>err parse</th><th>eventos</th><th class=\"l\">último error</th>\n</tr>\n<tr ng-repeat=\"r in msg.payload.rows track by r.ex\">\n  <td class=\"l\"><b>{{r.ex}}</b></td><td class=\"l\" ng-class=\"r.state\">{{r.state}}</td><td>{{r.reconnects}}</td><td>{{r.fps}}</td><td><b>{{r.evs}}</b></td>\n  <td>{{r.latAvg}} / {{r.latMin}} / {{r.latMax}}</td><td>{{r.pipeAvg}} / {{r.pipeMax}}</td>\n  <td>{{r.errs}}</td><td>{{r.total}}</td><td class=\"l err\" title=\"{{r.err}}\">{{r.err}}</td>\n</tr>\n</table>\n</div>\n<div ng-if=\"!msg.payload\" style=\"font-family:monospace\">esperando estadísticas…</div>",
+    "x": 1920,
+    "y": 420,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_stream_out",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "MD STREAM →",
+    "mode": "link",
+    "links": [
+      "prrr_example_in",
+      "prrr_s2_stream_in",
+      "prrr_plot_in"
+    ],
+    "x": 1700,
+    "y": 120,
+    "wires": [],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_example_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "ejemplo consumidor",
+    "links": [
+      "prrr_stream_out"
+    ],
+    "x": 1880,
+    "y": 120,
+    "wires": [
+      [
+        "prrr_example_dbg"
+      ]
+    ],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_example_dbg",
+    "type": "debug",
+    "z": "prrr_tab_main",
+    "name": "trades normalizados (activar para ver)",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 2140,
+    "y": 120,
+    "wires": [],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_render_init",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "ploteo inicial 250 ms",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "",
+    "payload": "250",
+    "payloadType": "num",
+    "x": 170,
+    "y": 1740,
+    "wires": [
+      [
+        "prrr_ui_render"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_render",
+    "type": "ui_dropdown",
+    "z": "prrr_tab_main",
+    "name": "Frecuencia de render",
+    "label": "Ploteo",
+    "tooltip": "Intervalo de ploteo: cada cuánto se envían/dibujan puntos (min/máx/último por intervalo). No afecta la adquisición ni los cálculos",
+    "place": "",
+    "group": "prrr_ui_g_ctrl",
+    "order": 50,
+    "width": 6,
+    "height": 1,
+    "passthru": true,
+    "multiple": false,
+    "options": [
+      {
+        "label": "100 ms",
+        "value": 100,
+        "type": "num"
+      },
+      {
+        "label": "250 ms",
+        "value": 250,
+        "type": "num"
+      },
+      {
+        "label": "500 ms",
+        "value": 500,
+        "type": "num"
+      },
+      {
+        "label": "1000 ms",
+        "value": 1000,
+        "type": "num"
+      }
+    ],
+    "payload": "",
+    "topic": "render_ms",
+    "topicType": "str",
+    "className": "",
+    "x": 420,
+    "y": 1740,
+    "wires": [
+      [
+        "prrr_core",
+        "prrr_plot_feeder"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_reset",
+    "type": "ui_button",
+    "z": "prrr_tab_main",
+    "name": "Reset stats",
+    "group": "prrr_ui_g_ctrl",
+    "order": 51,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "Reset stats",
+    "tooltip": "Reinicia picos, contadores y gráficos",
+    "color": "",
+    "bgcolor": "",
+    "className": "",
+    "icon": "fa-eraser",
+    "payload": "reset",
+    "payloadType": "str",
+    "topic": "reset",
+    "topicType": "str",
+    "x": 400,
+    "y": 1790,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_reconnect",
+    "type": "ui_button",
+    "z": "prrr_tab_main",
+    "name": "Reconectar todos",
+    "group": "prrr_ui_g_ctrl",
+    "order": 52,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "Reconectar",
+    "tooltip": "Fuerza reconexión de todos los WS habilitados",
+    "color": "",
+    "bgcolor": "",
+    "className": "",
+    "icon": "fa-refresh",
+    "payload": "reconnect",
+    "payloadType": "str",
+    "topic": "reconnect",
+    "topicType": "str",
+    "x": 410,
+    "y": 1840,
+    "wires": [
+      [
+        "prrr_binance_ws",
+        "prrr_coinbase_ws",
+        "prrr_kraken_ws",
+        "prrr_okx_ws",
+        "prrr_bybit_ws",
+        "prrr_bitfinex_ws",
+        "prrr_gate_ws",
+        "prrr_poloniex_ws",
+        "prrr_binance_perp_ws",
+        "prrr_bybit_perp_ws",
+        "prrr_bitget_ws",
+        "prrr_bitget_perp_ws",
+        "prrr_kraken_perp_ws",
+        "prrr_hyperliquid_ws"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores de este tab",
+    "scope": null,
+    "uncaught": false,
+    "x": 180,
+    "y": 1930,
+    "wires": [
+      [
+        "prrr_catch_dbg"
+      ]
+    ],
+    "g": "prrr_grp_err"
+  },
+  {
+    "id": "prrr_catch_dbg",
+    "type": "debug",
+    "z": "prrr_tab_main",
+    "name": "errores",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "error",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 400,
+    "y": 1930,
+    "wires": [],
+    "g": "prrr_grp_err"
+  },
+  {
+    "id": "prrr_comment_main",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "PRRR — Exchange WS → normalizador → MD BUS → MD CORE → (stream | dashboard)",
+    "info": "Cada fuente: `autostart → switch dashboard → WS Connector (subflow) → normalizador → link out MD BUS`.\n\nFuente = exchange + tipo de mercado (spot o perp). Los perpetuos se muestran como fuentes separadas (ej. `binance-perp`) y nunca se mezclan con el spot.\n\nPara agregar una fuente: copiar un grupo, cambiar env vars de la instancia del subflow (EXCHANGE, WS_URL, SUBSCRIBE, PING_*), escribir su normalizador al formato común, sumar su entrada en META (On Start del core) y enlazar el link out al `MD BUS`.",
+    "x": 360,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "prrr_ui_g_s2",
+    "type": "ui_group",
+    "name": "MEMORIA / NORMALIZADOR",
+    "tab": "prrr_ui_tab",
+    "order": 9,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_s2_stream_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "MD STREAM (RAW)",
+    "links": [
+      "prrr_stream_out"
+    ],
+    "x": 190,
+    "y": 2060,
+    "wires": [
+      [
+        "prrr_s2_norm"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 100 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.5",
+    "topic": "tick",
+    "x": 180,
+    "y": 2120,
+    "wires": [
+      [
+        "prrr_s2_norm"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "NORMALIZADOR 1 s (OHLC · vol USD · BUY/SELL · delta)",
+    "func": "// Entradas: trades del RAW (topic 'trade') y 'tick' (cada 100 ms). No modifica el mensaje RAW.\n// Salida: 1 msg por segundo cerrado: { topic:'bucket_1s', t, payload:[bucket BTC, ZEC, GMX, XMR] }\nconst N = context.get('N', 'memory');\nconst now = Date.now();\n\nfunction newAcc() {\n    return { o: 0, h: -Infinity, l: Infinity, c: 0, tO: Infinity, tC: -Infinity, n: 0, events: 0,\n        vol: 0, buy: 0, sell: 0, unk: 0, ex: new Set(), src: new Set(), spot: 0, perp: 0 };\n}\n\nif (msg.topic === 'trade') {\n    const t = msg.payload;\n    const acc = N.open[t.symbol];\n    if (!acc) return null;                                   // activo fuera de la memoria\n    const ts = t.local_receive_timestamp, sec = Math.floor(ts / 1000);\n    const usd = t.price * t.quantity;\n    if (!isFinite(ts) || !(t.price > 0) || !isFinite(usd) || usd < 0) { N.stats.badTrades++; return null; }\n    if (sec < N.nextSec) {                                   // su segundo ya se cerró\n        if (ts < N.stats.startedAt + 1000) N.stats.preStart++; else N.stats.late[t.symbol]++;\n    } else {\n        let a = acc.get(sec);\n        if (!a) { a = newAcc(); acc.set(sec, a); }\n        const fills = t.trade_count || 1;                    // Binance perp @aggTrade: fills reales dentro del evento\n        if (ts < a.tO) { a.tO = ts; a.o = t.price; }\n        if (ts >= a.tC) { a.tC = ts; a.c = t.price; }\n        if (t.price > a.h) a.h = t.price;\n        if (t.price < a.l) a.l = t.price;\n        a.n += fills; a.events++; a.vol += usd;\n        if (t.side === 'BUY') a.buy += usd;\n        else if (t.side === 'SELL') a.sell += usd;\n        else a.unk += usd;                                   // lado desconocido: cuenta en total, nunca en BUY/SELL\n        a.ex.add(t.exchange); a.src.add(t.source || t.exchange);\n        if (t.market_type === 'perp') a.perp += fills; else a.spot += fills;\n    }\n}\n\n// Cierre de buckets (en ticks y también al llegar trades)\nconst out = [];\nconst r2 = (v) => Math.round(v * 100) / 100;\nif (now - N.nextSec * 1000 > N.cfg.maxCatchUpSec * 1000) N.nextSec = Math.floor(now / 1000) - N.cfg.maxCatchUpSec;\nwhile (now >= (N.nextSec + 1) * 1000 + N.cfg.graceMs) {\n    const sec = N.nextSec, arr = [];\n    for (const sy of N.cfg.symbols) {\n        const m = N.open[sy], a = m.get(sec);\n        m.delete(sec);\n        for (const k of m.keys()) if (k < sec) m.delete(k); // higiene: nunca quedan segundos viejos abiertos\n        let b;\n        if (a && a.n > 0) {\n            b = { symbol: sy, t: sec * 1000, open: a.o, high: a.h, low: a.l, close: a.c,\n                trades: a.n, events: a.events, vol_usd: r2(a.vol), buy_usd: r2(a.buy), sell_usd: r2(a.sell),\n                delta_usd: r2(a.buy - a.sell), unknown_side_usd: r2(a.unk),\n                exchanges: a.ex.size, sources: a.src.size, spot_trades: a.spot, perp_trades: a.perp,\n                synthetic: false, status: 'trade' };\n            N.lastClose[sy] = a.c;\n        } else {\n            const p = N.lastClose[sy];                       // precio ARRASTRADO, no actividad\n            b = { symbol: sy, t: sec * 1000, open: p, high: p, low: p, close: p,\n                trades: 0, events: 0, vol_usd: 0, buy_usd: 0, sell_usd: 0, delta_usd: 0, unknown_side_usd: 0,\n                exchanges: 0, sources: 0, spot_trades: 0, perp_trades: 0,\n                synthetic: true, status: p == null ? 'no_price' : 'no_trade' };\n        }\n        arr.push(b);\n    }\n    N.nextSec++; N.stats.closed++;\n    out.push({ topic: 'bucket_1s', t: sec * 1000, payload: arr });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== NORMALIZADOR TEMPORAL 1 s =====\n// Reloj común = local_receive_timestamp (reloj de la notebook): todos los activos y exchanges quedan\n// alineados sobre los mismos segundos aunque los relojes de los exchanges difieran entre sí.\n// Un bucket [t, t+1000) se cierra cuando el reloj local pasa t + 1000 + GRACE_MS (margen para la cola interna).\nconst CFG = {\n    symbols: ['BTC', 'ZEC', 'GMX', 'XMR'],\n    graceMs: 500,           // trades que llegan después del cierre = \"tardíos\" (se cuentan, no se inventan ni se mueven)\n    maxCatchUpSec: 1800     // tras una suspensión larga no se generan más buckets que los que caben en memoria\n};\nconst N = {\n    cfg: CFG,\n    nextSec: Math.floor(Date.now() / 1000) + 1,   // el primer segundo parcial se descarta (no sería un bucket exacto)\n    open: {}, lastClose: {},\n    stats: { late: {}, preStart: 0, closed: 0, badTrades: 0, startedAt: Date.now() }\n};\nfor (const sy of CFG.symbols) { N.open[sy] = new Map(); N.lastClose[sy] = null; N.stats.late[sy] = 0; }\ncontext.set('N', N, 'memory');\nglobal.set('md_norm_1s_stats', N.stats, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "bucket_1s (4 activos por segundo)"
+    ],
+    "x": 480,
+    "y": 2080,
+    "wires": [
+      [
+        "prrr_s2_mem"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_mem",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "MEMORIA 1 s (RAM · 1800 × 4)",
+    "func": "// Guarda cada bucket en su buffer circular.\n// Salida 1: el mismo msg (hacia BUCKETS 1s → : persistencia futura / indicadores).\n// Salida 2: aviso para la vista del dashboard.\nconst MEM = context.get('MEM', 'memory');\nif (msg.topic !== 'bucket_1s' || !Array.isArray(msg.payload)) return null;\nfor (const b of msg.payload) {\n    let r = MEM.series[b.symbol];\n    if (!r) r = MEM.series[b.symbol] = { size: MEM.size, buf: new Array(MEM.size), idx: 0, count: 0 };\n    r.buf[r.idx] = b; r.idx = (r.idx + 1) % r.size; if (r.count < r.size) r.count++;\n    MEM.stored++;\n}\nMEM.lastT = msg.t;\nreturn [msg, { topic: 'mem_updated', t: msg.t }];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== MEMORIA 1 s (RAM) =====\n// Buffer circular por activo de tamaño fijo: nunca crece. Estructura pensada para persistir después\n// (cada bucket es una fila plana: symbol, t, open, high, low, close, trades, vol_usd, buy_usd, sell_usd, ...).\n// Lectura desde otros nodos: const M = global.get('md_mem_1s', 'memory');  M.series.BTC → { size, buf, idx, count }\n//   el más nuevo:  buf[(idx - 1 + size) % size]   ·   el más viejo:  buf[(idx - count + size) % size]\nconst SIZE = 1800;   // 30 min de buckets de 1 s\nconst MEM = { resolutionMs: 1000, size: SIZE, series: {}, lastT: null, stored: 0 };\nfor (const sy of ['BTC', 'ZEC', 'GMX', 'XMR']) MEM.series[sy] = { size: SIZE, buf: new Array(SIZE), idx: 0, count: 0 };\ncontext.set('MEM', MEM, 'memory');\nglobal.set('md_mem_1s', MEM, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "bucket_1s → persistencia / indicadores",
+      "aviso vista"
+    ],
+    "x": 800,
+    "y": 2080,
+    "wires": [
+      [
+        "prrr_s2_buckets_out"
+      ],
+      [
+        "prrr_s2_ui"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_buckets_out",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "BUCKETS 1s →",
+    "mode": "link",
+    "links": [
+      "prrr_s2_example_in"
+    ],
+    "x": 1010,
+    "y": 2060,
+    "wires": [],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_example_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "ejemplo consumidor buckets",
+    "links": [
+      "prrr_s2_buckets_out"
+    ],
+    "x": 1170,
+    "y": 2060,
+    "wires": [
+      [
+        "prrr_s2_example_dbg"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_example_dbg",
+    "type": "debug",
+    "z": "prrr_tab_main",
+    "name": "buckets 1 s (activar para ver)",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1420,
+    "y": 2060,
+    "wires": [],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_ui",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "vista MEMORIA (tabla + delta 60 s)",
+    "func": "// Vista de validación (1 vez por segundo): tabla + delta BUY−SELL de los últimos 60 buckets por activo.\nconst MEM = global.get('md_mem_1s', 'memory');\nconst NS = global.get('md_norm_1s_stats', 'memory') || { late: {} };\nif (!MEM) return null;\nconst now = Date.now();\nconst SYMS = ['BTC', 'ZEC', 'GMX', 'XMR'];\nconst usd = (v) => v == null ? '—' : (Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.abs(v) >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toFixed(0));\nconst px = (p) => p == null ? '—' : (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(3) : p.toPrecision(5));\nconst hms = (t) => { const d = new Date(t); return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2); };\nconst age = (ms) => ms < 60000 ? (ms / 1000).toFixed(0) + ' s' : Math.floor(ms / 60000) + ' min ' + Math.floor(ms % 60000 / 1000) + ' s';\nconst rows = [], charts = [];\nfor (const sy of SYMS) {\n    const r = MEM.series[sy];\n    if (!r || !r.count) { rows.push({ sym: sy, count: 0 }); charts.push({ payload: { sym: sy, pts: [] } }); continue; }\n    const last = r.buf[(r.idx - 1 + r.size) % r.size], oldest = r.buf[(r.idx - r.count + r.size) % r.size];\n    let syn = 0, tr60 = 0;\n    const pts = [];\n    for (let i = 0; i < r.count; i++) {\n        const b = r.buf[(r.idx - 1 - i + r.size * 2) % r.size];\n        if (b.synthetic) syn++;\n        if (i < 60) { pts.push({ t: b.t, v: b.delta_usd, syn: b.synthetic }); tr60 += b.trades; }\n    }\n    pts.reverse();\n    rows.push({ sym: sy, count: r.count, cover: age(r.count * 1000), oldestAge: age(now - oldest.t), lastT: hms(last.t), lastAge: ((now - last.t) / 1000).toFixed(1),\n        status: last.status, price: px(last.close), trades: last.trades, vol: usd(last.vol_usd), buy: usd(last.buy_usd), sell: usd(last.sell_usd),\n        delta: usd(last.delta_usd), dsign: last.delta_usd > 0 ? 1 : last.delta_usd < 0 ? -1 : 0, unk: usd(last.unknown_side_usd),\n        ex: last.exchanges, spot: last.spot_trades, perp: last.perp_trades,\n        synPct: (syn * 100 / r.count).toFixed(0), tr60: tr60, late: NS.late[sy] || 0 });\n    charts.push({ payload: { sym: sy, pts: pts, last: usd(last.delta_usd) } });\n}\nreturn [{ payload: { rows: rows, size: MEM.size, stored: MEM.stored } }].concat(charts);",
+    "outputs": 5,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "tabla",
+      "delta BTC",
+      "delta ZEC",
+      "delta GMX",
+      "delta XMR"
+    ],
+    "x": 1060,
+    "y": 2160,
+    "wires": [
+      [
+        "prrr_s2_ui_table"
+      ],
+      [
+        "prrr_s2_ui_d_btc"
+      ],
+      [
+        "prrr_s2_ui_d_zec"
+      ],
+      [
+        "prrr_s2_ui_d_gmx"
+      ],
+      [
+        "prrr_s2_ui_d_xmr"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_s2_ui_table",
+    "name": "MEMORIA tabla",
+    "group": "prrr_ui_g_s2",
+    "order": 1,
+    "width": 24,
+    "height": 3,
+    "format": "<style>\n.prrr-mem{width:100%;border-collapse:collapse;font-family:monospace;font-size:11.5px}\n.prrr-mem th,.prrr-mem td{padding:2px 5px;text-align:right;border-bottom:1px solid rgba(128,128,128,.25);white-space:nowrap}\n.prrr-mem th{opacity:.8}\n.prrr-mem .l{text-align:left}\n.prrr-mem .up{color:#27ae60}.prrr-mem .dn{color:#e74c3c}\n.prrr-mem .syn{color:#e6a700;font-weight:bold}.prrr-mem .real{color:#27ae60;font-weight:bold}\n.prrr-mem-note{font-family:monospace;font-size:11px;opacity:.7;margin-top:2px}\n</style>\n<div ng-if=\"msg.payload\" style=\"overflow-x:auto\">\n<table class=\"prrr-mem\">\n<tr><th class=\"l\">activo</th><th>buckets</th><th>cobertura</th><th>más viejo</th><th>último bucket</th><th class=\"l\">estado</th><th>close</th>\n<th>trades</th><th>vol USD</th><th>BUY USD</th><th>SELL USD</th><th>delta</th><th>sin lado USD</th><th>exch</th><th>spot/perp</th><th>trades 60 s</th><th>no_trade %</th><th>tardíos</th></tr>\n<tr ng-repeat=\"r in msg.payload.rows track by r.sym\">\n  <td class=\"l\"><b>{{r.sym}}</b></td><td>{{r.count}}/{{msg.payload.size}}</td><td>{{r.cover}}</td><td>{{r.oldestAge}}</td><td>{{r.lastT}} <small>({{r.lastAge}} s)</small></td>\n  <td class=\"l\" ng-class=\"r.status==='trade' ? 'real' : 'syn'\">{{r.status}}</td><td>{{r.price}}</td>\n  <td><b>{{r.trades}}</b></td><td>{{r.vol}}</td><td class=\"up\">{{r.buy}}</td><td class=\"dn\">{{r.sell}}</td>\n  <td ng-class=\"{'up': r.dsign>0, 'dn': r.dsign<0}\"><b>{{r.delta}}</b></td><td>{{r.unk}}</td><td>{{r.ex}}</td><td>{{r.spot}}/{{r.perp}}</td>\n  <td>{{r.tr60}}</td><td>{{r.synPct}}</td><td>{{r.late}}</td>\n</tr>\n</table>\n<div class=\"prrr-mem-note\">buckets exactos de 1 s (reloj local de recepción) · último bucket = segundo recién cerrado · no_trade = precio arrastrado sin actividad (trades y volúmenes en 0) · sin lado = volumen cuyo agresor no se pudo determinar (no suma a BUY/SELL) · USD incluye pares USDT/USDC</div>\n</div>\n<div ng-if=\"!msg.payload\" style=\"font-family:monospace\">esperando el primer bucket…</div>",
+    "x": 1370,
+    "y": 2120,
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_ui_d_btc",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "delta BTC → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "delta",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "BTC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1370,
+    "y": 2160,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_ui_d_zec",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "delta ZEC → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "delta",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "ZEC",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1370,
+    "y": 2200,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_ui_d_gmx",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "delta GMX → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "delta",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "GMX",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1370,
+    "y": 2240,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_ui_d_xmr",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "delta XMR → MERCADO",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "delta",
+        "tot": "str"
+      },
+      {
+        "t": "set",
+        "p": "sym",
+        "pt": "msg",
+        "to": "XMR",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1370,
+    "y": 2280,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ]
+    ],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_s2_comment",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "Formato del bucket 1 s (una fila por activo y segundo)",
+    "info": "```\n{\n  symbol, t: inicio del segundo (ms epoch, reloj local de recepción),\n  open, high, low, close,        // si no hubo trades: último precio conocido (arrastrado)\n  trades,                        // fills reales (Binance perp: fills dentro de @aggTrade)\n  events,                        // mensajes de trade recibidos\n  vol_usd, buy_usd, sell_usd,    // USD = price × quantity (USDT/USDC tratados como USD)\n  delta_usd = buy_usd − sell_usd,\n  unknown_side_usd,              // agresor indeterminado: suma a vol_usd, nunca a BUY/SELL\n  exchanges, sources,            // exchanges distintos / fuentes distintas (spot y perp por separado)\n  spot_trades, perp_trades,\n  synthetic: bool, status: \"trade\" | \"no_trade\" | \"no_price\"\n}\n```\nMemoria: `global.get(\"md_mem_1s\",\"memory\")` → series[SYM] = { size:1800, buf, idx, count } (buffer circular).\nPersistencia futura: enganchar un link in a `BUCKETS 1s →` (1 msg/s con los 4 buckets).",
+    "x": 500,
+    "y": 2160,
+    "wires": [],
+    "g": "prrr_grp_s2"
+  },
+  {
+    "id": "prrr_plot_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "MD STREAM (RAW)",
+    "links": [
+      "prrr_stream_out"
+    ],
+    "x": 190,
+    "y": 2300,
+    "wires": [
+      [
+        "prrr_plot_feeder"
+      ]
+    ],
+    "g": "prrr_grp_plot"
+  },
+  {
+    "id": "prrr_plot_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 50 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.05",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.5",
+    "topic": "tick",
+    "x": 180,
+    "y": 2360,
+    "wires": [
+      [
+        "prrr_plot_feeder"
+      ]
+    ],
+    "g": "prrr_grp_plot"
+  },
+  {
+    "id": "prrr_plot_feeder",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "PLOT feeder (intervalo de ploteo · historial 15 min/250 ms + 4 h/5 s)",
+    "func": "// Entradas: trades (copia del MD STREAM), 'tick' 50 ms, 'render_ms' (intervalo de ploteo), 'snapshot_req' (desde el navegador)\n// Salida 1: puntos del intervalo → MERCADO mux   ·   Salida 2: snapshot de historial → sólo al navegador que lo pidió\nconst F = context.get('F', 'memory');\nconst now = Date.now();\n\nif (msg.topic === 'trade') {\n    const t = msg.payload, sym = t.symbol;\n    const ser = F.series[sym];\n    if (!ser || !(t.price > 0)) return null;\n    const src = t.source || t.exchange, ts = t.local_receive_timestamp, y = t.price;\n    let S = ser[src];\n    if (!S) {\n        S = ser[src] = { lastT: 0 };\n        for (const d of F.tiers) S[d.n] = { slotMs: d.slotMs, cap: d.cap, idx: new Float64Array(d.cap).fill(-1), lo: new Float64Array(d.cap), hi: new Float64Array(d.cap), last: new Float64Array(d.cap) };\n    }\n    for (const d of F.tiers) {                           // historial: min/max/último por slot\n        const T = S[d.n], s = Math.floor(ts / T.slotMs), k = s % T.cap;\n        if (T.idx[k] !== s) { T.idx[k] = s; T.lo[k] = y; T.hi[k] = y; T.last[k] = y; }\n        else { if (y < T.lo[k]) T.lo[k] = y; if (y > T.hi[k]) T.hi[k] = y; if (ts >= S.lastT) T.last[k] = y; }\n    }\n    if (ts >= S.lastT) S.lastT = ts;\n    let a = F.iv[sym][src];                               // intervalo de ploteo actual: extremos con su hora real\n    if (!a) a = F.iv[sym][src] = { lo: y, loT: ts, hi: y, hiT: ts, last: y, lastT: ts };\n    else {\n        if (y < a.lo) { a.lo = y; a.loT = ts; }\n        if (y > a.hi) { a.hi = y; a.hiT = ts; }\n        if (ts >= a.lastT) { a.last = y; a.lastT = ts; }\n    }\n    F.ingested++;\n    return null;\n}\n\nif (msg.topic === 'render_ms') {\n    const v = Number(msg.payload);\n    if (v >= 50 && v <= 5000) F.plotMs = v;\n    return null;\n}\n\nif (msg.topic === 'snapshot_req') {                      // navegador recién abierto: le mando el historial disponible\n    const snap = { now: now, plotMs: F.plotMs, tiers: {}, syms: {} };\n    for (const d of F.tiers) snap.tiers[d.n] = { slotMs: d.slotMs, cap: d.cap };\n    for (const sym of F.syms) {\n        snap.syms[sym] = {};\n        for (const src in F.series[sym]) {\n            const S = F.series[sym][src], o = { lastT: S.lastT };\n            for (const d of F.tiers) {\n                const T = S[d.n], minS = Math.floor(now / T.slotMs) - T.cap + 1, arr = [];\n                for (let k = 0; k < T.cap; k++) if (T.idx[k] >= minS) arr.push(T.idx[k], T.lo[k], T.hi[k], T.last[k]);\n                o[d.n] = arr;\n            }\n            snap.syms[sym][src] = o;\n        }\n    }\n    return [null, { socketid: msg.socketid, payload: { snapshot: snap } }];\n}\n\nif (msg.topic !== 'tick') return null;\nif (now - F.lastFlush < F.plotMs - 25) return null;\nF.lastFlush = now;\nconst out = [];\nfor (const sym of F.syms) {\n    const pts = [], iv = F.iv[sym];\n    for (const src in iv) {\n        const a = iv[src], p = [[a.loT, a.lo], [a.hiT, a.hi], [a.lastT, a.last]];\n        p.sort(function (u, v) { return u[0] - v[0]; });\n        let prev = null;\n        for (const q of p) { const key = q[0] + ':' + q[1]; if (key !== prev) pts.push({ s: src, x: q[0], y: q[1] }); prev = key; }\n    }\n    F.iv[sym] = {};\n    out.push({ topic: 'chart', sym: sym, payload: { now: now, plotMs: F.plotMs, pts: pts } });   // siempre (el eje de tiempo avanza)\n}\nreturn [out, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// Estado del alimentador de ploteo (sólo presentación)\nconst F = {\n    plotMs: 250, lastFlush: 0,\n    syms: ['BTC', 'ZEC', 'GMX', 'XMR'],\n    tiers: [{ n: 'A', slotMs: 250, cap: 3600 }, { n: 'B', slotMs: 5000, cap: 2880 }],\n    series: {}, iv: {}, ingested: 0\n};\nfor (const s of F.syms) { F.series[s] = {}; F.iv[s] = {}; }\ncontext.set('F', F, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "puntos del intervalo → MERCADO",
+      "snapshot de historial → navegador que lo pidió"
+    ],
+    "x": 540,
+    "y": 2320,
+    "wires": [
+      [
+        "prrr_ui_mkt_mux"
+      ],
+      [
+        "prrr_ui_mkt"
+      ]
+    ],
+    "g": "prrr_grp_plot"
+  }
+]

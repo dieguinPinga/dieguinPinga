@@ -1,6 +1,33 @@
 # PRRR Market Data — Etapas 1 → 2
 
-**Versión actual: `prrr-market-data-stage2d.json`** (generador `tools/build-prrr-stage2d.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage2e.json`** (generador `tools/build-prrr-stage2e.js`). Al importar, elegir **Replace**.
+
+## 2e — Ventana visible, intervalo de ploteo, pausa (sólo presentación)
+* **Selector anterior ("Render UI", 100–2000 ms, en DIAGNÓSTICO):**
+  * Controlaba la **frecuencia de refresco**. Cada N ms el core enviaba, por fuente, **sólo el último trade** del intervalo.
+  * No descartaba eventos (RAW, métricas y buckets siempre recibieron todo), pero **ocultaba picos intermedios** en el gráfico.
+* **Ahora:**
+  * **Ploteo (100/250/500/1000 ms, inicial 250):** sigue siendo la cadencia con la que se envían puntos al navegador. Por intervalo y fuente se envían **mín, máx y último con su hora real**, así que no se pierden picos.
+  * **Dónde se ajusta:** se cambia desde MERCADO o desde el desplegable de DIAGNÓSTICO, que es el mismo control del servidor.
+  * **Cabeceras:** también usan esta cadencia, igual que antes.
+* **Ventana visible (5 min / 15 min / 1 h / 4 h, inicial 15 min):** control del navegador, compartida por los 4 gráficos, que quedan sincronizados en el mismo reloj. Se recuerda en el navegador.
+* **PLOT feeder** (nuevo, en paralelo, lee una copia del MD STREAM): arma el agregado de cada intervalo y el historial de gráficos en 2 resoluciones.
+  * A: 250 ms × 15 min. B: 5 s × 4 h.
+  * Min/máx/último por slot, en arrays de tamaño fijo: ~203 KB por serie, ~6,3 MB para 31 series.
+  * Un navegador nuevo pide el historial al abrir la página, y al cambiar de pestaña no se pierde.
+* **Dibujo por columna de píxel:** rango min–máx + escalón. Nunca se dibujan más puntos que la resolución disponible.
+  * **Redibujo** = máx(ploteo, resolución), con tope de 1 s. Por ejemplo, en 4 h 1 px ≈ 21 s.
+* **Pausa / Volver a vivo:** congela la vista de los 4 gráficos y los Δ. Los datos siguen entrando.
+* **Historial insuficiente:** se muestra "historial disponible: X de Y" y no se rellena hacia atrás.
+* **Δ BUY−SELL:** siempre los últimos 60 s en buckets de 1 s, independiente de la ventana.
+* **Medido** en Chromium a 1920×1080 con Edge 67 %, con 31 series de 4 h completas, ventana de 4 h y ploteo de 100 ms:
+  * ~1,7 ms de dibujo por chart;
+  * ~18 % del hilo principal (85 % antes del tope de redibujo);
+  * heap JS estable en 7,5 MB.
+* **Sin cambios:** WebSockets, normalizadores, core (métricas), normalizador 1 s, memoria y BUY/SELL.
+
+
+**2d: `prrr-market-data-stage2d.json`** (generador `tools/build-prrr-stage2d.js`).
 
 ## 2d — MERCADO a pantalla completa (sólo layout)
 * **Capa fija:** MERCADO es una capa `position: fixed` de `left:0` a `right:0` (100vw), debajo de la barra superior. Tiene `display:grid; grid-template-columns: repeat(4, minmax(0,1fr))`.
