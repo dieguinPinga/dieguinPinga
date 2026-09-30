@@ -1,4 +1,24 @@
-# PRRR Market Data — Etapa 1 / 1b
+# PRRR Market Data — Etapa 1 / 1b / 1c
+
+**Versión actual: `prrr-market-data-stage1c.json`** (generador `tools/build-prrr-stage1c.js`). Conserva todos los IDs de nodo de 1b: al importar, elegir **Replace**.
+
+## Etapa 1c
+* **Dashboard**: grilla 2×2 simétrica (BTC | ZEC / GMX | XMR). Cada instrumento tiene el mismo diseño: cabecera (precio, fuente, BUY/SELL, edad, ev/s, trades/min), precios por fuente y gráfico. Debajo, a ancho completo: throughput/frescura, mercados escuchados, controles y métricas técnicas.
+* **Gráficos**: canvas liviano en `ui_template`. `ui_chart` redibujaba todo el gráfico por cada punto de cada serie y saturaba el navegador con 10+ fuentes. Ahora hay 1 mensaje por ciclo de render, lo que equivale a 1 redibujado. Los buffers están acotados (5 min por serie, máx. 1500 puntos) y cada fuente tiene el mismo color en todos los gráficos. Sólo se dibujan trades reales: no se extiende ni se interpola el precio.
+* **trades/min reales** por fuente y mercado, en una ventana deslizante de 60 s. Para Binance perp se cuentan los fills reales dentro de cada `@aggTrade`.
+* **Nuevas fuentes legítimas para GMX / XMR** (perpetuos del mismo activo, siempre como fuentes separadas `*-perp`):
+
+| Fuente | GMX | XMR | Canal |
+|---|---|---|---|
+| binance-perp | GMXUSDT | XMRUSDT | USDⓈ-M `@aggTrade` (endpoint `/market`, migración de URLs de 2026) |
+| bybit-perp | GMXUSDT | XMRUSDT | linear `publicTrade` |
+| bitget (spot) | GMXUSDT | — | v2 `trade` |
+| bitget-perp | GMXUSDT | XMRUSDT | v2 `trade` USDT-FUTURES |
+| kraken-perp | PF_GMXUSD | PF_XMRUSD | Futures v1 `trade` |
+| hyperliquid | — | XMR | `trades` (si el mercado es HIP-3, el coin lleva prefijo `dex:XMR`) |
+
+* **Descartadas por ahora**: OKX swap y Gate futures (la cantidad viene en contratos: haría falta el multiplicador por REST), BitMEX (contratos), KuCoin (requiere token HTTP previo), HTX (frames gzip) y MEXC spot (protobuf).
+
 
 **Etapa 1b (actual): `prrr-market-data-stage1b.json`** = etapa 1 + GMX y XMR. Usa los mismos IDs de nodo que la etapa 1: al importarlo, Node-RED avisa que los nodos ya existen y hay que elegir **Replace** para actualizar el flow en el lugar. El generador es `tools/build-prrr-stage1b.js`.
 
