@@ -1,4 +1,6 @@
-# PRRR Market Data — Etapa 1
+# PRRR Market Data — Etapa 1 / 1b
+
+**Etapa 1b (actual): `prrr-market-data-stage1b.json`** = etapa 1 + GMX y XMR. Usa los mismos IDs de nodo que la etapa 1: al importarlo, Node-RED avisa que los nodos ya existen y hay que elegir **Replace** para actualizar el flow en el lugar. El generador es `tools/build-prrr-stage1b.js`.
 
 Flow de Node-RED: `prrr-market-data-stage1.json` (se importa desde **Import → Clipboard** o **Import → select a file**).
 Lo genera `tools/build-prrr-stage1.js`: si editás el generador, corré `node tools/build-prrr-stage1.js`.
@@ -29,6 +31,21 @@ Lo genera `tools/build-prrr-stage1.js`: si editás el generador, corré `node to
 | OKX | BTC-USDT | ZEC-USDT | `trades-all` (sin agregar) | `side` | ms |
 | Bybit | BTCUSDT | ZECUSDT | `publicTrade` | `S` | ms |
 | Bitfinex | tBTCUSD | tZECUSD | `trades` (`te`) | signo de `amount` | ms |
+
+### Etapa 1b: GMX y XMR
+
+| Exchange | GMX | XMR | Canal | Lado agresor | Timestamp |
+|---|---|---|---|---|---|
+| Binance | GMXUSDT | no lo lista (deslistado en 2024) | `@trade` | `m` | µs |
+| OKX | GMX-USDT | no lo lista (deslistado en 2024) | `trades-all` | `side` | ms |
+| Bybit | GMXUSDT | no | `publicTrade` | `S` | ms |
+| Kraken | GMX/USD | XMR/USD | v2 `trade` | `side` | µs |
+| Bitfinex | no | tXMRUSD | `trades` (`te`) | signo de `amount` | ms |
+| **Gate** (nuevo) | GMX_USDT | XMR_USDT | `spot.trades` | `side` | ms con decimales |
+| **Poloniex** (nuevo) | no | XMR_USDT | `trades` | `takerSide` | ms |
+
+Gate y Poloniex solo se suscriben a GMX y XMR, así que los datos de BTC y ZEC quedan igual que en la etapa 1. GMX (el DEX) no se usa como fuente porque no ofrece un WebSocket público de precios.
+Todo evento lleva ahora `kind: "trade"` (campo nuevo). El resto del formato no cambió.
 
 ## Métricas del dashboard
 

@@ -1,0 +1,2506 @@
+[
+  {
+    "id": "prrr_sf_wsconn",
+    "type": "subflow",
+    "name": "PRRR WS Connector",
+    "info": "Cliente WebSocket genérico con reconexión (backoff exponencial 1s→30s), watchdog de datos viejos (STALE_MS), ping de aplicación opcional y habilitación on/off por mensaje.\n\n**Entrada**: `{topic:\"enable\", payload:true|false}` o `{topic:\"reconnect\"}`.\n\n**Salida 1**: frame crudo `{payload:string, t_recv:ms, exchange}`.\n\n**Salida 2**: estado cada 1 s `{topic:\"ws_status\", payload:{state, reconnects, frames, bytes, lastMsgAge, lastError}}`.\n\nRequiere el módulo npm `ws` (Node-RED lo instala solo la primera vez: `functionExternalModules: true`).",
+    "category": "",
+    "in": [
+      {
+        "x": 60,
+        "y": 80,
+        "wires": [
+          {
+            "id": "prrr_sf_fn"
+          }
+        ]
+      }
+    ],
+    "out": [
+      {
+        "x": 460,
+        "y": 60,
+        "wires": [
+          {
+            "id": "prrr_sf_fn",
+            "port": 0
+          }
+        ]
+      },
+      {
+        "x": 460,
+        "y": 100,
+        "wires": [
+          {
+            "id": "prrr_sf_fn",
+            "port": 1
+          }
+        ]
+      }
+    ],
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "meta": {},
+    "color": "#E2D96E",
+    "icon": "font-awesome/fa-plug",
+    "inputLabels": [
+      "control (enable / reconnect)"
+    ],
+    "outputLabels": [
+      "frames crudos",
+      "ws_status"
+    ],
+    "status": {
+      "x": 460,
+      "y": 140,
+      "wires": [
+        {
+          "id": "prrr_sf_fn",
+          "port": 2
+        }
+      ]
+    }
+  },
+  {
+    "id": "prrr_sf_fn",
+    "type": "function",
+    "z": "prrr_sf_wsconn",
+    "name": "WS client (ws)",
+    "func": "// Control: {topic:'enable', payload:true|false}  |  {topic:'reconnect'}\nconst C = context.get('C', 'memory');\nif (!C) return null;\nconst topic = String(msg.topic || 'enable').toLowerCase();\nif (topic === 'reconnect') {\n    if (C.enabled) {\n        if (C.rcTimer) { clearTimeout(C.rcTimer); C.rcTimer = null; }\n        C.lastError = 'reconexión manual';\n        C.drop();\n        C.reconnects++;\n        C.attempt = 0;\n        C.connect();\n    }\n} else {\n    let v = msg.payload;\n    if (typeof v === 'string') v = /^(true|on|1|enable|enabled)$/i.test(v.trim());\n    v = !!v;\n    if (v && !C.enabled) {\n        C.enabled = true; C.attempt = 0; C.lastError = '';\n        C.connect();\n    } else if (!v && C.enabled) {\n        C.enabled = false;\n        if (C.rcTimer) { clearTimeout(C.rcTimer); C.rcTimer = null; }\n        C.drop();\n        C.lastError = '';\n    }\n}\nconst en = global.get('prrr_ws_enabled', 'memory') || {};\nen[C.cfg.exchange] = C.enabled;\nglobal.set('prrr_ws_enabled', en, 'memory');\nC.pushStatus();\nreturn null;",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== Conector WebSocket genérico =====\n// Se configura con las variables de entorno de cada instancia del subflow.\n// Salida 1: frames crudos {payload:string, t_recv, exchange}\n// Salida 2: estado cada 1 s {topic:'ws_status', payload:{...}}\n// Salida 3: status visual de la instancia\n// Arranca habilitado salvo que antes se lo haya apagado (estado guardado en global 'prrr_ws_enabled').\nlet subs = [];\ntry { subs = JSON.parse(env.get('SUBSCRIBE') || '[]'); } catch (e) { node.error('SUBSCRIBE no es JSON válido'); }\nif (!Array.isArray(subs)) subs = [subs];\nconst cfg = {\n    exchange: env.get('EXCHANGE') || 'unknown',\n    url: env.get('WS_URL') || '',\n    subs: subs,\n    pingMs: Number(env.get('PING_MS')) || 0,\n    pingPayload: env.get('PING_PAYLOAD') || '',\n    staleMs: Number(env.get('STALE_MS')) || 30000,\n    ignore: env.get('IGNORE_TEXT') || ''\n};\nconst C = {\n    cfg: cfg, ws: null, enabled: false, connected: false, stopped: false,\n    reconnects: 0, attempt: 0, frames: 0, bytes: 0,\n    lastMsgAt: 0, lastPingAt: 0, lastError: '', lastState: '',\n    rcTimer: null, timer: null\n};\n\n// __NOW_S__ / __NOW_MS__ en SUBSCRIBE o PING_PAYLOAD se reemplazan por la hora actual (Gate lo pide)\nC.fill = function (s) {\n    if (s.indexOf('__NOW_') < 0) return s;\n    const t = Date.now();\n    return s.split('__NOW_MS__').join(String(t)).split('__NOW_S__').join(String(Math.floor(t / 1000)));\n};\n\nC.state = function () {\n    if (!C.enabled) return 'off';\n    if (C.connected) return 'connected';\n    return C.ws ? 'connecting' : 'down';\n};\n\nC.pushStatus = function () {\n    const now = Date.now();\n    const st = C.state();\n    const p = {\n        exchange: cfg.exchange, state: st, enabled: C.enabled, connected: C.connected,\n        reconnects: C.reconnects, frames: C.frames, bytes: C.bytes,\n        lastMsgAge: C.lastMsgAt ? now - C.lastMsgAt : null,\n        lastError: C.lastError, url: cfg.url\n    };\n    C.frames = 0; C.bytes = 0;\n    let vis = null;\n    const txt = st + ' · rc ' + C.reconnects;\n    if (txt !== C.lastState) {\n        C.lastState = txt;\n        const fill = st === 'connected' ? 'green' : st === 'off' ? 'grey' : st === 'connecting' ? 'yellow' : 'red';\n        vis = { payload: { fill: fill, shape: C.connected ? 'dot' : 'ring', text: txt } };\n    }\n    node.send([null, { topic: 'ws_status', exchange: cfg.exchange, payload: p }, vis], false);\n};\n\nC.drop = function () {                    // cierra el socket actual sin disparar reconexión\n    const ws = C.ws;\n    C.ws = null; C.connected = false;\n    if (ws) {\n        ws.removeAllListeners();\n        ws.on('error', function () {});   // nunca dejar un 'error' sin listener (tumbaría Node-RED)\n        try { ws.terminate(); } catch (e) {}\n    }\n};\n\nC.scheduleReconnect = function () {\n    if (C.stopped || !C.enabled || C.rcTimer) return;\n    const delay = Math.min(30000, 1000 * Math.pow(2, C.attempt)) + Math.floor(Math.random() * 500);\n    C.attempt = Math.min(C.attempt + 1, 5);\n    C.reconnects++;\n    C.rcTimer = setTimeout(function () { C.rcTimer = null; C.connect(); }, delay);\n};\n\nC.connect = function () {\n    if (C.stopped || !C.enabled || C.ws) return;\n    if (!cfg.url) { C.lastError = 'WS_URL vacío'; return; }\n    let ws;\n    try {\n        ws = new WS(cfg.url, { perMessageDeflate: false, handshakeTimeout: 10000, maxPayload: 32 * 1024 * 1024 });\n    } catch (e) {\n        C.lastError = String(e.message || e);\n        C.scheduleReconnect();\n        return;\n    }\n    C.ws = ws;\n    ws.on('open', function () {\n        if (C.ws !== ws) return;\n        C.connected = true;\n        C.lastMsgAt = C.lastPingAt = Date.now();\n        C.lastError = '';\n        for (const s of cfg.subs) {\n            try { ws.send(C.fill(typeof s === 'string' ? s : JSON.stringify(s))); }\n            catch (e) { C.lastError = 'subscribe: ' + e.message; }\n        }\n        C.pushStatus();\n    });\n    ws.on('message', function (data) {\n        const t = Date.now();              // timestamp local lo antes posible\n        if (C.ws !== ws) return;\n        C.lastMsgAt = t; C.frames++; C.bytes += data.length;\n        C.attempt = 0;                     // hay datos: resetea el backoff\n        const s = data.toString();\n        if (cfg.ignore && s === cfg.ignore) return;\n        node.send([{ topic: 'raw', exchange: cfg.exchange, t_recv: t, payload: s }, null, null], false);\n    });\n    ws.on('ping', function () { C.lastMsgAt = Date.now(); });   // ws responde pong solo\n    ws.on('pong', function () { C.lastMsgAt = Date.now(); });\n    ws.on('error', function (e) { C.lastError = String((e && e.message) || e); });\n    ws.on('close', function (code) {\n        if (C.ws !== ws) return;\n        C.ws = null; C.connected = false;\n        if (!C.lastError) C.lastError = 'close ' + code;\n        C.pushStatus();\n        C.scheduleReconnect();\n    });\n};\n\nC.tick = function () {                    // watchdog + ping + status, cada 1 s\n    const now = Date.now();\n    if (C.ws && C.connected) {\n        if (now - C.lastMsgAt > cfg.staleMs) {\n            C.lastError = 'stale: ' + (now - C.lastMsgAt) + ' ms sin datos';\n            C.drop();\n            C.scheduleReconnect();\n        } else if (cfg.pingMs && now - C.lastPingAt >= cfg.pingMs) {\n            C.lastPingAt = now;\n            try { if (cfg.pingPayload) C.ws.send(C.fill(cfg.pingPayload)); else C.ws.ping(); } catch (e) {}\n        }\n    }\n    C.pushStatus();\n};\n\nC.timer = setInterval(C.tick, 1000);\ncontext.set('C', C, 'memory');\n// Recordar on/off entre redeploys parciales (el inject de autostart sólo corre al iniciar el flow completo)\nconst want = (global.get('prrr_ws_enabled', 'memory') || {})[cfg.exchange];\nif (want !== false) { C.enabled = true; C.connect(); }\nC.pushStatus();",
+    "finalize": "const C = context.get('C', 'memory');\nif (C) {\n    C.stopped = true; C.enabled = false;\n    clearInterval(C.timer);\n    if (C.rcTimer) clearTimeout(C.rcTimer);\n    C.drop();\n}\ncontext.set('C', undefined, 'memory');",
+    "libs": [
+      {
+        "var": "WS",
+        "module": "ws"
+      }
+    ],
+    "x": 250,
+    "y": 100,
+    "wires": [
+      [],
+      [],
+      []
+    ]
+  },
+  {
+    "id": "prrr_tab_main",
+    "type": "tab",
+    "label": "PRRR Market Data (Etapa 1b · BTC ZEC GMX XMR)",
+    "disabled": false,
+    "info": "Etapa 1: adquisición de trades individuales BTC/ZEC por WebSocket directo desde varios exchanges, formato normalizado común, métricas de caudal/frescura y dashboard.\n\nConsumir el stream normalizado desde otros flows con un **link in** conectado a `MD STREAM →`.\n\nContexto global disponible: `md_stats` (métricas de la última ventana de 1 s) y `md_ring` (últimos 5000 trades por símbolo, buffer circular)."
+  },
+  {
+    "id": "prrr_grp_binance",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Binance — BTCUSDT, ZECUSDT, GMXUSDT",
+    "style": {
+      "label": true,
+      "stroke": "#3f93cf",
+      "fill": "#3f93cf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_binance_autostart",
+      "prrr_binance_switch",
+      "prrr_binance_ws",
+      "prrr_binance_norm",
+      "prrr_binance_linkout"
+    ],
+    "x": 50,
+    "y": 95,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_coinbase",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Coinbase — BTC-USD, ZEC-USD",
+    "style": {
+      "label": true,
+      "stroke": "#ff7f0e",
+      "fill": "#ff7f0e",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_coinbase_autostart",
+      "prrr_coinbase_switch",
+      "prrr_coinbase_ws",
+      "prrr_coinbase_norm",
+      "prrr_coinbase_linkout"
+    ],
+    "x": 50,
+    "y": 205,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_kraken",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Kraken — BTC/USD, ZEC/USD, GMX/USD, XMR/USD",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_kraken_autostart",
+      "prrr_kraken_switch",
+      "prrr_kraken_ws",
+      "prrr_kraken_norm",
+      "prrr_kraken_linkout"
+    ],
+    "x": 50,
+    "y": 315,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_okx",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "OKX — BTC-USDT, ZEC-USDT, GMX-USDT",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_okx_autostart",
+      "prrr_okx_switch",
+      "prrr_okx_ws",
+      "prrr_okx_norm",
+      "prrr_okx_linkout"
+    ],
+    "x": 50,
+    "y": 425,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bybit",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bybit — BTCUSDT, ZECUSDT, GMXUSDT",
+    "style": {
+      "label": true,
+      "stroke": "#9467bd",
+      "fill": "#9467bd",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bybit_autostart",
+      "prrr_bybit_switch",
+      "prrr_bybit_ws",
+      "prrr_bybit_norm",
+      "prrr_bybit_linkout"
+    ],
+    "x": 50,
+    "y": 535,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_bitfinex",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex — tBTCUSD, tZECUSD, tXMRUSD",
+    "style": {
+      "label": true,
+      "stroke": "#8c564b",
+      "fill": "#8c564b",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_bitfinex_autostart",
+      "prrr_bitfinex_switch",
+      "prrr_bitfinex_ws",
+      "prrr_bitfinex_norm",
+      "prrr_bitfinex_linkout"
+    ],
+    "x": 50,
+    "y": 645,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_gate",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Gate — GMX_USDT, XMR_USDT",
+    "style": {
+      "label": true,
+      "stroke": "#e377c2",
+      "fill": "#e377c2",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_gate_autostart",
+      "prrr_gate_switch",
+      "prrr_gate_ws",
+      "prrr_gate_norm",
+      "prrr_gate_linkout"
+    ],
+    "x": 50,
+    "y": 755,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_poloniex",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Poloniex — XMR_USDT",
+    "style": {
+      "label": true,
+      "stroke": "#17becf",
+      "fill": "#17becf",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_poloniex_autostart",
+      "prrr_poloniex_switch",
+      "prrr_poloniex_ws",
+      "prrr_poloniex_norm",
+      "prrr_poloniex_linkout"
+    ],
+    "x": 50,
+    "y": 865,
+    "w": 1080,
+    "h": 100
+  },
+  {
+    "id": "prrr_grp_core",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "MD CORE — bus común, métricas, buffer circular, reloj de UI",
+    "style": {
+      "label": true,
+      "stroke": "#555555",
+      "fill": "#555555",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_link_bus_in",
+      "prrr_tick",
+      "prrr_core",
+      "prrr_comment_core"
+    ],
+    "x": 1000,
+    "y": 215,
+    "w": 490,
+    "h": 200
+  },
+  {
+    "id": "prrr_grp_ui",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Dashboard (render desacoplado)",
+    "style": {
+      "label": true,
+      "stroke": "#1f77b4",
+      "fill": "#1f77b4",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_ui_chart_btc",
+      "prrr_ui_chart_zec",
+      "prrr_ui_chart_gmx",
+      "prrr_ui_chart_xmr",
+      "prrr_ui_card_btc",
+      "prrr_ui_card_zec",
+      "prrr_ui_card_gmx",
+      "prrr_ui_card_xmr",
+      "prrr_ui_table",
+      "prrr_ui_chart_evs",
+      "prrr_ui_chart_fresh"
+    ],
+    "x": 1580,
+    "y": 175,
+    "w": 470,
+    "h": 320
+  },
+  {
+    "id": "prrr_grp_out",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Salida para etapas futuras (indicadores se enganchan acá)",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_stream_out",
+      "prrr_example_in",
+      "prrr_example_dbg"
+    ],
+    "x": 1560,
+    "y": 95,
+    "w": 690,
+    "h": 80
+  },
+  {
+    "id": "prrr_grp_ctl",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Controles globales",
+    "style": {
+      "label": true,
+      "stroke": "#7f7f7f",
+      "fill": "#7f7f7f",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_render_init",
+      "prrr_ui_render",
+      "prrr_ui_reset",
+      "prrr_ui_reconnect"
+    ],
+    "x": 50,
+    "y": 1035,
+    "w": 500,
+    "h": 180
+  },
+  {
+    "id": "prrr_grp_err",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "Errores",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_catch",
+      "prrr_catch_dbg"
+    ],
+    "x": 60,
+    "y": 1225,
+    "w": 470,
+    "h": 80
+  },
+  {
+    "id": "prrr_ui_tab",
+    "type": "ui_tab",
+    "name": "PRRR Market Data",
+    "icon": "fa-bolt",
+    "order": 90,
+    "disabled": false,
+    "hidden": false
+  },
+  {
+    "id": "prrr_ui_g_btc",
+    "type": "ui_group",
+    "name": "BTC",
+    "tab": "prrr_ui_tab",
+    "order": 1,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_zec",
+    "type": "ui_group",
+    "name": "ZEC",
+    "tab": "prrr_ui_tab",
+    "order": 2,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_gmx",
+    "type": "ui_group",
+    "name": "GMX",
+    "tab": "prrr_ui_tab",
+    "order": 3,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_xmr",
+    "type": "ui_group",
+    "name": "XMR",
+    "tab": "prrr_ui_tab",
+    "order": 4,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_perf",
+    "type": "ui_group",
+    "name": "Exchanges · caudal · frescura",
+    "tab": "prrr_ui_tab",
+    "order": 5,
+    "disp": true,
+    "width": "24",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_ctrl",
+    "type": "ui_group",
+    "name": "Control",
+    "tab": "prrr_ui_tab",
+    "order": 6,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_ui_g_thr",
+    "type": "ui_group",
+    "name": "Throughput / frescura (1 s)",
+    "tab": "prrr_ui_tab",
+    "order": 7,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_binance_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart binance = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_switch"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Binance on/off",
+    "label": "Binance",
+    "tooltip": "Habilita / deshabilita el WebSocket de Binance",
+    "group": "prrr_ui_g_ctrl",
+    "order": 1,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_ws"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Binance WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "binance"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://stream.binance.com:9443/stream?streams=btcusdt@trade/zecusdt@trade/gmxusdt@trade&timeUnit=MICROSECOND"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 160,
+    "wires": [
+      [
+        "prrr_binance_norm"
+      ],
+      [
+        "prrr_binance_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar binance",
+    "func": "// Binance spot @trade (trades individuales, no aggTrade).\n// timeUnit=MICROSECOND => T en microsegundos. m=true => el comprador es maker => agresor SELL.\nconst MAP = { BTCUSDT: ['BTC', 'USDT'], ZECUSDT: ['ZEC', 'USDT'], GMXUSDT: ['GMX', 'USDT'] };\nconst EX = 'binance';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nconst d = o && o.data ? o.data : o;\nif (!d || d.e !== 'trade') return null;            // respuestas de suscripción, etc.\nconst m = MAP[d.s];\nif (!m) return null;\nconst price = +d.p, qty = +d.q, T = +d.T;\nif (!(price > 0) || !(qty >= 0) || !(T > 0)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: d.s, exchange: EX, kind: 'trade',\n    price: price, quantity: qty, side: d.m ? 'SELL' : 'BUY', trade_id: d.t,\n    exchange_timestamp: T > 1e14 ? T / 1000 : T,    // ms epoch (con decimales si viene en µs)\n    exchange_ts_raw: d.T,                            // valor original sin tocar\n    local_receive_timestamp: msg.t_recv,\n    raw: d\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 140,
+    "wires": [
+      [
+        "prrr_binance_linkout"
+      ]
+    ],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_binance_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "binance → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 160,
+    "wires": [],
+    "g": "prrr_grp_binance"
+  },
+  {
+    "id": "prrr_coinbase_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart coinbase = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_switch"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Coinbase on/off",
+    "label": "Coinbase",
+    "tooltip": "Habilita / deshabilita el WebSocket de Coinbase",
+    "group": "prrr_ui_g_ctrl",
+    "order": 2,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_ws"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Coinbase WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "coinbase"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws-feed.exchange.coinbase.com"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"type\":\"subscribe\",\"product_ids\":[\"BTC-USD\"],\"channels\":[\"matches\",\"heartbeat\"]},{\"type\":\"subscribe\",\"product_ids\":[\"ZEC-USD\"],\"channels\":[\"matches\",\"heartbeat\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 270,
+    "wires": [
+      [
+        "prrr_coinbase_norm"
+      ],
+      [
+        "prrr_coinbase_linkout"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar coinbase",
+    "func": "// Coinbase Exchange feed, canal \"matches\" (trades individuales, time con µs).\n// \"side\" es el lado del MAKER => el agresor es el opuesto.\nconst MAP = { 'BTC-USD': ['BTC', 'USD'], 'ZEC-USD': ['ZEC', 'USD'] };\nconst EX = 'coinbase';\nfunction isoToMs(s) {                 // ISO8601 con fracción de µs/ns -> ms epoch con decimales\n    const ms = Date.parse(s);\n    if (!isFinite(ms)) return NaN;\n    const f = /\\.(\\d+)/.exec(s);\n    return (f && f[1].length > 3) ? ms + Number('0.' + f[1].slice(3)) : ms;\n}\nlet d;\ntry { d = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!d) return null;\nif (d.type === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + d.message + ' ' + (d.reason || '') };\nif (d.type !== 'match') return null;   // heartbeat, subscriptions, last_match (trade viejo previo a suscribir)\nconst m = MAP[d.product_id];\nif (!m) return null;\nconst price = +d.price, qty = +d.size, ts = isoToMs(d.time);\nif (!(price > 0) || !(qty >= 0) || !isFinite(ts)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: d.product_id, exchange: EX, kind: 'trade',\n    price: price, quantity: qty, side: d.side === 'sell' ? 'BUY' : (d.side === 'buy' ? 'SELL' : null),\n    trade_id: d.trade_id,\n    exchange_timestamp: ts, exchange_ts_raw: d.time,\n    local_receive_timestamp: msg.t_recv,\n    raw: d\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 250,
+    "wires": [
+      [
+        "prrr_coinbase_linkout"
+      ]
+    ],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_coinbase_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "coinbase → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 270,
+    "wires": [],
+    "g": "prrr_grp_coinbase"
+  },
+  {
+    "id": "prrr_kraken_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart kraken = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_switch"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Kraken on/off",
+    "label": "Kraken",
+    "tooltip": "Habilita / deshabilita el WebSocket de Kraken",
+    "group": "prrr_ui_g_ctrl",
+    "order": 3,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_ws"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Kraken WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "kraken"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.kraken.com/v2"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"BTC/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"ZEC/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"GMX/USD\"],\"snapshot\":false}},{\"method\":\"subscribe\",\"params\":{\"channel\":\"trade\",\"symbol\":[\"XMR/USD\"],\"snapshot\":false}}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "30000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_kraken_norm"
+      ],
+      [
+        "prrr_kraken_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar kraken",
+    "func": "// Kraken WS v2, canal \"trade\". side = lado del taker (agresor). timestamp RFC3339 con µs.\nconst MAP = { 'BTC/USD': ['BTC', 'USD'], 'ZEC/USD': ['ZEC', 'USD'], 'GMX/USD': ['GMX', 'USD'], 'XMR/USD': ['XMR', 'USD'] };\nconst EX = 'kraken';\nfunction isoToMs(s) {\n    const ms = Date.parse(s);\n    if (!isFinite(ms)) return NaN;\n    const f = /\\.(\\d+)/.exec(s);\n    return (f && f[1].length > 3) ? ms + Number('0.' + f[1].slice(3)) : ms;\n}\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.method === 'subscribe' && o.success === false) return { topic: 'md_err', exchange: EX, payload: 'subscribe: ' + (o.error || '') };\nif (o.channel !== 'trade' || o.type !== 'update' || !Array.isArray(o.data)) return null;  // heartbeat, status, snapshot\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.symbol];\n    if (!m) continue;\n    const price = +d.price, qty = +d.qty, ts = isoToMs(d.timestamp);\n    if (!(price > 0) || !(qty >= 0) || !isFinite(ts)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.symbol, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.trade_id,\n        exchange_timestamp: ts, exchange_ts_raw: d.timestamp,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 360,
+    "wires": [
+      [
+        "prrr_kraken_linkout"
+      ]
+    ],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_kraken_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "kraken → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 380,
+    "wires": [],
+    "g": "prrr_grp_kraken"
+  },
+  {
+    "id": "prrr_okx_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart okx = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_switch"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "OKX on/off",
+    "label": "OKX",
+    "tooltip": "Habilita / deshabilita el WebSocket de OKX",
+    "group": "prrr_ui_g_ctrl",
+    "order": 4,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_ws"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "OKX WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "okx"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.okx.com:8443/ws/v5/business"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"BTC-USDT\"}]},{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"ZEC-USDT\"}]},{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades-all\",\"instId\":\"GMX-USDT\"}]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "ping"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": "pong"
+      }
+    ],
+    "x": 600,
+    "y": 490,
+    "wires": [
+      [
+        "prrr_okx_norm"
+      ],
+      [
+        "prrr_okx_linkout"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar okx",
+    "func": "// OKX v5 canal \"trades-all\" (trades individuales). side = lado del taker. ts en ms.\nconst MAP = { 'BTC-USDT': ['BTC', 'USDT'], 'ZEC-USDT': ['ZEC', 'USDT'], 'GMX-USDT': ['GMX', 'USDT'] };\nconst EX = 'okx';\nif (msg.payload === 'pong') return null;\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + o.code + ' ' + o.msg };\nif (!o.arg || !Array.isArray(o.data)) return null;       // event subscribe, etc.\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.instId];\n    if (!m) continue;\n    const price = +d.px, qty = +d.sz, ts = +d.ts;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.instId, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.tradeId,\n        exchange_timestamp: ts, exchange_ts_raw: d.ts,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 470,
+    "wires": [
+      [
+        "prrr_okx_linkout"
+      ]
+    ],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_okx_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "okx → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 490,
+    "wires": [],
+    "g": "prrr_grp_okx"
+  },
+  {
+    "id": "prrr_bybit_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bybit = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_switch"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bybit on/off",
+    "label": "Bybit",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bybit",
+    "group": "prrr_ui_g_ctrl",
+    "order": 5,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_ws"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bybit WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bybit"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://stream.bybit.com/v5/public/spot"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"op\":\"subscribe\",\"args\":[\"publicTrade.BTCUSDT\"]},{\"op\":\"subscribe\",\"args\":[\"publicTrade.ZECUSDT\"]},{\"op\":\"subscribe\",\"args\":[\"publicTrade.GMXUSDT\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"op\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 600,
+    "wires": [
+      [
+        "prrr_bybit_norm"
+      ],
+      [
+        "prrr_bybit_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bybit",
+    "func": "// Bybit v5 spot \"publicTrade\". S = lado del taker (Buy/Sell). T en ms.\nconst MAP = { BTCUSDT: ['BTC', 'USDT'], ZECUSDT: ['ZEC', 'USDT'], GMXUSDT: ['GMX', 'USDT'] };\nconst EX = 'bybit';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.op) {                                               // respuestas subscribe / pong\n    if (o.success === false) return { topic: 'md_err', exchange: EX, payload: 'op ' + o.op + ': ' + (o.ret_msg || '') };\n    return null;\n}\nif (typeof o.topic !== 'string' || o.topic.indexOf('publicTrade.') !== 0 || !Array.isArray(o.data)) return null;\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.s];\n    if (!m) continue;\n    const price = +d.p, qty = +d.v, ts = +d.T;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.s, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.S === 'Buy' ? 'BUY' : (d.S === 'Sell' ? 'SELL' : null),\n        trade_id: d.i,\n        exchange_timestamp: ts, exchange_ts_raw: d.T,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 580,
+    "wires": [
+      [
+        "prrr_bybit_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bybit_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bybit → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 600,
+    "wires": [],
+    "g": "prrr_grp_bybit"
+  },
+  {
+    "id": "prrr_bitfinex_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart bitfinex = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_switch"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex on/off",
+    "label": "Bitfinex",
+    "tooltip": "Habilita / deshabilita el WebSocket de Bitfinex",
+    "group": "prrr_ui_g_ctrl",
+    "order": 6,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_ws"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Bitfinex WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "bitfinex"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://api-pub.bitfinex.com/ws/2"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tBTCUSD\"},{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tZECUSD\"},{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tXMRUSD\"}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "0"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": ""
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 710,
+    "wires": [
+      [
+        "prrr_bitfinex_norm"
+      ],
+      [
+        "prrr_bitfinex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar bitfinex",
+    "func": "// Bitfinex WS v2 canal \"trades\". Se usa sólo \"te\" (trade executed, llega antes que \"tu\").\n// [chanId,\"te\",[ID,MTS,AMOUNT,PRICE]]  AMOUNT>0 => agresor BUY, <0 => SELL.\nconst MAP = { tBTCUSD: ['BTC', 'USD'], tZECUSD: ['ZEC', 'USD'], tXMRUSD: ['XMR', 'USD'] };\nconst EX = 'bitfinex';\nlet chans = context.get('chans') || {};\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!Array.isArray(o)) {\n    if (!o) return null;\n    if (o.event === 'info' && o.version) { chans = {}; context.set('chans', chans); }  // nueva conexión\n    else if (o.event === 'subscribed' && o.channel === 'trades') { chans[o.chanId] = o.symbol; context.set('chans', chans); }\n    else if (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + o.code + ' ' + o.msg };\n    return null;\n}\nif (o[1] !== 'te' || !Array.isArray(o[2])) return null;   // hb, snapshot, tu\nconst sym = chans[o[0]];\nconst m = MAP[sym];\nif (!m) return null;\nconst t = o[2];\nconst amount = +t[2], price = +t[3], ts = +t[1];\nif (!(price > 0) || !isFinite(amount) || !(ts > 0)) return { topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + msg.payload.slice(0, 160) };\nreturn { topic: 'trade', payload: {\n    symbol: m[0], quote: m[1], market: sym, exchange: EX, kind: 'trade',\n    price: price, quantity: Math.abs(amount), side: amount > 0 ? 'BUY' : (amount < 0 ? 'SELL' : null),\n    trade_id: t[0],\n    exchange_timestamp: ts, exchange_ts_raw: t[1],\n    local_receive_timestamp: msg.t_recv,\n    raw: t\n} };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 690,
+    "wires": [
+      [
+        "prrr_bitfinex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_bitfinex_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "bitfinex → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 710,
+    "wires": [],
+    "g": "prrr_grp_bitfinex"
+  },
+  {
+    "id": "prrr_gate_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart gate = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_switch"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Gate on/off",
+    "label": "Gate",
+    "tooltip": "Habilita / deshabilita el WebSocket de Gate",
+    "group": "prrr_ui_g_ctrl",
+    "order": 7,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_ws"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Gate WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "gate"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://api.gateio.ws/ws/v4/"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[\"{\\\"time\\\":__NOW_S__,\\\"channel\\\":\\\"spot.trades\\\",\\\"event\\\":\\\"subscribe\\\",\\\"payload\\\":[\\\"GMX_USDT\\\"]}\",\"{\\\"time\\\":__NOW_S__,\\\"channel\\\":\\\"spot.trades\\\",\\\"event\\\":\\\"subscribe\\\",\\\"payload\\\":[\\\"XMR_USDT\\\"]}\"]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "15000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"time\":__NOW_S__,\"channel\":\"spot.ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 820,
+    "wires": [
+      [
+        "prrr_gate_norm"
+      ],
+      [
+        "prrr_gate_linkout"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar gate",
+    "func": "// Gate.io WS v4 canal \"spot.trades\" (trades individuales). side = lado del taker.\n// create_time_ms viene como string con fracción de ms (\"1606292218213.4578\").\nconst MAP = { GMX_USDT: ['GMX', 'USDT'], XMR_USDT: ['XMR', 'USDT'] };\nconst EX = 'gate';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.error) return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + JSON.stringify(o.error).slice(0, 160) };\nif (o.channel !== 'spot.trades' || o.event !== 'update' || !o.result) return null;   // subscribe ack, spot.pong\nconst list = Array.isArray(o.result) ? o.result : [o.result];\nconst out = [];\nfor (const d of list) {\n    const m = MAP[d.currency_pair];\n    if (!m) continue;\n    const price = +d.price, qty = +d.amount;\n    const ts = d.create_time_ms != null ? +d.create_time_ms : (+d.create_time) * 1000;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.currency_pair, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.side === 'buy' ? 'BUY' : (d.side === 'sell' ? 'SELL' : null),\n        trade_id: d.id,\n        exchange_timestamp: ts, exchange_ts_raw: d.create_time_ms != null ? d.create_time_ms : d.create_time,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 800,
+    "wires": [
+      [
+        "prrr_gate_linkout"
+      ]
+    ],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_gate_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "gate → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 820,
+    "wires": [],
+    "g": "prrr_grp_gate"
+  },
+  {
+    "id": "prrr_poloniex_autostart",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "autostart poloniex = ON",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "enable",
+    "payload": "true",
+    "payloadType": "bool",
+    "x": 170,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_switch"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_switch",
+    "type": "ui_switch",
+    "z": "prrr_tab_main",
+    "name": "Poloniex on/off",
+    "label": "Poloniex",
+    "tooltip": "Habilita / deshabilita el WebSocket de Poloniex",
+    "group": "prrr_ui_g_ctrl",
+    "order": 8,
+    "width": 4,
+    "height": 1,
+    "passthru": true,
+    "decouple": "false",
+    "topic": "enable",
+    "topicType": "str",
+    "style": "",
+    "onvalue": "true",
+    "onvalueType": "bool",
+    "onicon": "",
+    "oncolor": "",
+    "offvalue": "false",
+    "offvalueType": "bool",
+    "officon": "",
+    "offcolor": "",
+    "animate": false,
+    "className": "",
+    "x": 390,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_ws"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_ws",
+    "type": "subflow:prrr_sf_wsconn",
+    "z": "prrr_tab_main",
+    "name": "Poloniex WS",
+    "env": [
+      {
+        "name": "EXCHANGE",
+        "type": "str",
+        "value": "poloniex"
+      },
+      {
+        "name": "WS_URL",
+        "type": "str",
+        "value": "wss://ws.poloniex.com/ws/public"
+      },
+      {
+        "name": "SUBSCRIBE",
+        "type": "str",
+        "value": "[{\"event\":\"subscribe\",\"channel\":[\"trades\"],\"symbols\":[\"XMR_USDT\"]}]"
+      },
+      {
+        "name": "PING_MS",
+        "type": "str",
+        "value": "20000"
+      },
+      {
+        "name": "PING_PAYLOAD",
+        "type": "str",
+        "value": "{\"event\":\"ping\"}"
+      },
+      {
+        "name": "STALE_MS",
+        "type": "str",
+        "value": "45000"
+      },
+      {
+        "name": "IGNORE_TEXT",
+        "type": "str",
+        "value": ""
+      }
+    ],
+    "x": 600,
+    "y": 930,
+    "wires": [
+      [
+        "prrr_poloniex_norm"
+      ],
+      [
+        "prrr_poloniex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_norm",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "normalizar poloniex",
+    "func": "// Poloniex WS v3 canal \"trades\". takerSide = lado del agresor. createTime en ms.\nconst MAP = { XMR_USDT: ['XMR', 'USDT'] };\nconst EX = 'poloniex';\nlet o;\ntry { o = JSON.parse(msg.payload); } catch (e) { return { topic: 'md_err', exchange: EX, payload: 'JSON inválido: ' + String(msg.payload).slice(0, 120) }; }\nif (!o) return null;\nif (o.event === 'error') return { topic: 'md_err', exchange: EX, payload: 'exchange: ' + (o.message || JSON.stringify(o)).slice(0, 160) };\nif (o.channel !== 'trades' || !Array.isArray(o.data)) return null;   // subscribe ack, pong\nconst out = [];\nfor (const d of o.data) {\n    const m = MAP[d.symbol];\n    if (!m) continue;\n    const price = +d.price, qty = +d.quantity, ts = +d.createTime;\n    if (!(price > 0) || !(qty >= 0) || !(ts > 0)) { out.push({ topic: 'md_err', exchange: EX, payload: 'trade inválido: ' + JSON.stringify(d).slice(0, 160) }); continue; }\n    out.push({ topic: 'trade', payload: {\n        symbol: m[0], quote: m[1], market: d.symbol, exchange: EX, kind: 'trade',\n        price: price, quantity: qty, side: d.takerSide === 'buy' ? 'BUY' : (d.takerSide === 'sell' ? 'SELL' : null),\n        trade_id: d.id,\n        exchange_timestamp: ts, exchange_ts_raw: d.createTime,\n        local_receive_timestamp: msg.t_recv,\n        raw: d\n    } });\n}\nreturn out.length ? [out] : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 820,
+    "y": 910,
+    "wires": [
+      [
+        "prrr_poloniex_linkout"
+      ]
+    ],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_poloniex_linkout",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "poloniex → MD BUS",
+    "mode": "link",
+    "links": [
+      "prrr_link_bus_in"
+    ],
+    "x": 1000,
+    "y": 930,
+    "wires": [],
+    "g": "prrr_grp_poloniex"
+  },
+  {
+    "id": "prrr_link_bus_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "MD BUS",
+    "links": [
+      "prrr_binance_linkout",
+      "prrr_coinbase_linkout",
+      "prrr_kraken_linkout",
+      "prrr_okx_linkout",
+      "prrr_bybit_linkout",
+      "prrr_bitfinex_linkout",
+      "prrr_gate_linkout",
+      "prrr_poloniex_linkout"
+    ],
+    "x": 1120,
+    "y": 320,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick UI 50 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.05",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "0.5",
+    "topic": "tick",
+    "x": 1140,
+    "y": 380,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_core",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "MD CORE (stats · ring · render)",
+    "func": "// ===== MD CORE =====\n// Entradas: trades normalizados (topic 'trade'), 'ws_status', 'md_err', 'tick', 'render_ms', 'reset'.\n// Salida 1 = stream normalizado (1 msg por trade, sin agregar).\n// Salidas 2..5 = charts (BTC,ZEC,GMX,XMR), 6..9 = tarjetas, 10 = tabla, 11 = chart ev/s, 12 = chart frescura.\nconst S = context.get('S', 'memory');\nconst now = Date.now();\nconst topic = msg.topic;\n\nfunction newWin() { return { n: 0, bySym: {}, frames: 0, latSum: 0, latN: 0, latMin: Infinity, latMax: -Infinity, pipeSum: 0, pipeMax: 0 }; }\nfunction getEx(name) {\n    let e = S.ex[name];\n    if (!e) e = S.ex[name] = { name: name, state: '?', reconnects: 0, lastError: '', lastMsgAge: null, parseErrors: 0, lastParseError: '', total: 0, last: {}, w: newWin(), rates: null };\n    return e;\n}\n\n// ---------------- camino caliente: 1 trade ----------------\nif (topic === 'trade') {\n    const t = msg.payload;\n    const e = getEx(t.exchange);\n    const w = e.w;\n    const pipe = now - t.local_receive_timestamp;          // cola interna de Node-RED (sin depender del reloj del exchange)\n    const lat = t.local_receive_timestamp - t.exchange_timestamp; // exchange -> notebook (depende de sincronía NTP)\n    w.n++; e.total++; S.totalEvents++;\n    w.bySym[t.symbol] = (w.bySym[t.symbol] || 0) + 1;\n    w.pipeSum += pipe; if (pipe > w.pipeMax) w.pipeMax = pipe;\n    if (isFinite(lat)) { w.latSum += lat; w.latN++; if (lat < w.latMin) w.latMin = lat; if (lat > w.latMax) w.latMax = lat; }\n    let L = e.last[t.symbol];\n    if (!L) L = e.last[t.symbol] = {};\n    L.price = t.price; L.qty = t.quantity; L.side = t.side; L.tRecv = t.local_receive_timestamp; L.tEx = t.exchange_timestamp; L.quote = t.quote; L.dirty = true;\n    let y = S.sym[t.symbol];\n    if (!y) y = S.sym[t.symbol] = { w: 0, total: 0 };\n    y.w++; y.total++; y.price = t.price; y.ex = t.exchange; y.side = t.side; y.tRecv = t.local_receive_timestamp; y.dirty = true;\n    let r = S.ring[t.symbol];\n    if (!r) r = S.ring[t.symbol] = { size: S.ringSize, buf: new Array(S.ringSize), idx: 0, count: 0 };\n    r.buf[r.idx] = t; r.idx = (r.idx + 1) % r.size; if (r.count < r.size) r.count++;\n    const o = new Array(4 + 2 * S.symbols.length).fill(null); o[0] = msg;\n    return o;\n}\n\nif (topic === 'ws_status') {\n    const p = msg.payload || {};\n    const e = getEx(p.exchange || msg.exchange);\n    e.state = p.state; e.reconnects = p.reconnects; e.lastError = p.lastError || '';\n    e.lastMsgAge = p.lastMsgAge; e.w.frames += (p.frames || 0);\n    return null;\n}\n\nif (topic === 'md_err') {\n    const e = getEx(msg.exchange || '?');\n    e.parseErrors++; e.lastParseError = String(msg.payload).slice(0, 200);\n    return null;\n}\n\nif (topic === 'render_ms') {\n    const v = Number(msg.payload);\n    if (v >= 50 && v <= 10000) S.renderMs = v;\n    return null;\n}\n\nif (topic === 'reset') {\n    S.peak = { TOTAL: 0 }; S.totalEvents = 0; S.t0 = now;\n    S.lag = { max: 0, sum: 0, n: 0 };\n    for (const k in S.ex) { S.ex[k].total = 0; S.ex[k].parseErrors = 0; S.ex[k].lastParseError = ''; }\n    for (const k in S.sym) S.sym[k].total = 0;\n    const N = S.symbols.length;\n    const o = new Array(4 + 2 * N).fill(null);\n    for (let i = 0; i < N; i++) o[1 + i] = { payload: [] };\n    o[2 + 2 * N] = { payload: [] }; o[3 + 2 * N] = { payload: [] };\n    return o;\n}\n\nif (topic !== 'tick') return null;\n\n// ---------------- reloj de UI (tick cada S.tickMs) ----------------\nif (S.lastTick) {\n    const lag = Math.max(0, now - S.lastTick - S.tickMs);   // retraso del event loop + cola de mensajes\n    S.lag.sum += lag; S.lag.n++; if (lag > S.lag.max) S.lag.max = lag;\n}\nS.lastTick = now;\nconst N = S.symbols.length;\nconst OUT_TABLE = 1 + 2 * N, OUT_EVS = 2 + 2 * N, OUT_FRESH = 3 + 2 * N;\nconst out = new Array(4 + 2 * N).fill(null);\nconst fmtP = (p) => p == null ? '—' : (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(3) : p.toPrecision(5));\nconst fmt = (v, d) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);\n\n// Render de gráficos + tarjetas (a S.renderMs, independiente de la tasa de trades)\nif (now - S.lastRender >= S.renderMs - S.tickMs / 2) {\n    S.lastRender = now;\n    S.symbols.forEach(function (sym, i) {\n        const pts = [];\n        const perEx = [];\n        for (const k in S.ex) {\n            const L = S.ex[k].last[sym];\n            if (!L) continue;\n            if (L.dirty) { pts.push({ topic: k, payload: L.price, timestamp: L.tRecv }); L.dirty = false; }\n            perEx.push({ ex: k, price: fmtP(L.price), side: L.side, age: Math.round(now - L.tRecv), quote: L.quote });\n        }\n        perEx.sort((a, b) => a.ex < b.ex ? -1 : 1);\n        if (pts.length) out[1 + i] = pts;\n        const y = S.sym[sym];\n        if (y && (y.dirty || perEx.length)) {\n            y.dirty = false;\n            out[1 + N + i] = { payload: {\n                symbol: sym, price: fmtP(y.price), exchange: y.ex, side: y.side,\n                age: Math.round(now - y.tRecv), evs: S.symRate ? fmt(S.symRate[sym], 1) : '—',\n                perEx: perEx, renderMs: S.renderMs\n            } };\n        }\n    });\n}\n\n// Estadísticas cada 1 s\nif (now - S.lastStats >= 1000) {\n    const dt = (now - S.lastStats) / 1000;\n    S.lastStats = now;\n    const rows = [];\n    let tot = 0, latSum = 0, latN = 0, pipeMaxAll = 0;\n    const symTot = {};\n    const names = Object.keys(S.ex).sort();\n    for (const k of names) {\n        const e = S.ex[k], w = e.w;\n        tot += w.n; latSum += w.latSum; latN += w.latN;\n        if (w.pipeMax > pipeMaxAll) pipeMaxAll = w.pipeMax;\n        for (const s in w.bySym) symTot[s] = (symTot[s] || 0) + w.bySym[s];\n        const syms = S.symbols.map(function (sy) {\n            const L = e.last[sy];\n            return { sym: sy, evs: L ? fmt((w.bySym[sy] || 0) / dt, 1) : '·', price: L ? fmtP(L.price) : '·', age: L ? fmt((now - L.tRecv) / 1000, 1) : '' };\n        });\n        rows.push({\n            ex: k, state: e.state, reconnects: e.reconnects,\n            evs: fmt(w.n / dt, 1), syms: syms,\n            fps: fmt(w.frames / dt, 1),\n            latAvg: w.latN ? fmt(w.latSum / w.latN, 0) : '—', latMin: w.latN ? fmt(w.latMin, 0) : '—', latMax: w.latN ? fmt(w.latMax, 0) : '—',\n            pipeAvg: w.n ? fmt(w.pipeSum / w.n, 1) : '—', pipeMax: w.n ? fmt(w.pipeMax, 0) : '—',\n            lastMsgAge: e.lastMsgAge == null ? '—' : fmt(e.lastMsgAge / 1000, 1),\n            errs: e.parseErrors, total: e.total,\n            err: e.lastError || e.lastParseError || ''\n        });\n        e.rates = { evs: w.n / dt };\n        e.w = newWin();\n    }\n    const totEvs = tot / dt;\n    S.symRate = {};\n    for (const s of S.symbols) S.symRate[s] = (symTot[s] || 0) / dt;\n    for (const s in symTot) if (!(s in S.symRate)) S.symRate[s] = symTot[s] / dt;\n    if (totEvs > S.peak.TOTAL) S.peak.TOTAL = totEvs;\n    for (const s in S.symRate) if (!(S.peak[s] >= S.symRate[s])) S.peak[s] = S.symRate[s];\n    const lagAvg = S.lag.n ? S.lag.sum / S.lag.n : 0, lagMax = S.lag.max;\n    S.lag = { max: 0, sum: 0, n: 0 };\n    const summary = {\n        totEvs: fmt(totEvs, 1), peakTot: fmt(S.peak.TOTAL, 1),\n        syms: S.symbols.map(function (sy) { return { sym: sy, evs: fmt(S.symRate[sy] || 0, 1), peak: fmt(S.peak[sy] || 0, 1) }; }),\n        total: S.totalEvents, uptime: Math.round((now - S.t0) / 1000),\n        lagAvg: fmt(lagAvg, 1), lagMax: fmt(lagMax, 0), pipeMax: fmt(pipeMaxAll, 0),\n        latAvg: latN ? fmt(latSum / latN, 0) : '—', renderMs: S.renderMs\n    };\n    out[OUT_TABLE] = { payload: { rows: rows, summary: summary, symbols: S.symbols } };\n    out[OUT_EVS] = [{ topic: 'TOTAL', payload: +totEvs.toFixed(2) }].concat(\n        S.symbols.map(function (sy) { return { topic: sy, payload: +(S.symRate[sy] || 0).toFixed(2) }; }));\n    out[OUT_FRESH] = [\n        { topic: 'lag event-loop máx (ms)', payload: lagMax },\n        { topic: 'cola Node-RED máx (ms)', payload: pipeMaxAll }\n    ];\n    if (latN) out[OUT_FRESH].push({ topic: 'exchange→local prom (ms)', payload: Math.round(latSum / latN) });\n    global.set('md_stats', { t: now, dt: dt, totEvs: totEvs, symRate: S.symRate, lagAvg: lagAvg, lagMax: lagMax, pipeMax: pipeMaxAll, rows: rows }, 'memory');\n}\nreturn out;",
+    "outputs": 12,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== MD CORE: estado en memoria (nunca crece sin límite) =====\nconst RING_SIZE = 5000;          // últimos N trades por símbolo (buffer circular)\nconst S = {\n    t0: Date.now(),\n    tickMs: 50,                  // período del inject \"tick\"\n    renderMs: 500,               // frecuencia de render UI (ajustable desde el dashboard)\n    lastRender: 0, lastStats: Date.now(), lastTick: 0,\n    lag: { max: 0, sum: 0, n: 0 },\n    ex: {}, sym: {},\n    totalEvents: 0,\n    peak: { TOTAL: 0 },\n    ring: {}, ringSize: RING_SIZE,\n    symbols: ['BTC', 'ZEC', 'GMX', 'XMR']   // instrumentos con gráfico propio (el orden = salidas del nodo)\n};\ncontext.set('S', S, 'memory');\nglobal.set('md_ring', S.ring, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "stream normalizado",
+      "chart BTC",
+      "chart ZEC",
+      "chart GMX",
+      "chart XMR",
+      "card BTC",
+      "card ZEC",
+      "card GMX",
+      "card XMR",
+      "tabla exchanges",
+      "chart ev/s",
+      "chart frescura"
+    ],
+    "x": 1360,
+    "y": 340,
+    "wires": [
+      [
+        "prrr_stream_out"
+      ],
+      [
+        "prrr_ui_chart_btc"
+      ],
+      [
+        "prrr_ui_chart_zec"
+      ],
+      [
+        "prrr_ui_chart_gmx"
+      ],
+      [
+        "prrr_ui_chart_xmr"
+      ],
+      [
+        "prrr_ui_card_btc"
+      ],
+      [
+        "prrr_ui_card_zec"
+      ],
+      [
+        "prrr_ui_card_gmx"
+      ],
+      [
+        "prrr_ui_card_xmr"
+      ],
+      [
+        "prrr_ui_table"
+      ],
+      [
+        "prrr_ui_chart_evs"
+      ],
+      [
+        "prrr_ui_chart_fresh"
+      ]
+    ],
+    "g": "prrr_grp_core"
+  },
+  {
+    "id": "prrr_comment_core",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "Formato común del trade (msg.payload)",
+    "info": "```\n{\n  symbol: \"BTC\" | \"ZEC\" | \"GMX\" | \"XMR\",\n  quote: \"USD\" | \"USDT\",\n  market: símbolo nativo del exchange,\n  exchange: \"binance\" | \"coinbase\" | \"kraken\" | \"okx\" | \"bybit\" | \"bitfinex\" | \"gate\" | \"poloniex\",\n  kind: \"trade\",\n  price: Number,\n  quantity: Number,\n  side: \"BUY\" | \"SELL\" | null   // lado del AGRESOR (taker)\n  trade_id,\n  exchange_timestamp: ms epoch (Number, puede tener decimales = µs),\n  exchange_ts_raw: timestamp original sin tocar (µs/ISO),\n  local_receive_timestamp: ms epoch al recibir el frame WS,\n  raw: objeto original del exchange\n}\n```\nCada evento conserva su exchange. No hay agregación ni promedios antes del core.",
+    "x": 1330,
+    "y": 260,
+    "wires": [],
+    "g": "prrr_grp_core"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "step",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_btc",
+    "name": "BTC chart",
+    "group": "prrr_ui_g_btc",
+    "order": 2,
+    "width": 12,
+    "height": 7,
+    "label": "BTC — último precio por exchange",
+    "removeOlder": "10",
+    "removeOlderPoints": "2000",
+    "removeOlderUnit": "60",
+    "x": 1700,
+    "y": 220,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "step",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_zec",
+    "name": "ZEC chart",
+    "group": "prrr_ui_g_zec",
+    "order": 2,
+    "width": 12,
+    "height": 7,
+    "label": "ZEC — último precio por exchange",
+    "removeOlder": "10",
+    "removeOlderPoints": "2000",
+    "removeOlderUnit": "60",
+    "x": 1700,
+    "y": 260,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "step",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_gmx",
+    "name": "GMX chart",
+    "group": "prrr_ui_g_gmx",
+    "order": 2,
+    "width": 12,
+    "height": 7,
+    "label": "GMX — último precio por exchange",
+    "removeOlder": "10",
+    "removeOlderPoints": "2000",
+    "removeOlderUnit": "60",
+    "x": 1920,
+    "y": 220,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "step",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_xmr",
+    "name": "XMR chart",
+    "group": "prrr_ui_g_xmr",
+    "order": 2,
+    "width": 12,
+    "height": 7,
+    "label": "XMR — último precio por exchange",
+    "removeOlder": "10",
+    "removeOlderPoints": "2000",
+    "removeOlderUnit": "60",
+    "x": 1920,
+    "y": 260,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_card_btc",
+    "name": "BTC ticker",
+    "group": "prrr_ui_g_btc",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<style>\n.prrr-card{font-family:monospace;padding:2px 6px}\n.prrr-card .hd{display:flex;align-items:baseline;gap:12px}\n.prrr-card .sym{font-size:20px;font-weight:bold}\n.prrr-card .px{font-size:34px;font-weight:bold;line-height:1.1}\n.prrr-card .up{color:#27ae60}.prrr-card .dn{color:#e74c3c}\n.prrr-card .meta{opacity:.75;font-size:12px}\n.prrr-card .exs{font-size:12px;margin-top:2px}\n.prrr-card .exs span{display:inline-block;margin-right:12px;white-space:nowrap}\n</style>\n<div class=\"prrr-card\" ng-if=\"msg.payload\">\n  <div class=\"hd\">\n    <span class=\"sym\">{{msg.payload.symbol}}</span>\n    <span class=\"px\" ng-class=\"{'up': msg.payload.side==='BUY', 'dn': msg.payload.side==='SELL'}\">{{msg.payload.price}}</span>\n    <span class=\"meta\">{{msg.payload.exchange}} · {{msg.payload.side || '?'}} · edad {{msg.payload.age}} ms · {{msg.payload.evs}} ev/s</span>\n  </div>\n  <div class=\"exs\"><span ng-repeat=\"e in msg.payload.perEx track by e.ex\"><b>{{e.ex}}</b> <span ng-class=\"{'up': e.side==='BUY', 'dn': e.side==='SELL'}\">{{e.price}}</span> {{e.quote}} ({{e.age}} ms)</span></div>\n</div>\n<div class=\"prrr-card\" ng-if=\"!msg.payload\"><span class=\"meta\">esperando trades…</span></div>",
+    "x": 1700,
+    "y": 300,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_card_zec",
+    "name": "ZEC ticker",
+    "group": "prrr_ui_g_zec",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<style>\n.prrr-card{font-family:monospace;padding:2px 6px}\n.prrr-card .hd{display:flex;align-items:baseline;gap:12px}\n.prrr-card .sym{font-size:20px;font-weight:bold}\n.prrr-card .px{font-size:34px;font-weight:bold;line-height:1.1}\n.prrr-card .up{color:#27ae60}.prrr-card .dn{color:#e74c3c}\n.prrr-card .meta{opacity:.75;font-size:12px}\n.prrr-card .exs{font-size:12px;margin-top:2px}\n.prrr-card .exs span{display:inline-block;margin-right:12px;white-space:nowrap}\n</style>\n<div class=\"prrr-card\" ng-if=\"msg.payload\">\n  <div class=\"hd\">\n    <span class=\"sym\">{{msg.payload.symbol}}</span>\n    <span class=\"px\" ng-class=\"{'up': msg.payload.side==='BUY', 'dn': msg.payload.side==='SELL'}\">{{msg.payload.price}}</span>\n    <span class=\"meta\">{{msg.payload.exchange}} · {{msg.payload.side || '?'}} · edad {{msg.payload.age}} ms · {{msg.payload.evs}} ev/s</span>\n  </div>\n  <div class=\"exs\"><span ng-repeat=\"e in msg.payload.perEx track by e.ex\"><b>{{e.ex}}</b> <span ng-class=\"{'up': e.side==='BUY', 'dn': e.side==='SELL'}\">{{e.price}}</span> {{e.quote}} ({{e.age}} ms)</span></div>\n</div>\n<div class=\"prrr-card\" ng-if=\"!msg.payload\"><span class=\"meta\">esperando trades…</span></div>",
+    "x": 1700,
+    "y": 340,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_card_gmx",
+    "name": "GMX ticker",
+    "group": "prrr_ui_g_gmx",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<style>\n.prrr-card{font-family:monospace;padding:2px 6px}\n.prrr-card .hd{display:flex;align-items:baseline;gap:12px}\n.prrr-card .sym{font-size:20px;font-weight:bold}\n.prrr-card .px{font-size:34px;font-weight:bold;line-height:1.1}\n.prrr-card .up{color:#27ae60}.prrr-card .dn{color:#e74c3c}\n.prrr-card .meta{opacity:.75;font-size:12px}\n.prrr-card .exs{font-size:12px;margin-top:2px}\n.prrr-card .exs span{display:inline-block;margin-right:12px;white-space:nowrap}\n</style>\n<div class=\"prrr-card\" ng-if=\"msg.payload\">\n  <div class=\"hd\">\n    <span class=\"sym\">{{msg.payload.symbol}}</span>\n    <span class=\"px\" ng-class=\"{'up': msg.payload.side==='BUY', 'dn': msg.payload.side==='SELL'}\">{{msg.payload.price}}</span>\n    <span class=\"meta\">{{msg.payload.exchange}} · {{msg.payload.side || '?'}} · edad {{msg.payload.age}} ms · {{msg.payload.evs}} ev/s</span>\n  </div>\n  <div class=\"exs\"><span ng-repeat=\"e in msg.payload.perEx track by e.ex\"><b>{{e.ex}}</b> <span ng-class=\"{'up': e.side==='BUY', 'dn': e.side==='SELL'}\">{{e.price}}</span> {{e.quote}} ({{e.age}} ms)</span></div>\n</div>\n<div class=\"prrr-card\" ng-if=\"!msg.payload\"><span class=\"meta\">esperando trades…</span></div>",
+    "x": 1920,
+    "y": 300,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_card_xmr",
+    "name": "XMR ticker",
+    "group": "prrr_ui_g_xmr",
+    "order": 1,
+    "width": 12,
+    "height": 2,
+    "format": "<style>\n.prrr-card{font-family:monospace;padding:2px 6px}\n.prrr-card .hd{display:flex;align-items:baseline;gap:12px}\n.prrr-card .sym{font-size:20px;font-weight:bold}\n.prrr-card .px{font-size:34px;font-weight:bold;line-height:1.1}\n.prrr-card .up{color:#27ae60}.prrr-card .dn{color:#e74c3c}\n.prrr-card .meta{opacity:.75;font-size:12px}\n.prrr-card .exs{font-size:12px;margin-top:2px}\n.prrr-card .exs span{display:inline-block;margin-right:12px;white-space:nowrap}\n</style>\n<div class=\"prrr-card\" ng-if=\"msg.payload\">\n  <div class=\"hd\">\n    <span class=\"sym\">{{msg.payload.symbol}}</span>\n    <span class=\"px\" ng-class=\"{'up': msg.payload.side==='BUY', 'dn': msg.payload.side==='SELL'}\">{{msg.payload.price}}</span>\n    <span class=\"meta\">{{msg.payload.exchange}} · {{msg.payload.side || '?'}} · edad {{msg.payload.age}} ms · {{msg.payload.evs}} ev/s</span>\n  </div>\n  <div class=\"exs\"><span ng-repeat=\"e in msg.payload.perEx track by e.ex\"><b>{{e.ex}}</b> <span ng-class=\"{'up': e.side==='BUY', 'dn': e.side==='SELL'}\">{{e.price}}</span> {{e.quote}} ({{e.age}} ms)</span></div>\n</div>\n<div class=\"prrr-card\" ng-if=\"!msg.payload\"><span class=\"meta\">esperando trades…</span></div>",
+    "x": 1920,
+    "y": 340,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_table",
+    "name": "Tabla exchanges / rendimiento",
+    "group": "prrr_ui_g_perf",
+    "order": 1,
+    "width": 24,
+    "height": 6,
+    "format": "<style>\n.prrr-t{width:100%;border-collapse:collapse;font-family:monospace;font-size:12px}\n.prrr-t th,.prrr-t td{padding:2px 6px;text-align:right;border-bottom:1px solid rgba(128,128,128,.25);white-space:nowrap}\n.prrr-t th{font-weight:bold;opacity:.8}\n.prrr-t .l{text-align:left}\n.prrr-t .connected{color:#27ae60;font-weight:bold}.prrr-t .off{color:#888}\n.prrr-t .connecting{color:#e6a700}.prrr-t .down{color:#e74c3c;font-weight:bold}\n.prrr-t .err{color:#e67e22;max-width:260px;overflow:hidden;text-overflow:ellipsis}\n.prrr-sum{font-family:monospace;font-size:13px;margin:2px 0 6px 0}\n.prrr-sum span{display:inline-block;margin-right:18px}\n.prrr-t td.sy{border-left:1px solid rgba(128,128,128,.25)}\n</style>\n<div ng-if=\"msg.payload\" style=\"overflow-x:auto\">\n<div class=\"prrr-sum\">\n  <span><b>TOTAL</b> {{msg.payload.summary.totEvs}} ev/s (pico {{msg.payload.summary.peakTot}})</span>\n  <span ng-repeat=\"y in msg.payload.summary.syms track by y.sym\"><b>{{y.sym}}</b> {{y.evs}} ev/s (pico {{y.peak}})</span>\n  <span><b>lag event-loop</b> {{msg.payload.summary.lagAvg}} / {{msg.payload.summary.lagMax}} ms (prom/máx)</span>\n  <span><b>cola NR máx</b> {{msg.payload.summary.pipeMax}} ms</span>\n  <span><b>exch→local prom</b> {{msg.payload.summary.latAvg}} ms</span>\n  <span><b>eventos</b> {{msg.payload.summary.total}} en {{msg.payload.summary.uptime}} s</span>\n</div>\n<table class=\"prrr-t\">\n<tr>\n  <th class=\"l\">Exchange</th><th class=\"l\">WS</th><th>reconex</th><th>ev/s</th><th>frames/s</th>\n  <th ng-repeat-start=\"sy in msg.payload.symbols track by sy\">{{sy}} ev/s</th><th ng-repeat-end>últ. {{sy}} (edad s)</th>\n  <th>últ. frame s</th>\n  <th>exch→local ms prom/mín/máx</th><th>cola NR ms prom/máx</th><th>err parse</th><th>total</th><th class=\"l\">último error</th>\n</tr>\n<tr ng-repeat=\"r in msg.payload.rows track by r.ex\">\n  <td class=\"l\"><b>{{r.ex}}</b></td><td class=\"l\" ng-class=\"r.state\">{{r.state}}</td><td>{{r.reconnects}}</td>\n  <td><b>{{r.evs}}</b></td><td>{{r.fps}}</td>\n  <td ng-repeat-start=\"c in r.syms track by c.sym\" class=\"sy\">{{c.evs}}</td><td ng-repeat-end>{{c.price}} <small ng-if=\"c.age\">({{c.age}})</small></td>\n  <td>{{r.lastMsgAge}}</td>\n  <td>{{r.latAvg}} / {{r.latMin}} / {{r.latMax}}</td><td>{{r.pipeAvg}} / {{r.pipeMax}}</td>\n  <td>{{r.errs}}</td><td>{{r.total}}</td><td class=\"l err\" title=\"{{r.err}}\">{{r.err}}</td>\n</tr>\n</table>\n</div>\n<div ng-if=\"!msg.payload\" style=\"font-family:monospace\">esperando estadísticas…</div>",
+    "x": 1700,
+    "y": 380,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_evs",
+    "name": "Eventos/s",
+    "group": "prrr_ui_g_thr",
+    "order": 1,
+    "width": 12,
+    "height": 5,
+    "label": "Eventos/s (TOTAL · BTC · ZEC · GMX · XMR)",
+    "removeOlder": "15",
+    "removeOlderPoints": "1000",
+    "removeOlderUnit": "60",
+    "x": 1700,
+    "y": 420,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "type": "ui_chart",
+    "z": "prrr_tab_main",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "esperando trades…",
+    "dot": false,
+    "ymin": "0",
+    "ymax": "",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#ff7f0e",
+      "#2ca02c",
+      "#d62728",
+      "#9467bd",
+      "#8c564b",
+      "#e377c2",
+      "#7f7f7f",
+      "#bcbd22"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_ui_chart_fresh",
+    "name": "Frescura",
+    "group": "prrr_ui_g_thr",
+    "order": 2,
+    "width": 12,
+    "height": 5,
+    "label": "Frescura: lag event-loop · cola Node-RED · exchange→local (ms)",
+    "removeOlder": "15",
+    "removeOlderPoints": "1000",
+    "removeOlderUnit": "60",
+    "x": 1700,
+    "y": 460,
+    "g": "prrr_grp_ui"
+  },
+  {
+    "id": "prrr_stream_out",
+    "type": "link out",
+    "z": "prrr_tab_main",
+    "name": "MD STREAM →",
+    "mode": "link",
+    "links": [
+      "prrr_example_in"
+    ],
+    "x": 1680,
+    "y": 140,
+    "wires": [],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_example_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "ejemplo consumidor",
+    "links": [
+      "prrr_stream_out"
+    ],
+    "x": 1860,
+    "y": 140,
+    "wires": [
+      [
+        "prrr_example_dbg"
+      ]
+    ],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_example_dbg",
+    "type": "debug",
+    "z": "prrr_tab_main",
+    "name": "trades normalizados (activar para ver)",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 2120,
+    "y": 140,
+    "wires": [],
+    "g": "prrr_grp_out"
+  },
+  {
+    "id": "prrr_render_init",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "render inicial 500 ms",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "",
+    "payload": "500",
+    "payloadType": "num",
+    "x": 170,
+    "y": 1080,
+    "wires": [
+      [
+        "prrr_ui_render"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_render",
+    "type": "ui_dropdown",
+    "z": "prrr_tab_main",
+    "name": "Frecuencia de render",
+    "label": "Render UI",
+    "tooltip": "Cada cuánto se redibuja (no afecta la adquisición)",
+    "place": "",
+    "group": "prrr_ui_g_ctrl",
+    "order": 10,
+    "width": 6,
+    "height": 1,
+    "passthru": true,
+    "multiple": false,
+    "options": [
+      {
+        "label": "100 ms",
+        "value": 100,
+        "type": "num"
+      },
+      {
+        "label": "250 ms",
+        "value": 250,
+        "type": "num"
+      },
+      {
+        "label": "500 ms",
+        "value": 500,
+        "type": "num"
+      },
+      {
+        "label": "1000 ms",
+        "value": 1000,
+        "type": "num"
+      },
+      {
+        "label": "2000 ms",
+        "value": 2000,
+        "type": "num"
+      }
+    ],
+    "payload": "",
+    "topic": "render_ms",
+    "topicType": "str",
+    "className": "",
+    "x": 420,
+    "y": 1080,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_reset",
+    "type": "ui_button",
+    "z": "prrr_tab_main",
+    "name": "Reset stats",
+    "group": "prrr_ui_g_ctrl",
+    "order": 11,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "Reset stats",
+    "tooltip": "Reinicia picos, contadores y gráficos",
+    "color": "",
+    "bgcolor": "",
+    "className": "",
+    "icon": "fa-eraser",
+    "payload": "reset",
+    "payloadType": "str",
+    "topic": "reset",
+    "topicType": "str",
+    "x": 400,
+    "y": 1130,
+    "wires": [
+      [
+        "prrr_core"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_ui_reconnect",
+    "type": "ui_button",
+    "z": "prrr_tab_main",
+    "name": "Reconectar todos",
+    "group": "prrr_ui_g_ctrl",
+    "order": 12,
+    "width": 3,
+    "height": 1,
+    "passthru": false,
+    "label": "Reconectar",
+    "tooltip": "Fuerza reconexión de todos los WS habilitados",
+    "color": "",
+    "bgcolor": "",
+    "className": "",
+    "icon": "fa-refresh",
+    "payload": "reconnect",
+    "payloadType": "str",
+    "topic": "reconnect",
+    "topicType": "str",
+    "x": 410,
+    "y": 1180,
+    "wires": [
+      [
+        "prrr_binance_ws",
+        "prrr_coinbase_ws",
+        "prrr_kraken_ws",
+        "prrr_okx_ws",
+        "prrr_bybit_ws",
+        "prrr_bitfinex_ws",
+        "prrr_gate_ws",
+        "prrr_poloniex_ws"
+      ]
+    ],
+    "g": "prrr_grp_ctl"
+  },
+  {
+    "id": "prrr_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores de este tab",
+    "scope": null,
+    "uncaught": false,
+    "x": 180,
+    "y": 1270,
+    "wires": [
+      [
+        "prrr_catch_dbg"
+      ]
+    ],
+    "g": "prrr_grp_err"
+  },
+  {
+    "id": "prrr_catch_dbg",
+    "type": "debug",
+    "z": "prrr_tab_main",
+    "name": "errores",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "error",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 400,
+    "y": 1270,
+    "wires": [],
+    "g": "prrr_grp_err"
+  },
+  {
+    "id": "prrr_comment_main",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "PRRR Etapa 1 — Exchange WS → normalizador → MD BUS → MD CORE → (stream | dashboard)",
+    "info": "Cada exchange: `autostart → switch dashboard → WS Connector (subflow) → normalizador → link out MD BUS`.\n\nPara agregar un exchange: copiar un grupo, cambiar env vars de la instancia del subflow (EXCHANGE, WS_URL, SUBSCRIBE, PING_*), escribir su normalizador al formato común y enlazar el link out al `MD BUS`.\n\nPara agregar un símbolo: sumarlo al SUBSCRIBE y al `MAP` del normalizador. El core lo mide automáticamente; para graficarlo agregar su nombre en `S.symbols` (On Start del core) y una salida/gráfico.",
+    "x": 360,
+    "y": 60,
+    "wires": []
+  }
+]
