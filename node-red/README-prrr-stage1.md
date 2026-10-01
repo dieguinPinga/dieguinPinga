@@ -1,6 +1,31 @@
-# PRRR Market Data — Etapas 1 → 4
+# PRRR Market Data — Etapas 1 → 5
 
-**Versión actual: `prrr-market-data-stage4.json`** (generador `tools/build-prrr-stage4.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage5.json`** (generador `tools/build-prrr-stage5.js`). Al importar, elegir **Replace**.
+
+## Etapa 5 — LABORATORIO histórico (sólo lectura de `market_1s`)
+```
+[LABORATORIO ui_template] → LAB controlador (arma el SQL, 1 consulta a la vez) → [mysql: sólo SELECT] → resultado chico → LABORATORIO
+```
+* **Sin cambios en el resto del flow:** no se modificó ningún nodo existente.
+* **Requisitos:** el usuario `prrr` sólo necesita `SELECT`, porque no se crean tablas, ni siquiera temporales. MariaDB ≥ 10.2 (funciones de ventana).
+* **Variables en T:** se calculan con ventanas `ROWS BETWEEN 24/49 PRECEDING AND CURRENT ROW`, sólo pasado y presente.
+  * Una observación es utilizable sólo si T−49…T son 50 segundos contiguos (`LAG(ts,49) = T−49 s`).
+* **Labels futuros:** precio exacto en T+60/300/900/3600 s, por `LEFT JOIN` a la clave primaria. Si la fila no existe todavía o hay un hueco, el valor es NULL y la observación no cuenta para ese horizonte.
+* **Resumen:** 7 condiciones descriptivas × 4 horizontes, con N, N indep. ≈ N·k/horizonte, media, mediana exacta (`ROW_NUMBER`) y % > 0.
+  * Se marca "muestra insuficiente" si N indep. < 30.
+  * Para períodos de más de 120 000 s, el resumen usa 1 de cada k segundos (muestreo sistemático) y lo indica en pantalla.
+* **Rendimiento:** todo se calcula dentro de MariaDB y a Node-RED vuelven ~130 filas.
+  * Cada sentencia tiene `max_statement_time = 120 s` y hay una sola consulta en vuelo. Sólo se ejecuta al abrir la pestaña, al cambiar parámetros o con ACTUALIZAR.
+* **Modular:** `buildLab({featureSymbol, labelSymbol, …})`. BTC → ZEC = featureSymbol 'BTC', labelSymbol 'ZEC' (no expuesto todavía).
+* **Validado con MariaDB 10.11 real:**
+  * 10 343 observaciones con huecos y `no_trade`: las 15 variables y los labels coinciden exactamente con un cálculo independiente.
+  * Resumen exacto, también con muestreo.
+  * Sin look-ahead: alterar todo lo posterior a T* no cambia ninguna variable de entrada ≤ T*.
+  * Con 2,4 M filas (7 d × 4 activos): 1h 0,2 s, 24h 9 s, 7d/todo ~26 s.
+  * Mientras tanto, el PRRR procesó todos los eventos (lag mediana 1 ms, picos ≤ 63 ms) y el writer siguió guardando sin atraso extra.
+
+
+**Etapa 4: `prrr-market-data-stage4.json`** (generador `tools/build-prrr-stage4.js`).
 
 ## Etapa 4 — Analítica 25/50 (sólo calcular y observar)
 ```
