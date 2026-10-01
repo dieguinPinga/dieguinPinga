@@ -1,6 +1,38 @@
-# PRRR Market Data — Etapas 1 → 2
+# PRRR Market Data — Etapas 1 → 3
 
-**Versión actual: `prrr-market-data-stage2e.json`** (generador `tools/build-prrr-stage2e.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage3.json`** (generador `tools/build-prrr-stage3.js`). Al importar, elegir **Replace**.
+
+## Etapa 3 — Persistencia en MariaDB (`prrr_market.market_1s`)
+```
+BUCKETS 1s → (existente) ─→ DB writer (cola RAM acotada · lotes) ─→ [mysql] ─→ resultado ─┐
+                                 ↑ tick 1 s            catch (errores) · status (conexión) ──┘
+```
+* **Nodo requerido:** `node-red-node-mysql`. Usa `mysql2` y es compatible con MariaDB. Se instala desde *Manage palette → Install* o con `cd ~/.node-red && npm i node-red-node-mysql`.
+* **Credenciales:** en el config node **MariaDB prrr_market (localhost)** se cargan usuario `prrr` y su contraseña, que quedan en los credentials cifrados de Node-RED. No hay contraseñas en el código.
+* **Origen de los datos:** los buckets exactos del normalizador existente, que no se recalculan.
+* **Inserción:** `INSERT … VALUES ? ON DUPLICATE KEY UPDATE`, en lotes de hasta 400 filas cada ≤ 5 s, con un solo lote en vuelo.
+* **Desacople:** el writer sólo encola, así que el PRRR nunca espera a la base.
+* **Si MariaDB se cae:** el lote vuelve a la cola y se reintenta con backoff de 5 → 60 s; un lote sin respuesta en 30 s también se reintenta.
+  * La cola está acotada a 14 400 filas (1 h). Si la caída dura más, se descartan las filas más viejas y se cuentan.
+  * El error se registra en el log de Node-RED, sin repetir el mismo mensaje más de una vez por minuto.
+* **Columna `ts`:** su tipo se detecta en `information_schema`. DATETIME/TIMESTAMP se guarda en **UTC**, BIGINT en ms epoch, INT en segundos epoch.
+* **`no_trade`:** vale 1 en segundos sin trades (precio arrastrado). Los buckets `no_price` (todavía no hubo ningún precio) no se guardan.
+* **Indicador en DIAGNÓSTICO:** DB conectada, último bucket guardado, filas guardadas y errores DB. Los contadores son de la sesión actual de Node-RED.
+* **Validado con MariaDB 10.11 real:**
+  * Escritura de los 4 activos con un segundo por fila.
+  * Caída de MariaDB de 46 s sin huecos ni impacto en el PRRR (lag de event loop 1 ms).
+  * Reinicio de Node-RED: el histórico permanece y no hay duplicados.
+  * Al apagar Node-RED se pierden como máximo los ~5 s que estaban en cola (no pueden escribirse durante el cierre).
+
+Consultas de verificación:
+```sql
+SELECT symbol, COUNT(*) filas, MIN(ts), MAX(ts), SUM(no_trade) seg_sin_trades FROM market_1s GROUP BY symbol;
+SELECT * FROM market_1s WHERE symbol='BTC' ORDER BY ts DESC LIMIT 10;
+SELECT symbol, ts, COUNT(*) c FROM market_1s GROUP BY symbol, ts HAVING c > 1;   -- debe estar vacío
+```
+
+
+**2e: `prrr-market-data-stage2e.json`** (generador `tools/build-prrr-stage2e.js`).
 
 ## 2e — Ventana visible, intervalo de ploteo, pausa (sólo presentación)
 * **Selector anterior ("Render UI", 100–2000 ms, en DIAGNÓSTICO):**
