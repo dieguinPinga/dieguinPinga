@@ -1,6 +1,26 @@
-# PRRR Market Data — Etapas 1 → 3
+# PRRR Market Data — Etapas 1 → 4
 
-**Versión actual: `prrr-market-data-stage3.json`** (generador `tools/build-prrr-stage3.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage4.json`** (generador `tools/build-prrr-stage4.js`). Al importar, elegir **Replace**.
+
+## Etapa 4 — Analítica 25/50 (sólo calcular y observar)
+```
+BUCKETS 1s ─┬→ MariaDB (sin cambios)
+            └→ ANALÍTICA 25/50 (nuevo) → MERCADO mux → dashboard
+```
+* **Fuente:** los buckets de 1 s del normalizador (no RAW). Buffer propio de 50 buckets por activo.
+* **Precio:** `price_sma_25/50` es la media de `close` de los últimos 25/50 segundos con precio; `no_trade` participa con su precio arrastrado. Vale `null` hasta completar la ventana. `price_sma_spread_pct = (SMA25/SMA50 − 1) × 100`.
+* **Flujo:** `delta_25/50 = Σ delta_usd` y `volume_25/50 = Σ vol_usd`; `no_trade` aporta 0. `pressure = delta / volumen`, o 0 si el volumen es 0.
+* **Vista:** en cada chart de precio se agregan 2 líneas finas neutras, SMA25 continua y SMA50 punteada, con un borde claro para que se lean sobre el precio.
+  * Debajo hay una tira compacta: 25s / 50s (Δ, VOL, presión) y SMA25−SMA50 %. Verde/rojo indica sólo el signo.
+* **Valores:** quedan en `global.get('md_an_2550','memory')`. No se escriben en MariaDB porque se derivan de `market_1s`.
+* **Validado:**
+  * Las 9 magnitudes coinciden con un recálculo independiente, en pruebas sintéticas (con `no_trade` y `no_price`) y en vivo contra los buckets de la memoria para los 4 activos.
+  * CPU de Node-RED 11 % contra 10 % en la etapa 3 (ruido), con lag y cola idénticos.
+  * MariaDB sigue guardando sin huecos.
+  * MERCADO a 1920×1080 con Edge 67 %: 4 columnas de 707 px, charts de 689×714 y sin scroll.
+
+
+**Etapa 3: `prrr-market-data-stage3.json`** (generador `tools/build-prrr-stage3.js`).
 
 ## Etapa 3 — Persistencia en MariaDB (`prrr_market.market_1s`)
 ```
