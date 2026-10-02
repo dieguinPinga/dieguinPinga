@@ -77,13 +77,43 @@ FROM market_1s m JOIN gmx_price g ON g.symbol = m.symbol AND g.ts >= m.ts AND g.
 WHERE m.symbol='ZEC' AND m.ts > UTC_TIMESTAMP() - INTERVAL 10 MINUTE GROUP BY m.ts ORDER BY m.ts DESC LIMIT 20;
 ```
 
-### Despliegue (no interrumpe la adquisición)
-1. Crear la tabla con `sql/stage6-gmx_price.sql`.
-2. Importar el JSON (**Replace**) y luego **Deploy → Modified Nodes**. Así sólo arrancan los 13 nodos nuevos: los WebSockets, normalizadores y writers existentes **no se reinician**.
-   * Comprobado: 0 reconexiones y market_1s sin huecos durante el deploy.
-   * Un deploy **Full** sí reinicia todo el flow, con unos segundos sin datos.
-3. Node-RED necesita salida HTTPS hacia `*.gmxinfra.io` / `*.gmxinfra2.io`.
+### Despliegue
+**Actualizar la instancia en marcha, sin cortar la adquisición (recomendado):**
+1. Crear la tabla con `sql/stage6-gmx_price.sql`, como root.
+2. En el editor, abrir la pestaña **PRRR Market Data** e importar **`prrr-market-data-stage6-addon.json`** con *Import* normal, sin Replace. Son sólo los 13 nodos nuevos, que reutilizan el config node MariaDB existente.
+3. Hacer **Deploy → Modified Nodes**. Sólo arrancan los nodos nuevos.
 
+**Instalación nueva o reemplazo completo:** usar `prrr-market-data-stage6.json` (Replace + **Deploy Full**). En este caso se reinicia todo el flow y market_1s queda unos segundos sin datos, igual que en etapas anteriores.
+
+Node-RED necesita salida HTTPS hacia `*.gmxinfra.io` / `*.gmxinfra2.io`.
+
+### Validación (sandbox: Node-RED 5.0.7 + MariaDB 10.11)
+Los hosts de GMX están bloqueados por el proxy de este entorno. Por eso la API se simuló con un **mock** que devuelve la respuesta real grabada en los fixtures oficiales de `gmx-interface` (120 tokens, mismos campos), con ZEC en random walk y publicaciones cada 0,6–1,6 s. Precio y diferencia contra el PRRR son del mock: **la diferencia real GMX−PRRR hay que leerla en tu instalación.**
+
+**Addon sobre un stage5 en marcha, con el editor real:**
+* Quedaron "modificados" sólo los 11 nodos nuevos.
+* Deploy *Modified Nodes*: los WebSockets siguieron contando (binance 560 → 1386), con 0 reconexiones.
+* gmx_price empezó a llenarse.
+
+**10 min continuos:**
+* Lag del event loop: mediana 0 ms, p99 1 ms, máx 13 ms.
+* PRRR: lag máx/s mediana 1 ms, 185 ev/s, 0 reconexiones.
+* market_1s: 601/601 segundos por activo, 0 huecos desde antes del deploy.
+* gmx_price: 501 publicaciones, intervalo prom. 1,2 s (0,6–2,4 s), edad prom. 0,53 s, RTT prom. 53 ms.
+
+**Fallos simulados:**
+* HTTP 500: a los 3 errores pasa al fallback.
+* Cuelgue: timeout 4 s y cambio de host.
+* Connection refused: el estado pasa a error y recorre los hosts.
+* Respuesta sin ZEC: se cuenta, sin registrar nada.
+* Recuperación: ~4 s después de que vuelve el host. A los 10 min regresa solo al primario.
+* MariaDB caída 40 s: la cola se mantuvo y se vació al volver, sin huecos.
+* Log: 1 aviso por minuto como máximo; 0 `[error]`.
+
+**Integridad:**
+* 811 filas = 811 claves únicas tras varios reinicios.
+* `ts ≥ source_ts` siempre y `max ≥ min` siempre.
+* DECIMAL exacto.
 
 ## Etapa 5 — LABORATORIO histórico (sólo lectura de `market_1s`)
 ```
