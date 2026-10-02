@@ -1,6 +1,49 @@
-# PRRR Market Data — Etapas 1 → 6
+# PRRR Market Data — Etapas 1 → 6b
 
-**Versión actual: `prrr-market-data-stage6.json`** (generador `tools/build-prrr-stage6.js`). Al importar, elegir **Replace** y desplegar con **Deploy → Modified Nodes**.
+**Versión actual: `prrr-market-data-stage6b.json`** (generador `tools/build-prrr-stage6b.js`). Sobre una etapa 6 en marcha, usar el **addon `prrr-market-data-stage6b-addon.json`**.
+
+## Etapa 6b — serie GMX en el gráfico ZEC de MERCADO (sólo visual)
+```
+tick 500 ms → GMX → MERCADO (lee md_gmx del poller ZEC_GMX existente) → [ui_template invisible, grupo MERCADO]
+                                                                          → navegador: serie "GMX" en el gráfico ZEC
+```
+* **100 % aditivo: 0 nodos modificados, 4 agregados.**
+
+  | id | tipo | qué hace |
+  |---|---|---|
+  | `prrr_grp_gmx_mkt` | group (editor) | Marco visual "ETAPA 6b" en el editor. |
+  | `prrr_gmx_mkt_tick` | inject 500 ms | Despierta al nodo siguiente. |
+  | `prrr_gmx_mkt` | function | Toma de `global md_gmx` (escrito por el poller de la etapa 6, sólo lectura) las publicaciones nuevas de ZEC_GMX. Guarda 4 h `[recepción, mid]` y las envía al navegador. Atiende el pedido de historial `since`. |
+  | `prrr_gmx_mkt_ui` | ui_template 1×1 invisible en el grupo MERCADO | En el navegador agrega la serie **"GMX"** al almacén de series del gráfico ZEC (`window.__prrrPlot`), con la misma estructura que cada exchange. |
+
+* **Qué no se toca:**
+  * El template MERCADO no se modifica. Dibuja la serie GMX con sus reglas actuales: ventana visible, autoescala (excluye series stale), escalón entre datos reales, corte de línea tras 60 s sin datos, "(stale)" en la leyenda tras 60 s y el último punto sin extender hacia adelante.
+  * Tampoco cambian el PRRR, las SMA25/50, las señales, `market_1s`, `gmx_price` ni el poller ZEC_GMX.
+* **Identificación:** la leyenda dice **GMX**, en rojo `#d62728` (color ya asignado a la clave "GMX" en la paleta del dashboard). La serie sólo aparece en ZEC; BTC, GMX y XMR quedan iguales.
+* **Datos:**
+  * Valor = `mid` = (min+max)/2 de cada publicación real de ZEC_GMX, sin interpolar ni rellenar.
+  * Eje X = hora de **recepción local**, el mismo reloj que las series PRRR.
+  * La edad estricta de 10 s del dato GMX sigue en DIAGNÓSTICO → ZEC_GMX.
+* **Navegador:** al abrir la página recibe el historial de hasta 4 h. Al volver a la pestaña pide sólo lo que falta (`since`).
+
+### Instalación sin cortar la adquisición
+1. En el editor, abrir la pestaña **PRRR Market Data**.
+2. Menú → **Import** → pegar o abrir `prrr-market-data-stage6b-addon.json` → **Import**.
+   * Debe decir **"Imported: 3 nodes, 1 group"**, sin diálogo de conflicto.
+   * **Si aparece "Some of the nodes you are importing already exist…", elegir Cancel** (significa que ya estaba importado). No usar "Import copy".
+3. Hacer clic en el lienzo para soltar los nodos y luego **Deploy → Modified Nodes**.
+4. Recargar MERCADO no es necesario: la serie aparece sola en unos segundos.
+
+**Por qué no se modifica el template MERCADO:** el diálogo *Import* de Node-RED no ofrece "replace" para nodos de un flow (sólo para tabs, subflows y config nodes). Un addon con el template modificado sólo podría importarse como **copia**, lo que duplicaría MERCADO, o reemplazando el tab entero.
+
+**Validado con el diálogo Import real (Node-RED 5.0.7):**
+* Con un navegador ya abierto en MERCADO, la serie GMX apareció ~4 s después del deploy, sólo en ZEC.
+* Los WebSockets siguieron contando, con 0 reconexiones.
+* market_1s: 294/294 s por activo, contiguos a través del deploy.
+* gmx_price: filas = claves únicas.
+* Página nueva: carga el historial.
+* GMX caído: "GMX (stale)" y ningún punto nuevo inventado. Al volver, retoma solo.
+
 
 ## Etapa 6 — ZEC_GMX: precio de ejecución de GMX para ZEC/USD (Arbitrum)
 ```

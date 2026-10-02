@@ -1,0 +1,97 @@
+[
+  {
+    "id": "prrr_grp_gmx_mkt",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "ETAPA 6b — serie GMX en el gráfico ZEC de MERCADO (lee ZEC_GMX existente · sólo visual)",
+    "style": {
+      "label": true,
+      "stroke": "#d62728",
+      "fill": "#d62728",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_gmx_mkt_tick",
+      "prrr_gmx_mkt",
+      "prrr_gmx_mkt_ui"
+    ],
+    "x": 60,
+    "y": 3265,
+    "w": 890,
+    "h": 80
+  },
+  {
+    "id": "prrr_gmx_mkt_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 500 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "3",
+    "topic": "tick",
+    "x": 180,
+    "y": 3310,
+    "wires": [
+      [
+        "prrr_gmx_mkt"
+      ]
+    ],
+    "g": "prrr_grp_gmx_mkt"
+  },
+  {
+    "id": "prrr_gmx_mkt",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "GMX → MERCADO (publicaciones nuevas de md_gmx · historial 4 h)",
+    "func": "// Entradas: 'tick' (500 ms) · 'gmx_snapshot_req' {since} (desde el template GMX del navegador)\n// Salida → template GMX: { gmx: [t, mid, …] } (sólo publicaciones nuevas, a todos) o el historial al navegador que lo pidió.\nconst M = context.get('M', 'memory'), now = Date.now();\n\nfunction collect() {                                   // publicaciones del ring de md_gmx posteriores a la última enviada\n    const R = global.get('md_gmx', 'memory'), g = R && R.ring && R.ring.ZEC;\n    if (!g || !g.count) return [];\n    const f = [];\n    for (let i = 1; i <= g.count; i++) {\n        const r = g.buf[(g.idx - i + g.size) % g.size];\n        if (!r || r.ts <= M.lastT) break;\n        f.push(r);\n    }\n    return f.reverse();\n}\n\nif (msg.topic === 'tick') {\n    let cut = 0; while (cut < M.t.length && M.t[cut] < now - M.keepMs) cut++;\n    if (cut) { M.t.splice(0, cut); M.v.splice(0, cut); }\n    const f = collect();\n    if (!f.length) return null;\n    const flat = [];\n    for (const r of f) { M.lastT = r.ts; if (!(r.mid > 0)) continue; M.t.push(r.ts); M.v.push(r.mid); flat.push(r.ts, r.mid); }\n    node.status({ fill: 'green', shape: 'dot', text: M.t.length + ' pts en 4 h · último ' + new Date(M.lastT).toISOString().slice(11, 19) + ' UTC' });\n    return flat.length ? { payload: { gmx: flat } } : null;\n}\nif (msg.topic === 'gmx_snapshot_req') {                // navegador: lo que le falte desde 'since' (0 = todo)\n    const since = Number(msg.since) || 0, flat = [];\n    for (let i = 0; i < M.t.length; i++) if (M.t[i] > since) flat.push(M.t[i], M.v[i]);\n    return { socketid: msg.socketid, payload: { gmxSnapshot: flat } };\n}\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== GMX → MERCADO: estado =====\n// t/v: [hora de recepción local, mid] de cada publicación real de ZEC_GMX, últimas 4 h (= ventana máxima del gráfico)\nconst M = { lastT: 0, t: [], v: [], keepMs: 4 * 3600000 + 60000 };\ncontext.set('M', M, 'memory');",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "serie GMX → navegador"
+    ],
+    "x": 500,
+    "y": 3310,
+    "wires": [
+      [
+        "prrr_gmx_mkt_ui"
+      ]
+    ],
+    "g": "prrr_grp_gmx_mkt"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": false,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      [
+        "prrr_gmx_mkt"
+      ]
+    ],
+    "id": "prrr_gmx_mkt_ui",
+    "name": "serie GMX en gráfico ZEC (invisible)",
+    "group": "prrr_ui_g_btc",
+    "order": 2,
+    "width": 1,
+    "height": 1,
+    "format": "<div id=\"prrr_gmx_series\" style=\"display:none\"></div>\n<script>\n(function (scope) {\n  // Etapa 6b: agrega la serie \"GMX\" (ZEC_GMX mid = (min+max)/2, publicaciones reales) al gráfico ZEC de MERCADO.\n  // No modifica el template MERCADO: escribe en su almacén de series del navegador (window.__prrrPlot) con la\n  // misma estructura que usa para cada exchange, así se dibuja con sus mismas reglas. Sin interpolación ni relleno:\n  // 1 punto por publicación real, en su hora de recepción (mismo reloj que las series PRRR).\n  var SYM = 'ZEC', NAME = 'GMX', TIERS = { A: { slotMs: 250, cap: 3600 }, B: { slotMs: 5000, cap: 2880 } };   // = CFG.tiers del gráfico\n  var Q = window.__prrrGMXq || (window.__prrrGMXq = { pend: [], lastT: 0 });\n  function newTier(d) { return { slotMs: d.slotMs, cap: d.cap, idx: new Float64Array(d.cap).fill(-1), lo: new Float64Array(d.cap), hi: new Float64Array(d.cap), last: new Float64Array(d.cap) }; }\n  function tadd(T, t, y, isLast) {\n    var s = Math.floor(t / T.slotMs), k = s % T.cap;\n    if (T.idx[k] > s) return;                            // ya hay algo más nuevo en ese casillero (historial viejo): no pisar\n    if (T.idx[k] !== s) { T.idx[k] = s; T.lo[k] = y; T.hi[k] = y; T.last[k] = y; }\n    else { if (y < T.lo[k]) T.lo[k] = y; if (y > T.hi[k]) T.hi[k] = y; if (isLast) T.last[k] = y; }\n  }\n  function ser() {                                       // null hasta que el template MERCADO creó su almacén\n    var G = window.__prrrPlot; if (!G || !G.series || !G.series[SYM] || !G.order || !G.order[SYM]) return null;\n    var S = G.series[SYM][NAME];\n    if (!S) { S = G.series[SYM][NAME] = { A: newTier(TIERS.A), B: newTier(TIERS.B), lastT: 0, first: Infinity }; G.order[SYM].push(NAME); }\n    return S;\n  }\n  function add(S, t, y) {\n    var isLast = t >= S.lastT;\n    tadd(S.A, t, y, isLast); tadd(S.B, t, y, isLast);\n    if (isLast) S.lastT = t; if (t < S.first) S.first = t;\n    if (t > Q.lastT) Q.lastT = t;\n  }\n  function put(a, all) {                                 // a = [t, v, t, v, …]; all = historial (acepta puntos viejos)\n    var S = ser();\n    if (!S) { for (var i = 0; i < a.length; i += 2) Q.pend.push(a[i], a[i + 1]); return; }\n    if (Q.pend.length) { var p = Q.pend; Q.pend = []; for (var j = 0; j < p.length; j += 2) add(S, p[j], p[j + 1]); }\n    for (var k = 0; k < a.length; k += 2) { if (!(a[k + 1] > 0)) continue; if (!all && a[k] <= Q.lastT) continue; add(S, a[k], a[k + 1]); }\n  }\n  scope.$watch('msg', function (m) {\n    if (!m || !m.payload) return;\n    if (m.payload.gmxSnapshot) put(m.payload.gmxSnapshot, true);\n    else if (m.payload.gmx) put(m.payload.gmx, false);\n  });\n  var tm = setInterval(function () { if (Q.pend.length && ser()) put([], false); }, 300);\n  scope.$on('$destroy', function () { clearInterval(tm); });\n  // al (re)aparecer el widget: pedir sólo lo que falta (página nueva → todo el historial de 4 h)\n  setTimeout(function () { scope.send({ topic: 'gmx_snapshot_req', since: Q.lastT }); }, 0);\n})(scope);\n</script>",
+    "x": 820,
+    "y": 3310,
+    "g": "prrr_grp_gmx_mkt"
+  }
+]
