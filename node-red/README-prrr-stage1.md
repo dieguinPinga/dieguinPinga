@@ -1,6 +1,89 @@
-# PRRR Market Data — Etapas 1 → 5
+# PRRR Market Data — Etapas 1 → 6
 
-**Versión actual: `prrr-market-data-stage5.json`** (generador `tools/build-prrr-stage5.js`). Al importar, elegir **Replace**.
+**Versión actual: `prrr-market-data-stage6.json`** (generador `tools/build-prrr-stage6.js`). Al importar, elegir **Replace** y desplegar con **Deploy → Modified Nodes**.
+
+## Etapa 6 — ZEC_GMX: precio de ejecución de GMX para ZEC/USD (Arbitrum)
+```
+tick 250 ms → ZEC_GMX poller ─→ [http request] GET oracle keeper /prices/tickers ─→ ZEC_GMX poller
+                  │  (sólo publicaciones nuevas)                                          │
+                  ├─→ GMX DB writer (cola · lotes) ─→ [mysql] gmx_price                    │
+                  └─→ (1 Hz) indicador ZEC_GMX en DIAGNÓSTICO  ← último trade ZEC del PRRR (md_ring, sólo lectura)
+```
+SEÑAL (PRRR multi-exchange → SMA25/50) y EJECUCIÓN (oráculo GMX → ZEC_GMX) quedan separadas. **No se modificó ningún nodo existente:** hay 13 nodos nuevos y ninguno de los 173 anteriores cambia.
+
+### Fuente investigada (código oficial `gmx-io/gmx-synthetics` y `gmx-io/gmx-interface`)
+* **Ejecución on-chain:**
+  * Las órdenes de GMX v2 (apertura, cierre, TP/SL, liquidaciones) se ejecutan con precios que el *keeper* entrega firmados en la transacción.
+  * `Oracle.sol` (`setPrices` → `_validatePrices`) verifica cada precio con el proveedor configurado para el token (`oracleProviderForToken`). Además exige que sea reciente (`MAX_ORACLE_PRICE_AGE`) y lo compara contra el feed de referencia de Chainlink (`MAX_ORACLE_REF_PRICE_DEVIATION_FACTOR`).
+  * Cada precio validado tiene **min** y **max**. En `ChainlinkDataStreamProvider.sol`, `min = bid` y `max = ask` del reporte.
+  * La ejecución usa max o min según el lado: abrir long / cerrar short con max, y cerrar long / abrir short con min. Los triggers (TP/SL) siguen esa misma regla (`isLong ? maxPrice : minPrice`).
+* **Proveedor de ZEC:**
+  * ZEC es un token **sintético** (`0x6eAbbaA3278556Dc5b19c034dc26c0eaB60d65B5`, 8 decimales), mercado `ZEC/USD [WBTC-USDC]` `0x587759c237acCa739bCE3911647BacF56C876E60`, listado el 2025-12-22.
+  * El proveedor por defecto de los scripts de configuración es `chainlinkDataStream`, y todos los sintéticos equivalentes (XMR, PI, …) usan `dataStreamFeedId`. Por eso, con muy alta probabilidad, ZEC usa **Chainlink Data Streams**.
+  * No figura todavía en el `config/tokens.ts` público. La confirmación definitiva es on-chain: `DataStore.getAddress(oracleProviderForTokenKey(oracle, ZEC))`.
+* **Lectura programática:**
+  * El **oracle keeper oficial** `https://arbitrum-api.gmxinfra.io/prices/tickers`, con los fallbacks oficiales `arbitrum-api-fallback.gmxinfra.io` y `arbitrum-api-fallback.gmxinfra2.io`.
+  * Es la misma API que consulta la interfaz de GMX cada 1000 ms (`useTokenRecentPricesData`), y publica el min/max de los reportes del oráculo.
+  * **No existe WebSocket**, por eso se usa REST.
+  * No es scraping del frontend.
+* **Formato real** (fixture oficial grabado de la API):
+  * Ejemplo: `{"tokenAddress":"0x6eAb…65B5","tokenSymbol":"ZEC","minPrice":"4438634890306012950000000","maxPrice":"4438952227650124450000000","updatedAt":1783345314888,"timestamp":1783345314}`.
+  * Conversión: USD = raw / 10^(30−8) = **443,8635 / 443,8952**. Se hace exacta con BigInt, sin pasar por float.
+* **Límites honestos:**
+  * La API publica el mismo min/max que usa el keeper, pero el precio exacto de una ejecución es el del reporte incluido en *esa* transacción. Puede diferir en milisegundos y se puede auditar on-chain con el evento `OraclePriceUpdate`.
+  * La API no informa id de proveedor ni latencia propia. Por eso sólo se guardan `updatedAt`, min y max, sin inventar nada más.
+
+### Implementación
+* **Consulta:** cada `pollMs` = 1000 ms (igual que la interfaz oficial), con una sola consulta en vuelo y timeout de 4 s.
+* **Errores:** tras 3 errores seguidos pasa al siguiente host oficial, con backoff de 1 → 2 → 4 s por host y tope de 30 s. Estando en un fallback, cada 10 min vuelve a probar el primario.
+* **Registro:** sólo cuando la fuente publica algo nuevo (`updatedAt`/min/max distintos). Las repetidas se cuentan y no se guardan, y un `updatedAt` más viejo (host atrasado) se descarta. No hay ticks artificiales, interpolación ni relleno.
+* **Frecuencia:** lo que se observa es min(frecuencia de la fuente, 1/pollMs). El indicador muestra el intervalo mediano entre publicaciones y cuántas consultas vinieron repetidas.
+  * Si "repetidas" queda en ~0 y el intervalo ≈ pollMs, la fuente cambia más rápido que la consulta. En ese caso se puede bajar `pollMs` (en el *On Start* del poller) a 500 ms; no conviene bajar más contra la API pública.
+* **Memoria:** `global.get('md_gmx','memory')` → `last.ZEC` y `ring.ZEC` (últimos 3600 registros), para el futuro simulador.
+
+### Tabla `gmx_price` (nueva, independiente; `market_1s` no se toca)
+Crear una vez como administrador con **`sql/stage6-gmx_price.sql`**:
+* PK `(symbol, source_ts)`: una fila por publicación de la fuente, sin duplicados. Índice `(symbol, ts)`.
+* Columnas:
+  * `ts`: recepción local, DATETIME(3) UTC.
+  * `source_ts`: `updatedAt`.
+  * `price`: (min+max)/2, derivado.
+  * `min_price` / `max_price`: DECIMAL(30,18).
+  * `age_ms` = ts − source_ts.
+  * `rtt_ms`: ida y vuelta HTTP.
+  * `source`: host + ruta.
+* El usuario `prrr` ya tiene `SELECT, INSERT, UPDATE` sobre `prrr_market.*` (etapa 3), así que no hace falta un GRANT nuevo.
+* **Writer:** lotes cada ≤ 5 s, cola en RAM acotada (7200), reintento con backoff y `ON DUPLICATE KEY UPDATE` que conserva la hora de recepción original.
+* **Si la tabla no existe**, el indicador lo dice y el resto sigue funcionando.
+
+### DIAGNÓSTICO → grupo "ZEC_GMX · precio de ejecución GMX (oráculo)"
+* **Estado:** ok / error / sin actualizar / conectando; host en uso.
+* **Precios:** min (bid), max (ask), mid, spread.
+* **Tiempos:** updatedAt de la fuente, hora de recepción, edad del dato (en rojo si supera 10 s) y edad al recibir.
+* **Frecuencia:** actualizaciones (total y últimos 60 s) e intervalo mediano.
+* **Comparación:** último trade ZEC del PRRR (fuente y antigüedad) y **GMX mid − PRRR** en USD y en %. Si el dato GMX está viejo, se marca.
+* **Consultas:** ok/err, RTT, consultas demoradas, cambios de host y último error.
+* **DB `gmx_price`:** estado, filas, cola, errores y último guardado.
+
+### Consultas útiles
+```sql
+SELECT COUNT(*), MIN(source_ts), MAX(source_ts), AVG(age_ms), AVG(rtt_ms) FROM gmx_price WHERE symbol='ZEC';
+SELECT * FROM gmx_price WHERE symbol='ZEC' ORDER BY source_ts DESC LIMIT 20;
+-- intervalo real entre publicaciones
+SELECT AVG(d), MIN(d), MAX(d) FROM (SELECT TIMESTAMPDIFF(MICROSECOND, LAG(source_ts) OVER (ORDER BY source_ts), source_ts)/1000 d FROM gmx_price WHERE symbol='ZEC') x;
+-- GMX vs PRRR por segundo (close del bucket 1 s)
+SELECT m.ts, m.close_price prrr, AVG(g.price) gmx, AVG(g.price) - m.close_price diff_usd, (AVG(g.price)/m.close_price - 1)*100 diff_pct
+FROM market_1s m JOIN gmx_price g ON g.symbol = m.symbol AND g.ts >= m.ts AND g.ts < m.ts + INTERVAL 1 SECOND
+WHERE m.symbol='ZEC' AND m.ts > UTC_TIMESTAMP() - INTERVAL 10 MINUTE GROUP BY m.ts ORDER BY m.ts DESC LIMIT 20;
+```
+
+### Despliegue (no interrumpe la adquisición)
+1. Crear la tabla con `sql/stage6-gmx_price.sql`.
+2. Importar el JSON (**Replace**) y luego **Deploy → Modified Nodes**. Así sólo arrancan los 13 nodos nuevos: los WebSockets, normalizadores y writers existentes **no se reinician**.
+   * Comprobado: 0 reconexiones y market_1s sin huecos durante el deploy.
+   * Un deploy **Full** sí reinicia todo el flow, con unos segundos sin datos.
+3. Node-RED necesita salida HTTPS hacia `*.gmxinfra.io` / `*.gmxinfra2.io`.
+
 
 ## Etapa 5 — LABORATORIO histórico (sólo lectura de `market_1s`)
 ```

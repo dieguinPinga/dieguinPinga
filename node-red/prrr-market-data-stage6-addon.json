@@ -1,0 +1,290 @@
+[
+  {
+    "id": "prrr_grp_gmx",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "ETAPA 6 — ZEC_GMX (oracle keeper GMX → gmx_price · independiente del PRRR)",
+    "style": {
+      "label": true,
+      "stroke": "#2ca02c",
+      "fill": "#2ca02c",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_gmx_tick",
+      "prrr_gmx_poll",
+      "prrr_gmx_http",
+      "prrr_gmx_http_catch",
+      "prrr_gmx_http_tag",
+      "prrr_gmx_writer",
+      "prrr_gmx_mysql",
+      "prrr_gmx_db_catch",
+      "prrr_gmx_db_tag",
+      "prrr_gmx_ui",
+      "prrr_gmx_comment"
+    ],
+    "x": 50,
+    "y": 2975,
+    "w": 1370,
+    "h": 290
+  },
+  {
+    "id": "prrr_ui_g_gmx",
+    "type": "ui_group",
+    "name": "ZEC_GMX · precio de ejecución GMX (oráculo)",
+    "tab": "prrr_ui_tab",
+    "order": 11,
+    "disp": true,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "prrr_gmx_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 250 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.25",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "2",
+    "topic": "tick",
+    "x": 170,
+    "y": 3040,
+    "wires": [
+      [
+        "prrr_gmx_poll",
+        "prrr_gmx_writer"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_poll",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "ZEC_GMX poller (oracle keeper /prices/tickers · sólo cambios reales)",
+    "func": "// Entradas: 'tick' (250 ms; el período real de consulta es cfg.pollMs) · respuesta del nodo http request (msg.gmxReq) · 'gmx_http_error' (catch del http request)\n// Salida 1 → http request (1 consulta en vuelo)  ·  Salida 2 → registros nuevos → GMX DB writer  ·  Salida 3 → indicador\n// Sólo se emite un registro cuando la fuente publica una actualización nueva (updatedAt / min / max distintos):\n// nada de ticks artificiales, interpolación ni relleno.\nconst X = context.get('X', 'memory'), C = X.cfg, now = Date.now();\nconst R = global.get('md_gmx', 'memory');\nconst out = [null, null, null];\n\nfunction host() { return C.hosts[X.hostIdx]; }\nfunction hostName(h) { return String(h).replace(/^https?:\\/\\//, ''); }\nfunction toDec(raw, scale) {                       // BigInt → string decimal exacto (sin pasar por float)\n    const neg = raw < 0n; let s = (neg ? -raw : raw).toString();\n    if (scale > 0) { s = s.padStart(scale + 1, '0'); s = s.slice(0, s.length - scale) + '.' + s.slice(s.length - scale); s = s.replace(/\\.?0+$/, ''); }\n    return (neg ? '-' : '') + s;\n}\nfunction fail(reason) {\n    const r = String(reason).slice(0, 200);\n    X.errors++; X.errRun++; X.lastErr = r + ' @ ' + hostName(host()); X.lastErrAt = now;\n    if (now - X.lastLogAt > 60000) { node.warn('ZEC_GMX: ' + X.lastErr); X.lastLogAt = now; }\n    X.inflight = null;\n    X.backoff = Math.min(C.backoffMax, X.backoff ? X.backoff * 2 : 1000);\n    X.nextAt = now + X.backoff;\n    if (X.errRun >= C.failSwitch && C.hosts.length > 1) {           // reconexión: siguiente host oficial\n        X.hostIdx = (X.hostIdx + 1) % C.hosts.length; X.hostSince = now; X.switches++; X.errRun = 0;\n        X.backoff = 0; X.nextAt = now + 1000;                       // el host nuevo se prueba enseguida (1 → 2 → 4 s por host)\n        node.log('ZEC_GMX: cambio de host → ' + host());\n    }\n}\nfunction median(a) { if (!a.length) return null; const s = a.slice().sort(function (x, y) { return x - y; }); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }\n\n// ---- error de red / timeout del nodo http request (catch) ----\nif (msg.topic === 'gmx_http_error') {\n    if (X.inflight && msg.gmxReq === X.inflight.id) fail((msg.error && msg.error.message) || 'error HTTP');\n    return null;\n}\n\n// ---- respuesta del oracle keeper ----\nif (msg.gmxReq !== undefined) {\n    if (!X.inflight || msg.gmxReq !== X.inflight.id) return null;           // respuesta vieja (tras timeout)\n    const tRecv = now, rtt = now - X.inflight.sentAt, src = X.inflight.host;\n    X.inflight = null;\n    if (msg.statusCode !== 200) { fail('HTTP ' + msg.statusCode); return null; }\n    if (!Array.isArray(msg.payload)) { fail('respuesta no es un array JSON'); return null; }\n    X.ok++; X.errRun = 0; X.backoff = 0; X.rttLast = rtt; X.rttSum += rtt; X.rttN++;\n    const recs = [];\n    for (const t of C.tokens) {\n        const S = X.sym[t.symbol];\n        let e = null;\n        for (const it of msg.payload) if (it && String(it.tokenAddress).toLowerCase() === t.address) { e = it; break; }\n        if (!e) { S.missing++; X.lastErr = t.symbol + ' no está en la respuesta'; X.lastErrAt = now; continue; }\n        let mn, mx;\n        try { mn = BigInt(e.minPrice); mx = BigInt(e.maxPrice); } catch (err) { S.invalid++; continue; }\n        const srcTs = Number(e.updatedAt);\n        if (mn <= 0n || mx < mn || !isFinite(srcTs) || srcTs <= 0) { S.invalid++; continue; }\n        const L = S.last;\n        if (L && srcTs === L.source_ts && e.minPrice === L.minRaw && e.maxPrice === L.maxRaw) { S.repeats++; continue; }  // misma publicación\n        if (L && srcTs < L.source_ts) { S.older++; continue; }       // host atrasado (p. ej. tras cambiar a fallback): no retroceder\n        if (L && srcTs === L.source_ts) S.sameTsChanged++;            // mismo updatedAt con precio distinto (se actualiza la fila)\n        const scale = 30 - t.decimals;\n        const minS = toDec(mn, scale), maxS = toDec(mx, scale), midS = toDec((mn + mx) * 5n, scale + 1);\n        const r = {\n            symbol: t.symbol, ts: tRecv, source_ts: srcTs,\n            min: Number(minS), max: Number(maxS), mid: Number(midS), minS: minS, maxS: maxS, midS: midS,\n            minRaw: e.minPrice, maxRaw: e.maxPrice,\n            age_ms: tRecv - srcTs, rtt_ms: rtt, source: hostName(src) + C.path\n        };\n        if (L) { S.ivals.push(srcTs - L.source_ts); if (S.ivals.length > 300) S.ivals.shift(); }\n        S.recv.push(tRecv); while (S.recv.length && S.recv[0] < now - 60000) S.recv.shift();\n        S.last = r; S.updates++;\n        R.last[t.symbol] = r;\n        const g = R.ring[t.symbol]; g.buf[g.idx] = r; g.idx = (g.idx + 1) % g.size; if (g.count < g.size) g.count++;\n        recs.push(r);\n    }\n    if (recs.length) out[1] = { topic: 'gmx_price', payload: recs };\n    return out;\n}\n\nif (msg.topic !== 'tick') return null;\n// ---- tick 250 ms: watchdog, volver al primario, consulta cada pollMs, indicador 1 Hz ----\nif (X.inflight && now - X.inflight.sentAt > C.timeoutMs) fail('timeout ' + C.timeoutMs + ' ms');\nif (X.hostIdx !== 0 && now - X.hostSince > C.primaryRetryMs) { X.hostIdx = 0; X.hostSince = now; X.switches++; node.log('ZEC_GMX: reintento host primario'); }\nif (now >= X.nextAt) {\n  if (X.inflight) { if (!X.inflight.late) { X.inflight.late = true; X.skippedBusy++; } }   // tocaba consultar y la anterior sigue en vuelo: no se apilan\n  else {\n    X.inflight = { id: ++X.seq, sentAt: now, host: host() };\n    X.polls++; X.nextAt = now + C.pollMs;\n    out[0] = { url: host() + C.path, method: 'GET', headers: { accept: 'application/json' }, requestTimeout: C.timeoutMs, gmxReq: X.inflight.id };\n  }\n}\nif (now - X.lastInd < 1000) return out[0] ? out : null;\nX.lastInd = now;\n\n// indicador + comparación con el PRRR (último trade ZEC del stream multi-exchange; sólo lectura de md_ring)\nconst ring = global.get('md_ring', 'memory') || {};\nconst syms = [];\nfor (const t of C.tokens) {\n    const S = X.sym[t.symbol], L = S.last;\n    let prrr = null;\n    const rr = ring[t.symbol];\n    if (rr && rr.count) { const tr = rr.buf[(rr.idx - 1 + rr.size) % rr.size]; if (tr) prrr = { price: tr.price, t: tr.local_receive_timestamp, src: tr.source || tr.exchange }; }\n    const row = { symbol: t.symbol, updates: S.updates, repeats: S.repeats, older: S.older, missing: S.missing, invalid: S.invalid, sameTsChanged: S.sameTsChanged,\n        rate60: S.recv.length, ivalMed: median(S.ivals), prrr: prrr };\n    if (L) {\n        row.min = L.min; row.max = L.max; row.mid = L.mid; row.source_ts = L.source_ts; row.recv = L.ts;\n        row.ageNow = now - L.source_ts; row.ageAtRecv = L.age_ms; row.spreadPct = (L.max - L.min) / L.mid * 100;\n        if (prrr) { row.diff = L.mid - prrr.price; row.diffPct = (L.mid / prrr.price - 1) * 100; }\n        row.stale = row.ageNow > C.staleMs;                          // comparación con dato GMX viejo: se marca, no se oculta\n    }\n    syms.push(row);\n}\nconst z = syms[0] || {};\nconst fresh = z.ageNow != null && z.ageNow <= C.staleMs;\nconst state = X.errRun > 0 ? 'error' : fresh ? 'ok' : (X.errors && now - X.lastErrAt < 15000) ? 'error' : (X.ok ? 'sin actualizar' : 'conectando');\nout[2] = { payload: { db: global.get('md_gmx_db', 'memory') || null, state: state, host: hostName(host()), polls: X.polls, ok: X.ok, errors: X.errors, switches: X.switches, skippedBusy: X.skippedBusy,\n    lastErr: X.lastErr, lastErrAt: X.lastErrAt, rttLast: X.rttLast, rttAvg: X.rttN ? X.rttSum / X.rttN : null, backoff: X.backoff, syms: syms, now: now } };\nnode.status({ fill: state === 'ok' ? 'green' : state === 'error' ? 'red' : 'yellow', shape: 'dot',\n    text: (z.mid != null ? 'ZEC ' + z.mid.toFixed(3) + ' · edad ' + (z.ageNow / 1000).toFixed(1) + ' s · ' : '') + X.ok + ' ok / ' + X.errors + ' err' });\nreturn out;",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== ZEC_GMX POLLER: configuración y estado =====\nconst X = {\n    cfg: {\n        // Oracle keeper oficial de GMX para Arbitrum + fallbacks oficiales (mismos que usa la interfaz de GMX)\n        hosts: ['https://arbitrum-api.gmxinfra.io', 'https://arbitrum-api-fallback.gmxinfra.io', 'https://arbitrum-api-fallback.gmxinfra2.io'],\n        path: '/prices/tickers',\n        // Tokens a seguir (dirección on-chain = identificador inequívoco; decimales del token en GMX)\n        tokens: [{ symbol: 'ZEC', address: '0x6eabbaa3278556dc5b19c034dc26c0eab60d65b5', decimals: 8 }],\n        pollMs: 1000,           // igual que la interfaz oficial (PRICES_UPDATE_INTERVAL = 1000 ms). Mínimo práctico 250 (tick). No bajar de 500 contra la API real.\n        timeoutMs: 4000,        // una consulta sin respuesta en 4 s = error\n        failSwitch: 3,          // errores seguidos → pasar al siguiente host\n        primaryRetryMs: 600000, // estando en un fallback, volver a probar el primario cada 10 min\n        backoffMax: 30000,      // con errores: 1 → 2 → 4 … ≤ 30 s entre consultas\n        staleMs: 10000,         // dato GMX con más de 10 s = viejo (indicador en rojo, comparación marcada)\n        ringSize: 3600          // últimos N registros en RAM (global md_gmx)\n    },\n    hostIdx: 0, hostSince: Date.now(), inflight: null, seq: 0, nextAt: 0, lastInd: 0, backoff: 0, errRun: 0,\n    polls: 0, ok: 0, errors: 0, switches: 0, skippedBusy: 0, lastErr: '', lastErrAt: 0, lastLogAt: 0,\n    rttLast: null, rttSum: 0, rttN: 0,\n    sym: {}            // por símbolo: último registro, contadores, intervalos entre actualizaciones de la fuente\n};\nconst R = { last: {}, ring: {} };\nfor (const t of X.cfg.tokens) {\n    X.sym[t.symbol] = { last: null, updates: 0, repeats: 0, older: 0, sameTsChanged: 0, missing: 0, invalid: 0, ivals: [], recv: [] };\n    R.ring[t.symbol] = { size: X.cfg.ringSize, buf: new Array(X.cfg.ringSize), idx: 0, count: 0 };\n}\ncontext.set('X', X, 'memory');\nglobal.set('md_gmx', R, 'memory');\nnode.status({ fill: 'grey', shape: 'ring', text: 'esperando primer tick' });",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "consulta → http request",
+      "registros nuevos → gmx_price",
+      "indicador → DIAGNÓSTICO"
+    ],
+    "x": 490,
+    "y": 3060,
+    "wires": [
+      [
+        "prrr_gmx_http"
+      ],
+      [
+        "prrr_gmx_writer"
+      ],
+      [
+        "prrr_gmx_ui"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_http",
+    "type": "http request",
+    "z": "prrr_tab_main",
+    "name": "GET oracle keeper",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": true,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": true,
+    "headers": [],
+    "x": 850,
+    "y": 3020,
+    "wires": [
+      [
+        "prrr_gmx_poll"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_http_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores HTTP",
+    "scope": [
+      "prrr_gmx_http"
+    ],
+    "uncaught": false,
+    "x": 840,
+    "y": 3065,
+    "wires": [
+      [
+        "prrr_gmx_http_tag"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_http_tag",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "topic = gmx_http_error",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "gmx_http_error",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1050,
+    "y": 3065,
+    "wires": [
+      [
+        "prrr_gmx_poll"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_writer",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "GMX DB writer (gmx_price · lotes · reintento)",
+    "func": "// Entradas: 'gmx_price' (registros nuevos del poller) · 'tick' 1 s · respuesta mysql (msg.dbKind) · 'db_error' (catch)\n// Salida 1 → nodo mysql (1 query en vuelo) · Salida 2 → estado para el indicador (global md_gmx_db)\nconst W = context.get('W', 'memory'), C = W.cfg, now = Date.now();\nconst COLS = ['ts', 'source_ts', 'symbol', 'price', 'min_price', 'max_price', 'age_ms', 'rtt_ms', 'source'];\nconst out = [null];\n\nfunction fail(reason) {\n    const r = String(reason).slice(0, 200);\n    if (r !== W.lastErr || now - W.lastLogAt > 60000) { node.warn('gmx_price: ' + r + ' · cola ' + W.q.length); W.lastLogAt = now; }\n    W.errors++; W.lastErr = r; W.link = 'error';\n    if (W.inflight && W.inflight.kind === 'insert') {\n        W.q = W.inflight.rows.concat(W.q);\n        if (W.q.length > C.maxQueue) { const ex = W.q.length - C.maxQueue; W.q.splice(0, ex); W.dropped += ex; }\n    }\n    W.inflight = null;\n    W.backoff = Math.min(C.backoffMax, Math.max(C.backoffMin, W.backoff * 2));\n    W.nextTry = now + W.backoff;\n    node.status({ fill: 'red', shape: 'ring', text: 'error: ' + r.slice(0, 40) });\n}\nfunction pad(n, w) { return String(n).padStart(w || 2, '0'); }\nfunction tsValue(t, ty) {\n    if (ty === 'bigint' || ty === 'decimal') return t;                 // ms epoch\n    const d = new Date(t);                                              // DATETIME(3)/TIMESTAMP(3) en UTC\n    return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + '.' + pad(d.getUTCMilliseconds(), 3);\n}\nfunction row(r) { return [tsValue(r.ts, W.schema.ts), tsValue(r.source_ts, W.schema.source_ts), r.symbol, r.midS, r.minS, r.maxS, r.age_ms, r.rtt_ms, r.source]; }\nfunction publish() {\n    global.set('md_gmx_db', { db: W.link === 'conectada' && now - W.lastOkAt < 20000 ? 'conectada' : W.link, saved: W.saved, errors: W.errors, queue: W.q.length,\n        dropped: W.dropped, lastSaved: W.lastSavedT, lastErr: W.lastErr }, 'memory');\n}\n\nif (msg.topic === 'gmx_price' && Array.isArray(msg.payload)) {\n    for (const r of msg.payload) W.q.push(r);\n    if (W.q.length > C.maxQueue) { const ex = W.q.length - C.maxQueue; W.q.splice(0, ex); W.dropped += ex; }\n    return null;\n}\nif (msg.topic === 'db_error' || msg.error) {                           // antes que las respuestas: el msg del catch conserva dbKind\n    if (W.inflight && msg.dbBatch === W.inflight.id) fail((msg.error && msg.error.message) || 'error DB');\n    publish(); return null;\n}\nif (msg.dbKind) {\n    if (!W.inflight || msg.dbBatch !== W.inflight.id) return null;\n    if (msg.dbKind === 'schema') {\n        const have = {};\n        (Array.isArray(msg.payload) ? msg.payload : []).forEach(function (r) { if (r && r.COLUMN_NAME) have[String(r.COLUMN_NAME).toLowerCase()] = String(r.DATA_TYPE).toLowerCase(); });\n        W.inflight = null;\n        if (!Object.keys(have).length) { fail('tabla ' + C.table + ' no existe (crearla con el SQL del README, etapa 6)'); publish(); return null; }\n        const missing = COLS.filter(function (c) { return !have[c]; });\n        if (missing.length) { fail('faltan columnas en ' + C.table + ': ' + missing.join(', ')); publish(); return null; }\n        W.schema = { ts: have.ts, source_ts: have.source_ts };\n        W.link = 'conectada'; W.lastOkAt = now; W.backoff = 0;\n        node.status({ fill: 'green', shape: 'dot', text: 'ts=' + have.ts + ' · listo' });\n        publish(); return null;\n    }\n    const n = W.inflight.rows.length;\n    W.saved += n; W.lastSavedT = W.inflight.maxT; W.lastOkAt = now; W.link = 'conectada'; W.backoff = 0;\n    W.inflight = null;\n    W.lastFlush = W.q.length >= C.batchMax ? 0 : now;\n    node.status({ fill: 'green', shape: 'dot', text: W.saved + ' filas · cola ' + W.q.length });\n    publish(); return null;\n}\nif (msg.topic !== 'tick') return null;\nif (W.inflight && now - W.inflight.sentAt > C.timeoutMs) fail('timeout: MariaDB no respondió en ' + (C.timeoutMs / 1000) + ' s');\nif (!W.inflight && now >= W.nextTry) {\n    if (!W.schema) {\n        W.inflight = { id: ++W.seq, kind: 'schema', sentAt: now };\n        out[0] = { topic: 'SELECT COLUMN_NAME, DATA_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',\n            payload: [C.table], dbKind: 'schema', dbBatch: W.inflight.id };\n    } else if (W.q.length && (W.q.length >= C.batchMax || now - W.lastFlush >= C.flushMs)) {\n        const rows = W.q.splice(0, C.batchMax);\n        let maxT = 0; for (const r of rows) if (r.source_ts > maxT) maxT = r.source_ts;\n        W.inflight = { id: ++W.seq, kind: 'insert', rows: rows, sentAt: now, maxT: maxT };\n        const pre = (W.schema.ts === 'timestamp' || W.schema.source_ts === 'timestamp') ? \"SET time_zone = '+00:00'; \" : '';\n        // clave (symbol, source_ts): una fila por publicación de la fuente. Si se repite, se conserva la hora de recepción original.\n        out[0] = { topic: pre + 'INSERT INTO ' + C.table + ' (' + COLS.join(', ') + ') VALUES ? ON DUPLICATE KEY UPDATE price = VALUES(price), min_price = VALUES(min_price), max_price = VALUES(max_price)',\n            payload: [rows.map(row)], dbKind: 'insert', dbBatch: W.inflight.id };\n    }\n}\npublish();\nreturn out;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== GMX DB WRITER (gmx_price): estado =====\nconst W = {\n    cfg: { table: 'gmx_price', batchMax: 200, flushMs: 5000, maxQueue: 7200, timeoutMs: 30000, backoffMin: 5000, backoffMax: 60000 },\n    q: [], inflight: null, seq: 0, schema: null, lastFlush: Date.now(), backoff: 0, nextTry: 0,\n    saved: 0, errors: 0, dropped: 0, lastSavedT: null, lastOkAt: 0, lastErr: '', lastLogAt: 0, link: 'desconocido'\n};\ncontext.set('W', W, 'memory');\nnode.status({ fill: 'grey', shape: 'ring', text: 'esperando esquema' });",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "query → mysql"
+    ],
+    "x": 840,
+    "y": 3130,
+    "wires": [
+      [
+        "prrr_gmx_mysql"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_mysql",
+    "type": "mysql",
+    "z": "prrr_tab_main",
+    "mydb": "prrr_db_cfg",
+    "name": "MariaDB gmx_price",
+    "x": 1090,
+    "y": 3130,
+    "wires": [
+      [
+        "prrr_gmx_writer"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_db_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores mysql gmx",
+    "scope": [
+      "prrr_gmx_mysql"
+    ],
+    "uncaught": false,
+    "x": 1090,
+    "y": 3180,
+    "wires": [
+      [
+        "prrr_gmx_db_tag"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_db_tag",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "topic = db_error",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "db_error",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1290,
+    "y": 3180,
+    "wires": [
+      [
+        "prrr_gmx_writer"
+      ]
+    ],
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      []
+    ],
+    "id": "prrr_gmx_ui",
+    "name": "indicador ZEC_GMX",
+    "group": "prrr_ui_g_gmx",
+    "order": 1,
+    "width": 12,
+    "height": 7,
+    "format": "<style>\n.prrr-gx{font-family:monospace;font-size:13px;line-height:1.5}\n.prrr-gx .ok{color:#27ae60;font-weight:bold}.prrr-gx .bad{color:#e74c3c;font-weight:bold}.prrr-gx .mid{color:#e6a700;font-weight:bold}\n.prrr-gx table{border-collapse:collapse}.prrr-gx td{padding:0 10px 0 0;white-space:nowrap}.prrr-gx .k{opacity:.7}\n.prrr-gx .sep{border-top:1px solid rgba(128,128,128,.35);margin:3px 0}\n</style>\n<div class=\"prrr-gx\" ng-if=\"msg.payload\">\n <div>ZEC_GMX · oracle keeper <b>{{msg.payload.host}}</b> ·\n  <span ng-class=\"msg.payload.state==='ok' ? 'ok' : (msg.payload.state==='error' ? 'bad' : 'mid')\">{{msg.payload.state}}</span></div>\n <table ng-repeat=\"z in msg.payload.syms\">\n  <tr><td class=\"k\">min (bid)</td><td><b>{{z.min != null ? (z.min | number:4) : '—'}}</b></td><td class=\"k\">max (ask)</td><td><b>{{z.max != null ? (z.max | number:4) : '—'}}</b></td></tr>\n  <tr><td class=\"k\">mid</td><td><b>{{z.mid != null ? (z.mid | number:4) : '—'}}</b></td><td class=\"k\">spread</td><td>{{z.spreadPct != null ? (z.spreadPct | number:4) + ' %' : '—'}}</td></tr>\n  <tr><td class=\"k\">updatedAt fuente</td><td>{{z.source_ts ? (z.source_ts | date:'HH:mm:ss.sss') : '—'}}</td><td class=\"k\">recibido</td><td>{{z.recv ? (z.recv | date:'HH:mm:ss.sss') : '—'}}</td></tr>\n  <tr><td class=\"k\">edad dato</td><td ng-class=\"z.stale ? 'bad' : (z.ageNow > 3000 ? 'mid' : '')\">{{z.ageNow != null ? (z.ageNow/1000 | number:1) + ' s' : '—'}}</td>\n      <td class=\"k\">edad al recibir</td><td>{{z.ageAtRecv != null ? z.ageAtRecv + ' ms' : '—'}}</td></tr>\n  <tr><td class=\"k\">actualizaciones</td><td>{{z.updates}} <span class=\"k\">({{z.rate60}} en 60 s)</span></td><td class=\"k\">intervalo mediano</td><td>{{z.ivalMed != null ? (z.ivalMed | number:0) + ' ms' : '—'}}</td></tr>\n  <tr><td colspan=\"4\"><div class=\"sep\"></div></td></tr>\n  <tr><td class=\"k\">PRRR {{z.symbol}} últ. trade</td><td><b>{{z.prrr ? (z.prrr.price | number:4) : '—'}}</b></td><td colspan=\"2\" class=\"k\">{{z.prrr ? z.prrr.src + ' · hace ' + ((msg.payload.now - z.prrr.t)/1000 | number:1) + ' s' : ''}}</td></tr>\n  <tr><td class=\"k\">GMX mid − PRRR</td><td><b>{{z.diff != null ? (z.diff >= 0 ? '+' : '') + (z.diff | number:4) + ' USD' : '—'}}</b></td>\n      <td class=\"k\">diferencia %</td><td><b>{{z.diffPct != null ? (z.diffPct >= 0 ? '+' : '') + (z.diffPct | number:4) + ' %' : '—'}}</b> <span class=\"bad\" ng-if=\"z.stale\">dato GMX viejo</span></td></tr>\n </table>\n <div class=\"sep\"></div>\n <div>consultas <b>{{msg.payload.ok}}</b> ok / <b ng-class=\"{'bad': msg.payload.errors > 0}\">{{msg.payload.errors}}</b> err ·<br>\n  RTT {{msg.payload.rttLast != null ? msg.payload.rttLast + ' ms' : '—'}} (prom {{msg.payload.rttAvg != null ? (msg.payload.rttAvg | number:0) : '—'}}) ·\n  consultas demoradas {{msg.payload.skippedBusy}} · cambios de host {{msg.payload.switches}}<span ng-if=\"msg.payload.backoff\"> · backoff {{msg.payload.backoff/1000}} s</span></div>\n <div ng-if=\"msg.payload.db\">DB gmx_price: <span ng-class=\"msg.payload.db.db==='conectada' ? 'ok' : 'bad'\">{{msg.payload.db.db}}</span> ·\n  filas <b>{{msg.payload.db.saved}}</b> · cola {{msg.payload.db.queue}} · errores <b ng-class=\"{'bad': msg.payload.db.errors > 0}\">{{msg.payload.db.errors}}</b><br>\n  último guardado {{msg.payload.db.lastSaved ? (msg.payload.db.lastSaved | date:'HH:mm:ss') : '—'}}</div>\n <div ng-if=\"msg.payload.lastErr\" class=\"k\" title=\"{{msg.payload.lastErr}}\">último error: {{msg.payload.lastErr | limitTo:90}} {{msg.payload.lastErrAt ? '(' + (msg.payload.lastErrAt | date:'HH:mm:ss') + ')' : ''}}</div>\n</div>\n<div class=\"prrr-gx\" ng-if=\"!msg.payload\">ZEC_GMX: esperando…</div>",
+    "x": 840,
+    "y": 3230,
+    "g": "prrr_grp_gmx"
+  },
+  {
+    "id": "prrr_gmx_comment",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "ZEC_GMX: fuente, campos y tabla",
+    "info": "**Fuente**: oracle keeper oficial de GMX (`/prices/tickers`, Arbitrum) con los fallbacks oficiales. Es la misma API que usa la interfaz de GMX (polling 1 s) y publica el min/max (bid/ask) de los reportes de oráculo firmados (Chainlink Data Streams) que los keepers envían on-chain para ejecutar órdenes; `Oracle.sol` los valida y la ejecución usa min o max según el lado.\n\n**Campos**: `minPrice`/`maxPrice` (30 decimales; USD = raw / 10^(30−8) para ZEC) y `updatedAt` (ms). Conversión exacta con BigInt (sin float).\n\n**Registro**: sólo cuando cambia `updatedAt`/min/max (una fila por publicación de la fuente). No hay ticks artificiales, interpolación ni relleno.\n\n* `ts`: recepción local\n* `source_ts`: `updatedAt`\n* `price`: (min+max)/2 (derivado)\n* `age_ms`: ts − source_ts (incluye desfase de relojes)\n* `rtt_ms`: ida y vuelta HTTP\n* `source`: host + ruta\n\nComparación con el PRRR: último trade ZEC de `md_ring`, sólo lectura. RAM: `global.get(\"md_gmx\",\"memory\")` → last[SYM], ring[SYM] (3600 registros).",
+    "x": 490,
+    "y": 3230,
+    "wires": [],
+    "g": "prrr_grp_gmx"
+  }
+]
