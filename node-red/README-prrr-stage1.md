@@ -1,6 +1,94 @@
-# PRRR Market Data — Etapas 1 → 6b
+# PRRR Market Data — Etapas 1 → 7
 
-**Versión actual: `prrr-market-data-stage6b.json`** (generador `tools/build-prrr-stage6b.js`). Sobre una etapa 6 en marcha, usar el **addon `prrr-market-data-stage6b-addon.json`**.
+**Versión actual: `prrr-market-data-stage7.json`** (generador `tools/build-prrr-stage7.js`). Sobre una etapa 6/6b en marcha: **addon `prrr-market-data-stage7-addon.json` + `mercado-template-stage7.html`** (ver Instalación).
+
+## Etapa 7 — CONCEPTITO LIVE (paper trader ZEC, sin dinero real)
+```
+md_mem_1s (buckets PRRR ZEC 1 s, ya existentes) ─→ CONCEPTITO motor ─→ [mysql] conceptito_trades
+                                  tick 250 ms ─┘        │  (estado 1/s · eventos · historial SMA39/76)
+                                                        └→ [ui_template invisible] → window.__prrrCX → panel ZEC de MERCADO
+```
+* **Fuente:** los mismos buckets ZEC de 1 s del normalizador que van a `market_1s`, leídos de `global md_mem_1s`. No hay feeds nuevos. El precio PRRR se usa para la señal **y** para la ejecución paper; no se mezcla GMX.
+* **Sin tocar:**
+  * WebSockets, normalizador y analítica 25/50 (las SMA25/50 siguen en el gráfico);
+  * GMX, `market_1s`, `gmx_price`;
+  * BTC, GMX y XMR.
+
+### Reglas exactas
+Todos los parámetros están en el *On Start* del motor.
+
+| parámetro | valor |
+|---|---|
+| margen · leverage · exposición | 1000 USD · 3x · 3000 USD |
+| SMA rápida / lenta | 39 s / 76 s |
+| TP / SL | +32,10 / −84,25 USD de PnL **bruto** |
+| timeout | 18 min |
+| máximo de posiciones | 1 |
+| fee | 0,05 % por lado sobre el nocional de ese lado |
+
+* **SMA:** SMAn = media del `close` de los últimos n buckets.
+  * Es la definición de la analítica 25/50: un segundo sin trades cuenta con su precio arrastrado.
+  * Si faltan segundos (hueco), la SMA vuelve a calentar.
+* **Cruce:** cambio de signo de SMA39 − SMA76, evaluado en cada bucket cerrado. Hacia arriba → **LONG**; hacia abajo → **SHORT**. Un empate exacto no cambia el lado.
+* **Entrada:**
+  * Precio = `close` del bucket del cruce; `entry_ts` = inicio de ese bucket, igual que `market_1s.ts`.
+  * qty = 3000 / entrada.
+  * Fee de entrada = 3000 × 0,05 % = 1,50.
+* **Cruces ignorados:** con una posición abierta se ignoran todos. Tampoco abre en el mismo segundo en que cerró.
+* **Salida:** se evalúa en el `close` de cada bucket posterior a la entrada.
+  * Bruto = ±qty × (precio − entrada).
+  * Orden de prioridad: bruto ≥ +32,10 → **TP**; bruto ≤ −84,25 → **SL**; si no, a los 18 min → **TIMEOUT** (en condiciones normales, exactamente 1080 s).
+  * Precio de salida = `close` de ese bucket. El bruto puede pasarse un poco del umbral, porque es el precio real de ese segundo.
+* **Resultado:** fee de salida = qty × salida × 0,05 %; fees = entrada + salida; neto = bruto − fees.
+* **Acumulado (OPS · TP · SL · TO · NETO · FEES):** se calcula desde la tabla, así que cuenta todo lo que hizo el paper trader desde la primera operación.
+
+### Persistencia `conceptito_trades` y continuidad
+Crear la tabla con `sql/stage7-conceptito_trades.sql` (root). El usuario `prrr` ya tiene los permisos necesarios.
+
+* **Filas:** una por operación.
+  * Al **abrir** se escribe con `status='OPEN'`.
+  * Al **cerrar** se completa: precio y hora de salida, bruto, fees, neto, motivo, duración y MFE/MAE.
+  * Es un upsert por `(symbol, entry_ts)`: sin duplicados aunque se reintente.
+* **Arranque o Deploy:** el motor **primero lee la tabla** (posición OPEN + acumulado + operaciones de las últimas 4 h) y recién después opera. Sin DB no abre nada y el panel muestra **RESTAURANDO**.
+* **Deploy que reinicia sólo el motor:** re-procesa los buckets que siguen en memoria (30 min). Calienta la SMA al instante, y una posición restaurada se evalúa con esos mismos segundos, así que el resultado es idéntico al que habría tenido.
+* **Reinicio completo de Node-RED:** la memoria se vacía. La posición OPEN se retoma desde la tabla y se evalúa con los buckets nuevos. Si el corte pasó los 18 min, cierra por TIMEOUT al primer precio disponible. La SMA recalienta 76 s.
+* **Límite:** si MariaDB está caída justo cuando se abre una operación y Node-RED se reinicia antes de que la escritura se reintente, esa operación se pierde. Las escrituras quedan en cola mientras Node-RED siga corriendo.
+
+### Panel ZEC de MERCADO
+* **Zona CONCEPTITO LIVE:** compacta, entre las métricas 25/50 y el Δ BUY−SELL. Sólo se achica el Δ de ZEC; los 4 gráficos de precio conservan la misma altura. Tiene 3 líneas:
+  1. Configuración.
+  2. **ESTADO:** ESPERANDO / LONG / SHORT, más CALENTANDO o RESTAURANDO cuando corresponde. Con posición abierta muestra entrada, actual, PnL y tiempo `mm:ss / 18:00` con barra; si no, la relación SMA39/SMA76 y la última operación.
+  3. **ACUM:** OPS · TP · SL · TO · NETO · FEES.
+* **Gráfico ZEC:**
+  * SMA39 cian continua y SMA76 magenta a rayas, con borde claro. Se distinguen de las SMA25/50 negras y entran en la autoescala igual que ellas.
+  * Marcadores: **▲ LONG** / **▼ SHORT** en la entrada; **TP / SL / TO** en la salida; conector punteado verde/rojo según el neto.
+  * Con posición abierta: niveles TP y SL punteados. Si quedan fuera de escala, se ven como etiqueta con flecha en el borde, sin estirar la autoescala.
+  * Las líneas de exchanges, GMX y SMA25/50 no cambian.
+
+### Instalación sobre la etapa 6/6b en marcha (sin cortar la adquisición)
+1. Como root: `sql/stage7-conceptito_trades.sql`.
+2. En el editor, pestaña **PRRR Market Data** → Menú → **Import** → `prrr-market-data-stage7-addon.json` → **Import**.
+   * Debe decir **"Imported: 7 nodes, 1 group"**, sin conflictos.
+   * Hacer clic en el lienzo para soltar los nodos.
+3. Doble clic en el nodo **"MERCADO (capa fija 100vw: 4 columnas precio + Δ)"** → en el campo **Template**: **Ctrl+A** y pegar todo el contenido de `mercado-template-stage7.html` → **Done**.
+4. **Deploy → Modified Nodes.** Sólo arrancan el template MERCADO y los 7 nodos nuevos.
+
+**Por qué el paso 3 es manual:** el diálogo *Import* de Node-RED no ofrece "replace" para nodos de un flow. El template MERCADO se reemplaza pegando su texto; no cambia ninguna otra propiedad ni ningún cable.
+
+**Validado por la interfaz real (Node-RED 5.0.7):**
+* El import dijo "Imported: 7 nodes, 1 group".
+* El template pegado quedó idéntico al archivo (38 444 caracteres).
+* Los WebSockets siguieron contando, con 0 reconexiones.
+* El flow resultante es idéntico a `prrr-market-data-stage7.json`.
+
+**Motor (sin Node-RED):** 6 h de buckets simulados en dos regímenes. Comparado contra una implementación de referencia escrita por separado:
+* 56 operaciones idénticas en lado, motivo, precios, timestamps y duración.
+* PnL y fees con diferencia ≤ 0,00005 (redondeo).
+* Nunca 2 posiciones a la vez.
+* TIMEOUT siempre a los 1080 s.
+* La posición restaurada cierra igual que la original.
+* Sin DB no opera.
+
 
 ## Etapa 6b — serie GMX en el gráfico ZEC de MERCADO (sólo visual)
 ```

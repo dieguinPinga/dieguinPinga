@@ -1,0 +1,522 @@
+<style>
+/* MERCADO = capa fija a pantalla completa (100vw) debajo de la barra superior; ningún padre limita su ancho. */
+#prrr_mkt{position:fixed;left:0;right:0;bottom:0;top:48px;width:100vw;max-width:none;margin:0;box-sizing:border-box;padding:4px 8px 8px 8px;z-index:50;
+  display:flex;flex-direction:column;gap:6px;overflow:hidden;font-family:monospace}
+#prrr_mkt .bar{flex:none;height:34px;display:flex;align-items:center;gap:18px;font-size:14px;white-space:nowrap;overflow:hidden}
+#prrr_mkt .bar .grp{display:flex;align-items:center;gap:4px}
+#prrr_mkt .bar button{font:inherit;font-size:13px;padding:3px 9px;border:1px solid rgba(128,128,128,.5);border-radius:3px;background:transparent;color:inherit;cursor:pointer}
+#prrr_mkt .bar button.on{background:#1f77b4;border-color:#1f77b4;color:#fff}
+#prrr_mkt .bar button.pz.on{background:#e6a700;border-color:#e6a700}
+#prrr_mkt .bar .hint{opacity:.65;font-size:12px}
+#prrr_mkt .bar .st{font-weight:bold}
+#prrr_mkt .bar .st.live{color:#27ae60}#prrr_mkt .bar .st.paused{color:#e6a700}
+#prrr_mkt .grid4{flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:minmax(0,1fr);gap:8px}
+#prrr_mkt .col{display:flex;flex-direction:column;min-width:0;min-height:0;border:1px solid rgba(128,128,128,.3);border-radius:4px;padding:6px 8px;box-sizing:border-box}
+#prrr_mkt .hd{display:flex;align-items:baseline;gap:10px;white-space:nowrap;overflow:hidden;height:42px;flex:none}
+#prrr_mkt .sym{font-size:22px;font-weight:bold}
+#prrr_mkt .px{font-size:34px;font-weight:bold;line-height:1.1}
+#prrr_mkt .meta{font-size:15px;opacity:.85;overflow:hidden;text-overflow:ellipsis}
+#prrr_mkt .up{color:#27ae60}#prrr_mkt .dn{color:#e74c3c}
+#prrr_mkt .ex{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:3px 8px;margin-top:5px;font-size:14px;line-height:1.25;height:76px;overflow:hidden;align-content:start;flex:none}
+#prrr_mkt .ex .c{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border-left:3px solid #888;padding-left:4px}
+#prrr_mkt .ex .c.st{opacity:.45}
+#prrr_mkt .ex .n{opacity:.8}
+#prrr_mkt .lg{font-size:13px;line-height:18px;margin-top:5px;height:36px;overflow:hidden;flex:none}
+#prrr_mkt .lg span{margin-right:11px;white-space:nowrap;display:inline-block}
+#prrr_mkt .lg i{display:inline-block;width:12px;height:4px;margin-right:3px;vertical-align:middle}
+#prrr_mkt .pcv{flex:72 1 0;position:relative;min-height:0;margin-top:2px}
+#prrr_mkt .pcv .hist{position:absolute;left:90px;top:8px;font-size:12px;opacity:.75;pointer-events:none}
+#prrr_mkt .an{flex:none;height:40px;display:grid;grid-template-columns:1fr 1fr .8fr;gap:10px;margin-top:6px;padding-top:4px;border-top:1px solid rgba(128,128,128,.35);font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden}
+#prrr_mkt .an .w{opacity:.65}
+#prrr_mkt .an b.pos{color:#27ae60}#prrr_mkt .an b.neg{color:#e74c3c}
+#prrr_mkt .dwrap{flex:28 1 0;display:flex;flex-direction:column;min-height:0;border-top:1px solid rgba(128,128,128,.35);margin-top:6px;padding-top:4px}
+#prrr_mkt .dcv{flex:1;position:relative;min-height:0}
+#prrr_mkt canvas{position:absolute;left:0;top:0;width:100%;height:100%}
+#prrr_mkt .dhd{font-size:14px;white-space:nowrap;overflow:hidden}
+/* CONCEPTITO LIVE (etapa 7): zona compacta del panel ZEC, entre las métricas 25/50 y el Δ BUY−SELL */
+#prrr_mkt .cx{flex:none;font-size:12px;line-height:18px;padding:0 0 5px 0;margin-bottom:4px;border-bottom:1px solid rgba(128,128,128,.35);white-space:nowrap;overflow:hidden}
+#prrr_mkt .cx .t{font-weight:bold;letter-spacing:.5px}
+#prrr_mkt .cx .w{opacity:.65}
+#prrr_mkt .cx .cxst{display:inline-block;min-width:66px;padding:0 5px;border-radius:3px;font-weight:bold;color:#fff;background:#78909c;text-align:center}
+#prrr_mkt .cx .cxst.L{background:#00a152}#prrr_mkt .cx .cxst.S{background:#d50000}#prrr_mkt .cx .cxst.A{background:#e6a700}
+#prrr_mkt .cx b.pos{color:#27ae60}#prrr_mkt .cx b.neg{color:#e74c3c}
+#prrr_mkt .cx i.sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin:0 3px 0 6px}
+#prrr_mkt .cx .cxpg{display:inline-block;width:48px;height:6px;background:rgba(128,128,128,.25);vertical-align:middle;margin-left:8px;border-radius:3px;overflow:hidden}
+#prrr_mkt .cx .cxpg i{display:block;height:100%;background:#1f77b4}
+</style>
+<div id="prrr_mkt">
+  <div class="bar">
+    <span class="grp"><b>Ventana visible</b>
+      <button data-w="300000">5 min</button><button data-w="900000">15 min</button><button data-w="3600000">1 h</button><button data-w="14400000">4 h</button></span>
+    <span class="grp"><b>Ploteo</b>
+      <button data-p="100">100 ms</button><button data-p="250">250 ms</button><button data-p="500">500 ms</button><button data-p="1000">1000 ms</button>
+      <span class="hint">= cada cuánto se envían puntos (min · máx · último del intervalo: no se pierden picos) · <span class="rd"></span></span></span>
+    <span class="grp"><button class="pz">⏸ Pausar</button><button class="lv">● Volver a vivo</button></span>
+    <span class="st live">EN VIVO</span>
+    <span class="hint">Δ BUY−SELL: siempre los últimos 60 s (buckets de 1 s), independiente de la ventana</span>
+  </div>
+  <div class="grid4">
+  <div class="col" id="mkt_BTC">
+    <div class="hd"><span class="sym">BTC</span><span class="px">—</span><span class="meta">esperando trades…</span></div>
+    <div class="ex"></div>
+    <div class="lg"></div>
+    <div class="pcv"><canvas></canvas><div class="hist"></div></div>
+    <div class="an" id="mkta_BTC"><span class="w">25/50: calentando…</span></div>
+    <div class="dwrap" id="mktd_BTC"><div class="dhd"><b>BTC</b> Δ BUY−SELL USD · últimos 60 s</div><div class="dcv"><canvas></canvas></div></div>
+  </div>
+  <div class="col" id="mkt_ZEC">
+    <div class="hd"><span class="sym">ZEC</span><span class="px">—</span><span class="meta">esperando trades…</span></div>
+    <div class="ex"></div>
+    <div class="lg"></div>
+    <div class="pcv"><canvas></canvas><div class="hist"></div></div>
+    <div class="an" id="mkta_ZEC"><span class="w">25/50: calentando…</span></div>
+    <div class="dwrap" id="mktd_ZEC"><div class="cx" id="mktcx_ZEC"></div><div class="dhd"><b>ZEC</b> Δ BUY−SELL USD · últimos 60 s</div><div class="dcv"><canvas></canvas></div></div>
+  </div>
+  <div class="col" id="mkt_GMX">
+    <div class="hd"><span class="sym">GMX</span><span class="px">—</span><span class="meta">esperando trades…</span></div>
+    <div class="ex"></div>
+    <div class="lg"></div>
+    <div class="pcv"><canvas></canvas><div class="hist"></div></div>
+    <div class="an" id="mkta_GMX"><span class="w">25/50: calentando…</span></div>
+    <div class="dwrap" id="mktd_GMX"><div class="dhd"><b>GMX</b> Δ BUY−SELL USD · últimos 60 s</div><div class="dcv"><canvas></canvas></div></div>
+  </div>
+  <div class="col" id="mkt_XMR">
+    <div class="hd"><span class="sym">XMR</span><span class="px">—</span><span class="meta">esperando trades…</span></div>
+    <div class="ex"></div>
+    <div class="lg"></div>
+    <div class="pcv"><canvas></canvas><div class="hist"></div></div>
+    <div class="an" id="mkta_XMR"><span class="w">25/50: calentando…</span></div>
+    <div class="dwrap" id="mktd_XMR"><div class="dhd"><b>XMR</b> Δ BUY−SELL USD · últimos 60 s</div><div class="dcv"><canvas></canvas></div></div>
+  </div>
+  </div>
+</div>
+<script>
+(function (scope) {
+  var SYMS = ["BTC","ZEC","GMX","XMR"], COL = {"binance":"#f0b90b","binance-perp":"#b8860b","coinbase":"#1652f0","kraken":"#7132f5","kraken-perp":"#b39ddb","okx":"#607d8b","bybit":"#f7a600","bybit-perp":"#ff6f00","bitfinex":"#16b157","gate":"#e53935","poloniex":"#00897b","bitget":"#00bcd4","bitget-perp":"#006064","hyperliquid":"#97fce4","TOTAL":"#1f77b4","BTC":"#ff7f0e","ZEC":"#2ca02c","GMX":"#d62728","XMR":"#9467bd"};
+  var CFG = { staleMs: 60000, padPct: 0.10, shrinkMs: 1500,
+              tiers: { A: { slotMs: 250, cap: 3600 }, B: { slotMs: 5000, cap: 2880 } } };   // igual que el servidor
+  var EXTRA = ['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf'];
+  // Historial de ploteo del navegador: vive en window → sobrevive a cambios de pestaña del Dashboard
+  var G = window.__prrrPlot || (window.__prrrPlot = { series: {}, order: {}, now: 0, plotMs: 250, snapAsked: false });
+  var UI = window.__prrrUI || (window.__prrrUI = { windowMs: 900000, paused: false, frozenAt: 0 });
+  try { var w0 = +localStorage.getItem('prrr_window_ms'); if ([300000, 900000, 3600000, 14400000].indexOf(w0) >= 0 && !window.__prrrUIinit) UI.windowMs = w0; } catch (e) {}
+  window.__prrrUIinit = true;
+  SYMS.forEach(function (s) { if (!G.series[s]) { G.series[s] = {}; G.order[s] = []; } });
+
+  // SMA 25/50 por segundo (4 h) — vive en window: sobrevive a cambios de pestaña
+  var SMA = window.__prrrSMA || (window.__prrrSMA = {});
+  SYMS.forEach(function (s) { if (!SMA[s]) SMA[s] = { cap: 14400, idx: new Float64Array(14400).fill(-1), s25: new Float64Array(14400), s50: new Float64Array(14400) }; });
+  function smaPut(sym, sec, a, b) { var H = SMA[sym], k = sec % H.cap; H.idx[k] = sec; H.s25[k] = a == null ? NaN : a; H.s50[k] = b == null ? NaN : b; }
+  // ---------- CONCEPTITO LIVE (etapa 7, sólo ZEC) — datos en window.__prrrCX (los escribe el nodo "CONCEPTITO → navegador") ----------
+  var CXC = { f: '#00acc1', s: '#c2185b' };              // SMA39 cian continua · SMA76 magenta a rayas
+  var cxTimer = 0, cxRev = -1, cxSec = -1;
+  function cxMoney(v) { var a = Math.abs(v); return (v > 0 ? '+' : v < 0 ? '−' : '') + '$' + a.toFixed(2); }
+  function cxPx(v) { return v == null ? '—' : '$' + (v >= 100 ? v.toFixed(2) : v.toFixed(3)); }
+  function cxMS(ms) { ms = Math.max(0, ms); var t = Math.floor(ms / 1000); return two(Math.floor(t / 60)) + ':' + two(t % 60); }
+  function cxPanel() {
+    var el = $('mktcx_ZEC'); if (!el) return;
+    var X = window.__prrrCX, st = X && X.state, sec = Math.floor((G.now || 0) / 1000);
+    if ((X ? X.rev : -1) === cxRev && sec === cxSec) return;
+    cxRev = X ? X.rev : -1; cxSec = sec;
+    var c = (X && X.cfg) || { fast: 39, slow: 76, margin: 1000, lev: 3, exposure: 3000, tp: 32.1, sl: -84.25, timeoutMin: 18 };
+    var h = '<div><span class="t">CONCEPTITO LIVE</span> <span class="w">SMA</span><i class="sw" style="background:' + CXC.f + '"></i>' + c.fast
+      + '<i class="sw" style="background:' + CXC.s + '"></i>' + c.slow + ' <span class="w">·</span> $' + c.margin + ' x' + c.lev + ' · EXP $' + c.exposure
+      + ' <span class="w">·</span> TP ' + cxMoney(c.tp) + ' · SL ' + cxMoney(c.sl) + ' · TO ' + c.timeoutMin + 'm</div>';
+    if (!st) { el.innerHTML = h + '<div>ESTADO: <span class="cxst A">SIN DATOS</span> <span class="w">esperando el motor Conceptito…</span></div><div>&nbsp;</div>'; return; }
+    var p = st.pos, l2;
+    if (st.phase !== 'OPERANDO') l2 = '<span class="cxst A">RESTAURANDO</span> <span class="w">leyendo estado en MariaDB' + (st.db && st.db.err ? ': ' + esc(String(st.db.err)).slice(0, 90) : '…') + '</span>';
+    else if (p) {
+      var el_ = (G.now || 0) - p.entryT, tot = p.toMin * 60000;
+      l2 = '<span class="cxst ' + (p.side === 'LONG' ? 'L' : 'S') + '">' + p.side + '</span> <span class="w">Entrada</span> ' + cxPx(p.entryPx) + ' <span class="w">Actual</span> ' + cxPx(p.lastPx)
+        + ' <span class="w">PnL</span> <b class="' + (p.pnl >= 0 ? 'pos' : 'neg') + '">' + cxMoney(p.pnl) + '</b> <span class="w">Tiempo</span> ' + cxMS(el_) + ' / ' + cxMS(tot)
+        + '<span class="cxpg"><i style="width:' + Math.min(100, Math.max(0, el_ / tot * 100)).toFixed(1) + '%"></i></span>';
+    } else if (st.sS == null) l2 = '<span class="cxst A">CALENTANDO</span> <span class="w">SMA ' + st.warm + '/' + c.slow + ' s</span>';
+    else {
+      var d = st.sF - st.sS, lc = st.lastClosed;
+      l2 = '<span class="cxst">ESPERANDO</span> <span class="w">SMA' + c.fast + (d >= 0 ? ' > ' : ' < ') + 'SMA' + c.slow + ' (Δ ' + (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(4) + ')</span>'
+        + (lc ? ' <span class="w">· última</span> ' + lc.side + ' ' + (lc.reason === 'TIMEOUT' ? 'TO' : lc.reason) + ' <b class="' + (lc.net >= 0 ? 'pos' : 'neg') + '">' + cxMoney(lc.net) + '</b>' : '');
+    }
+    var T = st.totals || {};
+    el.innerHTML = h + '<div>ESTADO: ' + l2 + '</div><div><span class="w">ACUM</span> OPS <b>' + (T.ops || 0) + '</b> · TP <b>' + (T.tp || 0) + '</b> · SL <b>' + (T.sl || 0)
+      + '</b> · TO <b>' + (T.to || 0) + '</b> · NETO <b class="' + ((T.net || 0) >= 0 ? 'pos' : 'neg') + '">' + cxMoney(T.net || 0) + '</b> · FEES $' + (T.fees || 0).toFixed(2)
+      + (st.db && !st.db.ok && st.db.err ? ' <span style="color:#e74c3c">· DB: ' + esc(String(st.db.err)).slice(0, 60) + '</span>' : '') + '</div>';
+  }
+  function cxMarks(g, CX, tmin, tmax, mpc, L, T, pw, ph, Y) {   // ▲ LONG · ▼ SHORT · TP / SL / TO · niveles de la posición abierta
+    var Xt = function (t) { return L + (t - tmin) / mpc; };
+    var trs = CX.trades || [], st = CX.state || {};
+    g.font = 'bold 10px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (var i = 0; i < trs.length; i++) {
+      var tr = trs[i], te = tr.entryT + 1000, op = tr.exitT == null, tx = op ? tmax : tr.exitT + 1000;
+      if (tx < tmin || te > tmax) continue;
+      var xe = Xt(te), ye = Y(tr.entryPx), up = tr.side === 'LONG';
+      g.globalAlpha = .55; g.lineWidth = 1; g.setLineDash([3, 3]);
+      g.strokeStyle = op ? (up ? '#00a152' : '#d50000') : (tr.net >= 0 ? '#00a152' : '#d50000');
+      g.beginPath(); g.moveTo(xe, ye); g.lineTo(Xt(tx), op ? ye : Y(tr.exitPx)); g.stroke(); g.setLineDash([]); g.globalAlpha = 1;
+      if (te >= tmin) {
+        g.fillStyle = up ? '#00a152' : '#d50000'; g.strokeStyle = '#ffffff'; g.lineWidth = 1.5; g.beginPath();
+        if (up) { g.moveTo(xe, ye + 3); g.lineTo(xe - 6, ye + 13); g.lineTo(xe + 6, ye + 13); } else { g.moveTo(xe, ye - 3); g.lineTo(xe - 6, ye - 13); g.lineTo(xe + 6, ye - 13); }
+        g.closePath(); g.stroke(); g.fill();
+      }
+      if (!op && tx >= tmin && tx <= tmax) {
+        var xx = Xt(tx), yx = Y(tr.exitPx), lab = tr.reason === 'TIMEOUT' ? 'TO' : tr.reason, col = tr.reason === 'TP' ? '#00a152' : tr.reason === 'SL' ? '#d50000' : '#607d8b';
+        g.fillStyle = col; g.strokeStyle = '#ffffff'; g.lineWidth = 1.5; g.beginPath(); g.rect(xx - 11, yx - 7, 22, 14); g.stroke(); g.fill();
+        g.fillStyle = '#ffffff'; g.fillText(lab, xx, yx + 0.5);
+      }
+    }
+    if (st.pos) {
+      var p = st.pos, xs = Math.max(L, Xt(p.entryT + 1000)), xr = L + pw;
+      [[p.tpPx, '#00a152', 'TP'], [p.slPx, '#d50000', 'SL']].forEach(function (lv) {
+        var y = Y(lv[0]), inR = y >= T && y <= T + ph;
+        if (inR) { g.globalAlpha = .7; g.strokeStyle = lv[1]; g.lineWidth = 1; g.setLineDash([2, 4]); g.beginPath(); g.moveTo(xs, y); g.lineTo(xr, y); g.stroke(); g.setLineDash([]); }
+        var yl = inR ? y - 7 : (y < T ? T + 8 : T + ph - 8), lab = lv[2] + (inR ? '' : (y < T ? ' ▲ ' : ' ▼ ') + cxPx(lv[0]));
+        g.globalAlpha = .9; g.fillStyle = lv[1]; g.textAlign = 'right'; g.fillText(lab, xr - 2, yl); g.textAlign = 'center'; g.globalAlpha = 1;
+      });
+    }
+    g.textBaseline = 'alphabetic'; g.textAlign = 'left';
+  }
+  function sgn(v) { return v > 0 ? 'pos' : v < 0 ? 'neg' : ''; }
+  function money(v) { var a = Math.abs(v), s = v < 0 ? '−' : v > 0 ? '+' : ''; return s + '$' + (a >= 1e6 ? (a / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(1) + 'k' : a.toFixed(0)); }
+  function vol(v) { return '$' + (v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toFixed(0)); }
+  function pct(v, d) { return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(d) + '%'; }
+  function anStrip(sym, r) {
+    var el = document.getElementById('mkta_' + sym); if (!el || !r) return;
+    var w = function (n, d, v, p) { return '<span><span class="w">' + n + (r.seconds < +n.slice(0, 2) ? ' (' + r.seconds + 's)' : '') + '</span> Δ <b class="' + sgn(d) + '">' + money(d) + '</b> · VOL ' + vol(v) + '<br><span class="w">presión</span> <b class="' + sgn(p) + '">' + pct(p * 100, 1) + '</b></span>'; };
+    el.innerHTML = w('25s', r.delta_25, r.volume_25, r.pressure_25) + w('50s', r.delta_50, r.volume_50, r.pressure_50)
+      + '<span><span class="w">SMA25−SMA50</span><br>' + (r.price_sma_spread_pct == null ? '<span class="w">calentando</span>' : '<b class="' + sgn(r.price_sma_spread_pct) + '">' + pct(r.price_sma_spread_pct, 3) + '</b>') + '</span>';
+  }
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtY(v, span) { var d = span >= 100 ? 0 : span >= 1 ? 2 : span >= 0.01 ? 4 : 6; return v.toFixed(d); }
+  function two(n) { return ('0' + n).slice(-2); }
+  function fmtT(t, secs) { var d = new Date(t); return two(d.getHours()) + ':' + two(d.getMinutes()) + (secs ? ':' + two(d.getSeconds()) : ''); }
+  function fmtDur(ms) { var m = Math.floor(ms / 60000); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m >= 1 ? m + ' min' : Math.round(ms / 1000) + ' s'; }
+  function fmtU(v) { var a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : v.toFixed(0); }
+  function fit(cv, box) {
+    var W = box.clientWidth, H = box.clientHeight; if (W < 10 || H < 10) return null;
+    var dpr = window.devicePixelRatio || 1;
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    var g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+    return { g: g, W: W, H: H };
+  }
+  // ---------- historial por serie: 2 niveles, typed arrays de tamaño fijo ----------
+  function newTier(d) { return { slotMs: d.slotMs, cap: d.cap, idx: new Float64Array(d.cap).fill(-1), lo: new Float64Array(d.cap), hi: new Float64Array(d.cap), last: new Float64Array(d.cap) }; }
+  function getSer(sym, src) {
+    var S = G.series[sym][src];
+    if (!S) { S = G.series[sym][src] = { A: newTier(CFG.tiers.A), B: newTier(CFG.tiers.B), lastT: 0, first: Infinity }; G.order[sym].push(src); }
+    return S;
+  }
+  function tadd(T, t, y, isLast) {
+    var s = Math.floor(t / T.slotMs), k = s % T.cap;
+    if (T.idx[k] !== s) { T.idx[k] = s; T.lo[k] = y; T.hi[k] = y; T.last[k] = y; }
+    else { if (y < T.lo[k]) T.lo[k] = y; if (y > T.hi[k]) T.hi[k] = y; if (isLast) T.last[k] = y; }
+  }
+  function ingest(sym, pts) {
+    for (var i = 0; i < pts.length; i++) {
+      var q = pts[i], S = getSer(sym, q.s), isLast = q.x >= S.lastT;
+      tadd(S.A, q.x, q.y, isLast); tadd(S.B, q.x, q.y, isLast);
+      if (isLast) S.lastT = q.x;
+      if (q.x < S.first) S.first = q.x;
+    }
+  }
+  function loadSnapshot(snap) {
+    SYMS.forEach(function (sym) {
+      var src = snap.syms[sym] || {};
+      Object.keys(src).forEach(function (name) {
+        var o = src[name], S = getSer(sym, name);
+        ['A', 'B'].forEach(function (tn) {
+          var T = S[tn], a = o[tn] || [];
+          for (var i = 0; i < a.length; i += 4) {
+            var s = a[i], k = s % T.cap;
+            if (T.idx[k] > s) continue;                   // ya hay algo más nuevo del navegador
+            T.idx[k] = s; T.lo[k] = a[i + 1]; T.hi[k] = a[i + 2]; T.last[k] = a[i + 3];
+            var t = s * T.slotMs; if (t < S.first) S.first = t;
+          }
+        });
+        if (o.lastT > S.lastT) S.lastT = o.lastT;
+      });
+    });
+    if (snap.now > G.now) G.now = snap.now;
+  }
+
+  // ---------- gráfico de precio ----------
+  function PriceChart(sym) {
+    var root = $('mkt_' + sym), self = this;
+    this.yLo = null; this.yHi = null; this.lastDraw = 0; this.staleKey = null; this.raf = 0; this.win = 0; this.buf = {};
+    this.color = function (n) { return COL[n] || EXTRA[G.order[sym].indexOf(n) % EXTRA.length]; };
+    this.sched = function () { if (!self.raf) self.raf = requestAnimationFrame(function () { self.raf = 0; self.draw(); }); };
+    this.legend = function (stale) {
+      var h = '';
+      G.order[sym].forEach(function (n) { var sv = !!stale[n]; h += '<span' + (sv ? ' style="opacity:.4"' : '') + '><i style="background:' + self.color(n) + '"></i>' + esc(n) + (sv ? ' (stale)' : '') + '</span>'; });
+      h += '<span><b>━ SMA25s</b></span><span><b>╍ SMA50s</b></span>';
+      root.querySelector('.lg').innerHTML = h;
+    };
+    this.draw = function () {
+      var t0 = performance.now();
+      var r = fit(root.querySelector('.pcv canvas'), root.querySelector('.pcv')); if (!r) return;
+      var g = r.g, W = r.W, H = r.H, fg = getComputedStyle(root).color || '#888';
+      var L = 82, R = 8, T = 8, B = 22, pw = Math.max(10, Math.floor(W - L - R)), ph = H - T - B;
+      var win = UI.windowMs, tmax = UI.paused ? UI.frozenAt : G.now, tmin = tmax - win;
+      if (self.win !== win) { self.win = win; self.yLo = self.yHi = null; }
+      // nivel de detalle: A (250 ms) si cubre el rango visible; si no, B (5 s)
+      var A = CFG.tiers.A, tier = (win <= A.slotMs * A.cap && tmin >= G.now - A.slotMs * (A.cap - 2)) ? 'A' : 'B';
+      var msPerCol = win / pw, gapMs = Math.max(CFG.staleMs, 3 * CFG.tiers[tier].slotMs, 3 * msPerCol);
+      // 1) agregación por columna de píxel: min / max / último (nunca más puntos que la resolución útil)
+      var lo = Infinity, hi = -Infinity, alo = Infinity, ahi = -Infinity, stale = {}, earliest = Infinity, anyData = false;
+      var srcs = G.order[sym], cols = {};
+      for (var si = 0; si < srcs.length; si++) {
+        var n = srcs[si], S = G.series[sym][n], Tt = S[tier];
+        var b = self.buf[n]; if (!b || b.lo.length !== pw) b = self.buf[n] = { lo: new Float64Array(pw), hi: new Float64Array(pw), last: new Float64Array(pw), has: new Uint8Array(pw) };
+        b.has.fill(0);
+        var s0 = Math.floor(tmin / Tt.slotMs), s1 = Math.floor(tmax / Tt.slotMs), cnt = 0, lastT = -Infinity;
+        if (s1 - s0 + 1 > Tt.cap) s0 = s1 - Tt.cap + 1;
+        for (var s = s0; s <= s1; s++) {
+          var k = s % Tt.cap; if (Tt.idx[k] !== s) continue;
+          var tc = s * Tt.slotMs + Tt.slotMs / 2; if (tc > tmax) tc = tmax;
+          var c = Math.floor((tc - tmin) / msPerCol); if (c < 0) continue; if (c >= pw) c = pw - 1;
+          var l = Tt.lo[k], h = Tt.hi[k], z = Tt.last[k];
+          if (!b.has[c]) { b.has[c] = 1; b.lo[c] = l; b.hi[c] = h; b.last[c] = z; }
+          else { if (l < b.lo[c]) b.lo[c] = l; if (h > b.hi[c]) b.hi[c] = h; b.last[c] = z; }
+          cnt++; lastT = s * Tt.slotMs;
+          if (s * Tt.slotMs < earliest) earliest = Math.max(s * Tt.slotMs, tmin);
+        }
+        if (!cnt) continue;
+        anyData = true; cols[n] = b;
+        var fresh = Math.min(S.lastT, tmax) >= tmax - CFG.staleMs && lastT >= tmax - CFG.staleMs - Tt.slotMs;
+        if (!fresh) stale[n] = true;
+        for (var c2 = 0; c2 < pw; c2++) if (b.has[c2]) {
+          if (b.lo[c2] < alo) alo = b.lo[c2]; if (b.hi[c2] > ahi) ahi = b.hi[c2];
+          if (fresh) { if (b.lo[c2] < lo) lo = b.lo[c2]; if (b.hi[c2] > hi) hi = b.hi[c2]; }
+        }
+      }
+      // SMA 25/50: 1 valor por segundo → último valor por columna de píxel
+      var HS = SMA[sym], sm = self.smaBuf; if (!sm || sm.a.length !== pw) sm = self.smaBuf = { a: new Float64Array(pw), b: new Float64Array(pw), has: new Uint8Array(pw) };
+      sm.has.fill(0);
+      var q0 = Math.max(Math.floor(tmin / 1000), Math.floor(tmax / 1000) - HS.cap + 1), q1 = Math.floor(tmax / 1000);
+      for (var qs = q0; qs <= q1; qs++) {
+        var kq = qs % HS.cap; if (HS.idx[kq] !== qs) continue;
+        var cq = Math.floor((qs * 1000 + 500 - tmin) / msPerCol); if (cq < 0) continue; if (cq >= pw) cq = pw - 1;
+        sm.has[cq] = 1; sm.a[cq] = HS.s25[kq]; sm.b[cq] = HS.s50[kq];
+        if (anyData && isFinite(lo)) { var va = HS.s25[kq], vb = HS.s50[kq];
+          if (va === va) { if (va < lo) lo = va; if (va > hi) hi = va; } if (vb === vb) { if (vb < lo) lo = vb; if (vb > hi) hi = vb; } }
+      }
+      // CONCEPTITO (etapa 7, sólo ZEC): SMA39/76 por segundo → último valor por columna; entran en la autoescala igual que SMA25/50
+      var CX = sym === 'ZEC' ? window.__prrrCX : null, cxs = null;
+      if (CX) {
+        cxs = self.cxBuf; if (!cxs || cxs.a.length !== pw) cxs = self.cxBuf = { a: new Float64Array(pw), b: new Float64Array(pw), has: new Uint8Array(pw) };
+        cxs.has.fill(0);
+        var x0 = Math.max(Math.floor(tmin / 1000), Math.floor(tmax / 1000) - CX.cap + 1), x1 = Math.floor(tmax / 1000);
+        for (var xq = x0; xq <= x1; xq++) {
+          var kx = xq % CX.cap; if (CX.idx[kx] !== xq) continue;
+          var cq2 = Math.floor((xq * 1000 + 500 - tmin) / msPerCol); if (cq2 < 0) continue; if (cq2 >= pw) cq2 = pw - 1;
+          cxs.has[cq2] = 1; cxs.a[cq2] = CX.a[kx]; cxs.b[cq2] = CX.b[kx];
+          if (anyData && isFinite(lo)) { var xa = CX.a[kx], xb = CX.b[kx];
+            if (xa === xa) { if (xa < lo) lo = xa; if (xa > hi) hi = xa; } if (xb === xb) { if (xb < lo) lo = xb; if (xb > hi) hi = xb; } }
+        }
+      }
+      var sk = Object.keys(stale).sort().join(',') + '|' + srcs.length; if (sk !== self.staleKey) { self.staleKey = sk; self.legend(stale); }
+      var hist = root.querySelector('.hist');
+      g.font = '13px monospace'; g.fillStyle = fg; g.strokeStyle = fg;
+      if (!anyData) { self.yLo = self.yHi = null; hist.textContent = ''; g.globalAlpha = .6; g.fillText('sin trades en la ventana', L + 8, T + 36); g.globalAlpha = 1; return; }
+      if (!isFinite(lo)) { lo = alo; hi = ahi; }
+      // historial menor que la ventana: se muestra lo disponible, sin rellenar hacia atrás
+      hist.textContent = (earliest > tmin + Math.max(2 * msPerCol, 2000)) ? 'historial disponible: ' + fmtDur(tmax - earliest) + ' de ' + fmtDur(win) : '';
+      // 2) autoescala Y (visible, sin stale, ±10 %, expande ya / contrae suave)
+      var ctr = (hi + lo) / 2, minSpan = Math.max(Math.abs(ctr) * 2e-5, 1e-9);
+      if (hi - lo < minSpan) { lo = ctr - minSpan / 2; hi = ctr + minSpan / 2; }
+      var pad = (hi - lo) * CFG.padPct, tLo = lo - pad, tHi = hi + pad;
+      var nowMs = performance.now(), dt = self.lastDraw ? Math.min(nowMs - self.lastDraw, 1000) : 1000; self.lastDraw = nowMs;
+      var a = 1 - Math.exp(-dt / CFG.shrinkMs);
+      if (self.yLo === null || tLo < self.yLo) self.yLo = tLo; else self.yLo += (tLo - self.yLo) * a;
+      if (self.yHi === null || tHi > self.yHi) self.yHi = tHi; else self.yHi += (tHi - self.yHi) * a;
+      var eps = (tHi - tLo) * 0.002, animating = Math.abs(self.yLo - tLo) > eps || Math.abs(self.yHi - tHi) > eps;
+      if (!animating) { self.yLo = tLo; self.yHi = tHi; }
+      lo = self.yLo; hi = self.yHi;
+      var Y = function (v) { return T + (hi - v) / (hi - lo) * ph; };
+      // 3) ejes
+      g.globalAlpha = .18; g.lineWidth = 1; g.beginPath();
+      for (var q = 0; q <= 5; q++) { var yy = T + ph * q / 5; g.moveTo(L, yy); g.lineTo(L + pw, yy); }
+      for (var q2 = 0; q2 <= 6; q2++) { var xx = L + pw * q2 / 6; g.moveTo(xx, T); g.lineTo(xx, T + ph); }
+      g.stroke(); g.globalAlpha = .8;
+      g.textAlign = 'right'; for (var q3 = 0; q3 <= 5; q3++) { var v = hi - (hi - lo) * q3 / 5; g.fillText(fmtY(v, hi - lo), L - 4, T + ph * q3 / 5 + 4); }
+      g.textAlign = 'center'; for (var q4 = 0; q4 <= 6; q4++) { var tt = tmin + win * q4 / 6; g.fillText(fmtT(tt, win <= 900000), Math.min(Math.max(L + pw * q4 / 6, L + 30), L + pw - 30), H - 5); }
+      // 4) series: por columna, rango vertical min–máx + escalón desde el último anterior; huecos largos = corte
+      g.lineWidth = 1.5; g.save(); g.beginPath(); g.rect(L, T, pw, ph); g.clip();
+      g.globalAlpha = 1; g.lineWidth = 1.5;
+      for (var sj = 0; sj < srcs.length; sj++) {
+        var nm = srcs[sj], bb = cols[nm]; if (!bb) continue;
+        g.globalAlpha = stale[nm] ? 0.35 : 1; g.strokeStyle = self.color(nm); g.fillStyle = self.color(nm);
+        g.beginPath();
+        var prevC = -1, prevY = 0, lx = 0, ly = 0;
+        for (var cc = 0; cc < pw; cc++) {
+          if (!bb.has[cc]) continue;
+          var x = L + cc + 0.5, yl = Y(bb.lo[cc]), yh = Y(bb.hi[cc]), yz = Y(bb.last[cc]);
+          if (prevC < 0 || (cc - prevC) * msPerCol > gapMs) g.moveTo(x, yz);
+          else g.lineTo(x, prevY);
+          if (yh !== yl) { g.lineTo(x, yh); g.lineTo(x, yl); }
+          g.lineTo(x, yz);
+          prevC = cc; prevY = yz; lx = x; ly = yz;
+        }
+        g.stroke();
+        g.beginPath(); g.arc(lx, ly, 2.4, 0, 6.283); g.fill();        // último dato real (no se extiende hacia adelante)
+      }
+      // SMA 25/50 encima del precio: finas, con borde claro para que se lean sobre zonas densas
+      [['a', []], ['b', [10, 7]]].forEach(function (ln) {
+        var arr = sm[ln[0]];
+        [[5.2, 'rgba(255,255,255,0.9)'], [2.6, '#111']].forEach(function (pass) {
+          var prev = -1;                                                // une columnas; sólo corta en huecos reales > 5 s
+          g.globalAlpha = 1; g.strokeStyle = pass[1]; g.lineWidth = pass[0]; g.setLineDash(ln[1]); g.beginPath();
+          for (var cs = 0; cs < pw; cs++) {
+            if (!sm.has[cs] || arr[cs] !== arr[cs]) continue;
+            var xs = L + cs + 0.5, ys = Y(arr[cs]);
+            if (prev < 0 || (cs - prev) * msPerCol > 5000) g.moveTo(xs, ys); else g.lineTo(xs, ys);
+            prev = cs;
+          }
+          g.stroke();
+        });
+        g.setLineDash([]);
+      });
+      if (CX) {                                                       // CONCEPTITO: SMA39/76 con borde claro + marcadores
+        [['a', CXC.f, []], ['b', CXC.s, [12, 5]]].forEach(function (ln) {
+          var arr = cxs[ln[0]];
+          [[5, 'rgba(255,255,255,0.9)'], [2.4, ln[1]]].forEach(function (pass) {
+            var prev = -1; g.globalAlpha = 1; g.strokeStyle = pass[1]; g.lineWidth = pass[0]; g.setLineDash(ln[2]); g.beginPath();
+            for (var cz = 0; cz < pw; cz++) {
+              if (!cxs.has[cz] || arr[cz] !== arr[cz]) continue;
+              var xz = L + cz + 0.5, yz2 = Y(arr[cz]);
+              if (prev < 0 || (cz - prev) * msPerCol > 5000) g.moveTo(xz, yz2); else g.lineTo(xz, yz2);
+              prev = cz;
+            }
+            g.stroke();
+          });
+          g.setLineDash([]);
+        });
+        cxMarks(g, CX, tmin, tmax, msPerCol, L, T, pw, ph, Y);
+      }
+      g.restore(); g.globalAlpha = 1;
+      window.__prrrDrawMs = (window.__prrrDrawMs || 0) * 0.9 + (performance.now() - t0) * 0.1;   // medición de costo
+      if (animating) self.sched();
+    };
+  }
+
+  // ---------- Δ BUY−SELL 60 s ----------
+  function DeltaChart(sym) {
+    var root = $('mktd_' + sym), self = this; this.data = null; this.raf = 0;
+    this.sched = function () { if (!self.raf) self.raf = requestAnimationFrame(function () { self.raf = 0; self.draw(); }); };
+    this.feed = function (p) { self.data = p; if (!UI.paused) self.sched(); };
+    this.draw = function () {
+      var data = self.data; if (!data) return;
+      root.querySelector('.dhd').innerHTML = '<b>' + sym + '</b> Δ BUY−SELL USD · últimos 60 s (buckets 1 s) · último <b>' + esc(data.last || '—') + '</b>';
+      var r = fit(root.querySelector('.dcv canvas'), root.querySelector('.dcv')); if (!r) return;
+      var g = r.g, W = r.W, H = r.H, fg = getComputedStyle(root).color || '#888';
+      var pts = data.pts || [], mx = 0;
+      for (var i = 0; i < pts.length; i++) mx = Math.max(mx, Math.abs(pts[i].v));
+      var L = 64, T = 4, B = 4, pw = W - L - 4, ph = H - T - B, mid = T + ph / 2;
+      g.font = '13px monospace'; g.fillStyle = fg; g.strokeStyle = fg; g.globalAlpha = .7; g.textAlign = 'right';
+      g.fillText(mx ? '+' + fmtU(mx) : '0', L - 4, T + 12); g.fillText(mx ? '-' + fmtU(mx) : '0', L - 4, T + ph - 2);
+      g.globalAlpha = .3; g.beginPath(); g.moveTo(L, mid); g.lineTo(L + pw, mid); g.stroke(); g.globalAlpha = 1;
+      var bw = pw / 60;
+      for (var j = 0; j < pts.length; j++) {
+        var p = pts[j], x = L + (60 - pts.length + j) * bw;
+        if (p.syn) { g.fillStyle = '#9e9e9e'; g.globalAlpha = .6; g.fillRect(x + bw * .3, mid - 1, Math.max(1, bw * .4), 2); g.globalAlpha = 1; continue; }
+        var h = mx ? Math.abs(p.v) / mx * (ph / 2) : 0;
+        g.fillStyle = p.v >= 0 ? '#27ae60' : '#e74c3c';
+        g.fillRect(x + 1, p.v >= 0 ? mid - h : mid, Math.max(1, bw - 2), Math.max(1, h));
+      }
+    };
+  }
+
+  // ---------- cabecera + exchanges ----------
+  function card(sym, p) {
+    var root = $('mkt_' + sym); if (!root || !p) return;
+    var cls = p.side === 'BUY' ? 'up' : p.side === 'SELL' ? 'dn' : '';
+    var px = root.querySelector('.px'); px.textContent = p.price; px.className = 'px ' + cls;
+    root.querySelector('.meta').innerHTML = esc(p.exchange) + ' · <b class="' + cls + '">' + esc(p.side || '?') + '</b> · edad ' + esc(p.age) + ' · <b>' + esc(p.evs) + '</b> ev/s · <b>' + esc(p.perMin) + '</b> trades/min';
+    var h = '';
+    (p.perEx || []).forEach(function (e) {
+      var c = e.side === 'BUY' ? 'up' : e.side === 'SELL' ? 'dn' : '';
+      h += '<div class="c' + (e.off || !e.pm ? ' st' : '') + '" style="border-left-color:' + (COL[e.ex] || '#888') + '" title="' + esc(e.ex) + ': ' + e.pm + ' trades en 60 s">'
+        + '<span class="n">' + esc(e.ex) + '</span> <b>' + e.pm + '</b><span class="n">/m</span><br><b class="' + c + '">' + esc(e.price) + '</b> <span class="n">' + esc(e.age) + '</span></div>';
+    });
+    root.querySelector('.ex').innerHTML = h;
+  }
+
+  // ---------- controles compartidos ----------
+  var P = {}, D = {}, lastAll = 0, pendAll = 0;
+  // Redibujado limitado por resolución útil: nunca más seguido que el ploteo, y como máximo cada 1 s
+  // cuando 1 píxel representa varios segundos (p.ej. 4 h: 1 px ≈ 21 s). Los datos se ingieren igual.
+  function redrawMs() {
+    var c = $('mkt_' + SYMS[0]), w = c ? Math.max(200, c.querySelector('.pcv').clientWidth - 90) : 600;
+    return Math.max(G.plotMs, Math.min(1000, UI.windowMs / w / 4));
+  }
+  function drawAll(force) {
+    var now = performance.now(), iv = redrawMs();
+    if (!force && now - lastAll < iv - 5) { if (!pendAll) pendAll = setTimeout(function () { pendAll = 0; drawAll(true); }, iv - (now - lastAll)); return; }
+    lastAll = now; SYMS.forEach(function (s) { if (P[s]) P[s].sched(); });
+    var hint = $('prrr_mkt') && $('prrr_mkt').querySelector('.rd'); if (hint) hint.textContent = 'redibujo cada ' + Math.round(iv) + ' ms';
+  }
+  function bar() {
+    var el = $('prrr_mkt'); if (!el) return;
+    el.querySelectorAll('button[data-w]').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-w') === UI.windowMs); });
+    el.querySelectorAll('button[data-p]').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-p') === G.plotMs); });
+    el.querySelector('.pz').classList.toggle('on', UI.paused);
+    var st = el.querySelector('.st');
+    st.className = 'st ' + (UI.paused ? 'paused' : 'live');
+    st.textContent = UI.paused ? 'PAUSADO · vista fija en ' + fmtT(UI.frozenAt, true) + ' (los datos siguen entrando)' : 'EN VIVO';
+  }
+  function wire() {
+    var el = $('prrr_mkt'); if (!el || el.__wired) return; el.__wired = true;
+    el.querySelectorAll('button[data-w]').forEach(function (b) { b.addEventListener('click', function () {
+      UI.windowMs = +b.getAttribute('data-w'); try { localStorage.setItem('prrr_window_ms', UI.windowMs); } catch (e) {} bar(); drawAll(true); }); });
+    el.querySelectorAll('button[data-p]').forEach(function (b) { b.addEventListener('click', function () {
+      scope.send({ topic: 'render_ms', payload: +b.getAttribute('data-p') }); }); });
+    el.querySelector('.pz').addEventListener('click', function () {
+      if (!UI.paused) { UI.paused = true; UI.frozenAt = G.now; } else { UI.paused = false; }
+      bar(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); });
+    el.querySelector('.lv').addEventListener('click', function () {
+      UI.paused = false; bar(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); });
+  }
+  function place() {
+    var el = $('prrr_mkt'); if (!el) return;
+    var tb = document.querySelector('md-toolbar'), top = 0;
+    if (tb) { var r = tb.getBoundingClientRect(); if (r.bottom > 0 && r.bottom < window.innerHeight / 3) top = Math.round(r.bottom); }
+    el.style.top = top + 'px';
+    if (!el.style.background) {
+      var bg = '', cands = [document.querySelector('md-content'), document.body, document.documentElement];
+      for (var i = 0; i < cands.length && !bg; i++) { if (!cands[i]) continue; var c = getComputedStyle(cands[i]).backgroundColor; if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') bg = c; }
+      el.style.background = bg || '#ffffff';
+    }
+  }
+  function init() {
+    SYMS.forEach(function (s) { if (!P[s] && $('mkt_' + s)) { P[s] = new PriceChart(s); D[s] = new DeltaChart(s); } });
+    wire(); bar();
+    if (!cxTimer) cxTimer = setInterval(cxPanel, 250);              // etapa 7: zona CONCEPTITO del panel ZEC
+    if (!G.snapAsked) { G.snapAsked = true; scope.send({ topic: 'snapshot_req' }); }   // página nueva: pedir historial al servidor
+  }
+  scope.$watch('msg', function (m) {
+    if (!m || !m.payload) return;
+    init();
+    var b = m.payload;
+    if (b.snapshot) { loadSnapshot(b.snapshot); drawAll(true); return; }
+    if (b.smaSnapshot) { SYMS.forEach(function (s) { var a = b.smaSnapshot[s] || []; for (var i = 0; i < a.length; i += 3) smaPut(s, a[i], a[i + 1] === null ? null : a[i + 1], a[i + 2] === null ? null : a[i + 2]); }); drawAll(true); return; }
+    if (b.an) SYMS.forEach(function (s) { var r = b.an[s]; if (!r) return; smaPut(s, Math.floor(r.t / 1000), r.price_sma_25, r.price_sma_50); if (!UI.paused) anStrip(s, r); });
+    var plotChanged = false;
+    SYMS.forEach(function (s) {
+      var c = b.charts && b.charts[s];
+      if (c) {
+        if (c.now > G.now) G.now = c.now;
+        if (c.plotMs && c.plotMs !== G.plotMs) { G.plotMs = c.plotMs; plotChanged = true; }
+        if (c.pts && c.pts.length) ingest(s, c.pts);        // se ingiere siempre, aun en pausa
+      }
+      if (b.cards && b.cards[s]) card(s, b.cards[s]);
+      if (b.deltas && b.deltas[s] && D[s]) D[s].feed(b.deltas[s]);
+    });
+    if (plotChanged) bar();
+    if (!UI.paused) drawAll();
+  });
+  var onRes = function () { place(); drawAll(true); SYMS.forEach(function (s) { if (D[s]) D[s].sched(); }); };
+  window.addEventListener('resize', onRes);
+  scope.$on('$destroy', function () { window.removeEventListener('resize', onRes); if (cxTimer) { clearInterval(cxTimer); cxTimer = 0; } });
+  setTimeout(function () { init(); onRes(); }, 0);
+  setTimeout(onRes, 500);
+})(scope);
+</script>

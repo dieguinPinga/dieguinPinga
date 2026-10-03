@@ -1,0 +1,177 @@
+[
+  {
+    "id": "prrr_grp_cx",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "ETAPA 7 — CONCEPTITO LIVE (paper trader ZEC · SMA39/76 · TP/SL/TO · conceptito_trades)",
+    "style": {
+      "label": true,
+      "stroke": "#00838f",
+      "fill": "#00838f",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_cx_tick",
+      "prrr_cx_engine",
+      "prrr_cx_mysql",
+      "prrr_cx_catch",
+      "prrr_cx_err_tag",
+      "prrr_cx_ui",
+      "prrr_cx_comment"
+    ],
+    "x": 60,
+    "y": 3395,
+    "w": 1160,
+    "h": 180
+  },
+  {
+    "id": "prrr_cx_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 250 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.25",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "3",
+    "topic": "tick",
+    "x": 180,
+    "y": 3470,
+    "wires": [
+      [
+        "prrr_cx_engine"
+      ]
+    ],
+    "g": "prrr_grp_cx"
+  },
+  {
+    "id": "prrr_cx_engine",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "CONCEPTITO motor (lee md_mem_1s ZEC · SMA39/76 · paper 1 pos · persiste)",
+    "func": "// Entradas: 'tick' (250 ms) · respuestas del nodo mysql (msg.cxKind) · 'db_error' (catch) · 'cx_snapshot_req' (navegador)\n// Salida 1 → mysql (1 query en vuelo)  ·  Salida 2 → navegador (estado 1/s, eventos, historial)\nconst E = context.get('E', 'memory'), C = E.cfg, now = Date.now();\nconst out = [null, null];\n\nfunction pad(n, w) { return String(n).padStart(w || 2, '0'); }\nfunction dt(t) { const d = new Date(t); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + '.' + pad(d.getUTCMilliseconds(), 3); }\nfunction r(v, d) { return v == null ? null : Number(v.toFixed(d)); }\nfunction num(v) { return v == null ? null : Number(v); }\nfunction enqueue(item) { E.q.push(item); if (E.q.length > 1000) { E.q.shift(); E.dbErrors++; E.dbErr = 'cola DB llena: se descartó la escritura más vieja'; } }\nfunction fail(reason) {\n    const m = String(reason).slice(0, 200);\n    if (m !== E.dbErr || now - E.lastLogAt > 60000) { node.warn('Conceptito DB: ' + m); E.lastLogAt = now; }\n    E.dbErrors++; E.dbErr = m; E.dbOk = false;\n    if (E.inflight && E.inflight.item) E.q.unshift(E.inflight.item);       // se reintenta en orden\n    E.inflight = null;\n    E.backoff = Math.min(60000, Math.max(3000, E.backoff * 2)); E.nextTry = now + E.backoff;\n}\n\n// ---------- persistencia: una fila por operación (OPEN al abrir, CLOSED al cerrar; upsert por symbol+entry_ts) ----------\nconst COLS = ['symbol', 'source', 'status', 'entry_ts', 'exit_ts', 'side', 'entry_price', 'exit_price', 'qty', 'margin_usd', 'leverage', 'exposure_usd',\n    'sma_fast', 'sma_slow', 'sma_fast_entry', 'sma_slow_entry', 'tp_usd', 'sl_usd', 'timeout_min', 'fee_rate',\n    'gross_pnl', 'fee_entry', 'fee_exit', 'fees', 'net_pnl', 'exit_reason', 'duration_seconds', 'mfe_usd', 'mae_usd'];\nconst UPD = ['status', 'exit_ts', 'exit_price', 'gross_pnl', 'fee_exit', 'fees', 'net_pnl', 'exit_reason', 'duration_seconds', 'mfe_usd', 'mae_usd'];\nfunction saveRow(p, x) {\n    const row = [C.symbol, 'PRRR', x ? 'CLOSED' : 'OPEN', dt(p.entryT), x ? dt(x.t) : null, p.side, p.entryPx, x ? x.px : null, r(p.qty, 10),\n        p.margin, p.lev, p.exposure, p.fast, p.slow, r(p.sFast, 8), r(p.sSlow, 8), p.tp, p.sl, p.toMin, p.feeRate,\n        x ? r(x.gross, 4) : null, r(p.feeEntry, 4), x ? r(x.feeExit, 4) : null, x ? r(x.fees, 4) : null, x ? r(x.net, 4) : null,\n        x ? x.reason : null, x ? x.dur : null, x ? r(p.mfe, 4) : null, x ? r(p.mae, 4) : null];\n    const upsert = { kind: 'save', row: row, sql: 'INSERT INTO ' + C.table + ' (' + COLS.join(', ') + ') VALUES ? ON DUPLICATE KEY UPDATE ' + UPD.map(function (c) { return c + ' = VALUES(' + c + ')'; }).join(', '),\n        params: [[row]] };\n    if (!x) { enqueue(upsert); return; }\n    // cierre: UPDATE de la fila OPEN (ids correlativos); si no existe (se perdió el INSERT), upsert completo\n    const vals = UPD.map(function (c) { return row[COLS.indexOf(c)]; });\n    enqueue({ kind: 'close', row: row, fallback: upsert, sql: 'UPDATE ' + C.table + ' SET ' + UPD.map(function (c) { return c + ' = ?'; }).join(', ') + ' WHERE symbol = ? AND entry_ts = ?',\n        params: vals.concat([C.symbol, dt(p.entryT)]) });\n}\n\n// ---------- SMA / historial ----------\nfunction avgLast(n) { const a = E.closes; if (a.length < n) return null; let s = 0; for (let i = a.length - n; i < a.length; i++) s += a[i]; return s / n; }\nfunction histPut(t, a, b) { const H = E.hist, sec = Math.floor(t / 1000), k = sec % H.cap; H.idx[k] = sec; H.a[k] = a == null ? NaN : a; H.b[k] = b == null ? NaN : b; }\nfunction levels(p) { const k = p.side === 'LONG' ? 1 : -1; return { tpPx: p.entryPx * (1 + k * p.tp / p.exposure), slPx: p.entryPx * (1 + k * p.sl / p.exposure) }; }\n\n// ---------- posición paper ----------\nfunction open(side, b) {\n    const exposure = C.margin * C.lev, px = b.close;\n    E.pos = { side: side, entryT: b.t, entryPx: px, qty: exposure / px, margin: C.margin, lev: C.lev, exposure: exposure,\n        fast: C.fast, slow: C.slow, sFast: E.sF, sSlow: E.sS, tp: C.tp, sl: C.sl, toMin: C.timeoutMin, feeRate: C.feeRate,\n        feeEntry: exposure * C.feeRate, pnl: 0, mfe: 0, mae: 0, lastPx: px, lastT: b.t };\n    saveRow(E.pos, null);\n    E.trades.push({ entryT: b.t, entryPx: px, side: side }); E.tradesRev++;\n    node.log('Conceptito: abre ' + side + ' @ ' + px + ' (SMA' + C.fast + ' ' + E.sF.toFixed(6) + ' / SMA' + C.slow + ' ' + E.sS.toFixed(6) + ')');\n}\nfunction manage(b) {                                    // devuelve true si cerró en este bucket\n    const p = E.pos, k = p.side === 'LONG' ? 1 : -1, px = b.close;\n    const gross = k * p.qty * (px - p.entryPx);         // = ±exposición × (precio/entrada − 1)\n    p.pnl = gross; p.lastPx = px; p.lastT = b.t;\n    if (gross > p.mfe) p.mfe = gross; if (gross < p.mae) p.mae = gross;\n    let reason = null;\n    if (gross >= p.tp) reason = 'TP'; else if (gross <= p.sl) reason = 'SL'; else if (b.t - p.entryT >= p.toMin * 60000) reason = 'TIMEOUT';\n    if (!reason) return false;\n    const feeExit = p.qty * px * p.feeRate, fees = p.feeEntry + feeExit, net = gross - fees;\n    const x = { t: b.t, px: px, gross: gross, feeExit: feeExit, fees: fees, net: net, reason: reason, dur: Math.round((b.t - p.entryT) / 1000) };\n    saveRow(p, x);\n    const T = E.totals; T.ops++; if (reason === 'TP') T.tp++; else if (reason === 'SL') T.sl++; else T.to++; T.net += net; T.fees += fees;\n    for (let i = E.trades.length - 1; i >= 0; i--) if (E.trades[i].entryT === p.entryT) { Object.assign(E.trades[i], { exitT: b.t, exitPx: px, reason: reason, net: net }); break; }\n    E.lastClosed = { side: p.side, reason: reason, net: net, gross: gross, t: b.t, dur: x.dur };\n    E.tradesRev++; E.pos = null;\n    node.log('Conceptito: cierra ' + p.side + ' por ' + reason + ' @ ' + px + ' · bruto ' + gross.toFixed(2) + ' · neto ' + net.toFixed(2));\n    return true;\n}\nfunction onBucket(b, live) {\n    if (b.close == null || b.status === 'no_price') return;\n    if (E.lastBucketT && b.t - E.lastBucketT > 1000) { E.closes = []; E.lastSign = 0; E.gaps++; }   // hueco: la SMA vuelve a calentar\n    E.lastBucketT = b.t;\n    E.closes.push(b.close); if (E.closes.length > C.slow) E.closes.shift();\n    E.sF = avgLast(C.fast); E.sS = avgLast(C.slow);\n    E.last = { t: b.t, px: b.close };\n    histPut(b.t, E.sF, E.sS); E.newPts.push(b.t, r(E.sF, 6), r(E.sS, 6));\n    let closedNow = false;\n    if (E.pos && b.t > E.pos.entryT) closedNow = manage(b);\n    if (E.sF == null || E.sS == null) return;\n    const d = E.sF - E.sS, sg = d > 0 ? 1 : d < 0 ? -1 : 0;\n    if (sg === 0) return;                                // empate exacto: no cambia el lado\n    const cross = (E.lastSign !== 0 && sg !== E.lastSign) ? sg : 0;\n    E.lastSign = sg;\n    if (!cross) return;\n    if (live && !E.pos && !closedNow) open(cross > 0 ? 'LONG' : 'SHORT', b);\n    else E.ignored++;                                    // posición abierta, cerró en este mismo segundo, o historial previo al arranque\n}\n\n// ---------- estado para el navegador ----------\nfunction state() {\n    const p = E.pos, o = { phase: E.phase, t: E.last && E.last.t, px: E.last && E.last.px, sF: r(E.sF, 6), sS: r(E.sS, 6), warm: Math.min(E.closes.length, C.slow),\n        totals: { ops: E.totals.ops, tp: E.totals.tp, sl: E.totals.sl, to: E.totals.to, net: r(E.totals.net, 2), fees: r(E.totals.fees, 2) },\n        lastClosed: E.lastClosed, db: { ok: E.dbOk, err: E.dbErr, errors: E.dbErrors, queue: E.q.length + (E.inflight ? 1 : 0), saved: E.saved } };\n    if (p) { const L = levels(p); o.pos = { side: p.side, entryT: p.entryT, entryPx: p.entryPx, lastPx: p.lastPx, pnl: r(p.pnl, 2), toMin: p.toMin, tp: p.tp, sl: p.sl, tpPx: L.tpPx, slPx: L.slPx }; }\n    return o;\n}\nfunction cfgOut() { return { fast: C.fast, slow: C.slow, margin: C.margin, lev: C.lev, exposure: C.margin * C.lev, tp: C.tp, sl: C.sl, timeoutMin: C.timeoutMin, feeRate: C.feeRate }; }\nfunction recentTrades() { const lim = now - C.histSec * 1000; return E.trades.filter(function (t) { return (t.exitT || now) >= lim; }); }\nfunction statusText() {\n    const p = E.pos;\n    if (E.phase !== 'OPERANDO') return { fill: 'yellow', shape: 'ring', text: 'restaurando estado (MariaDB)' + (E.dbErr ? ': ' + E.dbErr.slice(0, 40) : '') };\n    if (p) return { fill: p.side === 'LONG' ? 'green' : 'red', shape: 'dot', text: p.side + ' @ ' + p.entryPx + ' · PnL ' + p.pnl.toFixed(2) + ' · ops ' + E.totals.ops + ' · neto ' + E.totals.net.toFixed(2) };\n    return { fill: E.sS == null ? 'yellow' : 'blue', shape: 'dot', text: (E.sS == null ? 'calentando SMA ' + E.closes.length + '/' + C.slow : 'esperando cruce') + ' · ops ' + E.totals.ops + ' · neto ' + E.totals.net.toFixed(2) };\n}\n\n// ---------- error / respuestas mysql ----------\nif (msg.topic === 'db_error' || msg.error) {\n    if (E.inflight && msg.cxBatch === E.inflight.id) fail((msg.error && msg.error.message) || 'error DB');\n    return null;\n}\nif (msg.cxKind) {\n    if (!E.inflight || msg.cxBatch !== E.inflight.id) return null;\n    const kind = E.inflight.kind; E.lastItem = E.inflight.item; E.inflight = null; E.backoff = 0; E.dbOk = true; E.dbErr = '';\n    if (kind === 'restore') {\n        const sets = (Array.isArray(msg.payload) ? msg.payload : []).filter(Array.isArray);\n        const op = (sets[0] || [])[0], tot = (sets[1] || [])[0] || {}, recent = sets[2] || [];\n        E.openRows = Number(tot.open_rows || 0);\n        if (E.openRows > 1) node.warn('Conceptito: hay ' + E.openRows + ' filas OPEN en ' + C.table + '; se retoma la más reciente');\n        if (op) {\n            E.pos = { side: op.side, entryT: Number(op.entry_ms), entryPx: num(op.entry_price), qty: num(op.qty), margin: num(op.margin_usd), lev: num(op.leverage),\n                exposure: num(op.exposure_usd), fast: Number(op.sma_fast), slow: Number(op.sma_slow), sFast: num(op.sma_fast_entry), sSlow: num(op.sma_slow_entry),\n                tp: num(op.tp_usd), sl: num(op.sl_usd), toMin: num(op.timeout_min), feeRate: num(op.fee_rate), feeEntry: num(op.fee_entry),\n                pnl: 0, mfe: 0, mae: 0, lastPx: num(op.entry_price), lastT: Number(op.entry_ms) };\n            node.log('Conceptito: posición ' + E.pos.side + ' abierta restaurada (entrada ' + new Date(E.pos.entryT).toISOString() + ' @ ' + E.pos.entryPx + ')');\n        }\n        E.totals = { ops: Number(tot.ops || 0), tp: Number(tot.tp || 0), sl: Number(tot.sl || 0), to: Number(tot.tmo || 0), net: num(tot.net) || 0, fees: num(tot.fees) || 0 };\n        E.trades = recent.map(function (x) { return x.exit_ms == null ? { entryT: Number(x.entry_ms), entryPx: num(x.entry_price), side: x.side }\n            : { entryT: Number(x.entry_ms), entryPx: num(x.entry_price), side: x.side, exitT: Number(x.exit_ms), exitPx: num(x.exit_price), reason: x.exit_reason, net: num(x.net_pnl) }; });\n        E.tradesRev++;\n        // a partir de acá: se re-procesan los buckets ya en memoria (calientan la SMA y, si hay posición restaurada, evalúan su salida);\n        // sólo los buckets posteriores pueden abrir operaciones nuevas.\n        const M = global.get('md_mem_1s', 'memory'), g = M && M.series && M.series[C.symbol];\n        E.replayUntil = (g && g.count) ? g.buf[(g.idx - 1 + g.size) % g.size].t : 0;\n        E.lastT = 0; E.phase = 'OPERANDO'; E.dirty = true;\n        node.status(statusText());\n        return null;\n    }\n    if (kind === 'close' && msg.payload && msg.payload.affectedRows === 0 && E.lastItem && E.lastItem.fallback) E.q.unshift(E.lastItem.fallback);\n    else E.saved++;                                      // escritura OK\n    return null;\n}\n\n// ---------- historial para un navegador ----------\nif (msg.topic === 'cx_snapshot_req') {\n    const H = E.hist, since = Math.floor((Number(msg.since) || 0) / 1000), nowSec = Math.floor(now / 1000), arr = [];\n    for (let s = Math.max(since + 1, nowSec - H.cap + 1); s <= nowSec; s++) { const k = s % H.cap; if (H.idx[k] === s) arr.push(s * 1000, r(H.a[k], 6), r(H.b[k], 6)); }\n    out[1] = { socketid: msg.socketid, payload: { cxSnap: { cfg: cfgOut(), sma: arr, trades: recentTrades(), state: state() } } };\n    return out;\n}\n\nif (msg.topic !== 'tick') return null;\n// ---------- tick: DB, restauración, buckets nuevos, emisión ----------\nif (E.inflight && now - E.inflight.sentAt > 30000) fail('timeout: MariaDB no respondió en 30 s');\nif (E.phase === 'RESTAURANDO' && !E.inflight && !E.q.some(function (i) { return i.kind === 'restore'; }) && now >= E.nextTry) {\n    const T = C.table, ms = function (c) { return 'TIMESTAMPDIFF(MICROSECOND, \\'1970-01-01 00:00:00\\', ' + c + ') DIV 1000'; };\n    E.q.unshift({ kind: 'restore', sql:\n        'SELECT ' + ms('entry_ts') + ' AS entry_ms, side, entry_price, qty, margin_usd, leverage, exposure_usd, sma_fast, sma_slow, sma_fast_entry, sma_slow_entry, tp_usd, sl_usd, timeout_min, fee_rate, fee_entry FROM ' + T + ' WHERE symbol = ? AND status = \\'OPEN\\' ORDER BY entry_ts DESC LIMIT 1; ' +\n        'SELECT SUM(status = \\'CLOSED\\') ops, SUM(exit_reason = \\'TP\\') tp, SUM(exit_reason = \\'SL\\') sl, SUM(exit_reason = \\'TIMEOUT\\') tmo, SUM(CASE WHEN status = \\'CLOSED\\' THEN net_pnl END) net, SUM(CASE WHEN status = \\'CLOSED\\' THEN fees END) fees, SUM(status = \\'OPEN\\') open_rows FROM ' + T + ' WHERE symbol = ?; ' +\n        'SELECT ' + ms('entry_ts') + ' AS entry_ms, CASE WHEN exit_ts IS NULL THEN NULL ELSE ' + ms('exit_ts') + ' END AS exit_ms, side, entry_price, exit_price, exit_reason, net_pnl FROM ' + T + ' WHERE symbol = ? AND (exit_ts IS NULL OR exit_ts >= ?) ORDER BY entry_ts',\n        params: [C.symbol, C.symbol, C.symbol, dt(now - C.histSec * 1000)] });\n}\nif (!E.inflight && E.q.length && now >= E.nextTry) {\n    const it = E.q.shift();\n    E.inflight = { id: ++E.seq, kind: it.kind, item: it, sentAt: now };\n    out[0] = { topic: it.sql, payload: it.params, cxKind: it.kind, cxBatch: E.inflight.id, cxRow: it.row };\n}\nif (E.phase === 'OPERANDO') {\n    const M = global.get('md_mem_1s', 'memory'), g = M && M.series && M.series[C.symbol];\n    if (g && g.count) {\n        const nb = [];\n        for (let i = 1; i <= g.count; i++) { const b = g.buf[(g.idx - i + g.size) % g.size]; if (!b || b.t <= E.lastT) break; nb.push(b); }\n        for (let j = nb.length - 1; j >= 0; j--) { const b = nb[j]; onBucket(b, b.t > E.replayUntil); E.lastT = b.t; E.dirty = true; }\n    }\n}\nif (E.dirty && now - E.lastEmit >= 250) {\n    E.dirty = false; E.lastEmit = now;\n    const p = { cx: { state: state(), pts: E.newPts } };\n    E.newPts = [];\n    if (E.tradesRev !== E.sentRev) { p.cx.trades = recentTrades(); p.cx.cfg = cfgOut(); E.sentRev = E.tradesRev; }\n    out[1] = { payload: p };\n    node.status(statusText());\n}\nreturn (out[0] || out[1]) ? out : null;",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== CONCEPTITO LIVE: configuración y estado =====\nconst C = {\n    symbol: 'ZEC',\n    fast: 39, slow: 76,          // SMA en segundos (buckets 1 s, close; no_trade cuenta con su precio arrastrado)\n    margin: 1000, lev: 3,        // exposición = margin × lev = 3000 USD\n    tp: 32.10, sl: -84.25,       // USD de PnL BRUTO\n    timeoutMin: 18,\n    maxPos: 1,\n    feeRate: 0.0005,             // 0,05 % por lado sobre el nocional de cada lado\n    table: 'conceptito_trades',\n    histSec: 14400               // historial SMA39/76 para el gráfico (4 h = ventana máxima)\n};\nconst E = {\n    cfg: C, phase: 'RESTAURANDO',            // RESTAURANDO (esperando la DB) → OPERANDO\n    lastT: 0, replayUntil: 0, lastBucketT: 0, gaps: 0,\n    closes: [], sF: null, sS: null, lastSign: 0, ignored: 0, last: null,\n    pos: null, totals: { ops: 0, tp: 0, sl: 0, to: 0, net: 0, fees: 0 }, trades: [], tradesRev: 0, lastClosed: null,\n    hist: { cap: C.histSec, idx: new Float64Array(C.histSec).fill(-1), a: new Float64Array(C.histSec), b: new Float64Array(C.histSec) },\n    newPts: [], dirty: true, lastEmit: 0,\n    // DB: cola FIFO, 1 query en vuelo\n    q: [], inflight: null, seq: 0, backoff: 0, nextTry: 0, saved: 0, dbErrors: 0, dbErr: '', lastLogAt: 0, dbOk: false, openRows: 0\n};\ncontext.set('E', E, 'memory');\nnode.status({ fill: 'grey', shape: 'ring', text: 'restaurando estado desde MariaDB…' });",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "query → mysql",
+      "estado → navegador"
+    ],
+    "x": 520,
+    "y": 3470,
+    "wires": [
+      [
+        "prrr_cx_mysql"
+      ],
+      [
+        "prrr_cx_ui"
+      ]
+    ],
+    "g": "prrr_grp_cx"
+  },
+  {
+    "id": "prrr_cx_mysql",
+    "type": "mysql",
+    "z": "prrr_tab_main",
+    "mydb": "prrr_db_cfg",
+    "name": "MariaDB conceptito_trades",
+    "x": 880,
+    "y": 3440,
+    "wires": [
+      [
+        "prrr_cx_engine"
+      ]
+    ],
+    "g": "prrr_grp_cx"
+  },
+  {
+    "id": "prrr_cx_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores mysql conceptito",
+    "scope": [
+      "prrr_cx_mysql"
+    ],
+    "uncaught": false,
+    "x": 880,
+    "y": 3490,
+    "wires": [
+      [
+        "prrr_cx_err_tag"
+      ]
+    ],
+    "g": "prrr_grp_cx"
+  },
+  {
+    "id": "prrr_cx_err_tag",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "topic = db_error",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "db_error",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1090,
+    "y": 3490,
+    "wires": [
+      [
+        "prrr_cx_engine"
+      ]
+    ],
+    "g": "prrr_grp_cx"
+  },
+  {
+    "type": "ui_template",
+    "z": "prrr_tab_main",
+    "storeOutMessages": false,
+    "fwdInMessages": false,
+    "resendOnRefresh": false,
+    "templateScope": "local",
+    "className": "",
+    "wires": [
+      [
+        "prrr_cx_engine"
+      ]
+    ],
+    "id": "prrr_cx_ui",
+    "name": "CONCEPTITO → navegador (invisible)",
+    "group": "prrr_ui_g_btc",
+    "order": 3,
+    "width": 1,
+    "height": 1,
+    "format": "<div id=\"prrr_cx_io\" style=\"display:none\"></div>\n<script>\n(function (scope) {\n  // Etapa 7: puente de datos CONCEPTITO → window.__prrrCX (lo dibuja el template MERCADO en el panel ZEC).\n  var X = window.__prrrCX || (window.__prrrCX = { cap: 14400, idx: new Float64Array(14400).fill(-1), a: new Float64Array(14400), b: new Float64Array(14400),\n                                                    state: null, cfg: null, trades: [], rev: 0, lastPt: 0, at: 0 });\n  function pts(a) {\n    for (var i = 0; i < a.length; i += 3) {\n      var s = Math.floor(a[i] / 1000), k = s % X.cap;\n      if (X.idx[k] > s) continue;\n      X.idx[k] = s; X.a[k] = a[i + 1] == null ? NaN : a[i + 1]; X.b[k] = a[i + 2] == null ? NaN : a[i + 2];\n      if (a[i] > X.lastPt) X.lastPt = a[i];\n    }\n  }\n  scope.$watch('msg', function (m) {\n    if (!m || !m.payload) return;\n    var s = m.payload.cxSnap, c = m.payload.cx;\n    if (s) { if (s.cfg) X.cfg = s.cfg; pts(s.sma || []); X.trades = s.trades || []; X.state = s.state; }\n    else if (c) { pts(c.pts || []); if (c.trades) X.trades = c.trades; if (c.cfg) X.cfg = c.cfg; X.state = c.state; }\n    else return;\n    X.at = Date.now(); X.rev++;\n  });\n  setTimeout(function () { scope.send({ topic: 'cx_snapshot_req', since: X.lastPt }); }, 0);   // lo que falte (página nueva: 4 h)\n})(scope);\n</script>",
+    "x": 880,
+    "y": 3540,
+    "g": "prrr_grp_cx"
+  },
+  {
+    "id": "prrr_cx_comment",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "Conceptito: reglas exactas",
+    "info": "**Paper trader, sin dinero real.** Fuente única: buckets PRRR ZEC 1 s (`md_mem_1s`, los mismos que van a `market_1s`).\n\n* SMA39 / SMA76 = media del `close` de los últimos 39 / 76 buckets (definición idéntica a la analítica 25/50; los segundos sin trades cuentan con su precio arrastrado). Si hay un hueco de segundos, la SMA vuelve a calentar.\n* Cruce: cambio de signo de SMA39 − SMA76 (empates exactos no cambian el lado). Arriba → LONG, abajo → SHORT.\n* Entrada: `close` del bucket del cruce, `entry_ts` = inicio de ese bucket. Exposición 1000 × 3 = 3000 USD, qty = 3000 / entrada.\n* Con posición abierta los cruces se ignoran. Tampoco abre en el mismo segundo en que cerró.\n* Salida, evaluada en cada `close` 1 s posterior a la entrada: bruto ≥ +32,10 → TP; bruto ≤ −84,25 → SL; si no, 18 min → TIMEOUT. Precio de salida = `close` de ese bucket.\n* Fees: 0,05 % del nocional de entrada (1,50) + 0,05 % del nocional de salida. Neto = bruto − fees.\n* Persistencia `conceptito_trades`: fila OPEN al abrir (upsert) y CLOSED al cerrar. Al arrancar o en cada Deploy restaura la posición OPEN y el acumulado; no opera hasta haber leído la tabla.\n* Al arrancar re-procesa los buckets ya en memoria (calienta la SMA y evalúa la salida de una posición restaurada); sólo los buckets nuevos abren operaciones.",
+    "x": 520,
+    "y": 3520,
+    "wires": [],
+    "g": "prrr_grp_cx"
+  }
+]
