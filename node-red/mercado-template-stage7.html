@@ -130,7 +130,8 @@
       l2 = '<span class="cxst ' + (p.side === 'LONG' ? 'L' : 'S') + '">' + p.side + '</span> <span class="w">Entrada</span> ' + cxPx(p.entryPx) + ' <span class="w">Actual</span> ' + cxPx(p.lastPx)
         + ' <span class="w">PnL</span> <b class="' + (p.pnl >= 0 ? 'pos' : 'neg') + '">' + cxMoney(p.pnl) + '</b> <span class="w">Tiempo</span> ' + cxMS(el_) + ' / ' + cxMS(tot)
         + '<span class="cxpg"><i style="width:' + Math.min(100, Math.max(0, el_ / tot * 100)).toFixed(1) + '%"></i></span>';
-    } else if (st.sS == null) l2 = '<span class="cxst A">CALENTANDO</span> <span class="w">SMA ' + st.warm + '/' + c.slow + ' s</span>';
+    } else if (st.pend) l2 = '<span class="cxst ' + (st.pend.side === 'LONG' ? 'L' : 'S') + '">SEÑAL ' + st.pend.side + '</span> <span class="w">cruce SMA' + c.fast + '/' + c.slow + ' confirmado · entra al close del próximo segundo</span>';
+    else if (st.sS == null) l2 = '<span class="cxst A">CALENTANDO</span> <span class="w">SMA ' + st.warm + '/' + c.slow + ' s</span>';
     else {
       var d = st.sF - st.sS, lc = st.lastClosed;
       l2 = '<span class="cxst">ESPERANDO</span> <span class="w">SMA' + c.fast + (d >= 0 ? ' > ' : ' < ') + 'SMA' + c.slow + ' (Δ ' + (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(4) + ')</span>'

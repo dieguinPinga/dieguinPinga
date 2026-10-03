@@ -15,7 +15,7 @@ md_mem_1s (buckets PRRR ZEC 1 s, ya existentes) ─→ CONCEPTITO motor ─→ [
   * BTC, GMX y XMR.
 
 ### Reglas exactas
-Todos los parámetros están en el *On Start* del motor.
+Son las del backtest original. Todos los parámetros están en el *On Start* del motor.
 
 | parámetro | valor |
 |---|---|
@@ -24,30 +24,35 @@ Todos los parámetros están en el *On Start* del motor.
 | TP / SL | +32,10 / −84,25 USD de PnL **bruto** |
 | timeout | 18 min |
 | máximo de posiciones | 1 |
-| fee | 0,05 % por lado sobre el nocional de ese lado |
+| fee | 0,05 % por lado |
 
-* **SMA:** SMAn = media del `close` de los últimos n buckets.
+* **SMA:** SMAn = media del `close` de los últimos n buckets de 1 s.
   * Es la definición de la analítica 25/50: un segundo sin trades cuenta con su precio arrastrado.
-  * Si faltan segundos (hueco), la SMA vuelve a calentar.
-* **Cruce:** cambio de signo de SMA39 − SMA76, evaluado en cada bucket cerrado. Hacia arriba → **LONG**; hacia abajo → **SHORT**. Un empate exacto no cambia el lado.
-* **Entrada:**
-  * Precio = `close` del bucket del cruce; `entry_ts` = inicio de ese bucket, igual que `market_1s.ts`.
+  * Si faltan segundos, vuelve a calentar.
+* **Cruce:** cambio de signo de SMA39 − SMA76, confirmado en el bucket **N**. Hacia arriba → LONG; hacia abajo → SHORT.
+* **Entrada** (como el backtest, `entry_idx = idx + 1`):
+  * Es el `close` del bucket siguiente, **N+1**.
+  * `signal_ts` = N y `entry_ts` = N+1.
   * qty = 3000 / entrada.
-  * Fee de entrada = 3000 × 0,05 % = 1,50.
-* **Cruces ignorados:** con una posición abierta se ignoran todos. Tampoco abre en el mismo segundo en que cerró.
-* **Salida:** se evalúa en el `close` de cada bucket posterior a la entrada.
-  * Bruto = ±qty × (precio − entrada).
-  * Orden de prioridad: bruto ≥ +32,10 → **TP**; bruto ≤ −84,25 → **SL**; si no, a los 18 min → **TIMEOUT** (en condiciones normales, exactamente 1080 s).
-  * Precio de salida = `close` de ese bucket. El bruto puede pasarse un poco del umbral, porque es el precio real de ese segundo.
-* **Resultado:** fee de salida = qty × salida × 0,05 %; fees = entrada + salida; neto = bruto − fees.
+* **Cruces ignorados:** con posición abierta o con una entrada pendiente. Tampoco cuenta un cruce en el mismo segundo de la entrada o de la salida.
+* **Después de cerrar:** espera un cruce **nuevo**. El que originó la operación, y cualquiera ocurrido mientras estaba abierta, nunca se reutilizan.
+* **Salida:** se evalúa con el `close` de cada bucket posterior a la entrada.
+  * **TP:** si el bruto al close es ≥ +32,10, el bruto realizado es **exactamente +32,10**.
+  * **SL:** si el bruto al close es ≤ −84,25, el bruto realizado es **exactamente −84,25**.
+  * **TIMEOUT:** si ninguno se cumplió, a los 18 min de la entrada (1080 s) cierra con el bruto **real** de ese close.
+  * El close que cruzó el umbral sólo sirve para detectarlo y se guarda en `exit_trigger_price`.
+  * `exit_price` = precio equivalente al PnL realizado (en TIMEOUT, el close).
+* **Fees:** entrada = 3000 × 0,05 % = 1,50; salida = qty × `exit_price` × 0,05 %; neto = bruto realizado − fees.
+  * Con `feeBase: 'exposure'` la salida también sería 1,50 fijo.
 * **Acumulado (OPS · TP · SL · TO · NETO · FEES):** se calcula desde la tabla, así que cuenta todo lo que hizo el paper trader desde la primera operación.
+* **Señal pendiente:** dura 1 s. Si Node-RED se reinicia justo en ese segundo, esa entrada no se hace.
 
 ### Persistencia `conceptito_trades` y continuidad
 Crear la tabla con `sql/stage7-conceptito_trades.sql` (root). El usuario `prrr` ya tiene los permisos necesarios.
 
 * **Filas:** una por operación.
-  * Al **abrir** se escribe con `status='OPEN'`.
-  * Al **cerrar** se completa: precio y hora de salida, bruto, fees, neto, motivo, duración y MFE/MAE.
+  * Al **abrir** se escribe con `status='OPEN'` (incluye `signal_ts`).
+  * Al **cerrar** se completa: `exit_price`, `exit_trigger_price`, hora de salida, bruto, fees, neto, motivo, duración y MFE/MAE.
   * Es un upsert por `(symbol, entry_ts)`: sin duplicados aunque se reintente.
 * **Arranque o Deploy:** el motor **primero lee la tabla** (posición OPEN + acumulado + operaciones de las últimas 4 h) y recién después opera. Sin DB no abre nada y el panel muestra **RESTAURANDO**.
 * **Deploy que reinicia sólo el motor:** re-procesa los buckets que siguen en memoria (30 min). Calienta la SMA al instante, y una posición restaurada se evalúa con esos mismos segundos, así que el resultado es idéntico al que habría tenido.
@@ -81,13 +86,13 @@ Crear la tabla con `sql/stage7-conceptito_trades.sql` (root). El usuario `prrr` 
 * Los WebSockets siguieron contando, con 0 reconexiones.
 * El flow resultante es idéntico a `prrr-market-data-stage7.json`.
 
-**Motor (sin Node-RED):** 6 h de buckets simulados en dos regímenes. Comparado contra una implementación de referencia escrita por separado:
-* 56 operaciones idénticas en lado, motivo, precios, timestamps y duración.
-* PnL y fees con diferencia ≤ 0,00005 (redondeo).
-* Nunca 2 posiciones a la vez.
-* TIMEOUT siempre a los 1080 s.
-* La posición restaurada cierra igual que la original.
-* Sin DB no opera.
+**Motor (sin Node-RED):** 20 h de buckets simulados en tres regímenes. Comparado contra una referencia escrita como el backtest (índices, `entry_idx = idx + 1`, `pnl = TP` / `pnl = -SL`, TIMEOUT al close):
+* 101 operaciones idénticas en lado, motivo, `signal_ts`, `entry_ts` = N+1, precios y close disparador.
+* TP siempre +32,10 exacto; SL −84,25 exacto; TIMEOUT a los 1080 s.
+* Fees y neto con diferencia ≤ 0,00005 (redondeo).
+* Cada operación nace de un cambio de signo real, posterior a la salida anterior.
+* Escenario dirigido (TP rápido con la SMA39 todavía arriba): no reabre.
+* La posición restaurada cierra igual que la original; sin DB no opera.
 
 
 ## Etapa 6b — serie GMX en el gráfico ZEC de MERCADO (sólo visual)

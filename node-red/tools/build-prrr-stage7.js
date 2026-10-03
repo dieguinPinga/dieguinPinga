@@ -1399,7 +1399,8 @@ function mktTpl() {
       l2 = '<span class="cxst ' + (p.side === 'LONG' ? 'L' : 'S') + '">' + p.side + '</span> <span class="w">Entrada</span> ' + cxPx(p.entryPx) + ' <span class="w">Actual</span> ' + cxPx(p.lastPx)
         + ' <span class="w">PnL</span> <b class="' + (p.pnl >= 0 ? 'pos' : 'neg') + '">' + cxMoney(p.pnl) + '</b> <span class="w">Tiempo</span> ' + cxMS(el_) + ' / ' + cxMS(tot)
         + '<span class="cxpg"><i style="width:' + Math.min(100, Math.max(0, el_ / tot * 100)).toFixed(1) + '%"></i></span>';
-    } else if (st.sS == null) l2 = '<span class="cxst A">CALENTANDO</span> <span class="w">SMA ' + st.warm + '/' + c.slow + ' s</span>';
+    } else if (st.pend) l2 = '<span class="cxst ' + (st.pend.side === 'LONG' ? 'L' : 'S') + '">SEÑAL ' + st.pend.side + '</span> <span class="w">cruce SMA' + c.fast + '/' + c.slow + ' confirmado · entra al close del próximo segundo</span>';
+    else if (st.sS == null) l2 = '<span class="cxst A">CALENTANDO</span> <span class="w">SMA ' + st.warm + '/' + c.slow + ' s</span>';
     else {
       var d = st.sF - st.sS, lc = st.lastClosed;
       l2 = '<span class="cxst">ESPERANDO</span> <span class="w">SMA' + c.fast + (d >= 0 ? ' > ' : ' < ') + 'SMA' + c.slow + ' (Δ ' + (d >= 0 ? '+' : '−') + Math.abs(d).toFixed(4) + ')</span>'
@@ -3233,14 +3234,15 @@ const C = {
     tp: 32.10, sl: -84.25,       // USD de PnL BRUTO
     timeoutMin: 18,
     maxPos: 1,
-    feeRate: 0.0005,             // 0,05 % por lado sobre el nocional de cada lado
+    feeRate: 0.0005,             // 0,05 % por lado
+    feeBase: 'notional',         // 'notional' = sobre el nocional de cada lado (entrada 3000; salida qty × precio de salida) · 'exposure' = siempre sobre 3000
     table: 'conceptito_trades',
     histSec: 14400               // historial SMA39/76 para el gráfico (4 h = ventana máxima)
 };
 const E = {
     cfg: C, phase: 'RESTAURANDO',            // RESTAURANDO (esperando la DB) → OPERANDO
     lastT: 0, replayUntil: 0, lastBucketT: 0, gaps: 0,
-    closes: [], sF: null, sS: null, lastSign: 0, ignored: 0, last: null,
+    closes: [], sF: null, sS: null, lastSign: 0, ignored: 0, last: null, pend: null,
     pos: null, totals: { ops: 0, tp: 0, sl: 0, to: 0, net: 0, fees: 0 }, trades: [], tradesRev: 0, lastClosed: null,
     hist: { cap: C.histSec, idx: new Float64Array(C.histSec).fill(-1), a: new Float64Array(C.histSec), b: new Float64Array(C.histSec) },
     newPts: [], dirty: true, lastEmit: 0,
@@ -3270,12 +3272,12 @@ function fail(reason) {
 }
 
 // ---------- persistencia: una fila por operación (OPEN al abrir, CLOSED al cerrar; upsert por symbol+entry_ts) ----------
-const COLS = ['symbol', 'source', 'status', 'entry_ts', 'exit_ts', 'side', 'entry_price', 'exit_price', 'qty', 'margin_usd', 'leverage', 'exposure_usd',
+const COLS = ['symbol', 'source', 'status', 'signal_ts', 'entry_ts', 'exit_ts', 'side', 'entry_price', 'exit_price', 'exit_trigger_price', 'qty', 'margin_usd', 'leverage', 'exposure_usd',
     'sma_fast', 'sma_slow', 'sma_fast_entry', 'sma_slow_entry', 'tp_usd', 'sl_usd', 'timeout_min', 'fee_rate',
     'gross_pnl', 'fee_entry', 'fee_exit', 'fees', 'net_pnl', 'exit_reason', 'duration_seconds', 'mfe_usd', 'mae_usd'];
-const UPD = ['status', 'exit_ts', 'exit_price', 'gross_pnl', 'fee_exit', 'fees', 'net_pnl', 'exit_reason', 'duration_seconds', 'mfe_usd', 'mae_usd'];
+const UPD = ['status', 'exit_ts', 'exit_price', 'exit_trigger_price', 'gross_pnl', 'fee_exit', 'fees', 'net_pnl', 'exit_reason', 'duration_seconds', 'mfe_usd', 'mae_usd'];
 function saveRow(p, x) {
-    const row = [C.symbol, 'PRRR', x ? 'CLOSED' : 'OPEN', dt(p.entryT), x ? dt(x.t) : null, p.side, p.entryPx, x ? x.px : null, r(p.qty, 10),
+    const row = [C.symbol, 'PRRR', x ? 'CLOSED' : 'OPEN', dt(p.signalT), dt(p.entryT), x ? dt(x.t) : null, p.side, p.entryPx, x ? r(x.px, 8) : null, x ? x.trigger : null, r(p.qty, 10),
         p.margin, p.lev, p.exposure, p.fast, p.slow, r(p.sFast, 8), r(p.sSlow, 8), p.tp, p.sl, p.toMin, p.feeRate,
         x ? r(x.gross, 4) : null, r(p.feeEntry, 4), x ? r(x.feeExit, 4) : null, x ? r(x.fees, 4) : null, x ? r(x.net, 4) : null,
         x ? x.reason : null, x ? x.dur : null, x ? r(p.mfe, 4) : null, x ? r(p.mae, 4) : null];
@@ -3294,31 +3296,35 @@ function histPut(t, a, b) { const H = E.hist, sec = Math.floor(t / 1000), k = se
 function levels(p) { const k = p.side === 'LONG' ? 1 : -1; return { tpPx: p.entryPx * (1 + k * p.tp / p.exposure), slPx: p.entryPx * (1 + k * p.sl / p.exposure) }; }
 
 // ---------- posición paper ----------
-function open(side, b) {
+function open(sig, b) {                                // sig = cruce confirmado en el bucket anterior (N); b = bucket N+1
     const exposure = C.margin * C.lev, px = b.close;
-    E.pos = { side: side, entryT: b.t, entryPx: px, qty: exposure / px, margin: C.margin, lev: C.lev, exposure: exposure,
-        fast: C.fast, slow: C.slow, sFast: E.sF, sSlow: E.sS, tp: C.tp, sl: C.sl, toMin: C.timeoutMin, feeRate: C.feeRate,
+    E.pos = { side: sig.side, signalT: sig.t, entryT: b.t, entryPx: px, qty: exposure / px, margin: C.margin, lev: C.lev, exposure: exposure,
+        fast: C.fast, slow: C.slow, sFast: sig.sF, sSlow: sig.sS, tp: C.tp, sl: C.sl, toMin: C.timeoutMin, feeRate: C.feeRate, feeBase: C.feeBase,
         feeEntry: exposure * C.feeRate, pnl: 0, mfe: 0, mae: 0, lastPx: px, lastT: b.t };
     saveRow(E.pos, null);
-    E.trades.push({ entryT: b.t, entryPx: px, side: side }); E.tradesRev++;
-    node.log('Conceptito: abre ' + side + ' @ ' + px + ' (SMA' + C.fast + ' ' + E.sF.toFixed(6) + ' / SMA' + C.slow + ' ' + E.sS.toFixed(6) + ')');
+    E.trades.push({ entryT: b.t, entryPx: px, side: sig.side }); E.tradesRev++;
+    node.log('Conceptito: abre ' + sig.side + ' @ ' + px + ' (cruce en ' + new Date(sig.t).toISOString().slice(11, 19) + ' · SMA' + C.fast + ' ' + sig.sF.toFixed(6) + ' / SMA' + C.slow + ' ' + sig.sS.toFixed(6) + ')');
 }
 function manage(b) {                                    // devuelve true si cerró en este bucket
     const p = E.pos, k = p.side === 'LONG' ? 1 : -1, px = b.close;
     const gross = k * p.qty * (px - p.entryPx);         // = ±exposición × (precio/entrada − 1)
     p.pnl = gross; p.lastPx = px; p.lastT = b.t;
     if (gross > p.mfe) p.mfe = gross; if (gross < p.mae) p.mae = gross;
-    let reason = null;
-    if (gross >= p.tp) reason = 'TP'; else if (gross <= p.sl) reason = 'SL'; else if (b.t - p.entryT >= p.toMin * 60000) reason = 'TIMEOUT';
+    // el close detecta el umbral; en TP/SL el PnL realizado se fija EXACTAMENTE en el valor configurado (como el backtest)
+    let reason = null, realized = gross;
+    if (gross >= p.tp) { reason = 'TP'; realized = p.tp; }
+    else if (gross <= p.sl) { reason = 'SL'; realized = p.sl; }
+    else if (b.t - p.entryT >= p.toMin * 60000) reason = 'TIMEOUT';        // TIMEOUT: PnL real al close de ese bucket
     if (!reason) return false;
-    const feeExit = p.qty * px * p.feeRate, fees = p.feeEntry + feeExit, net = gross - fees;
-    const x = { t: b.t, px: px, gross: gross, feeExit: feeExit, fees: fees, net: net, reason: reason, dur: Math.round((b.t - p.entryT) / 1000) };
+    const exitPx = reason === 'TIMEOUT' ? px : p.entryPx + k * realized / p.qty;   // precio equivalente al PnL realizado
+    const feeExit = (p.feeBase === 'exposure' ? p.exposure : p.qty * exitPx) * p.feeRate, fees = p.feeEntry + feeExit, net = realized - fees;
+    const x = { t: b.t, px: exitPx, trigger: px, gross: realized, feeExit: feeExit, fees: fees, net: net, reason: reason, dur: Math.round((b.t - p.entryT) / 1000) };
     saveRow(p, x);
     const T = E.totals; T.ops++; if (reason === 'TP') T.tp++; else if (reason === 'SL') T.sl++; else T.to++; T.net += net; T.fees += fees;
-    for (let i = E.trades.length - 1; i >= 0; i--) if (E.trades[i].entryT === p.entryT) { Object.assign(E.trades[i], { exitT: b.t, exitPx: px, reason: reason, net: net }); break; }
-    E.lastClosed = { side: p.side, reason: reason, net: net, gross: gross, t: b.t, dur: x.dur };
+    for (let i = E.trades.length - 1; i >= 0; i--) if (E.trades[i].entryT === p.entryT) { Object.assign(E.trades[i], { exitT: b.t, exitPx: exitPx, reason: reason, net: net }); break; }
+    E.lastClosed = { side: p.side, reason: reason, net: net, gross: realized, t: b.t, dur: x.dur };
     E.tradesRev++; E.pos = null;
-    node.log('Conceptito: cierra ' + p.side + ' por ' + reason + ' @ ' + px + ' · bruto ' + gross.toFixed(2) + ' · neto ' + net.toFixed(2));
+    node.log('Conceptito: cierra ' + p.side + ' por ' + reason + ' (close ' + px + ') · bruto ' + realized.toFixed(2) + ' · neto ' + net.toFixed(2));
     return true;
 }
 function onBucket(b, live) {
@@ -3329,23 +3335,24 @@ function onBucket(b, live) {
     E.sF = avgLast(C.fast); E.sS = avgLast(C.slow);
     E.last = { t: b.t, px: b.close };
     histPut(b.t, E.sF, E.sS); E.newPts.push(b.t, r(E.sF, 6), r(E.sS, 6));
-    let closedNow = false;
-    if (E.pos && b.t > E.pos.entryT) closedNow = manage(b);
+    let closedNow = false, enteredNow = false;
+    if (E.pend) { open(E.pend, b); E.pend = null; enteredNow = true; }       // entrada = close del bucket siguiente al cruce (N+1)
+    else if (E.pos && b.t > E.pos.entryT) closedNow = manage(b);
     if (E.sF == null || E.sS == null) return;
     const d = E.sF - E.sS, sg = d > 0 ? 1 : d < 0 ? -1 : 0;
     if (sg === 0) return;                                // empate exacto: no cambia el lado
     const cross = (E.lastSign !== 0 && sg !== E.lastSign) ? sg : 0;
     E.lastSign = sg;
     if (!cross) return;
-    if (live && !E.pos && !closedNow) open(cross > 0 ? 'LONG' : 'SHORT', b);
-    else E.ignored++;                                    // posición abierta, cerró en este mismo segundo, o historial previo al arranque
+    if (live && !E.pos && !E.pend && !closedNow && !enteredNow) E.pend = { side: cross > 0 ? 'LONG' : 'SHORT', t: b.t, sF: E.sF, sS: E.sS };
+    else E.ignored++;                                    // posición abierta, entró/cerró en este mismo segundo, o historial previo al arranque
 }
 
 // ---------- estado para el navegador ----------
 function state() {
     const p = E.pos, o = { phase: E.phase, t: E.last && E.last.t, px: E.last && E.last.px, sF: r(E.sF, 6), sS: r(E.sS, 6), warm: Math.min(E.closes.length, C.slow),
         totals: { ops: E.totals.ops, tp: E.totals.tp, sl: E.totals.sl, to: E.totals.to, net: r(E.totals.net, 2), fees: r(E.totals.fees, 2) },
-        lastClosed: E.lastClosed, db: { ok: E.dbOk, err: E.dbErr, errors: E.dbErrors, queue: E.q.length + (E.inflight ? 1 : 0), saved: E.saved } };
+        pend: E.pend ? { side: E.pend.side, t: E.pend.t } : null, lastClosed: E.lastClosed, db: { ok: E.dbOk, err: E.dbErr, errors: E.dbErrors, queue: E.q.length + (E.inflight ? 1 : 0), saved: E.saved } };
     if (p) { const L = levels(p); o.pos = { side: p.side, entryT: p.entryT, entryPx: p.entryPx, lastPx: p.lastPx, pnl: r(p.pnl, 2), toMin: p.toMin, tp: p.tp, sl: p.sl, tpPx: L.tpPx, slPx: L.slPx }; }
     return o;
 }
@@ -3372,9 +3379,9 @@ if (msg.cxKind) {
         E.openRows = Number(tot.open_rows || 0);
         if (E.openRows > 1) node.warn('Conceptito: hay ' + E.openRows + ' filas OPEN en ' + C.table + '; se retoma la más reciente');
         if (op) {
-            E.pos = { side: op.side, entryT: Number(op.entry_ms), entryPx: num(op.entry_price), qty: num(op.qty), margin: num(op.margin_usd), lev: num(op.leverage),
+            E.pos = { side: op.side, signalT: op.signal_ms == null ? Number(op.entry_ms) - 1000 : Number(op.signal_ms), entryT: Number(op.entry_ms), entryPx: num(op.entry_price), qty: num(op.qty), margin: num(op.margin_usd), lev: num(op.leverage),
                 exposure: num(op.exposure_usd), fast: Number(op.sma_fast), slow: Number(op.sma_slow), sFast: num(op.sma_fast_entry), sSlow: num(op.sma_slow_entry),
-                tp: num(op.tp_usd), sl: num(op.sl_usd), toMin: num(op.timeout_min), feeRate: num(op.fee_rate), feeEntry: num(op.fee_entry),
+                tp: num(op.tp_usd), sl: num(op.sl_usd), toMin: num(op.timeout_min), feeRate: num(op.fee_rate), feeBase: C.feeBase, feeEntry: num(op.fee_entry),
                 pnl: 0, mfe: 0, mae: 0, lastPx: num(op.entry_price), lastT: Number(op.entry_ms) };
             node.log('Conceptito: posición ' + E.pos.side + ' abierta restaurada (entrada ' + new Date(E.pos.entryT).toISOString() + ' @ ' + E.pos.entryPx + ')');
         }
@@ -3409,7 +3416,7 @@ if (E.inflight && now - E.inflight.sentAt > 30000) fail('timeout: MariaDB no res
 if (E.phase === 'RESTAURANDO' && !E.inflight && !E.q.some(function (i) { return i.kind === 'restore'; }) && now >= E.nextTry) {
     const T = C.table, ms = function (c) { return 'TIMESTAMPDIFF(MICROSECOND, \'1970-01-01 00:00:00\', ' + c + ') DIV 1000'; };
     E.q.unshift({ kind: 'restore', sql:
-        'SELECT ' + ms('entry_ts') + ' AS entry_ms, side, entry_price, qty, margin_usd, leverage, exposure_usd, sma_fast, sma_slow, sma_fast_entry, sma_slow_entry, tp_usd, sl_usd, timeout_min, fee_rate, fee_entry FROM ' + T + ' WHERE symbol = ? AND status = \'OPEN\' ORDER BY entry_ts DESC LIMIT 1; ' +
+        'SELECT ' + ms('entry_ts') + ' AS entry_ms, CASE WHEN signal_ts IS NULL THEN NULL ELSE ' + ms('signal_ts') + ' END AS signal_ms, side, entry_price, qty, margin_usd, leverage, exposure_usd, sma_fast, sma_slow, sma_fast_entry, sma_slow_entry, tp_usd, sl_usd, timeout_min, fee_rate, fee_entry FROM ' + T + ' WHERE symbol = ? AND status = \'OPEN\' ORDER BY entry_ts DESC LIMIT 1; ' +
         'SELECT SUM(status = \'CLOSED\') ops, SUM(exit_reason = \'TP\') tp, SUM(exit_reason = \'SL\') sl, SUM(exit_reason = \'TIMEOUT\') tmo, SUM(CASE WHEN status = \'CLOSED\' THEN net_pnl END) net, SUM(CASE WHEN status = \'CLOSED\' THEN fees END) fees, SUM(status = \'OPEN\') open_rows FROM ' + T + ' WHERE symbol = ?; ' +
         'SELECT ' + ms('entry_ts') + ' AS entry_ms, CASE WHEN exit_ts IS NULL THEN NULL ELSE ' + ms('exit_ts') + ' END AS exit_ms, side, entry_price, exit_price, exit_reason, net_pnl FROM ' + T + ' WHERE symbol = ? AND (exit_ts IS NULL OR exit_ts >= ?) ORDER BY entry_ts',
         params: [C.symbol, C.symbol, C.symbol, dt(now - C.histSec * 1000)] });
@@ -3477,7 +3484,7 @@ inGroup(gCx, { id: 'prrr_cx_err_tag', type: 'change', z: TAB, name: 'topic = db_
 inGroup(gCx, Object.assign({}, tplBase, { id: CXUI, name: 'CONCEPTITO → navegador (invisible)', group: 'prrr_ui_g_btc', order: 3, width: 1, height: 1,
   format: CX_IO_TPL, storeOutMessages: false, resendOnRefresh: false, x: 880, y: CXY + 70, wires: [[CXE]] }));
 inGroup(gCx, { id: 'prrr_cx_comment', type: 'comment', z: TAB, name: 'Conceptito: reglas exactas',
-  info: '**Paper trader, sin dinero real.** Fuente única: buckets PRRR ZEC 1 s (`md_mem_1s`, los mismos que van a `market_1s`).\n\n* SMA39 / SMA76 = media del `close` de los últimos 39 / 76 buckets (definición idéntica a la analítica 25/50; los segundos sin trades cuentan con su precio arrastrado). Si hay un hueco de segundos, la SMA vuelve a calentar.\n* Cruce: cambio de signo de SMA39 − SMA76 (empates exactos no cambian el lado). Arriba → LONG, abajo → SHORT.\n* Entrada: `close` del bucket del cruce, `entry_ts` = inicio de ese bucket. Exposición 1000 × 3 = 3000 USD, qty = 3000 / entrada.\n* Con posición abierta los cruces se ignoran. Tampoco abre en el mismo segundo en que cerró.\n* Salida, evaluada en cada `close` 1 s posterior a la entrada: bruto ≥ +32,10 → TP; bruto ≤ −84,25 → SL; si no, 18 min → TIMEOUT. Precio de salida = `close` de ese bucket.\n* Fees: 0,05 % del nocional de entrada (1,50) + 0,05 % del nocional de salida. Neto = bruto − fees.\n* Persistencia `conceptito_trades`: fila OPEN al abrir (upsert) y CLOSED al cerrar. Al arrancar o en cada Deploy restaura la posición OPEN y el acumulado; no opera hasta haber leído la tabla.\n* Al arrancar re-procesa los buckets ya en memoria (calienta la SMA y evalúa la salida de una posición restaurada); sólo los buckets nuevos abren operaciones.',
+  info: '**Paper trader, sin dinero real.** Fuente única: buckets PRRR ZEC 1 s (`md_mem_1s`, los mismos que van a `market_1s`).\n\n* SMA39 / SMA76 = media del `close` de los últimos 39 / 76 buckets (definición idéntica a la analítica 25/50; los segundos sin trades cuentan con su precio arrastrado). Si hay un hueco de segundos, la SMA vuelve a calentar.\n* Cruce: cambio de signo de SMA39 − SMA76 (empates exactos no cambian el lado). Arriba → LONG, abajo → SHORT.\n* Entrada (como el backtest: entry_idx = idx + 1): el cruce se confirma en el bucket N y la entrada es el `close` del bucket siguiente N+1; `signal_ts` = N, `entry_ts` = N+1. Exposición 1000 × 3 = 3000 USD, qty = 3000 / entrada.\n* Con posición abierta (o entrada pendiente) los cruces se ignoran; tampoco cuenta un cruce en el mismo segundo de entrada o de salida. Después de cerrar espera un cruce NUEVO.\n* Salida, evaluada en cada `close` 1 s posterior a la entrada: el close detecta bruto ≥ +32,10 → TP con bruto realizado EXACTO +32,10; bruto ≤ −84,25 → SL con −84,25 exacto; si no, 18 min desde la entrada → TIMEOUT con el PnL real de ese close. `exit_price` = precio equivalente al PnL realizado; `exit_trigger_price` = close que disparó.\n* Fees: 0,05 % del nocional de entrada (1,50) + 0,05 % del nocional de salida (qty × exit_price; con `feeBase: exposure` serían 1,50 + 1,50). Neto = bruto realizado − fees.\n* Persistencia `conceptito_trades`: fila OPEN al abrir (upsert) y CLOSED al cerrar. Al arrancar o en cada Deploy restaura la posición OPEN y el acumulado; no opera hasta haber leído la tabla.\n* Al arrancar re-procesa los buckets ya en memoria (calienta la SMA y evalúa la salida de una posición restaurada); sólo los buckets nuevos abren operaciones.',
   x: 520, y: CXY + 50, wires: [] });
 
 // ---------------------------------------------------------------------------
