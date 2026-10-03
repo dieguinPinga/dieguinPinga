@@ -24,7 +24,7 @@ Son las del backtest original. Todos los parámetros están en el *On Start* del
 | TP / SL | +32,10 / −84,25 USD de PnL **bruto** |
 | timeout | 18 min |
 | máximo de posiciones | 1 |
-| fee | 0,05 % por lado |
+| fee | 0,05 % por lado sobre la exposición (1,50 + 1,50) |
 
 * **SMA:** SMAn = media del `close` de los últimos n buckets de 1 s.
   * Es la definición de la analítica 25/50: un segundo sin trades cuenta con su precio arrastrado.
@@ -42,8 +42,7 @@ Son las del backtest original. Todos los parámetros están en el *On Start* del
   * **TIMEOUT:** si ninguno se cumplió, a los 18 min de la entrada (1080 s) cierra con el bruto **real** de ese close.
   * El close que cruzó el umbral sólo sirve para detectarlo y se guarda en `exit_trigger_price`.
   * `exit_price` = precio equivalente al PnL realizado (en TIMEOUT, el close).
-* **Fees:** entrada = 3000 × 0,05 % = 1,50; salida = qty × `exit_price` × 0,05 %; neto = bruto realizado − fees.
-  * Con `feeBase: 'exposure'` la salida también sería 1,50 fijo.
+* **Fees** (`feeBase: 'exposure'`, como el backtest): 0,05 % de la exposición por lado → entrada 1,50 + salida 1,50 = **3,00 por operación cerrada**. Ejemplo: 180 operaciones = 540 USD. Neto = bruto realizado − fees.
 * **Acumulado (OPS · TP · SL · TO · NETO · FEES):** se calcula desde la tabla, así que cuenta todo lo que hizo el paper trader desde la primera operación.
 * **Señal pendiente:** dura 1 s. Si Node-RED se reinicia justo en ese segundo, esa entrada no se hace.
 
@@ -89,7 +88,7 @@ Crear la tabla con `sql/stage7-conceptito_trades.sql` (root). El usuario `prrr` 
 **Motor (sin Node-RED):** 20 h de buckets simulados en tres regímenes. Comparado contra una referencia escrita como el backtest (índices, `entry_idx = idx + 1`, `pnl = TP` / `pnl = -SL`, TIMEOUT al close):
 * 101 operaciones idénticas en lado, motivo, `signal_ts`, `entry_ts` = N+1, precios y close disparador.
 * TP siempre +32,10 exacto; SL −84,25 exacto; TIMEOUT a los 1080 s.
-* Fees y neto con diferencia ≤ 0,00005 (redondeo).
+* Fees y neto con diferencia ≤ 0,00005 (redondeo). Las fees son siempre 1,50 + 1,50 = 3,00 por operación (91 de 91).
 * Cada operación nace de un cambio de signo real, posterior a la salida anterior.
 * Escenario dirigido (TP rápido con la SMA39 todavía arriba): no reabre.
 * La posición restaurada cierra igual que la original; sin DB no opera.
