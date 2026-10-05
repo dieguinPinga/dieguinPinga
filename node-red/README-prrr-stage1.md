@@ -33,9 +33,28 @@ WS → normalizador por exchange → MD BUS → MD CORE → MD STREAM → ┬→
 3. En la pestaña **PRRR Market Data**: Menú → **Import** → `prrr-market-data-stage8-addon.json` → **Import**.
    * Debe decir **"Imported: 7 nodes, 1 group"**, sin conflictos.
    * Hacer clic en el lienzo para soltar los nodos.
-4. **Deploy → Modified Nodes.**
+4. **Verificar el enlace (paso manual obligatorio).** Doble clic en el link in **"MD STREAM (RAW)"** del grupo ETAPA 8 (`prrr_ex_in`):
+   * Debe tener tildado **"MD STREAM →"**.
+   * Si aparece sin ningún enlace (`links: []`), tildar **"MD STREAM →"** → **Done**.
+   * Sin este enlace la rama no recibe trades y `market_ex_1s` queda en 0 filas, sin ningún error visible.
+5. **Deploy → Modified Nodes.**
+6. Comprobar a los ~60 s: `SELECT COUNT(*) FROM market_ex_1s WHERE symbol='ZEC';` debe ser > 0 y crecer.
 
-Al guardar, el editor agrega solo `prrr_ex_in` a la lista `links` del `link out` "MD STREAM →". Es el otro extremo del enlace y Node-RED siempre lo sincroniza así. Sus tres destinos existentes no cambian.
+**Sobre el enlace:**
+* En la prueba del sandbox (Node-RED 5.0.7, import con la pestaña PRRR activa), el enlace quedó resuelto solo.
+* **En la instalación real NO quedó resuelto**: el link in apareció con `links: []`. Se corrigió a mano tildando "MD STREAM →" y, tras el Deploy, `market_ex_1s` empezó a recibir filas de inmediato.
+* El editor de Node-RED descarta al importar los enlaces de un link node cuyo otro extremo no encuentra o que queda en otra pestaña. Por eso conviene importar con la pestaña PRRR activa y revisar siempre el paso 4.
+* Una vez enlazado, el editor agrega `prrr_ex_in` a la lista `links` del `link out` "MD STREAM →" (el otro extremo; Node-RED sincroniza ambos). Sus tres destinos existentes no cambian.
+* Pendiente, sin cambiar nada todavía: revisar si el addon puede entregarse con el enlace resuelto de forma segura en cualquier versión del editor.
+
+### Observaciones de la instalación real
+Registradas a pedido, **sin cambios en Stage 8**.
+* **Datos reales iniciales:** en los primeros minutos hubo filas de **binance, coinbase, kraken y okx** (spot). **Bybit y Bitfinex** todavía no habían generado filas en ese período corto. No es un error: la tabla sólo tiene filas de segundos en que el venue efectivamente operó, sin forward-fill.
+* **Bitfinex:**
+  * Por observación previa suele ser **muy esporádico**, y su precio muchas veces queda **bastante separado del resto**, lo que ensucia el gráfico.
+  * **Decisión: se conserva y se siguen acumulando sus datos igual.** Más adelante, al estudiar BREADTH, se evaluará excluirlo o darle menor peso.
+  * Los datos crudos por venue que guarda `market_ex_1s` permiten tomar esa decisión después, sin perder nada.
+* **BREADTH:** no está implementado. Esta etapa sólo acumula los datos.
 
 **Validado (Node-RED 5.0.7 + MariaDB 10.11, con el diálogo Import real):**
 * Los WebSockets siguieron contando, con 0 reconexiones. `market_1s` sin huecos. Conceptito siguió sin reiniciarse y abrió su siguiente operación normalmente.
