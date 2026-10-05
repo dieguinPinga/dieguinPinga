@@ -14,7 +14,9 @@ BASE actual, sin re-optimizar:
 Reutiliza de operability_lab_v1.py (misma carpeta): carga GMX, conversión de
 tiempos, grilla causal 1 s, cruces con cooldown y la función de operación
 (trade_from: TP/SL/TO y ejecución GMX). Lo único que se agrega acá es:
-  1. MOV66 con la definición exacta del motor live MOVEMENT_V1;
+  1. MOV66 = range_30m >= 66.04 con el MISMO cálculo de los labs
+     (operability_lab_v1.slow_features, usado en mov66_21k_tp100.py);
+     --mov live usa en cambio la definición del motor CONCEPTITO_MOVEMENT_V1;
   2. detección de la tabla histórica por exchange en MariaDB;
   3. el breadth causal y el filtro.
 
@@ -335,6 +337,8 @@ def main():
     ap.add_argument('--gmx-csv', help='GMX desde CSV (pruebas)')
     ap.add_argument('--ex-csv', help='exchanges desde CSV con columnas ts,exchange,price[,market,recv]')
     ap.add_argument('--gmx-source')
+    ap.add_argument('--mov', choices=['lab', 'live'], default='lab',
+                    help="MOV66: 'lab' = range_30m de los labs (default) · 'live' = motor MOVEMENT_V1")
     ap.add_argument('--out-dir', default=os.path.dirname(os.path.abspath(__file__)))
     a = ap.parse_args()
     sym = OL.SYMBOL
@@ -375,7 +379,13 @@ def main():
     n = len(T)
     cut_i = int(np.searchsorted(T, cut_ms, side='left'))
     cands = OL.find_crosses(g)
-    mov_on, warm, _ = movement_on(g)
+    if a.mov == 'live':
+        mov_on, _, _ = movement_on(g)
+    else:
+        with np.errstate(invalid='ignore'):
+            mov_on = OL.slow_features(g)['range_30m'] >= MOVE_THRESHOLD_BPS   # NaN = bloquea
+    print('MOV66 (%s): ON en %.1f %% de los segundos GMX válidos'
+          % (a.mov, mov_on[g['valid']].mean() * 100))
 
     if a.ex_csv:
         X, mode = prepare_exchange(pd.read_csv(a.ex_csv).rename(
@@ -427,8 +437,8 @@ def main():
                   'blocked_by_mov': c_t['blocked_mov'] + c_p['blocked_mov'],
                   'avg_valid_exchanges': (c_t['venues_sum'] + c_p['venues_sum']) / chk if chk else np.nan,
                   'breadth_coverage_pct': (c_t['covered'] + c_p['covered']) / chk * 100 if chk else np.nan,
-                  'TRAIN_h1 net': h1['net'], 'TRAIN_h1 ops': h1['ops'],
-                  'TRAIN_h2 net': h2['net'], 'TRAIN_h2 ops': h2['ops']})
+                  'TRAIN_h1 net': h1['net'], 'TRAIN_h1 ops': h1['ops'], 'TRAIN_h1 net/op': h1['per'],
+                  'TRAIN_h2 net': h2['net'], 'TRAIN_h2 ops': h2['ops'], 'TRAIN_h2 net/op': h2['per']})
         for sd in ('LONG', 'SHORT'):
             for pre, tr in (('TRAIN', tr_t), ('POST', tr_p)):
                 s = st(tr[tr.side == sd]) if len(tr) else st(tr)
@@ -445,12 +455,15 @@ def main():
     def robust(r):
         if r.estrategia == 'BASE':
             return np.nan, ''
-        d1 = r['TRAIN_h1 net'] - b['TRAIN_h1 net']
-        d2 = r['TRAIN_h2 net'] - b['TRAIN_h2 net']
-        per_ok = np.isfinite(r['TRAIN net/op']) and np.isfinite(b['TRAIN net/op']) and \
-            r['TRAIN net/op'] > b['TRAIN net/op']
-        enough = r['TRAIN ops'] >= max(8, 0.3 * b['TRAIN ops'])
-        flag = 'INTERESANTE' if (d1 > 0 and d2 > 0 and per_ok and enough) else ''
+        # mejora en NETO POR OPERACIÓN en cada mitad (con BASE perdedor, cualquier filtro que
+        # quite operaciones "mejora" el neto total sin tener ventaja: por eso no se usa)
+        d1 = r['TRAIN_h1 net/op'] - b['TRAIN_h1 net/op']
+        d2 = r['TRAIN_h2 net/op'] - b['TRAIN_h2 net/op']
+        if not (np.isfinite(d1) and np.isfinite(d2)):
+            return np.nan, 'sin datos en alguna mitad'
+        enough = r['TRAIN ops'] >= max(8, 0.3 * b['TRAIN ops']) and \
+            min(r['TRAIN_h1 ops'], r['TRAIN_h2 ops']) >= 4
+        flag = 'INTERESANTE' if (d1 > 0 and d2 > 0 and enough) else ''
         if flag and np.isfinite(r['POST net/op']) and np.isfinite(b['POST net/op']) and \
                 r['POST net/op'] <= b['POST net/op']:
             flag = 'INTERESANTE · POST contradice'
@@ -508,16 +521,20 @@ def main():
           % (b['TRAIN ops'], fmt(b['TRAIN net']), fmt(b['TRAIN net/op']), b['POST ops'],
              fmt(b['POST net']), fmt(b['POST net/op'])))
     V = R.iloc[1:].sort_values('robust_min_half_delta', ascending=False).head(3)
-    print('Top 3 por robustez = mayor mejora MÍNIMA vs BASE entre las dos mitades de TRAIN '
-          '(no es una elección de ganador):')
+    print('Top 3 por robustez = mayor mejora MÍNIMA de neto/op vs BASE entre las dos mitades '
+          'de TRAIN (no es una elección de ganador):')
     for _, r in V.iterrows():
-        print('  %-9s Δmin½ %+8.2f · TRAIN %d ops neto %s (%s/op) · POST %d ops neto %s (%s/op)  %s'
+        print('  %-9s Δmin½ %+6.2f/op · TRAIN %d ops neto %s (%s/op) · POST %d ops neto %s (%s/op)  %s'
               % (r.estrategia, r.robust_min_half_delta, r['TRAIN ops'], fmt(r['TRAIN net']),
                  fmt(r['TRAIN net/op']), r['POST ops'], fmt(r['POST net']),
                  fmt(r['POST net/op']), r.nota))
         if r.robust_min_half_delta > 0 and r['POST ops'] and np.isfinite(b['POST net/op']) \
                 and r['POST net/op'] <= b['POST net/op']:
             print('      ⚠ POST contradice TRAIN: en POST no mejora el neto/op del BASE')
+    nv_med = R.avg_valid_exchanges.dropna()
+    if len(nv_med) and nv_med.median() < 7:
+        print('Nota: con ~%.0f exchanges válidos los umbrales son discretos (p.ej. con 5: 3/5=60%%), '
+              'así que variantes B50/B60 pueden coincidir.' % nv_med.median())
     if not (R.nota.str.startswith('INTERESANTE')).any():
         print('Ninguna variante mejora al BASE de forma consistente en ambas mitades de TRAIN.')
     print('\nArchivos: %s · %s' % (p1, p2))
