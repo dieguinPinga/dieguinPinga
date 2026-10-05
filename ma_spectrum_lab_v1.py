@@ -86,7 +86,12 @@ NEUTRAL_BPS = 0.01            # |slope| <= esto => signo 0 (neutra)
 # Estrategia BASE
 FAST, SLOW = 35, 70
 COOLDOWN_S = 32
-COOLDOWN_FROM = "exit"        # "exit": desde la salida de la última op; "entry": desde la última entrada
+# Semántica LIVE de GMX_MOV_V1 (oficial): cooldown CROSS-TO-CROSS.
+#   Un cruce está permitido si no hubo cruce anterior o si pasaron >= 32 s desde el cruce anterior.
+#   TODO cruce actualiza lastCrossT, aunque quede bloqueado por cooldown, MOVEMENT, posición abierta,
+#   entrada pendiente o filtro de variante.
+# Los modos "exit"/"entry" existen SÓLO como diagnóstico NO-LIVE (--cooldown-diag).
+COOLDOWN_MODE = "live"
 RANGE_WIN_S = 1800            # 30 minutos causales
 RANGE_MIN_BPS = 66.04
 EXPOSURE_USD = 3000.0
@@ -562,15 +567,22 @@ def print_vertical_spectrum(G, i, title=""):
 # =============================================================================
 
 def base_signals(G):
+    """
+    Todos los cruces SMA35/70 (sin filtrar) + máscaras evaluadas en el cruce N:
+      cd_ok    cooldown LIVE cross-to-cross: primer cruce, o >= COOLDOWN_S desde el cruce ANTERIOR
+               (cualquiera, permitido o no: todo cruce actualiza lastCrossT).
+      move_ok  rango causal 30 min >= RANGE_MIN_BPS.
+    """
     d = G.fast - G.slow
     prev = np.r_[np.nan, d[:-1]]
     bull = (d > 0) & (prev <= 0)
     bear = (d < 0) & (prev >= 0)
     cross_idx = np.flatnonzero(bull | bear)
+    dirs = np.where(bull[cross_idx], 1, -1).astype(np.int8)
     move_ok = G.range_bps[cross_idx] >= RANGE_MIN_BPS
-    idx = cross_idx[move_ok]
-    dirs = np.where(bull[idx], 1, -1).astype(np.int8)
-    return idx, dirs, int(cross_idx.size), int(idx.size)
+    gap = np.diff(cross_idx, prepend=cross_idx[0] - COOLDOWN_S - 1) if cross_idx.size else cross_idx
+    cd_ok = gap >= COOLDOWN_S
+    return cross_idx, dirs, cd_ok, move_ok
 
 
 def signal_features(G, idx, dirs):
@@ -607,8 +619,13 @@ def variant_masks(F):
     }
 
 
-def simulate(G, sig_idx, sig_dir):
-    """maxPos=1, señal en N, entrada en N+1, TP/SL brutos exactos, timeout."""
+def simulate(G, sig_idx, sig_dir, cooldown_mode="live"):
+    """
+    maxPos=1, señal en N, entrada en N+1, TP/SL brutos exactos, timeout.
+    cooldown_mode="live": el cooldown cross-to-cross YA se aplicó sobre todos los cruces
+    (base_signals); acá sólo se descartan cruces con posición abierta / entrada pendiente
+    o con entrada STALE.  "exit"/"entry": diagnóstico NO-LIVE.
+    """
     L = G.L
     trades = []
     busy_until = -1
@@ -619,10 +636,11 @@ def simulate(G, sig_idx, sig_dir):
         if n <= busy_until:
             skipped_busy += 1
             continue
-        ref = last_exit if COOLDOWN_FROM == "exit" else last_entry
-        if n - ref < COOLDOWN_S:
-            skipped_cd += 1
-            continue
+        if cooldown_mode != "live":
+            ref = last_exit if cooldown_mode == "exit" else last_entry
+            if n - ref < COOLDOWN_S:
+                skipped_cd += 1
+                continue
         e = n + 1
         if e >= L or not G.valid[e]:
             skipped_stale += 1
@@ -669,7 +687,9 @@ def simulate(G, sig_idx, sig_dir):
     cols = ["sig_i", "entry_i", "exit_i", "dir", "entry_price", "exit_price", "exit_reason", "gross", "fees"]
     df = pd.DataFrame(trades, columns=cols)
     df["net"] = df["gross"] - df["fees"]
-    stats = {"skipped_busy": skipped_busy, "skipped_cooldown": skipped_cd, "skipped_entry_stale": skipped_stale}
+    stats = {"skipped_busy": skipped_busy, "skipped_entry_stale": skipped_stale}
+    if cooldown_mode != "live":
+        stats["skipped_cooldown_nolive"] = skipped_cd
     return df, stats
 
 
@@ -800,7 +820,7 @@ def build_results(all_trades, variants, skip_stats):
     base_netop = {(p, s): per[("BASE", p, s)]["net_per_op"] for p in ("ALL", "EARLY", "LATE") for s in ("ALL", "LONG", "SHORT")}
     res["base_net_per_op"] = [base_netop[(p, s)] for p, s in zip(res["period"], res["side"])]
     res["delta_net_per_op_vs_base"] = res["net_per_op"] - res["base_net_per_op"]
-    for k in ("skipped_busy", "skipped_cooldown", "skipped_entry_stale", "signals_in"):
+    for k in skip_stats[variants[0]]:
         res[k] = res["variant"].map(lambda v: skip_stats[v][k])
     return res, per, flags, vsb
 
@@ -953,7 +973,6 @@ def state_frequency(G, split_ts, top=25):
 # =============================================================================
 
 def main():
-    global COOLDOWN_FROM
     ap = argparse.ArgumentParser(description="Laboratorio del espectro de medias móviles ZEC/GMX (v1)")
     ap.add_argument("--symbol", default=DEFAULT_SYMBOL)
     ap.add_argument("--symbol-col", default=None, help="columna de símbolo (auto-detecta si se omite)")
@@ -963,18 +982,28 @@ def main():
     ap.add_argument("--from-csv", default=None, help="cargar desde CSV (source_ts,min_price,max_price) en vez de MariaDB")
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--neutral-bps", type=float, default=NEUTRAL_BPS)
-    ap.add_argument("--cooldown-from", choices=("exit", "entry"), default=COOLDOWN_FROM)
+    ap.add_argument("--cooldown-diag", choices=("exit", "entry"), default=None,
+                    help="SÓLO DIAGNÓSTICO NO-LIVE: cooldown desde la última salida/entrada en vez del "
+                         "cross-to-cross live. Los CSV llevan sufijo _NOLIVE_<modo>.")
     ap.add_argument("--split", default=None, help="corte EARLY/LATE en UTC (default: punto medio temporal)")
     ap.add_argument("--show-at", default=None, help="imprime el espectro vertical en ese instante UTC")
     ap.add_argument("--export-grid", default=None, help="CSV con TODOS los segundos válidos (puede ser enorme)")
     args = ap.parse_args()
 
-    COOLDOWN_FROM = args.cooldown_from
+    cd_mode = args.cooldown_diag or COOLDOWN_MODE
+    nolive = cd_mode != "live"
+    prefix = OUT_PREFIX + (f"_NOLIVE_{cd_mode}" if nolive else "")
 
     T_start = time.time()
     hr("MA SPECTRUM LAB v1  —  ZEC / GMX")
     print(f"Espectro: {SPECTRUM}   slope {SLOPE_LAG_S}s   neutral |slope|<={args.neutral_bps} bps   stale>{STALE_MAX_AGE_S}s")
-    print(f"BASE: SMA{FAST}/{SLOW}  cooldown {COOLDOWN_S}s (desde {COOLDOWN_FROM})  range30m>={RANGE_MIN_BPS}bps  "
+    if nolive:
+        print("!" * 100)
+        print(f"!!  MODO DIAGNÓSTICO NO-LIVE: cooldown desde la última {'salida' if cd_mode == 'exit' else 'entrada'}.")
+        print("!!  Estos resultados NO reproducen GMX_MOV_V1. El resultado oficial es sin --cooldown-diag.")
+        print("!" * 100)
+    cd_txt = "cross-to-cross LIVE" if not nolive else f"NO-LIVE desde {cd_mode}"
+    print(f"BASE: SMA{FAST}/{SLOW}  cooldown {COOLDOWN_S}s ({cd_txt})  range30m>={RANGE_MIN_BPS}bps  "
           f"exp ${EXPOSURE_USD:.0f}  TP +${TP_USD:.0f}  SL ${SL_USD:.0f}  timeout {TIMEOUT_S // 60}m  fees ${FEES_RT_USD:.0f}")
 
     # ---------------- carga
@@ -1024,16 +1053,26 @@ def main():
 
     # ---------------- señales y simulaciones
     t_sim0 = time.time()
-    sig_idx, sig_dir, n_cross, n_move = base_signals(G)
+    sig_idx, sig_dir, cd_ok, move_ok = base_signals(G)
+    n_cross = int(sig_idx.size)
     F = signal_features(G, sig_idx, sig_dir)
     masks = variant_masks(F)
     variants = list(masks.keys())
     all_tr, skip_stats = [], {}
     for v in variants:
-        m = masks[v]
-        tr, st = simulate(G, sig_idx[m], sig_dir[m])
-        st["signals_in"] = int(m.sum())
-        skip_stats[v] = st
+        fm = masks[v]
+        if nolive:
+            m = move_ok & fm
+            st_pre = {"crosses": n_cross, "blocked_movement": int((~move_ok).sum()),
+                      "blocked_filter": int((move_ok & ~fm).sum())}
+        else:
+            # orden de atribución: cooldown live -> movement -> filtro de variante -> posición -> entrada stale
+            m = cd_ok & move_ok & fm
+            st_pre = {"crosses": n_cross, "blocked_cooldown_live": int((~cd_ok).sum()),
+                      "blocked_movement": int((cd_ok & ~move_ok).sum()),
+                      "blocked_filter": int((cd_ok & move_ok & ~fm).sum())}
+        tr, st = simulate(G, sig_idx[m], sig_dir[m], cd_mode)
+        skip_stats[v] = {**st_pre, "signals_in": int(m.sum()), **st}
         all_tr.append(enrich_trades(G, tr, v, split_ts))
     trades = pd.concat([t for t in all_tr if not t.empty], ignore_index=True) if any(not t.empty for t in all_tr) \
         else pd.DataFrame(columns=["variant", "period", "side", "exit_reason", "gross", "fees", "net", "exit_ts",
@@ -1044,7 +1083,8 @@ def main():
     print(f"Tiempo de carga:        {t_load:.1f} s")
     print(f"Tiempo de cálculo:      {t_calc:.1f} s (grilla + espectro)   simulación {t_sim:.1f} s")
     print(f"RAM actual (RSS):       {rss_mb():,.0f} MB    pico: {peak_rss_mb():,.0f} MB")
-    print(f"Cruces SMA{FAST}/{SLOW}: {n_cross:,}    con movement filter: {n_move:,}")
+    print(f"Cruces SMA{FAST}/{SLOW}: {n_cross:,}   permitidos por cooldown cross-to-cross: {int(cd_ok.sum()):,}   "
+          f"cooldown+movement: {int((cd_ok & move_ok).sum()):,}   (sólo movement: {int(move_ok.sum()):,})")
 
     # ---------------- ejemplo de espectro
     last_full = np.flatnonzero(G.SVALID.all(0))
@@ -1058,7 +1098,7 @@ def main():
             print(f"--show-at fuera de rango")
     del last_full
 
-    out = lambda name: os.path.join(args.out_dir, f"{OUT_PREFIX}_{name}.csv")
+    out = lambda name: os.path.join(args.out_dir, f"{prefix}_{name}.csv")
 
     # ---------------- resultados por variante
     results, per, flags, vsb = build_results(trades, variants, skip_stats)
@@ -1094,7 +1134,7 @@ def main():
             for b in variants[i + 1:]:
                 if keys[a] and keys[a] == keys[b]:
                     print(f"[NOTA] {b} produce exactamente las mismas operaciones que {a} (filtro redundante con este disparador).")
-    print("\nSeñales descartadas (en posición / cooldown / entrada stale):")
+    print("\nEmbudo de cruces (cooldown live -> movement -> filtro -> en posición/pendiente -> entrada stale):")
     print_df(pd.DataFrame([{"variant": v, **skip_stats[v]} for v in variants]))
 
     # ---------------- distribución BASE
