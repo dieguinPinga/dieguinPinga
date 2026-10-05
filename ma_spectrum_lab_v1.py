@@ -535,6 +535,19 @@ def compute_spectrum(G, neutral_bps):
     rmax = pd.Series(G.mid).rolling(RANGE_WIN_S, min_periods=1).max().to_numpy()
     rmin = pd.Series(G.mid).rolling(RANGE_WIN_S, min_periods=1).min().to_numpy()
     G.range_bps = ((rmax - rmin) / G.mid * 1e4).astype(np.float32)   # NaN si mid(t) stale
+
+    # WARMUP de MOVEMENT (semántica live GMX_MOV_V1):
+    #   movePut sólo en segundos válidos; r30 = precios en (t-30min, t].
+    #   r30Since = primer segundo válido, y se reinicia SÓLO cuando, al podar en un segundo válido,
+    #   la ventana r30 queda vacía (el válido anterior está a >= 30 min).  Un STALE corto no resetea.
+    #   MOVEMENT puede ser ON/OFF recién cuando t - r30Since >= 30min - 1s; antes es WARMUP.
+    G.move_warm = np.zeros(L, dtype=bool)
+    vi = np.flatnonzero(G.valid)
+    if vi.size:
+        reset = np.r_[True, np.diff(vi) >= RANGE_WIN_S]
+        since = vi[np.flatnonzero(reset)][np.cumsum(reset) - 1]
+        G.move_warm[vi] = (vi - since) >= RANGE_WIN_S - 1
+    del vi
     del rmax, rmin
 
 
@@ -571,7 +584,8 @@ def base_signals(G):
     Todos los cruces SMA35/70 (sin filtrar) + máscaras evaluadas en el cruce N:
       cd_ok    cooldown LIVE cross-to-cross: primer cruce, o >= COOLDOWN_S desde el cruce ANTERIOR
                (cualquiera, permitido o no: todo cruce actualiza lastCrossT).
-      move_ok  rango causal 30 min >= RANGE_MIN_BPS.
+      move_ok  MOVEMENT ON: warmup de 30 min completo (G.move_warm) y rango causal 30 min >= RANGE_MIN_BPS.
+      move_warm MOVEMENT fuera de WARMUP (para el embudo).
     """
     d = G.fast - G.slow
     prev = np.r_[np.nan, d[:-1]]
@@ -579,10 +593,11 @@ def base_signals(G):
     bear = (d < 0) & (prev >= 0)
     cross_idx = np.flatnonzero(bull | bear)
     dirs = np.where(bull[cross_idx], 1, -1).astype(np.int8)
-    move_ok = G.range_bps[cross_idx] >= RANGE_MIN_BPS
+    move_warm = G.move_warm[cross_idx]
+    move_ok = move_warm & (G.range_bps[cross_idx] >= RANGE_MIN_BPS)
     gap = np.diff(cross_idx, prepend=cross_idx[0] - COOLDOWN_S - 1) if cross_idx.size else cross_idx
     cd_ok = gap >= COOLDOWN_S
-    return cross_idx, dirs, cd_ok, move_ok
+    return cross_idx, dirs, cd_ok, move_ok, move_warm
 
 
 def signal_features(G, idx, dirs):
@@ -1053,7 +1068,7 @@ def main():
 
     # ---------------- señales y simulaciones
     t_sim0 = time.time()
-    sig_idx, sig_dir, cd_ok, move_ok = base_signals(G)
+    sig_idx, sig_dir, cd_ok, move_ok, move_warm = base_signals(G)
     n_cross = int(sig_idx.size)
     F = signal_features(G, sig_idx, sig_dir)
     masks = variant_masks(F)
@@ -1063,13 +1078,15 @@ def main():
         fm = masks[v]
         if nolive:
             m = move_ok & fm
-            st_pre = {"crosses": n_cross, "blocked_movement": int((~move_ok).sum()),
+            st_pre = {"crosses": n_cross, "blocked_movement_warmup": int((~move_warm).sum()),
+                      "blocked_movement_off": int((move_warm & ~move_ok).sum()),
                       "blocked_filter": int((move_ok & ~fm).sum())}
         else:
             # orden de atribución: cooldown live -> movement -> filtro de variante -> posición -> entrada stale
             m = cd_ok & move_ok & fm
             st_pre = {"crosses": n_cross, "blocked_cooldown_live": int((~cd_ok).sum()),
-                      "blocked_movement": int((cd_ok & ~move_ok).sum()),
+                      "blocked_movement_warmup": int((cd_ok & ~move_warm).sum()),
+                      "blocked_movement_off": int((cd_ok & move_warm & ~move_ok).sum()),
                       "blocked_filter": int((cd_ok & move_ok & ~fm).sum())}
         tr, st = simulate(G, sig_idx[m], sig_dir[m], cd_mode)
         skip_stats[v] = {**st_pre, "signals_in": int(m.sum()), **st}
