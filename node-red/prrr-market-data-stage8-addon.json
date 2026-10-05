@@ -1,0 +1,166 @@
+[
+  {
+    "id": "prrr_grp_ex",
+    "type": "group",
+    "z": "prrr_tab_main",
+    "name": "ETAPA 8 — market_ex_1s (ZEC por exchange · mercado · segundo · rama nueva desde MD STREAM)",
+    "style": {
+      "label": true,
+      "stroke": "#6a1b9a",
+      "fill": "#6a1b9a",
+      "fill-opacity": "0.12",
+      "color": "#000000"
+    },
+    "nodes": [
+      "prrr_ex_in",
+      "prrr_ex_tick",
+      "prrr_ex_agg",
+      "prrr_ex_mysql",
+      "prrr_ex_catch",
+      "prrr_ex_err_tag",
+      "prrr_ex_comment"
+    ],
+    "x": 60,
+    "y": 3595,
+    "w": 1140,
+    "h": 150
+  },
+  {
+    "id": "prrr_ex_in",
+    "type": "link in",
+    "z": "prrr_tab_main",
+    "name": "MD STREAM (RAW)",
+    "links": [
+      "prrr_stream_out"
+    ],
+    "x": 190,
+    "y": 3640,
+    "wires": [
+      [
+        "prrr_ex_agg"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_tick",
+    "type": "inject",
+    "z": "prrr_tab_main",
+    "name": "tick 100 ms",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "2",
+    "topic": "tick",
+    "x": 180,
+    "y": 3690,
+    "wires": [
+      [
+        "prrr_ex_agg"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_agg",
+    "type": "function",
+    "z": "prrr_tab_main",
+    "name": "market_ex_1s: agregador ZEC por venue/segundo + writer",
+    "func": "// Entradas: trades del MD STREAM (topic 'trade', copia; no se modifican) · 'tick' (100 ms) · respuestas mysql (msg.exKind) · 'db_error' (catch)\n// Salida 1 → mysql (1 query en vuelo).\n// Semántica: una fila por segundo (reloj local de recepción) + exchange + market_type, sólo si hubo trades. Sin relleno.\nconst X = context.get('X', 'memory'), C = X.cfg, now = Date.now();\nconst out = [null];\n\nfunction pad(n, w) { return String(n).padStart(w || 2, '0'); }\nfunction dt(t) { const d = new Date(Math.floor(t)); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) + ' ' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + '.' + pad(d.getUTCMilliseconds(), 3); }\nfunction fail(reason) {\n    const m = String(reason).slice(0, 200);\n    if (m !== X.lastErr || now - X.lastLogAt > 60000) { node.warn('market_ex_1s: ' + m + ' · cola ' + X.q.length + ' filas'); X.lastLogAt = now; }\n    X.errors++; X.lastErr = m;\n    if (X.inflight && X.inflight.kind === 'insert') { X.q = X.inflight.rows.concat(X.q); if (X.q.length > C.maxQueue) { const ex = X.q.length - C.maxQueue; X.q.splice(0, ex); X.dropped += ex; } }\n    X.inflight = null;\n    X.backoff = Math.min(C.backoffMax, Math.max(C.backoffMin, X.backoff * 2)); X.nextTry = now + X.backoff;\n    node.status({ fill: 'red', shape: 'ring', text: 'error DB: ' + m.slice(0, 40) });\n}\n\n// ---------- trade individual ----------\nif (msg.topic === 'trade') {\n    const t = msg.payload;\n    if (!t || C.symbols.indexOf(t.symbol) < 0) return null;\n    const ts = t.local_receive_timestamp, sec = Math.floor(ts / 1000), usd = t.price * t.quantity;\n    if (!isFinite(ts) || !(t.price > 0) || !isFinite(usd) || usd < 0) { X.stats.bad++; return null; }\n    const vk = t.symbol + '|' + t.exchange + '|' + (t.market_type === 'perp' ? 'perp' : 'spot');\n    if (sec < X.nextSec) {                              // ese segundo ya se cerró (o es anterior al arranque): no se toca el histórico\n        if (sec < X.firstSec) X.stats.preStart++; else { X.stats.late++; X.stats.lateByVenue[vk] = (X.stats.lateByVenue[vk] || 0) + 1; }\n        return null;\n    }\n    let s = X.open.get(sec); if (!s) { s = new Map(); X.open.set(sec, s); }\n    let a = s.get(vk);\n    if (!a) { a = { symbol: t.symbol, exchange: t.exchange, market: t.market_type === 'perp' ? 'perp' : 'spot', recv: -Infinity, px: 0, exTs: 0, n: 0, buy: 0, sell: 0 }; s.set(vk, a); }\n    if (ts >= a.recv) { a.recv = ts; a.px = t.price; a.exTs = Number(t.exchange_timestamp) || ts; }   // último recibido (empate: el último en llegar)\n    a.n += t.trade_count || 1;                          // fills reales (Binance perp @aggTrade agrupa fills)\n    if (t.side === 'BUY') a.buy += usd; else if (t.side === 'SELL') a.sell += usd;   // lado desconocido: no suma a ninguno\n    X.stats.trades++;\n    return null;\n}\n\n// ---------- respuestas / errores mysql ----------\nif (msg.topic === 'db_error' || msg.error) {           // antes que las respuestas: el msg del catch conserva exKind\n    if (X.inflight && msg.exBatch === X.inflight.id) fail((msg.error && msg.error.message) || 'error DB');\n    return null;\n}\nif (msg.exKind) {\n    if (!X.inflight || msg.exBatch !== X.inflight.id) return null;\n    if (msg.exKind === 'schema') {\n        const have = {};\n        (Array.isArray(msg.payload) ? msg.payload : []).forEach(function (r) { if (r && r.COLUMN_NAME) have[String(r.COLUMN_NAME).toLowerCase()] = 1; });\n        X.inflight = null;\n        const need = ['ts', 'symbol', 'exchange', 'market', 'last_price', 'last_trade_ts', 'recv_ts', 'trades', 'buy_usd', 'sell_usd'];\n        if (!Object.keys(have).length) { fail('tabla ' + C.table + ' no existe (crearla con sql/stage8-market_ex_1s.sql)'); return null; }\n        const miss = need.filter(function (c) { return !have[c]; });\n        if (miss.length) { fail('faltan columnas en ' + C.table + ': ' + miss.join(', ')); return null; }\n        X.schema = true; X.backoff = 0; X.lastErr = '';\n        return null;\n    }\n    X.saved += X.inflight.rows.length; X.lastSavedT = X.inflight.maxT; X.backoff = 0; X.lastErr = '';\n    X.inflight = null;\n    X.lastFlush = X.q.length >= C.batchMax ? 0 : now;\n    return null;\n}\nif (msg.topic !== 'tick') return null;\n\n// ---------- cierre causal de segundos: [S, S+1000) se cierra recién a S + 1000 + graceMs ----------\nwhile (now >= (X.nextSec + 1) * 1000 + C.graceMs) {\n    const sec = X.nextSec, s = X.open.get(sec);\n    if (s) {\n        s.forEach(function (a) {\n            X.q.push([dt(sec * 1000), a.symbol, a.exchange, a.market, a.px, dt(a.exTs), dt(a.recv), a.n, Math.round(a.buy * 1e6) / 1e6, Math.round(a.sell * 1e6) / 1e6]);\n            X.stats.rows++;\n        });\n        X.open.delete(sec);\n    }\n    X.stats.closedSecs++; X.nextSec++;\n}\nif (X.q.length > C.maxQueue) { const ex = X.q.length - C.maxQueue; X.q.splice(0, ex); X.dropped += ex; }\n\n// ---------- writer: 1 query en vuelo, lotes ----------\nif (X.inflight && now - X.inflight.sentAt > C.timeoutMs) fail('timeout: MariaDB no respondió en ' + (C.timeoutMs / 1000) + ' s');\nif (!X.inflight && now >= X.nextTry) {\n    if (!X.schema) {\n        X.inflight = { id: ++X.seq, kind: 'schema', sentAt: now };\n        out[0] = { topic: 'SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?', payload: [C.table], exKind: 'schema', exBatch: X.inflight.id };\n    } else if (X.q.length && (X.q.length >= C.batchMax || now - X.lastFlush >= C.flushMs)) {\n        const rows = X.q.splice(0, C.batchMax);\n        X.inflight = { id: ++X.seq, kind: 'insert', rows: rows, sentAt: now, maxT: rows[rows.length - 1][0] };\n        // una fila por (symbol, exchange, market, ts) cerrada UNA vez; el upsert sólo hace idempotente un reintento con los mismos valores\n        out[0] = { topic: 'INSERT INTO ' + C.table + ' (ts, symbol, exchange, market, last_price, last_trade_ts, recv_ts, trades, buy_usd, sell_usd) VALUES ? ' +\n            'ON DUPLICATE KEY UPDATE last_price = VALUES(last_price), last_trade_ts = VALUES(last_trade_ts), recv_ts = VALUES(recv_ts), trades = VALUES(trades), buy_usd = VALUES(buy_usd), sell_usd = VALUES(sell_usd)',\n            payload: [rows], exKind: 'insert', exBatch: X.inflight.id };\n    }\n}\nglobal.set('md_ex_1s_stats', { trades: X.stats.trades, rows: X.stats.rows, late: X.stats.late, lateByVenue: X.stats.lateByVenue, preStart: X.stats.preStart, bad: X.stats.bad,\n    saved: X.saved, queue: X.q.length, errors: X.errors, dropped: X.dropped, lastErr: X.lastErr, lastSaved: X.lastSavedT }, 'memory');\nif (now - (X.lastStatus || 0) > 1000) {\n    X.lastStatus = now;\n    if (!X.lastErr) node.status({ fill: X.schema ? 'green' : 'grey', shape: 'dot', text: X.saved + ' filas guardadas · cola ' + X.q.length + ' · tardíos ' + X.stats.late });\n}\nreturn out[0] ? out : null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "// ===== AGREGADOR POR VENUE (market_ex_1s): configuración y estado =====\nconst CFG = {\n    symbols: ['ZEC'],       // por ahora sólo ZEC\n    graceMs: 500,           // igual que el normalizador de market_1s: el segundo [t, t+1000) se cierra a t + 1000 + 500 ms (reloj local)\n    table: 'market_ex_1s',\n    batchMax: 500, flushMs: 5000, maxQueue: 36000, timeoutMs: 30000, backoffMin: 5000, backoffMax: 60000\n};\nconst X = {\n    cfg: CFG,\n    nextSec: Math.floor(Date.now() / 1000) + 1,   // el primer segundo guardado es el primero COMPLETO después del arranque\n    firstSec: Math.floor(Date.now() / 1000) + 1,\n    open: new Map(),                               // sec → Map(venueKey → acumulador)\n    stats: { trades: 0, late: 0, preStart: 0, bad: 0, rows: 0, closedSecs: 0, lateByVenue: {} },\n    // writer\n    q: [], inflight: null, seq: 0, schema: null, lastFlush: Date.now(), backoff: 0, nextTry: 0,\n    saved: 0, errors: 0, dropped: 0, lastErr: '', lastLogAt: 0, lastSavedT: null\n};\ncontext.set('X', X, 'memory');\nnode.status({ fill: 'grey', shape: 'ring', text: 'esperando esquema de ' + CFG.table });",
+    "finalize": "",
+    "libs": [],
+    "outputLabels": [
+      "query → mysql"
+    ],
+    "x": 520,
+    "y": 3660,
+    "wires": [
+      [
+        "prrr_ex_mysql"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_mysql",
+    "type": "mysql",
+    "z": "prrr_tab_main",
+    "mydb": "prrr_db_cfg",
+    "name": "MariaDB market_ex_1s",
+    "x": 860,
+    "y": 3640,
+    "wires": [
+      [
+        "prrr_ex_agg"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_catch",
+    "type": "catch",
+    "z": "prrr_tab_main",
+    "name": "errores mysql market_ex_1s",
+    "scope": [
+      "prrr_ex_mysql"
+    ],
+    "uncaught": false,
+    "x": 860,
+    "y": 3690,
+    "wires": [
+      [
+        "prrr_ex_err_tag"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_err_tag",
+    "type": "change",
+    "z": "prrr_tab_main",
+    "name": "topic = db_error",
+    "rules": [
+      {
+        "t": "set",
+        "p": "topic",
+        "pt": "msg",
+        "to": "db_error",
+        "tot": "str"
+      }
+    ],
+    "action": "",
+    "property": "",
+    "from": "",
+    "to": "",
+    "reg": false,
+    "x": 1070,
+    "y": 3690,
+    "wires": [
+      [
+        "prrr_ex_agg"
+      ]
+    ],
+    "g": "prrr_grp_ex"
+  },
+  {
+    "id": "prrr_ex_comment",
+    "type": "comment",
+    "z": "prrr_tab_main",
+    "name": "market_ex_1s: semántica y causalidad",
+    "info": "Fuente: trades individuales normalizados del MD STREAM (los mismos que recibe el normalizador de market_1s), antes de toda agregación.\n\nUna fila por **segundo + exchange + market (spot/perp)**, sólo si ese venue tuvo trades en ese segundo (sin forward-fill ni segundos artificiales). Por ahora sólo ZEC.\n\n* `ts`: inicio del segundo según el reloj LOCAL de recepción (misma convención que `market_1s`).\n* `last_price`: precio del último trade recibido del venue en ese segundo (mayor `local_receive_timestamp`; empate: el último en llegar).\n* `last_trade_ts`: timestamp original del exchange de ese trade · `recv_ts`: su recepción local.\n* `trades`: fills (igual que market_1s) · `buy_usd` / `sell_usd`: precio × cantidad por lado agresor; lado desconocido no suma.\n\n**Causalidad**: el segundo [S, S+1) se persiste recién a S + 1,5 s de reloj local, y una sola vez. Un trade que llega después (cola interna > 500 ms) se cuenta como tardío y se descarta: nunca modifica una fila ya cerrada. El primer segundo tras un arranque/Deploy es el primero completo; los segundos abiertos al detener Node-RED no se guardan (nunca filas parciales).",
+    "x": 520,
+    "y": 3710,
+    "wires": [],
+    "g": "prrr_grp_ex"
+  }
+]

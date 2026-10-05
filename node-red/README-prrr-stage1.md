@@ -1,6 +1,48 @@
-# PRRR Market Data — Etapas 1 → 7
+# PRRR Market Data — Etapas 1 → 8
 
-**Versión actual: `prrr-market-data-stage7.json`** (generador `tools/build-prrr-stage7.js`). Sobre una etapa 6/6b en marcha: **addon `prrr-market-data-stage7-addon.json` + `mercado-template-stage7.html`** (ver Instalación).
+**Versión actual: `prrr-market-data-stage8.json`** (generador `tools/build-prrr-stage8.js`). Sobre la etapa 7 en marcha: **addon `prrr-market-data-stage8-addon.json`** (sólo nodos nuevos).
+
+## Etapa 8 — `market_ex_1s`: precio ZEC por exchange / mercado / segundo (base para estudiar BREADTH)
+```
+WS → normalizador por exchange → MD BUS → MD CORE → MD STREAM → ┬→ normalizador 1 s → market_1s     (sin cambios)
+   (trades individuales: symbol, exchange, market_type,          ├→ PLOT feeder / ejemplo              (sin cambios)
+    price, quantity, side, exchange_timestamp,                   └→ [NUEVO] link in → agregador ZEC por venue → market_ex_1s
+    local_receive_timestamp, trade_count)
+```
+* **Dónde está el dato individual:** cada trade viaja como `{topic:'trade', payload:{…}}` por el `link out` **"MD STREAM →"** (`prrr_stream_out`, salida 1 del MD CORE). Antes de él no hay ninguna agregación.
+  * Campos: `symbol`, `exchange`, `market_type` (spot/perp), `source`, `price`, `quantity`, `side` (agresor BUY/SELL/null), `trade_count` (fills de Binance perp), `exchange_timestamp`, `local_receive_timestamp`, `raw`.
+  * Lo consumen el normalizador de `market_1s`, el PLOT feeder y el nodo de ejemplo. La rama nueva es un cuarto consumidor del mismo stream y no altera los mensajes de los otros.
+* **Venues ZEC suscritos:** 6, todos **spot**: binance (ZECUSDT), coinbase (ZEC-USD), kraken (ZEC/USD), okx (ZEC-USDT), bybit (ZECUSDT), bitfinex (tZECUSD). No hay perps de ZEC; si se agregan, salen solos con `market='perp'`.
+* **Fila:** una por **segundo + exchange + market**, sólo si ese venue tuvo trades en ese segundo. Sin forward-fill ni segundos artificiales.
+  * `ts` = inicio del segundo según el reloj **local de recepción**, la misma convención que `market_1s`.
+  * `last_price` = precio del último trade recibido; `last_trade_ts` = su timestamp de exchange; `recv_ts` = su recepción local.
+  * `trades` = fills, la misma cuenta que `market_1s.trades`.
+  * `buy_usd` / `sell_usd` = Σ precio × cantidad por lado agresor. Un lado desconocido no suma a ninguno.
+* **Causalidad / tardíos:**
+  * El segundo [S, S+1) se persiste **una sola vez**, recién a S + 1,5 s de reloj local. Es la misma regla de cierre que `market_1s`.
+  * Un trade que llega después (por cola interna > 500 ms) se **descarta y se cuenta** como tardío. Nunca modifica una fila ya cerrada.
+  * Al arrancar o en un Deploy, el primer segundo guardado es el primero completo. Los segundos abiertos al detener Node-RED no se guardan, así que nunca hay filas parciales.
+  * El estado está en `global.get('md_ex_1s_stats','memory')` y en el status del nodo.
+* **Tabla:** `sql/stage8-market_ex_1s.sql`, con el esquema pedido. El usuario `prrr` ya tiene los permisos necesarios.
+* **Writer propio:** lotes de hasta 500 filas cada ≤ 5 s, un lote en vuelo, cola acotada (36 000 filas) y reintento con backoff.
+* **No se tocó:** Stage 1/2, `market_1s`, MERCADO, GMX, Conceptito (Stage 7) ni `conceptito_trades`.
+
+### Instalación (sin cortar la adquisición)
+1. **Backup:** Menú → Export → *All flows* → Download, y además copia de `~/.node-red/flows.json`.
+2. Como root: `sql/stage8-market_ex_1s.sql`.
+3. En la pestaña **PRRR Market Data**: Menú → **Import** → `prrr-market-data-stage8-addon.json` → **Import**.
+   * Debe decir **"Imported: 7 nodes, 1 group"**, sin conflictos.
+   * Hacer clic en el lienzo para soltar los nodos.
+4. **Deploy → Modified Nodes.**
+
+Al guardar, el editor agrega solo `prrr_ex_in` a la lista `links` del `link out` "MD STREAM →". Es el otro extremo del enlace y Node-RED siempre lo sincroniza así. Sus tres destinos existentes no cambian.
+
+**Validado (Node-RED 5.0.7 + MariaDB 10.11, con el diálogo Import real):**
+* Los WebSockets siguieron contando, con 0 reconexiones. `market_1s` sin huecos. Conceptito siguió sin reiniciarse y abrió su siguiente operación normalmente.
+* En 99 segundos, la suma por venue coincide **exactamente** con `market_1s` en `trades` y `buy_usd`/`sell_usd`.
+* El `close` de `market_1s` es siempre el `last_price` de un venue con la recepción más tardía (las diferencias aparentes eran empates de milisegundo).
+* `recv_ts` siempre dentro de su segundo, `last_trade_ts ≤ recv_ts` y ninguna fila con 0 trades.
+
 
 ## Etapa 7 — CONCEPTITO LIVE (paper trader ZEC, sin dinero real)
 ```
