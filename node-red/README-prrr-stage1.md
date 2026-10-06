@@ -16,25 +16,29 @@ global md_gmx.last.ZEC / md_gmx.ring.ZEC (sólo lectura) ───────�
   * **Spot:** `{topic:'trade', payload:{symbol, quote, market, exchange, kind, price, quantity, side, trade_id, exchange_timestamp, exchange_ts_raw, local_receive_timestamp, raw}}`.
   * **Los trades spot NO traen `market_type`** (sólo los perp traen `'perp'`). Por eso el monitor toma spot = `market_type` `'spot'` **o ausente** y excluye `'perp'`, igual que `market_1s` y `market_ex_1s` (parámetro `spotRule`).
   * **GMX** (`md_gmx.last.ZEC`): `{symbol, ts (recepción local), source_ts, min, max, mid, minS, maxS, midS, minRaw, maxRaw, age_ms, rtt_ms, source}`. Historial en `md_gmx.ring.ZEC = {size, buf, idx, count}`.
-* **Regla congelada:**
-  * **Venues:** binance/coinbase/kraken/okx; último trade por venue; fresco si `now − local_receive_timestamp ≤ 1000 ms`; mínimo 3 venues.
-  * `spot_median` = mediana de los frescos.
-  * **GMX:** fresco si `now − ts ≤ 3000 ms`.
-  * `basis_bps = (spot_median / gmx_mid − 1) × 10000`, evaluado **en cada trade y cada 250 ms**.
-  * **Trigger** sólo en el onset de |basis| ≥ 23,429. LONG si basis > 0, SHORT si < 0. Cooldown 10 s.
-  * La primera evaluación válida tras arrancar sólo fija el estado.
-  * Un intervalo inválido no resetea above/below.
-  * +umbral → −umbral sin bajar no es onset.
-  * Al terminar el cooldown no dispara solo; los onsets dentro del cooldown se cuentan.
-* **Forward paper:**
-  * **Entrada:** trigger + 1000 ms.
-  * **Salidas:** +2/+5/+10 s desde la entrada.
-  * **Quotes:** último quote GMX con `ts ≤` ese instante y edad ≤ 3000 ms; si no hay, "sin quote".
-  * **Precios:** LONG entra a `max` y sale a `min`; SHORT entra a `min` y sale a `max`.
-  * **Resultado:** neto = bruto − 10 bps.
-  * Últimos 500 eventos en memoria (`global slm_leadlag_v1`); se pierden en un Deploy o reinicio.
-* **Dashboard (pestaña LEADLAG, 4/s):** estado, basis, umbral, spot median, GMX mid/min/max, edad GMX, venues frescos, edad por venue, dispersión spot, triggers, onsets en cooldown, estadística forward por horizonte y lado, últimos 12 eventos, contadores de formato.
-* **Efecto a tener en cuenta:** como se evalúa en cada trade y los venues se actualizan de a uno, la mediana puede pasar por valores intermedios. Si el basis oscila cerca del umbral, eso produce muchos onsets; el cooldown los filtra y quedan contados en "onsets en cooldown".
+* **Dos ramas en paralelo, misma regla congelada (`spot_core_clean.py`):**
+  * **`HIST_REPLICA`** (comparador/research): reconstruye las filas de `market_ex_1s` igual que Stage 8.
+    * Último trade por venue y segundo de recepción; cierre a S+1000+500 ms; tardíos descartados y contados; `last_price` redondeado como DECIMAL(20,8).
+    * Las reproduce en orden de `recv_ts`, una evaluación por fila.
+    * Empates en el mismo ms: orden natural de llegada, sin orden secundario artificial, contados.
+    * GMX con valores como `gmx_price` (DECIMAL(30,18)).
+    * Sólo puede decidir al cerrar el segundo. Marca la demora de decisión y si la entrada T+1000 **ya había pasado** al decidir.
+  * **`LIVE_CAUSAL`** (operable): cada trade real es un evento con T = su `local_receive_timestamp`. Cada venue arrastra su último trade real.
+* **Regla (ambas ramas):**
+  * **Venues y frescura:** binance/coinbase/kraken/okx; spot = `market_type` `'spot'` o ausente. Venue válido si `recv_ts ≤ T` y `T − recv_ts ≤ 1000 ms`; mínimo 3.
+  * **Precios:** `spot_median` = mediana. GMX = `gmx_at(T)`: último quote con `ts ≤ T` y edad ≤ 3000 ms.
+  * **Basis:** `basis_bps = (spot_median / mid − 1) × 10000`.
+  * Las evaluaciones inválidas **no entran a la serie** y no tocan `prev_above`.
+  * **Onset:** `above ∧ ¬prev_above`, con `prev_above` inicial = False, así que **la primera evaluación válida puede disparar**.
+  * **Trigger:** si `T − último_trigger ≥ 10 s` (exactamente 10 s ya queda fuera del cooldown). LONG si basis > 0, SHORT si < 0.
+* **El tick de 250 ms no evalúa `LIVE_CAUSAL`** ni toca su estado. Sólo cierra segundos de la réplica (cuyo resultado lo fijan los datos), resuelve forwards, compara ramas y emite el dashboard.
+* **Forward (ambas ramas):**
+  * **Entrada:** `T + 1000 ms`, LONG a `max` y SHORT a `min`.
+  * **Salidas:** +2/+5/+10 s desde la entrada, LONG a `min` y SHORT a `max`.
+  * `gmx_at` causal; neto = bruto − 10 bps.
+  * **+5 s y +10 s son la validación congelada**; +2 s es diagnóstico.
+* **Comparación:** dos triggers "coinciden" si tienen el mismo lado y |ΔT| ≤ 1 s. Se informan coincidencias, ΔT medio (LIVE − REPLICA), sólo LIVE y sólo REPLICA. No se ajusta ningún parámetro por estas diferencias.
+* Últimos 500 eventos por rama en memoria (`global slm_leadlag_v1`). Se pierden en un Deploy o reinicio.
 
 ### Instalación (sin cortar la adquisición)
 1. Backup: Menú → Export → *All flows*.
@@ -44,13 +48,14 @@ global md_gmx.last.ZEC / md_gmx.ring.ZEC (sólo lectura) ───────�
 5. **Deploy → Modified Nodes.** La pestaña **LEADLAG** aparece en el dashboard.
 
 **Validado:**
-* **Reglas:** 22 casos sintéticos, uno por cada regla congelada, todos OK.
-* **Instalación:** en Node-RED real, con el link out renombrado a `b422762406083786`:
-  * el import conservó el enlace;
-  * Conceptito, Stage 8 y el poller GMX quedaron idénticos;
-  * los WebSockets tuvieron 0 reconexiones;
-  * se dispararon triggers y el forward se midió a +2/+5/+10 s.
-
+* **Equivalencia exacta** en 3 streams sintéticos de 15–20 min, con GMX retrasado, empates y trades tardíos:
+  * `HIST_REPLICA` = reimplementación literal de `spot_core_clean.py` sobre filas de `market_ex_1s` construidas aparte: mismas filas, mismos T y lados en los 242 triggers;
+  * `LIVE_CAUSAL` = referencia trade a trade: mismos 254 triggers;
+  * el tick nunca cambió el estado LIVE;
+  * primera evaluación válida dispara; onset a 9,999 s del trigger queda en cooldown y a 10 s exactos dispara.
+* **En Node-RED real**, con el link out renombrado a `b422762406083786` e import por el diálogo:
+  * el enlace se conservó; ningún nodo existente cambió (sólo la lista `links` del link out); 0 reconexiones de WebSockets;
+  * filas de la réplica = filas de `market_ex_1s` de los 4 venues en el mismo intervalo (136 = 136).
 
 ## Etapa 8 — `market_ex_1s`: precio ZEC por exchange / mercado / segundo (base para estudiar BREADTH)
 ```

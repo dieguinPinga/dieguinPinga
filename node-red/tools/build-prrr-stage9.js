@@ -3643,201 +3643,259 @@ inGroup(gEx, { id: 'prrr_ex_comment', type: 'comment', z: TAB, name: 'market_ex_
 // ===========================================================================
 const SLM = 'slm_engine', SLMUI = 'slm_ui';
 const SLM_STREAM_LINK = 'prrr_stream_out';   // en el addon: id real de "MD STREAM →"
-const SLM_INIT = String.raw`// ===== SPOT_GMX_LEADLAG_V1_MONITOR: regla congelada =====
+const SLM_INIT = String.raw`// ===== SPOT_GMX_LEADLAG_V1_MONITOR: regla congelada (spot_core_clean.py) · dos ramas en paralelo =====
+// HIST_REPLICA: reconstruye market_ex_1s (último trade por venue/segundo, cierre S+1000+500 ms) y reproduce sus filas como eventos.
+//               Comparador/research: decide tarde (al conocer el último trade del segundo) y marca si la entrada ya pasó.
+// LIVE_CAUSAL : cada trade real es un evento en T = su local_receive_timestamp. Única rama operable.
 const CFG = {
     symbol: 'ZEC',
-    venues: ['binance', 'coinbase', 'kraken', 'okx'],   // únicamente estos 4
-    spotRule: 'spot_o_ausente',  // los trades spot de PRRR NO traen market_type (sólo los perp traen 'perp'): spot = 'spot' o ausente; 'perp' se excluye
-    minVenues: 3,
-    spotMaxAgeMs: 1000,          // por local_receive_timestamp
-    gmxMaxAgeMs: 3000,           // por md_gmx.last.ZEC.ts (recepción local)
-    thrBps: 23.429,
-    cooldownMs: 10000,
-    entryLatencyMs: 1000,        // del trigger a la entrada
-    horizonsMs: [2000, 5000, 10000],   // desde la entrada
-    feeRtBps: 10,
-    maxEvents: 500,
-    uiMs: 250
+    venues: ['binance', 'coinbase', 'kraken', 'okx'],
+    spotRule: 'spot_o_ausente',   // los trades spot de PRRR no traen market_type; 'perp' se excluye
+    minVenues: 3, spotMaxAgeMs: 1000, gmxMaxAgeMs: 3000,
+    thrBps: 23.429, cooldownMs: 10000,
+    entryLatencyMs: 1000, horizonsMs: [2000, 5000, 10000],   // +5 s y +10 s = validación congelada · +2 s diagnóstico
+    feeRtBps: 10, maxEvents: 500, uiMs: 250,
+    replicaGraceMs: 500,          // = Stage 8 (market_ex_1s): filas idénticas
+    matchWindowMs: 1000           // comparación: mismo lado y |ΔT| ≤ 1 s
 };
+function engine(name) {
+    return { name: name, v: {}, prevAbove: false,   // como el backtest: prev_above.fillna(False) → la 1.ª evaluación válida puede disparar
+        lastTrigger: null, events: [], seq: 0, last: null,
+        cnt: { evals: 0, valid: 0, invalid: 0, onsets: 0, onsetsInCooldown: 0, triggers: 0 } };
+}
 const S = {
-    cfg: CFG, v: {},                 // venue → { px, tRecv, tEx }
-    above: null,                     // null = todavía sin evaluación válida (la primera no es onset)
-    cooldownUntil: 0, last: null, events: [], seq: 0, lastUi: 0,
-    cnt: { msgs: 0, trades: {}, skipped: { otherSymbol: 0, otherVenue: 0, perp: 0, badFields: 0 }, marketTypes: {}, triggers: 0, onsetsInCooldown: 0, validEvals: 0, invalidEvals: 0 },
-    startedAt: Date.now()
+    cfg: CFG, live: engine('LIVE_CAUSAL'), repl: engine('HIST_REPLICA'),
+    // réplica: buffer por segundo (como prrr_ex_agg)
+    nextSec: Math.floor(Date.now() / 1000) + 1, firstSec: Math.floor(Date.now() / 1000) + 1, open: new Map(), arrival: 0,
+    replRows: 0, replTies: 0, replLate: 0, replPreStart: 0, replHorizon: 0,
+    cnt: { msgs: 0, trades: {}, skipped: { otherSymbol: 0, otherVenue: 0, perp: 0, badFields: 0 }, marketTypes: {}, outOfOrder: 0 },
+    cmp: { matched: 0, dtSum: 0, liveOnly: 0, replOnly: 0 },
+    lastUi: 0, startedAt: Date.now()
 };
 context.set('S', S, 'memory');
 node.status({ fill: 'grey', shape: 'ring', text: 'esperando datos' });`;
 
-const SLM_FUNC = String.raw`// Entradas: mensajes del MD STREAM (topic 'trade') · 'tick' 250 ms.  Salida: estado → dashboard propio.
-// Nunca envía órdenes ni abre posiciones: los eventos y su forward son sólo observación en memoria.
+const SLM_FUNC = String.raw`// Entradas: MD STREAM (topic 'trade') · 'tick' 250 ms.  Salida: estado → dashboard propio.  Nunca órdenes.
+// El tick NO evalúa LIVE_CAUSAL ni toca su estado: sólo cierra segundos de la réplica (resultado fijado por los datos),
+// resuelve forwards, compara ramas y emite el dashboard.
 const S = context.get('S', 'memory'), C = S.cfg, now = Date.now();
 
 function median(a) { const s = a.slice().sort(function (x, y) { return x - y; }), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
-function gmxRing() { const R = global.get('md_gmx', 'memory'); return R && R.ring && R.ring[C.symbol]; }
-function gmxLast() { const R = global.get('md_gmx', 'memory'); return R && R.last && R.last[C.symbol]; }
-function quoteAt(T) {                                   // último quote GMX conocido en T (ts local ≤ T); fresco si T − ts ≤ gmxMaxAgeMs
-    const g = gmxRing(); let best = null;
-    if (g && g.count) for (let i = 1; i <= g.count; i++) { const q = g.buf[(g.idx - i + g.size) % g.size]; if (!q) break; if (q.ts <= T) { best = q; break; } }
-    if (!best) return { fail: 'sin quote GMX conocido en ese instante' };
-    if (T - best.ts > C.gmxMaxAgeMs) return { fail: 'quote GMX viejo (' + (T - best.ts) + ' ms)' };
-    return best;
+function roundDec(x, d) {                               // redondeo decimal half-up sobre la representación decimal (como DECIMAL de MariaDB)
+    let s = typeof x === 'string' ? x : String(x);
+    if (/e/i.test(s)) s = Number(s).toFixed(20);
+    const neg = s[0] === '-'; if (neg) s = s.slice(1);
+    let [ip, fp = ''] = s.split('.');
+    if (fp.length <= d) return Number((neg ? '-' : '') + ip + (fp ? '.' + fp : ''));
+    const up = fp.charCodeAt(d) - 48 >= 5;
+    let digits = (ip + fp.slice(0, d)).split('').map(Number);
+    if (up) { let i = digits.length - 1; while (i >= 0) { digits[i]++; if (digits[i] < 10) break; digits[i] = 0; i--; } if (i < 0) digits.unshift(1); }
+    const str = digits.join(''), cut = str.length - d;
+    return Number((neg ? '-' : '') + str.slice(0, cut) + (d ? '.' + str.slice(cut) : ''));
+}
+function gmxAt(T, exact) {                              // último quote con ts ≤ T y edad ≤ 3 s (exact: valores como los lee el backtest de gmx_price)
+    const R = global.get('md_gmx', 'memory'), g = R && R.ring && R.ring[C.symbol];
+    let q = null;
+    if (g && g.count) for (let i = 1; i <= g.count; i++) { const r = g.buf[(g.idx - i + g.size) % g.size]; if (!r) break; if (r.ts <= T) { q = r; break; } }
+    if (!q) return { fail: 'sin quote GMX ≤ T' };
+    if (T - q.ts > C.gmxMaxAgeMs) return { fail: 'quote GMX viejo (' + (T - q.ts) + ' ms)' };
+    if (!exact) return { mid: q.mid, min: q.min, max: q.max, ts: q.ts };
+    return { mid: roundDec(q.midS || q.mid, 18), min: roundDec(q.minS || q.min, 18), max: roundDec(q.maxS || q.max, 18), ts: q.ts };   // DECIMAL(30,18)
 }
 
-// ---------- spot: último trade de cada venue ----------
+// ---------- evaluación de una rama en T (regla congelada) ----------
+function evaluate(E, T, exact) {
+    E.cnt.evals++;
+    const fresh = [];
+    for (const name of C.venues) { const v = E.v[name]; if (v && v.recv <= T && T - v.recv <= C.spotMaxAgeMs) fresh.push({ venue: name, px: v.px, age_ms: T - v.recv }); }
+    const q = gmxAt(T, exact);
+    const ev = { T: T, at: now, venues: fresh.length, fresh: fresh.map(function (f) { return f.venue; }), gmx: q.fail ? null : q, gmx_fail: q.fail || null };
+    if (fresh.length) { const p = fresh.map(function (f) { return f.px; }); ev.spot_median = median(p); ev.dispersion_bps = (Math.max.apply(null, p) - Math.min.apply(null, p)) / ev.spot_median * 10000; }
+    if (fresh.length < C.minVenues || q.fail) {        // evaluación inválida: no entra a la serie → no toca prevAbove
+        E.cnt.invalid++; ev.valid = false; ev.reason = fresh.length < C.minVenues ? 'venues ' + fresh.length + ' < ' + C.minVenues : q.fail; E.last = ev; return;
+    }
+    E.cnt.valid++; ev.valid = true;
+    ev.basis_bps = (ev.spot_median / q.mid - 1) * 10000;
+    const above = Math.abs(ev.basis_bps) >= C.thrBps;
+    if (above && !E.prevAbove) {
+        E.cnt.onsets++;
+        if (E.lastTrigger === null || T - E.lastTrigger >= C.cooldownMs) {
+            E.lastTrigger = T; E.cnt.triggers++;
+            const e = { id: ++E.seq, branch: E.name, T: T, decidedAt: now, decision_delay_ms: now - T, side: ev.basis_bps > 0 ? 'LONG' : 'SHORT', basis_bps: ev.basis_bps,
+                spot_median: ev.spot_median, gmx_mid: q.mid, venues: fresh.map(function (f) { return f.venue + ' ' + f.px + ' (' + f.age_ms + ' ms)'; }),
+                entryAt: T + C.entryLatencyMs, entry_in_past: now > T + C.entryLatencyMs, entry: null, fwd: {}, match: null };
+            E.events.push(e); if (E.events.length > C.maxEvents) E.events.splice(0, E.events.length - C.maxEvents);
+            node.log(E.name + ' trigger ' + e.side + ' T=' + new Date(T).toISOString().slice(11, 23) + ' basis ' + ev.basis_bps.toFixed(3) + (e.entry_in_past ? ' (entrada ya pasada al decidir: +' + (now - T) + ' ms)' : ''));
+        } else E.cnt.onsetsInCooldown++;
+    }
+    E.prevAbove = above;
+    E.last = ev;
+}
+
+// ---------- réplica: cerrar segundos (filas = último trade por venue/segundo) y reproducirlas en orden de recv_ts ----------
+function closeReplica() {
+    while (now >= (S.nextSec + 1) * 1000 + C.replicaGraceMs) {
+        const sec = S.nextSec, m = S.open.get(sec);
+        if (m) {
+            const rows = Array.from(m.values()).sort(function (a, b) { return a.recv - b.recv || a.arr - b.arr; });   // estable: orden natural de llegada
+            for (let i = 0; i < rows.length; i++) {
+                const r = rows[i];
+                if (i > 0 && rows[i - 1].recv === r.recv) S.replTies++;
+                S.repl.v[r.venue] = { px: r.px, recv: r.recv };
+                S.replRows++;
+                evaluate(S.repl, r.recv, true);
+            }
+            S.open.delete(sec);
+        }
+        S.nextSec++; S.replHorizon = S.nextSec * 1000 - 1;   // todas las filas con recv_ts < nextSec·1000 ya fueron procesadas
+    }
+}
+
+// ---------- trade spot ----------
 if (msg.topic === 'trade') {
     S.cnt.msgs++;
     const t = msg.payload;
     if (!t || t.symbol !== C.symbol) { S.cnt.skipped.otherSymbol++; return null; }
     if (C.venues.indexOf(t.exchange) < 0) { S.cnt.skipped.otherVenue++; return null; }
-    const mt = t.market_type == null ? '(ausente)' : String(t.market_type);
-    S.cnt.marketTypes[mt] = (S.cnt.marketTypes[mt] || 0) + 1;
+    const mt = t.market_type == null ? '(ausente)' : String(t.market_type); S.cnt.marketTypes[mt] = (S.cnt.marketTypes[mt] || 0) + 1;
     if (!(t.market_type == null || t.market_type === 'spot')) { S.cnt.skipped.perp++; return null; }
-    const px = Number(t.price), tr = Number(t.local_receive_timestamp);
-    if (!(px > 0) || !isFinite(tr)) { S.cnt.skipped.badFields++; return null; }
-    const v = S.v[t.exchange];
-    if (!v || tr >= v.tRecv) S.v[t.exchange] = { px: px, tRecv: tr, tEx: Number(t.exchange_timestamp) || null };
+    const px = Number(t.price), T = Number(t.local_receive_timestamp);
+    if (!(px > 0) || !isFinite(T)) { S.cnt.skipped.badFields++; return null; }
     S.cnt.trades[t.exchange] = (S.cnt.trades[t.exchange] || 0) + 1;
-} else if (msg.topic !== 'tick') return null;
-
-// ---------- evaluación (en cada trade y en cada tick) ----------
-const ages = {}, fresh = [];
-for (const name of C.venues) {
-    const v = S.v[name];
-    ages[name] = v ? now - v.tRecv : null;
-    if (v && now - v.tRecv <= C.spotMaxAgeMs) fresh.push({ venue: name, px: v.px, age_ms: now - v.tRecv });
-}
-const g = gmxLast(), gmxAge = g ? now - g.ts : null, gmxOk = !!(g && g.mid > 0 && gmxAge <= C.gmxMaxAgeMs);
-const valid = fresh.length >= C.minVenues && gmxOk;
-const ev = { t: now, valid: valid, venues: fresh.length, fresh: fresh, ages: ages, gmx_age_ms: gmxAge,
-    gmx_mid: g ? g.mid : null, gmx_min: g ? g.min : null, gmx_max: g ? g.max : null,
-    reason: valid ? null : (fresh.length < C.minVenues ? 'venues frescos ' + fresh.length + ' < ' + C.minVenues : (!g ? 'sin GMX' : 'GMX viejo (' + gmxAge + ' ms)')) };
-if (fresh.length) {
-    const prices = fresh.map(function (f) { return f.px; });
-    ev.spot_median = median(prices);
-    ev.dispersion_bps = (Math.max.apply(null, prices) - Math.min.apply(null, prices)) / ev.spot_median * 10000;
-}
-if (valid) {
-    S.cnt.validEvals++;
-    ev.basis_bps = (ev.spot_median / g.mid - 1) * 10000;
-    const nowAbove = Math.abs(ev.basis_bps) >= C.thrBps;
-    if (S.above === null) S.above = nowAbove;                       // primera evaluación válida: fija el estado, no es onset
+    // LIVE_CAUSAL: evento en T = local_receive_timestamp de este trade
+    const lv = S.live.v[t.exchange];
+    if (!lv || T >= lv.recv) S.live.v[t.exchange] = { px: px, recv: T }; else S.cnt.outOfOrder++;
+    evaluate(S.live, T, false);
+    // HIST_REPLICA: acumular en su segundo (mismo criterio que prrr_ex_agg)
+    const sec = Math.floor(T / 1000);
+    if (sec < S.nextSec) { if (sec < S.firstSec) S.replPreStart++; else S.replLate++; }
     else {
-        if (nowAbove && !S.above) {                                  // ONSET
-            if (now < S.cooldownUntil) S.cnt.onsetsInCooldown++;
-            else {
-                const side = ev.basis_bps > 0 ? 'LONG' : 'SHORT';
-                S.cnt.triggers++; S.cooldownUntil = now + C.cooldownMs;
-                S.events.push({ id: ++S.seq, t: now, side: side, basis_bps: ev.basis_bps, spot_median: ev.spot_median, gmx_mid: g.mid, gmx_min: g.min, gmx_max: g.max,
-                    gmx_ts: g.ts, gmx_age_ms: gmxAge, venues: fresh.map(function (f) { return f.venue + ' ' + f.px + ' (' + f.age_ms + ' ms)'; }), dispersion_bps: ev.dispersion_bps,
-                    entryDue: now + C.entryLatencyMs, entry: null, fwd: {} });
-                if (S.events.length > C.maxEvents) S.events.splice(0, S.events.length - C.maxEvents);
-                node.log('LEADLAG trigger ' + side + ' basis ' + ev.basis_bps.toFixed(3) + ' bps (spot ' + ev.spot_median + ' / gmx ' + g.mid + ')');
-            }
+        let m = S.open.get(sec); if (!m) { m = new Map(); S.open.set(sec, m); }
+        const a = m.get(t.exchange);
+        if (!a || T >= a.recv) m.set(t.exchange, { venue: t.exchange, px: roundDec(px, 8), recv: T, arr: ++S.arrival });   // DECIMAL(20,8)
+    }
+    closeReplica();
+    return null;
+}
+if (msg.topic !== 'tick') return null;
+closeReplica();
+
+// ---------- forwards (ambas ramas): entrada T+1000 · salidas +2/+5/+10 s desde la entrada · gmx_at causal ----------
+function resolve(E, exact) {
+    for (const e of E.events) {
+        if (e.done) continue;
+        if (!e.entry && now >= e.entryAt) { const q = gmxAt(e.entryAt, exact); e.entry = q.fail ? { fail: q.fail } : { px: e.side === 'LONG' ? q.max : q.min, quote_ts: q.ts }; if (e.entry.fail) { e.done = true; continue; } }
+        if (!e.entry) continue;
+        let pending = 0;
+        for (const h of C.horizonsMs) {
+            if (e.fwd[h]) continue;
+            const at = e.entryAt + h; if (now < at) { pending++; continue; }
+            const q = gmxAt(at, exact);
+            if (q.fail) { e.fwd[h] = { fail: q.fail }; continue; }
+            const x = e.side === 'LONG' ? q.min : q.max, gross = e.side === 'LONG' ? (x / e.entry.px - 1) * 10000 : (1 - x / e.entry.px) * 10000;
+            e.fwd[h] = { px: x, gross_bps: gross, net_bps: gross - C.feeRtBps };
         }
-        S.above = nowAbove;                                          // un intervalo inválido NO llega acá: no resetea above/below
+        if (!pending) e.done = true;
     }
-} else S.cnt.invalidEvals++;
-S.last = ev;
-
-// ---------- forward paper: entrada a +1000 ms, salidas a +2/+5/+10 s desde la entrada (quotes conocidos por ts local) ----------
-for (const e of S.events) {
-    if (e.done) continue;
-    if (!e.entry && now >= e.entryDue) {
-        const q = quoteAt(e.entryDue);
-        e.entry = q.fail ? { fail: q.fail } : { px: e.side === 'LONG' ? q.max : q.min, quote_ts: q.ts, quote_age_ms: e.entryDue - q.ts };
-        if (e.entry.fail) e.done = true;
-    }
-    if (!e.entry || e.entry.fail) continue;
-    let pending = 0;
-    for (const h of C.horizonsMs) {
-        if (e.fwd[h]) continue;
-        const due = e.entryDue + h;
-        if (now < due) { pending++; continue; }
-        const q = quoteAt(due);
-        if (q.fail) { e.fwd[h] = { fail: q.fail }; continue; }
-        const exit = e.side === 'LONG' ? q.min : q.max;
-        const gross = e.side === 'LONG' ? (exit / e.entry.px - 1) * 10000 : (1 - exit / e.entry.px) * 10000;
-        e.fwd[h] = { px: exit, quote_ts: q.ts, quote_age_ms: due - q.ts, gross_bps: gross, net_bps: gross - C.feeRtBps };
-    }
-    if (!pending) e.done = true;
 }
+resolve(S.live, false); resolve(S.repl, true);
 
-// ---------- estado para el dashboard (cada 250 ms) ----------
-if (msg.topic !== 'tick' || now - S.lastUi < C.uiMs - 20) return null;
+// ---------- comparación de ramas: mismo lado y |ΔT| ≤ 1 s ----------
+for (const r of S.repl.events) {
+    if (r.match) continue;
+    let best = null;
+    for (const l of S.live.events) if (!l.match && l.side === r.side && Math.abs(l.T - r.T) <= C.matchWindowMs && (!best || Math.abs(l.T - r.T) < Math.abs(best.T - r.T))) best = l;
+    if (best) { r.match = best.id; best.match = r.id; r.dt = best.T - r.T; best.dt = r.dt; S.cmp.matched++; S.cmp.dtSum += r.dt; }
+    else if (now > r.T + C.matchWindowMs + 100) { r.match = 'solo'; S.cmp.replOnly++; }
+}
+for (const l of S.live.events) if (!l.match && S.replHorizon > l.T + C.matchWindowMs) { l.match = 'solo'; S.cmp.liveOnly++; }
+
+// ---------- estado para el dashboard (4/s) ----------
+if (now - S.lastUi < C.uiMs - 20) return null;
 S.lastUi = now;
-const inCd = now < S.cooldownUntil, lastEv = S.events[S.events.length - 1];
-const stats = {};
-for (const h of C.horizonsMs) {
-    const all = [], L = [], Sh = []; let fails = 0;
-    for (const e of S.events) { const f = e.fwd[h]; if (!f) continue; if (f.fail) { fails++; continue; } all.push(f.net_bps); (e.side === 'LONG' ? L : Sh).push(f.net_bps); }
-    const sum = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
-    stats[h / 1000 + 's'] = { n: all.length, mean_net_bps: all.length ? sum(all) / all.length : null, median_net_bps: all.length ? median(all) : null,
-        win_pct: all.length ? all.filter(function (x) { return x > 0; }).length * 100 / all.length : null,
-        long_n: L.length, long_mean: L.length ? sum(L) / L.length : null, short_n: Sh.length, short_mean: Sh.length ? sum(Sh) / Sh.length : null, sin_quote: fails };
+function stats(E) {
+    const o = {};
+    for (const h of C.horizonsMs) {
+        const all = [], L = [], Sh = []; let fails = 0;
+        for (const e of E.events) { const f = e.fwd[h]; if (!f) continue; if (f.fail) { fails++; continue; } all.push(f.net_bps); (e.side === 'LONG' ? L : Sh).push(f.net_bps); }
+        const avg = function (a) { return a.length ? a.reduce(function (x, y) { return x + y; }, 0) / a.length : null; };
+        o[h / 1000 + 's'] = { n: all.length, mean: avg(all), median: all.length ? median(all) : null, win: all.length ? all.filter(function (x) { return x > 0; }).length * 100 / all.length : null,
+            long_n: L.length, long_mean: avg(L), short_n: Sh.length, short_mean: avg(Sh), sin_quote: fails };
+    }
+    return o;
 }
-const out = {
-    monitor: 'SPOT_GMX_LEADLAG_V1_MONITOR', timestamp: now,
-    spot_median: ev.spot_median == null ? null : ev.spot_median, gmx_mid: ev.gmx_mid, basis_bps: valid ? ev.basis_bps : null,
-    threshold_bps: C.thrBps, venues: ev.venues, fresh_venues: fresh.map(function (f) { return f.venue; }), age_ms: ages,
-    spot_dispersion_bps: ev.dispersion_bps == null ? null : ev.dispersion_bps, gmx_age_ms: gmxAge, gmx_min: ev.gmx_min, gmx_max: ev.gmx_max,
-    estado: inCd ? lastEv.side : 'ESPERANDO', valid: valid, invalid_reason: ev.reason, above: S.above, cooldown_ms: inCd ? S.cooldownUntil - now : 0,
-    stats: stats, triggers: S.cnt.triggers, onsets_in_cooldown: S.cnt.onsetsInCooldown, events_in_memory: S.events.length,
-    last_events: S.events.slice(-12).reverse().map(function (e) {
-        const r = { id: e.id, t: e.t, side: e.side, basis_bps: e.basis_bps, entry: e.entry ? (e.entry.fail ? e.entry.fail : e.entry.px) : null, fwd: {} };
-        for (const h of C.horizonsMs) { const f = e.fwd[h]; r.fwd[h / 1000 + 's'] = !f ? null : (f.fail ? 'sin quote' : f.net_bps); }
-        return r; }),
-    counters: { msgs: S.cnt.msgs, trades: S.cnt.trades, skipped: S.cnt.skipped, market_type_seen: S.cnt.marketTypes, valid_evals: S.cnt.validEvals, invalid_evals: S.cnt.invalidEvals }
-};
-global.set('slm_leadlag_v1', { state: out, events: S.events }, 'memory');   // sólo lectura para análisis posterior
-node.status({ fill: valid ? (inCd ? (lastEv.side === 'LONG' ? 'green' : 'red') : 'blue') : 'yellow', shape: 'dot',
-    text: (valid ? 'basis ' + ev.basis_bps.toFixed(2) + ' bps' : 'inválido: ' + ev.reason) + ' · venues ' + ev.venues + ' · triggers ' + S.cnt.triggers });
+function branch(E) {
+    const ev = E.last || {}, lastEv = E.events[E.events.length - 1], inCd = E.lastTrigger !== null && (E === S.live ? now : S.replHorizon) - E.lastTrigger < C.cooldownMs;
+    return { name: E.name, T: ev.T || null, valid: !!ev.valid, reason: ev.reason || null, basis_bps: ev.valid ? ev.basis_bps : null, spot_median: ev.spot_median == null ? null : ev.spot_median,
+        gmx_mid: ev.gmx ? ev.gmx.mid : null, venues: ev.venues || 0, fresh_venues: ev.fresh || [], dispersion_bps: ev.dispersion_bps == null ? null : ev.dispersion_bps,
+        above: E.prevAbove, estado: inCd && lastEv ? lastEv.side : 'ESPERANDO', cnt: E.cnt, stats: stats(E),
+        entry_in_past: E.events.filter(function (e) { return e.entry_in_past; }).length,
+        decision_delay_ms: E.events.length ? E.events.reduce(function (a, e) { return a + e.decision_delay_ms; }, 0) / E.events.length : null,
+        last_events: E.events.slice(-10).reverse().map(function (e) {
+            const r = { id: e.id, T: e.T, side: e.side, basis_bps: e.basis_bps, entry: e.entry ? (e.entry.fail ? 'sin quote' : e.entry.px) : null, past: e.entry_in_past,
+                delay: e.decision_delay_ms, match: e.match === null ? '…' : (e.match === 'solo' ? 'solo' : '#' + e.match + ' (' + (e.dt >= 0 ? '+' : '') + e.dt + ' ms)'), fwd: {} };
+            for (const h of C.horizonsMs) { const f = e.fwd[h]; r.fwd[h / 1000 + 's'] = !f ? null : (f.fail ? 'sin quote' : f.net_bps); }
+            return r; }) };
+}
+const ages = {}; for (const name of C.venues) { const v = S.live.v[name]; ages[name] = v ? now - v.recv : null; }
+const g = (function () { const R = global.get('md_gmx', 'memory'); return R && R.last && R.last[C.symbol]; })();
+const out = { monitor: 'SPOT_GMX_LEADLAG_V1_MONITOR', timestamp: now, threshold_bps: C.thrBps,
+    gmx: g ? { mid: g.mid, min: g.min, max: g.max, age_ms: now - g.ts } : null, age_ms: ages,
+    live: branch(S.live), repl: branch(S.repl),
+    replica: { rows: S.replRows, ties: S.replTies, late: S.replLate, horizon: S.replHorizon, lag_ms: now - S.replHorizon },
+    cmp: { matched: S.cmp.matched, dt_mean_ms: S.cmp.matched ? S.cmp.dtSum / S.cmp.matched : null, live_only: S.cmp.liveOnly, repl_only: S.cmp.replOnly },
+    counters: { msgs: S.cnt.msgs, trades: S.cnt.trades, skipped: S.cnt.skipped, market_type_seen: S.cnt.marketTypes, out_of_order: S.cnt.outOfOrder } };
+global.set('slm_leadlag_v1', { state: out, live_events: S.live.events, replica_events: S.repl.events }, 'memory');
+const L = out.live;
+node.status({ fill: L.valid ? (L.estado === 'LONG' ? 'green' : L.estado === 'SHORT' ? 'red' : 'blue') : 'yellow', shape: 'dot',
+    text: 'LIVE ' + (L.valid ? L.basis_bps.toFixed(2) + ' bps' : 'inválido') + ' · trig LIVE ' + S.live.cnt.triggers + ' / REPLICA ' + S.repl.cnt.triggers + ' · coinciden ' + S.cmp.matched });
 return { payload: out };`;
 
 const SLM_TPL = String.raw`<style>
-.slm{font-family:monospace;font-size:13px;line-height:1.5}
-.slm .big{font-size:22px;font-weight:bold}.slm .k{opacity:.65}.slm .pos{color:#27ae60}.slm .neg{color:#e74c3c}.slm .warn{color:#e6a700}
-.slm table{border-collapse:collapse;margin-top:4px}.slm td,.slm th{padding:1px 8px 1px 0;text-align:right;white-space:nowrap}.slm th{opacity:.7;font-weight:normal}
-.slm .st{display:inline-block;min-width:92px;padding:0 8px;border-radius:3px;color:#fff;font-weight:bold;text-align:center;background:#78909c}
-.slm .st.LONG{background:#00a152}.slm .st.SHORT{background:#d50000}
-.slm .sep{border-top:1px solid rgba(128,128,128,.35);margin:6px 0}
+.slm{font-family:monospace;font-size:13px;line-height:1.45}
+.slm .k{opacity:.65}.slm .pos{color:#27ae60}.slm .neg{color:#e74c3c}.slm .warn{color:#e6a700}
+.slm .cols{display:flex;gap:18px;flex-wrap:wrap}.slm .col{flex:1 1 560px;min-width:520px;border:1px solid rgba(128,128,128,.35);border-radius:4px;padding:6px 8px}
+.slm h4{margin:0 0 4px 0;font-size:14px}.slm .big{font-size:20px;font-weight:bold}
+.slm table{border-collapse:collapse;margin-top:4px}.slm td,.slm th{padding:1px 7px 1px 0;text-align:right;white-space:nowrap}.slm th{opacity:.7;font-weight:normal}
+.slm .st{display:inline-block;min-width:88px;padding:0 6px;border-radius:3px;color:#fff;font-weight:bold;text-align:center;background:#78909c}
+.slm .st.LONG{background:#00a152}.slm .st.SHORT{background:#d50000}.slm .tag{font-weight:bold;letter-spacing:.5px}
+.slm tr.main td{font-weight:bold}
 </style>
 <div class="slm" ng-if="msg.payload">
- <div><b>SPOT_GMX_LEADLAG_V1_MONITOR</b> <span class="k">· sólo observación / paper · nunca órdenes</span></div>
- <div>
-  <span class="st" ng-class="msg.payload.estado">{{msg.payload.estado}}</span>
-  <span ng-if="msg.payload.cooldown_ms" class="k">cooldown {{msg.payload.cooldown_ms/1000 | number:1}} s</span>
-  <span ng-if="!msg.payload.valid" class="warn">· inválido: {{msg.payload.invalid_reason}}</span>
+ <div><b>SPOT_GMX_LEADLAG_V1_MONITOR</b> <span class="k">· sólo observación / paper · nunca órdenes · umbral ±{{msg.payload.threshold_bps}} bps · cooldown 10 s · entrada T+1 s · fee RT 10 bps</span></div>
+ <div><span class="k">GMX</span> mid <b>{{msg.payload.gmx ? (msg.payload.gmx.mid | number:4) : '—'}}</b> <span class="k">min/max</span> {{msg.payload.gmx.min | number:4}} / {{msg.payload.gmx.max | number:4}}
+  <span class="k">· edad</span> <b ng-class="{'warn': msg.payload.gmx.age_ms > 3000}">{{msg.payload.gmx.age_ms}} ms</b>
+  <span class="k">· edad venues (live):</span> <span ng-repeat="(k,v) in msg.payload.age_ms" ng-class="{'warn': v==null || v > 1000}">{{k}} {{v==null?'—':v+' ms'}}&nbsp;</span></div>
+ <div class="cols">
+  <div class="col" ng-repeat="B in [msg.payload.live, msg.payload.repl]">
+   <h4><span class="tag">{{B.name}}</span> <span class="k">{{B.name==='LIVE_CAUSAL' ? '· operable · evento = cada trade, T = local_receive_timestamp' : '· comparador research · filas market_ex_1s (último trade/venue/seg) · decide a S+1,5 s'}}</span></h4>
+   <div><span class="st" ng-class="B.estado">{{B.estado}}</span> <span class="k">basis</span> <span class="big" ng-class="B.basis_bps>0?'pos':(B.basis_bps<0?'neg':'')">{{B.basis_bps==null?'—':(B.basis_bps | number:3)}}</span>
+    <span class="k">bps · {{B.above?'por encima':'por debajo'}}</span> <span ng-if="!B.valid" class="warn">· inválido: {{B.reason}}</span></div>
+   <div><span class="k">spot median</span> <b>{{B.spot_median==null?'—':(B.spot_median | number:4)}}</b> <span class="k">· venues</span> <b>{{B.venues}}</b> {{B.fresh_venues.join(' · ')}}
+    <span class="k">· dispersión</span> {{B.dispersion_bps==null?'—':(B.dispersion_bps | number:2)}} <span class="k">bps · T</span> {{B.T | date:'HH:mm:ss.sss'}}</div>
+   <div><span class="k">evaluaciones</span> {{B.cnt.evals}} <span class="k">(válidas {{B.cnt.valid}}) · onsets</span> {{B.cnt.onsets}} <span class="k">· en cooldown</span> {{B.cnt.onsetsInCooldown}}
+    <span class="k">· triggers</span> <b>{{B.cnt.triggers}}</b> <span ng-if="B.name==='HIST_REPLICA'"><span class="k">· entrada ya pasada al decidir</span> <b class="warn">{{B.entry_in_past}}</b></span>
+    <span class="k">· demora decisión media</span> {{B.decision_delay_ms==null?'—':(B.decision_delay_ms | number:0)+' ms'}}</div>
+   <table>
+    <tr><th>forward</th><th>n</th><th>neto medio</th><th>mediana</th><th>% &gt; 0</th><th>LONG n · medio</th><th>SHORT n · medio</th><th>sin quote</th></tr>
+    <tr ng-repeat="h in ['5s','10s','2s']" ng-class="{'main': h!=='2s'}" ng-init="s=B.stats[h]"><td>+{{h}}{{h==='2s'?' (diag)':''}}</td><td>{{s.n}}</td>
+     <td ng-class="s.mean>0?'pos':(s.mean<0?'neg':'')">{{s.mean==null?'—':(s.mean | number:2)}}</td><td>{{s.median==null?'—':(s.median | number:2)}}</td><td>{{s.win==null?'—':(s.win | number:0)+' %'}}</td>
+     <td>{{s.long_n}} · {{s.long_mean==null?'—':(s.long_mean | number:2)}}</td><td>{{s.short_n}} · {{s.short_mean==null?'—':(s.short_mean | number:2)}}</td><td>{{s.sin_quote}}</td></tr>
+   </table>
+   <table>
+    <tr><th>#</th><th>T</th><th>lado</th><th>basis</th><th>entrada</th><th>+5s</th><th>+10s</th><th>+2s</th><th>demora</th><th>par</th></tr>
+    <tr ng-repeat="e in B.last_events"><td>{{e.id}}</td><td>{{e.T | date:'HH:mm:ss.sss'}}</td><td ng-class="e.side==='LONG'?'pos':'neg'">{{e.side}}</td><td>{{e.basis_bps | number:2}}</td>
+     <td ng-class="{'warn': e.past}">{{e.entry==null?'pendiente':(e.entry==='sin quote'?e.entry:(e.entry | number:4))}}{{e.past?' (pasada)':''}}</td>
+     <td ng-repeat="h in ['5s','10s','2s']" ng-class="e.fwd[h]>0?'pos':(e.fwd[h]<0?'neg':'')">{{e.fwd[h]==null?'…':(e.fwd[h]==='sin quote'?'sin quote':(e.fwd[h] | number:2))}}</td>
+     <td>{{e.delay}} ms</td><td>{{e.match}}</td></tr>
+   </table>
+  </div>
  </div>
- <div>
-  <span class="k">basis</span> <span class="big" ng-class="msg.payload.basis_bps>0?'pos':(msg.payload.basis_bps<0?'neg':'')">{{msg.payload.basis_bps==null?'—':(msg.payload.basis_bps | number:3)}}</span> <span class="k">bps · umbral ±{{msg.payload.threshold_bps}}</span>
-  <span class="k">· {{msg.payload.above?'por encima':'por debajo'}} del umbral</span>
- </div>
- <div><span class="k">spot median</span> <b>{{msg.payload.spot_median==null?'—':(msg.payload.spot_median | number:4)}}</b>
-  <span class="k">· GMX mid</span> <b>{{msg.payload.gmx_mid==null?'—':(msg.payload.gmx_mid | number:4)}}</b>
-  <span class="k">(min {{msg.payload.gmx_min | number:4}} / max {{msg.payload.gmx_max | number:4}}) · edad GMX</span>
-  <b ng-class="{'warn': msg.payload.gmx_age_ms > 3000}">{{msg.payload.gmx_age_ms==null?'—':msg.payload.gmx_age_ms+' ms'}}</b></div>
- <div><span class="k">venues frescos</span> <b ng-class="{'warn': msg.payload.venues < 3}">{{msg.payload.venues}}/4</b> {{msg.payload.fresh_venues.join(' · ')}}
-  <span class="k">· dispersión spot</span> <b>{{msg.payload.spot_dispersion_bps==null?'—':(msg.payload.spot_dispersion_bps | number:2)+' bps'}}</b></div>
- <div><span class="k">edad por venue:</span> <span ng-repeat="(k,v) in msg.payload.age_ms" ng-class="{'warn': v==null || v > 1000}">{{k}} {{v==null?'—':v+' ms'}}&nbsp;&nbsp;</span></div>
- <div class="sep"></div>
- <div><span class="k">triggers</span> <b>{{msg.payload.triggers}}</b> <span class="k">· onsets en cooldown</span> {{msg.payload.onsets_in_cooldown}} <span class="k">· eventos en memoria</span> {{msg.payload.events_in_memory}}/500
-  <span class="k">· forward: entrada +1 s (LONG max / SHORT min), salida LONG min / SHORT max, fee RT 10 bps</span></div>
- <table>
-  <tr><th>horizonte</th><th>n</th><th>neto medio</th><th>neto mediana</th><th>% &gt; 0</th><th>LONG n · medio</th><th>SHORT n · medio</th><th>sin quote</th></tr>
-  <tr ng-repeat="(h,s) in msg.payload.stats"><td>+{{h}}</td><td>{{s.n}}</td>
-   <td ng-class="s.mean_net_bps>0?'pos':(s.mean_net_bps<0?'neg':'')">{{s.mean_net_bps==null?'—':(s.mean_net_bps | number:2)}}</td>
-   <td>{{s.median_net_bps==null?'—':(s.median_net_bps | number:2)}}</td><td>{{s.win_pct==null?'—':(s.win_pct | number:0)+' %'}}</td>
-   <td>{{s.long_n}} · {{s.long_mean==null?'—':(s.long_mean | number:2)}}</td><td>{{s.short_n}} · {{s.short_mean==null?'—':(s.short_mean | number:2)}}</td><td>{{s.sin_quote}}</td></tr>
- </table>
- <div class="sep"></div>
- <table>
-  <tr><th>#</th><th>hora</th><th>lado</th><th>basis</th><th>entrada GMX</th><th>+2s neto</th><th>+5s neto</th><th>+10s neto</th></tr>
-  <tr ng-repeat="e in msg.payload.last_events"><td>{{e.id}}</td><td>{{e.t | date:'HH:mm:ss.sss'}}</td><td ng-class="e.side==='LONG'?'pos':'neg'">{{e.side}}</td><td>{{e.basis_bps | number:2}}</td>
-   <td>{{e.entry==null?'pendiente':(e.entry | number:4)}}</td>
-   <td ng-repeat="h in ['2s','5s','10s']" ng-class="e.fwd[h]>0?'pos':(e.fwd[h]<0?'neg':'')">{{e.fwd[h]==null?'…':(e.fwd[h]==='sin quote'?'sin quote':(e.fwd[h] | number:2))}}</td></tr>
- </table>
- <div class="k" style="margin-top:4px">trades usados: {{msg.payload.counters.trades}} · market_type vistos: {{msg.payload.counters.market_type_seen}}</div>
+ <div style="margin-top:6px"><b>Comparación</b> <span class="k">(mismo lado, |ΔT| ≤ 1 s)</span>: coinciden <b>{{msg.payload.cmp.matched}}</b>
+  <span class="k">· ΔT medio LIVE − REPLICA</span> {{msg.payload.cmp.dt_mean_ms==null?'—':(msg.payload.cmp.dt_mean_ms | number:0)+' ms'}}
+  <span class="k">· sólo LIVE</span> <b>{{msg.payload.cmp.live_only}}</b> <span class="k">· sólo REPLICA</span> <b>{{msg.payload.cmp.repl_only}}</b></div>
+ <div class="k">réplica: filas {{msg.payload.replica.rows}} · empates de recv_ts {{msg.payload.replica.ties}} · trades tardíos (>500 ms) {{msg.payload.replica.late}} · atraso réplica {{msg.payload.replica.lag_ms}} ms
+  · trades usados {{msg.payload.counters.trades}} · market_type {{msg.payload.counters.market_type_seen}} · fuera de orden {{msg.payload.counters.out_of_order}}</div>
 </div>
 <div class="slm" ng-if="!msg.payload">SPOT_GMX_LEADLAG_V1_MONITOR: esperando…</div>`;
 
@@ -3855,7 +3913,7 @@ inGroup(gSlm, { id: SLM, type: 'function', z: TAB, name: 'SPOT_GMX_LEADLAG_V1_MO
 inGroup(gSlm, Object.assign({}, tplBase, { id: SLMUI, name: 'LEADLAG monitor (dashboard)', group: 'slm_ui_group', order: 1, width: 20, height: 16,
   format: SLM_TPL, storeOutMessages: false, resendOnRefresh: true, x: 780, y: SLY + 20, wires: [[]] }));
 inGroup(gSlm, { id: 'slm_comment', type: 'comment', z: TAB, name: 'LEADLAG: regla congelada',
-  info: 'Sólo observación/paper. Nunca envía órdenes ni abre posiciones. Sin MySQL.\n\n* Spot: binance/coinbase/kraken/okx; spot = market_type "spot" o ausente (los trades spot de PRRR no traen market_type; "perp" se excluye). Último trade por venue; fresco si now − local_receive_timestamp ≤ 1000 ms; mínimo 3 venues.\n* spot_median = mediana de los frescos · GMX: global md_gmx.last.ZEC, fresco si now − ts ≤ 3000 ms · gmx_mid = mid.\n* basis_bps = (spot_median / gmx_mid − 1) × 10000. Se evalúa en cada trade y cada 250 ms.\n* Trigger sólo en el ONSET de |basis| ≥ 23,429 (venía por debajo en la última evaluación válida). La primera evaluación válida tras arrancar sólo fija el estado. Un intervalo inválido no resetea above/below. +umbral → −umbral sin bajar no es onset. Cooldown 10 s; los onsets dentro del cooldown se cuentan y no disparan; al terminar no dispara solo.\n* LONG si basis > 0, SHORT si < 0. Estado LONG/SHORT durante el cooldown; si no, ESPERANDO.\n* Forward: entrada a trigger + 1000 ms con el último quote GMX con ts ≤ ese instante (fresco ≤ 3000 ms): LONG max, SHORT min. Salidas a +2/+5/+10 s desde la entrada: LONG min, SHORT max. Neto = bruto − 10 bps. Últimos 500 eventos en memoria (global slm_leadlag_v1).',
+  info: 'Sólo observación/paper. Nunca envía órdenes ni abre posiciones. Sin MySQL. Dos ramas en paralelo con la regla congelada de spot_core_clean.py:\n\n* **HIST_REPLICA** (comparador/research): reconstruye las filas de market_ex_1s (último trade por venue y segundo de recepción, cierre a S+1000+500 ms, tardíos descartados; precio redondeado a DECIMAL(20,8)) y las reproduce en orden de recv_ts (empates: orden natural de llegada, contados). Decide recién al cerrar el segundo y marca si la entrada T+1000 ya había pasado.\n* **LIVE_CAUSAL** (operable): cada trade real es un evento con T = local_receive_timestamp.\n\nRegla (ambas): venues binance/coinbase/kraken/okx, spot = market_type spot o ausente; carry-forward del último precio por venue; válido si recv_ts ≤ T y T − recv_ts ≤ 1000 ms; mínimo 3; spot_median = mediana; GMX = último quote con ts ≤ T y edad ≤ 3 s (réplica: valores redondeados como gmx_price DECIMAL(30,18)); basis = (spot_median / mid − 1)·1e4. Las evaluaciones inválidas no entran a la serie (no tocan prev_above). onset = above ∧ ¬prev_above con prev_above inicial = False (la 1.ª evaluación válida puede disparar). Trigger si T − último_trigger ≥ 10 s. LONG si basis > 0.\n\nForward: entrada T + 1000 ms (LONG max, SHORT min), salidas +2/+5/+10 s desde la entrada (LONG min, SHORT max), gmx_at causal, neto = bruto − 10 bps. +5 s y +10 s = validación congelada; +2 s diagnóstico. El tick 250 ms no evalúa LIVE_CAUSAL: cierra segundos de la réplica, resuelve forwards, compara ramas (mismo lado y |ΔT| ≤ 1 s) y emite el dashboard. Últimos 500 eventos por rama en memoria (global slm_leadlag_v1).',
   x: 490, y: SLY + 70, wires: [] });
 
 // ---------------------------------------------------------------------------
