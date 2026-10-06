@@ -1,6 +1,56 @@
-# PRRR Market Data — Etapas 1 → 8
+# PRRR Market Data — Etapas 1 → 9
 
-**Versión actual: `prrr-market-data-stage8.json`** (generador `tools/build-prrr-stage8.js`). Sobre la etapa 7 en marcha: **addon `prrr-market-data-stage8-addon.json`** (sólo nodos nuevos).
+**Versión actual: `prrr-market-data-stage9.json`** (generador `tools/build-prrr-stage9.js`). Monitor LEADLAG para la instalación real: **`spot-gmx-leadlag-v1-monitor-addon.json`**.
+
+## Etapa 9 — `SPOT_GMX_LEADLAG_V1_MONITOR` (aislado · sólo observación/paper · nunca órdenes)
+```
+"MD STREAM →" (id real b422762406083786) ──→ [link in nuevo slm_in] ─┐
+tick 250 ms ──────────────────────────────────────────────────────────┼→ SPOT_GMX_LEADLAG_V1_MONITOR → ui_template (pestaña LEADLAG propia)
+global md_gmx.last.ZEC / md_gmx.ring.ZEC (sólo lectura) ──────────────┘
+```
+* **Addon:** 8 nodos nuevos (grupo, pestaña y grupo de dashboard propios, link in, tick, function, template, comentario).
+  * Ningún wire hacia nodos existentes.
+  * Sin MySQL.
+  * No toca Conceptito (`prrr_cx_engine`, `2b52d690158290f8`), `CONCEPTITO_SPECTRUM_V1`, Stage 8 (`prrr_ex_in`/`prrr_ex_agg`), `prrr_gmx_poll`, MERCADO ni `conceptito_trades`.
+* **Formato real de los inputs** (inspeccionado):
+  * **Spot:** `{topic:'trade', payload:{symbol, quote, market, exchange, kind, price, quantity, side, trade_id, exchange_timestamp, exchange_ts_raw, local_receive_timestamp, raw}}`.
+  * **Los trades spot NO traen `market_type`** (sólo los perp traen `'perp'`). Por eso el monitor toma spot = `market_type` `'spot'` **o ausente** y excluye `'perp'`, igual que `market_1s` y `market_ex_1s` (parámetro `spotRule`).
+  * **GMX** (`md_gmx.last.ZEC`): `{symbol, ts (recepción local), source_ts, min, max, mid, minS, maxS, midS, minRaw, maxRaw, age_ms, rtt_ms, source}`. Historial en `md_gmx.ring.ZEC = {size, buf, idx, count}`.
+* **Regla congelada:**
+  * **Venues:** binance/coinbase/kraken/okx; último trade por venue; fresco si `now − local_receive_timestamp ≤ 1000 ms`; mínimo 3 venues.
+  * `spot_median` = mediana de los frescos.
+  * **GMX:** fresco si `now − ts ≤ 3000 ms`.
+  * `basis_bps = (spot_median / gmx_mid − 1) × 10000`, evaluado **en cada trade y cada 250 ms**.
+  * **Trigger** sólo en el onset de |basis| ≥ 23,429. LONG si basis > 0, SHORT si < 0. Cooldown 10 s.
+  * La primera evaluación válida tras arrancar sólo fija el estado.
+  * Un intervalo inválido no resetea above/below.
+  * +umbral → −umbral sin bajar no es onset.
+  * Al terminar el cooldown no dispara solo; los onsets dentro del cooldown se cuentan.
+* **Forward paper:**
+  * **Entrada:** trigger + 1000 ms.
+  * **Salidas:** +2/+5/+10 s desde la entrada.
+  * **Quotes:** último quote GMX con `ts ≤` ese instante y edad ≤ 3000 ms; si no hay, "sin quote".
+  * **Precios:** LONG entra a `max` y sale a `min`; SHORT entra a `min` y sale a `max`.
+  * **Resultado:** neto = bruto − 10 bps.
+  * Últimos 500 eventos en memoria (`global slm_leadlag_v1`); se pierden en un Deploy o reinicio.
+* **Dashboard (pestaña LEADLAG, 4/s):** estado, basis, umbral, spot median, GMX mid/min/max, edad GMX, venues frescos, edad por venue, dispersión spot, triggers, onsets en cooldown, estadística forward por horizonte y lado, últimos 12 eventos, contadores de formato.
+* **Efecto a tener en cuenta:** como se evalúa en cada trade y los venues se actualizan de a uno, la mediana puede pasar por valores intermedios. Si el basis oscila cerca del umbral, eso produce muchos onsets; el cooldown los filtra y quedan contados en "onsets en cooldown".
+
+### Instalación (sin cortar la adquisición)
+1. Backup: Menú → Export → *All flows*.
+2. **Abrir la pestaña del editor que contiene "MD STREAM →"** (el import coloca los nodos en la pestaña activa y descarta el enlace si el link out queda en otra pestaña).
+3. Menú → **Import** → `spot-gmx-leadlag-v1-monitor-addon.json`. Debe decir "Imported: 5 nodes, 1 group, 2 configuration nodes". Hacer clic en el lienzo para soltar los nodos.
+4. Doble clic en **"MD STREAM (RAW) → LEADLAG"**: debe tener tildado **"MD STREAM →"**. Si no, tildarlo.
+5. **Deploy → Modified Nodes.** La pestaña **LEADLAG** aparece en el dashboard.
+
+**Validado:**
+* **Reglas:** 22 casos sintéticos, uno por cada regla congelada, todos OK.
+* **Instalación:** en Node-RED real, con el link out renombrado a `b422762406083786`:
+  * el import conservó el enlace;
+  * Conceptito, Stage 8 y el poller GMX quedaron idénticos;
+  * los WebSockets tuvieron 0 reconexiones;
+  * se dispararon triggers y el forward se midió a +2/+5/+10 s.
+
 
 ## Etapa 8 — `market_ex_1s`: precio ZEC por exchange / mercado / segundo (base para estudiar BREADTH)
 ```
