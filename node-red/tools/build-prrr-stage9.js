@@ -3652,7 +3652,7 @@ const CFG = {
     venues: ['binance', 'coinbase', 'kraken', 'okx'],
     spotRule: 'spot_o_ausente',   // los trades spot de PRRR no traen market_type; 'perp' se excluye
     minVenues: 3, spotMaxAgeMs: 1000, gmxMaxAgeMs: 3000,
-    thrBps: 23.429, cooldownMs: 10000,
+    thrBps: 23.429287760230455, cooldownMs: 10000,   // umbral exacto de spot_core_clean.py (el dashboard lo muestra redondeado)
     entryLatencyMs: 1000, horizonsMs: [2000, 5000, 10000],   // +5 s y +10 s = validación congelada · +2 s diagnóstico
     feeRtBps: 10, maxEvents: 500, uiMs: 250,
     replicaGraceMs: 500,          // = Stage 8 (market_ex_1s): filas idénticas
@@ -3862,7 +3862,7 @@ const SLM_TPL = String.raw`<style>
 .slm tr.main td{font-weight:bold}
 </style>
 <div class="slm" ng-if="msg.payload">
- <div><b>SPOT_GMX_LEADLAG_V1_MONITOR</b> <span class="k">· sólo observación / paper · nunca órdenes · umbral ±{{msg.payload.threshold_bps}} bps · cooldown 10 s · entrada T+1 s · fee RT 10 bps</span></div>
+ <div><b>SPOT_GMX_LEADLAG_V1_MONITOR</b> <span class="k">· sólo observación / paper · nunca órdenes · umbral ±{{msg.payload.threshold_bps | number:3}} bps · cooldown 10 s · entrada T+1 s · fee RT 10 bps</span></div>
  <div><span class="k">GMX</span> mid <b>{{msg.payload.gmx ? (msg.payload.gmx.mid | number:4) : '—'}}</b> <span class="k">min/max</span> {{msg.payload.gmx.min | number:4}} / {{msg.payload.gmx.max | number:4}}
   <span class="k">· edad</span> <b ng-class="{'warn': msg.payload.gmx.age_ms > 3000}">{{msg.payload.gmx.age_ms}} ms</b>
   <span class="k">· edad venues (live):</span> <span ng-repeat="(k,v) in msg.payload.age_ms" ng-class="{'warn': v==null || v > 1000}">{{k}} {{v==null?'—':v+' ms'}}&nbsp;</span></div>

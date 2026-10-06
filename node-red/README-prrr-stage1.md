@@ -29,6 +29,7 @@ global md_gmx.last.ZEC / md_gmx.ring.ZEC (sólo lectura) ───────�
   * **Precios:** `spot_median` = mediana. GMX = `gmx_at(T)`: último quote con `ts ≤ T` y edad ≤ 3000 ms.
   * **Basis:** `basis_bps = (spot_median / mid − 1) × 10000`.
   * Las evaluaciones inválidas **no entran a la serie** y no tocan `prev_above`.
+  * **Umbral:** `|basis| ≥ 23.429287760230455` bps, el valor exacto de `spot_core_clean.py`, en precisión completa. El dashboard lo muestra redondeado a 23,429.
   * **Onset:** `above ∧ ¬prev_above`, con `prev_above` inicial = False, así que **la primera evaluación válida puede disparar**.
   * **Trigger:** si `T − último_trigger ≥ 10 s` (exactamente 10 s ya queda fuera del cooldown). LONG si basis > 0, SHORT si < 0.
 * **El tick de 250 ms no evalúa `LIVE_CAUSAL`** ni toca su estado. Sólo cierra segundos de la réplica (cuyo resultado lo fijan los datos), resuelve forwards, compara ramas y emite el dashboard.
@@ -48,6 +49,9 @@ global md_gmx.last.ZEC / md_gmx.ring.ZEC (sólo lectura) ───────�
 5. **Deploy → Modified Nodes.** La pestaña **LEADLAG** aparece en el dashboard.
 
 **Validado:**
+* **Umbral exacto:**
+  * Con `23.429287760230455` los triggers de la referencia son **idénticos** a los de 23,429 en los 3 streams: ninguna evaluación cayó en [23,429; 23,4292877…).
+  * Prueba dirigida: basis 23,4291 / 23,42928 / 23,4292877602 no disparan (con 23,429 sí habrían disparado); 23,429287760230455 dispara.
 * **Equivalencia exacta** en 3 streams sintéticos de 15–20 min, con GMX retrasado, empates y trades tardíos:
   * `HIST_REPLICA` = reimplementación literal de `spot_core_clean.py` sobre filas de `market_ex_1s` construidas aparte: mismas filas, mismos T y lados en los 242 triggers;
   * `LIVE_CAUSAL` = referencia trade a trade: mismos 254 triggers;
