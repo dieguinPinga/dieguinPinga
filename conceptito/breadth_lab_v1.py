@@ -7,16 +7,17 @@ BREADTH LAB v1 — ¿cuántos exchanges de ZEC acompañan la señal GMX?
 BASE actual, sin re-optimizar:
 
   ZEC · señal y ejecución GMX · SMA35/70 · cooldown 32 s · MOVEMENT ON
-  (range_30m >= 66.04 bps, igual que CONCEPTITO_MOVEMENT_V1) · señal N →
+  (range30 >= 66.04 bps, CONCEPTITO_MOVEMENT_V1) · señal N →
   entrada N+1 · maxPos=1 · TP +25 / SL -75 exactos · TO 100 m · $3000 · fees $3 ·
   LONG entra max / sale min, SHORT al revés.
 
 Reutiliza de operability_lab_v1.py (misma carpeta): carga GMX, conversión de
 tiempos, grilla causal 1 s, cruces con cooldown y la función de operación
 (trade_from: TP/SL/TO y ejecución GMX). Lo único que se agrega acá es:
-  1. MOV66 = range_30m >= 66.04 con el MISMO cálculo de los labs
-     (operability_lab_v1.slow_features, usado en mov66_21k_tp100.py);
-     --mov live usa en cambio la definición del motor CONCEPTITO_MOVEMENT_V1;
+  1. MOV66 OFICIAL (default, --mov live) = definición del motor live
+     CONCEPTITO_MOVEMENT_V1: rango de los segundos GMX válidos en (T-30m, T],
+     warm-up 30 min. --mov lab = range_30m de los labs (operability_lab_v1 /
+     mov66_21k_tp100), sólo como diagnóstico; cada baseline va a su propio CSV;
   2. lectura de market_ex_1s (Stage 8: ts, symbol, exchange, market, last_price,
      last_trade_ts, recv_ts, trades, buy_usd, sell_usd; una fila por venue y
      segundo SÓLO si hubo trades). Si no existe, se intenta detectar otra tabla;
@@ -350,8 +351,9 @@ def main():
     ap.add_argument('--gmx-csv', help='GMX desde CSV (pruebas)')
     ap.add_argument('--ex-csv', help='exchanges desde CSV con columnas ts,exchange,price[,market,recv]')
     ap.add_argument('--gmx-source')
-    ap.add_argument('--mov', choices=['lab', 'live'], default='lab',
-                    help="MOV66: 'lab' = range_30m de los labs (default) · 'live' = motor MOVEMENT_V1")
+    ap.add_argument('--mov', choices=['live', 'lab'], default='live',
+                    help="MOV66: 'live' = motor CONCEPTITO_MOVEMENT_V1 (OFICIAL, default) · "
+                         "'lab' = range_30m de los labs (sólo diagnóstico)")
     ap.add_argument('--clock', choices=['local', 'gmx'], default='local',
                     help="instante del breadth: 'local' = recepción local de la quote GMX que cierra N "
                          "(default, mismo reloj que recv_ts) · 'gmx' = T_N")
@@ -429,8 +431,8 @@ def main():
     # donde hay GMX y datos de exchanges
     lo_ms = max(int(T[0]), int(X.avail.min()) + 60_000)
     hi_ms = min(int(T[-1]) + 1, int(X.avail.max()) + 1)
-    print('BASE · %s · SMA%d/%d CD%d · MOV range30>=%.2f · TP+%.0f SL%.0f TO%dm · $%.0f · '
-          'fees $%.0f' % (sym, OL.FAST, OL.SLOW, OL.COOLDOWN_S, MOVE_THRESHOLD_BPS, OL.TP,
+    print('BASE[mov %s] · %s · SMA%d/%d CD%d · MOV range30>=%.2f · TP+%.0f SL%.0f TO%dm · $%.0f · '
+          'fees $%.0f' % (a.mov, sym, OL.FAST, OL.SLOW, OL.COOLDOWN_S, MOVE_THRESHOLD_BPS, OL.TP,
                           OL.SL, OL.TO_MIN, OL.EXPOSURE, OL.FEE_RT))
     print('GMX %s → %s · corte %s · ventana evaluada %s → %s (intersección GMX ∩ exchanges)'
           % (OL.iso(T[0]), OL.iso(T[-1]), OL.iso(cut_ms), OL.iso(lo_ms), OL.iso(hi_ms - 1)))
@@ -571,15 +573,17 @@ def main():
                  r['TRAIN_h1 ops'], r['TRAIN_h2 net'], r['TRAIN_h2 ops']))
 
     os.makedirs(a.out_dir, exist_ok=True)
-    p1 = os.path.join(a.out_dir, 'breadth_lab_v1_results.csv')
-    p2 = os.path.join(a.out_dir, 'breadth_lab_v1_trades.csv')
+    # un archivo por baseline MOV66: nunca se mezclan
+    p1 = os.path.join(a.out_dir, 'breadth_lab_v1_results_mov%s.csv' % a.mov)
+    p2 = os.path.join(a.out_dir, 'breadth_lab_v1_trades_mov%s.csv' % a.mov)
     R.to_csv(p1, index=False)
     if all_tr:
         pd.concat(all_tr, ignore_index=True).to_csv(p2, index=False)
 
     # ---------------- resumen ----------------
     print('\n' + '=' * 90)
-    print('RESUMEN')
+    print('RESUMEN — baseline MOV66 %s%s (cada variante se compara SÓLO contra este BASE)'
+          % (a.mov, ' · OFICIAL' if a.mov == 'live' else ' · diagnóstico'))
     print('=' * 90)
     print('BASE: TRAIN %d ops · neto %s · %s/op  |  POST %d ops · neto %s · %s/op'
           % (b['TRAIN ops'], fmt(b['TRAIN net']), fmt(b['TRAIN net/op']), b['POST ops'],
