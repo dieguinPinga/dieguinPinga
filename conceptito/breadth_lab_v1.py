@@ -17,26 +17,38 @@ tiempos, grilla causal 1 s, cruces con cooldown y la función de operación
   1. MOV66 = range_30m >= 66.04 con el MISMO cálculo de los labs
      (operability_lab_v1.slow_features, usado en mov66_21k_tp100.py);
      --mov live usa en cambio la definición del motor CONCEPTITO_MOVEMENT_V1;
-  2. detección de la tabla histórica por exchange en MariaDB;
+  2. lectura de market_ex_1s (Stage 8: ts, symbol, exchange, market, last_price,
+     last_trade_ts, recv_ts, trades, buy_usd, sell_usd; una fila por venue y
+     segundo SÓLO si hubo trades). Si no existe, se intenta detectar otra tabla;
   3. el breadth causal y el filtro.
 
-Breadth en la señal N (boundary T_N):
-  * cada venue (exchange, y spot/perp si existe) se compara SOLO contra sí mismo:
-        ret_L = p(T_N) / p(T_N - L) - 1,   L = 3, 5, 10 s
-    p(x) = último precio del venue DISPONIBLE en x (ver "disponibilidad").
-  * un venue es válido si p(T_N) y p(T_N - L) tienen <= FRESH_S de antigüedad.
+Reloj (causalidad estricta, sin mezclar relojes):
+  * market_ex_1s está en el reloj LOCAL de recepción (recv_ts); GMX en source_ts.
+  * Para la señal N se calcula D = el primer instante LOCAL en que el motor puede
+    saber que el segundo N cerró = min(gmx_price.ts) entre las quotes con
+    source_ts > T_N (el live procesa N recién cuando llega una quote posterior).
+  * El breadth se evalúa en D con filas cuyo recv_ts <= D. La entrada (N+1) ocurre
+    después de D. --clock gmx usa T_N directamente (mezcla relojes; sólo para comparar).
+
+Breadth en D:
+  * cada venue (exchange:market) se compara SOLO contra sí mismo:
+        ret_L = p(D) / p(D - L) - 1,   L = 3, 5, 10 s
+    p(x) = last_price de la última fila del venue con recv_ts <= x.
+  * venue válido (--fresh window, default): tuvo al menos un trade con recv_ts en
+    (D - L, D] y tiene precio de referencia en D - L con <= 10 s de antigüedad.
+    Un venue sin trades en la ventana no aporta información y no cuenta.
+    --fresh age: válido si p(D) y p(D-L) tienen <= 10 s (un venue quieto da ret 0
+    y participa sin acompañar).
   * LONG: breadth = (# venues con ret > 0) / (# válidos). SHORT: ret < 0.
-    Un venue válido sin cambio (ret == 0) participa pero no acompaña.
   * se exigen >= 3 venues válidos; si hay menos, la entrada se bloquea y se
     cuenta aparte (blocked_few_ex).
-  * disponibilidad: si la tabla tiene una columna de recepción se usa
-    max(ts, recv); si los ts son buckets de 1 s exactos (inicio del segundo)
-    el bucket recién se considera conocido en ts + 1 s. Nunca se usa un dato
-    con disponibilidad > T_N (la entrada es en T_N + 1 s).
+  * --exclude bitfinex permite sacar venues (p.ej. bitfinex, esporádico).
 
 Uso:
-  python3 breadth_lab_v1.py                      # detecta la tabla sola
+  python3 breadth_lab_v1.py                      # usa market_ex_1s
   python3 breadth_lab_v1.py --list-tables        # sólo inspecciona la base
+  python3 breadth_lab_v1.py --cut "2026-10-06 12:00:00"   # corte dentro del rango de market_ex_1s
+  python3 breadth_lab_v1.py --exclude bitfinex
   python3 breadth_lab_v1.py --ex-table trades_raw --ex-ts ts --ex-exchange exchange \
           --ex-price price [--ex-market market] [--ex-recv recv_ts]
 """
@@ -75,25 +87,10 @@ MKT_NAMES = ['market', 'market_type', 'type', 'kind', 'instrument_type', 'is_per
 SKIP_TABLES = {'market_1s', 'conceptito_trades'}
 
 PROPOSED_DDL = """
--- Tabla propuesta (escribirla desde el normalizador de la etapa 1, que ya tiene
--- cada trade con su exchange en memoria — md_ring — pero no lo persiste):
-CREATE TABLE IF NOT EXISTS prrr_market.market_ex_1s (
-  ts            DATETIME(3)   NOT NULL COMMENT 'inicio del segundo, UTC',
-  symbol        VARCHAR(16)   NOT NULL,
-  exchange      VARCHAR(32)   NOT NULL,
-  market        ENUM('spot','perp') NOT NULL,
-  last_price    DECIMAL(20,8) NOT NULL COMMENT 'precio del último trade del segundo',
-  last_trade_ts DATETIME(3)   NOT NULL COMMENT 'hora del exchange del último trade',
-  recv_ts       DATETIME(3)   NOT NULL COMMENT 'hora local de recepción del último trade',
-  trades        INT           NOT NULL,
-  buy_usd       DOUBLE        NOT NULL,
-  sell_usd      DOUBLE        NOT NULL,
-  PRIMARY KEY (symbol, exchange, market, ts),
-  KEY k_sym_ts (symbol, ts)
-) ENGINE=InnoDB;
--- Una fila por (exchange, market, segundo) sólo cuando hubo trades.
--- Con recv_ts el lab puede usar la disponibilidad real (sin look-ahead) y
--- con market separa spot de perp. ~3-8 filas/s para ZEC.
+Para breadth hace falta market_ex_1s (Stage 8: node-red/sql/stage8-market_ex_1s.sql +
+prrr-market-data-stage8-addon.json, con el link in "MD STREAM (RAW)" enlazado).
+Comprobar: SELECT exchange, market, COUNT(*), MIN(ts), MAX(ts) FROM market_ex_1s
+           WHERE symbol='ZEC' GROUP BY exchange, market;
 """
 
 
@@ -140,15 +137,29 @@ def inspect_db(conn, verbose):
                  mkt=pick(names, MKT_NAMES), recv=pick(names, RECV_NAMES))
         if m['recv'] == m['ts']:
             m['recv'] = None
+        if t == 'market_ex_1s':
+            need = {'ts', 'symbol', 'exchange', 'market', 'last_price', 'recv_ts'}
+            if need <= set(names):
+                m = dict(table=t, ts='ts', sym='symbol', ex='exchange', px='last_price',
+                         mkt='market', recv='recv_ts', exact=True)
+                found.insert(0, m)
+                continue
+            print('  ⚠ market_ex_1s existe pero le faltan columnas: %s' % (need - set(names)))
         if m['ts'] and m['ex'] and m['px']:
             found.append(m)
     return tabs, found
 
 
+def sym_where(m, symbol):
+    if not m['sym']:
+        return '', ()
+    if m.get('exact'):
+        return 'WHERE `%s` = %%s' % m['sym'], (symbol,)
+    return 'WHERE `%s` LIKE %%s' % m['sym'], ('%' + symbol + '%',)
+
+
 def probe(conn, m, symbol):
-    where, params = '', ()
-    if m['sym']:
-        where, params = 'WHERE `%s` LIKE %%s' % m['sym'], ('%' + symbol + '%',)
+    where, params = sym_where(m, symbol)
     r = q(conn, 'SELECT COUNT(*) n, COUNT(DISTINCT `%s`) nex, MIN(`%s`) t0, MAX(`%s`) t1 '
                 'FROM `%s` %s' % (m['ex'], m['ts'], m['ts'], m['table'], where), params)
     return r.iloc[0].to_dict()
@@ -165,8 +176,6 @@ def report_missing(tabs, found, probes):
             print('  %-24s exchanges distintos ZEC=%s filas=%s' % (m['table'], p.get('nex'), p.get('n')))
     print('market_1s mezcla exchanges: su columna `exchanges` es sólo la CANTIDAD de exchanges '
           'del segundo, no el precio de cada uno.')
-    print('\nFalta, como mínimo: timestamp · symbol · exchange · precio por exchange '
-          '(idealmente spot/perp y hora de recepción).')
     print(PROPOSED_DDL)
 
 
@@ -208,9 +217,7 @@ def load_exchange(conn, m, symbol, t_lo_ms, t_hi_ms):
         cols.append('`%s` AS mkt' % m['mkt'])
     if m['recv']:
         cols.append('`%s` AS recv' % m['recv'])
-    where, params = '', ()
-    if m['sym']:
-        where, params = 'WHERE `%s` LIKE %%s' % m['sym'], ('%' + symbol + '%',)
+    where, params = sym_where(m, symbol)
     df = q(conn, 'SELECT %s FROM `%s` %s' % (', '.join(cols), m['table'], where), params)
     return prepare_exchange(df, t_lo_ms, t_hi_ms)
 
@@ -239,8 +246,9 @@ def prepare_exchange(df, t_lo_ms=None, t_hi_ms=None):
     return X.sort_values(['venue', 'avail', 'ts'], kind='mergesort').reset_index(drop=True), mode
 
 
-def breadth_at(X, Ts):
-    """Para cada T en Ts y cada lag: (#válidos, #suben, #bajan). Sólo datos con avail <= T."""
+def breadth_at(X, Ts, fresh_mode='window'):
+    """Para cada instante D en Ts y cada lag: (#válidos, #suben, #bajan) y validez por venue.
+    Sólo filas con avail <= D (nunca datos posteriores)."""
     out = {L: dict(valid=np.zeros(len(Ts), int), up=np.zeros(len(Ts), int),
                    dn=np.zeros(len(Ts), int)) for L in LAGS}
     Ts = np.asarray(Ts, dtype='float64')
@@ -256,9 +264,14 @@ def breadth_at(X, Ts):
             return np.where(fresh, px[kc], np.nan)
 
         p0 = asof(Ts)
+        k0 = np.searchsorted(av, Ts, side='right') - 1
+        last_av = np.where(k0 >= 0, av[np.maximum(k0, 0)], -np.inf)
         for L in LAGS:
             pL = asof(Ts - L * 1000)
             ok = np.isfinite(p0) & np.isfinite(pL)
+            if fresh_mode == 'window':                 # hubo trade en (D-L, D]
+                ok &= last_av > Ts - L * 1000
+            out[L].setdefault('per_venue', {})[venue] = ok
             r = np.where(ok, p0 / np.where(ok, pL, 1) - 1, 0.0)
             out[L]['valid'] += ok
             out[L]['up'] += ok & (r > 0)
@@ -339,6 +352,12 @@ def main():
     ap.add_argument('--gmx-source')
     ap.add_argument('--mov', choices=['lab', 'live'], default='lab',
                     help="MOV66: 'lab' = range_30m de los labs (default) · 'live' = motor MOVEMENT_V1")
+    ap.add_argument('--clock', choices=['local', 'gmx'], default='local',
+                    help="instante del breadth: 'local' = recepción local de la quote GMX que cierra N "
+                         "(default, mismo reloj que recv_ts) · 'gmx' = T_N")
+    ap.add_argument('--fresh', choices=['window', 'age'], default='window',
+                    help="'window' = el venue debe haber operado en los últimos L s (default)")
+    ap.add_argument('--exclude', default='', help='exchanges a excluir, separados por coma')
     ap.add_argument('--out-dir', default=os.path.dirname(os.path.abspath(__file__)))
     a = ap.parse_args()
     sym = OL.SYMBOL
@@ -374,7 +393,8 @@ def main():
 
     # ---------------- 2) BASE: GMX, cruces, MOV66 ----------------
     cut_ms = int(OL.to_ms([a.cut], 'cut')[0])
-    g = OL.build_grid(OL.load_gmx(argparse.Namespace(gmx_csv=a.gmx_csv, gmx_source=a.gmx_source)))
+    G = OL.load_gmx(argparse.Namespace(gmx_csv=a.gmx_csv, gmx_source=a.gmx_source))
+    g = OL.build_grid(G)
     T = g['T']
     n = len(T)
     cut_i = int(np.searchsorted(T, cut_ms, side='left'))
@@ -391,8 +411,12 @@ def main():
         X, mode = prepare_exchange(pd.read_csv(a.ex_csv).rename(
             columns={'exchange': 'ex', 'price': 'px', 'market': 'mkt'}))
     else:
-        X, mode = load_exchange(conn, good, sym, float(T[0]) - 60_000, float(T[-1]))
+        X, mode = load_exchange(conn, good, sym, float(T[0]) - 3_600_000, float(T[-1]) + 3_600_000)
         conn.close()
+    if a.exclude:
+        exc = [e.strip().lower() for e in a.exclude.split(',') if e.strip()]
+        X = X[~X['ex'].isin(exc)].reset_index(drop=True)
+        print('Excluidos: %s' % ', '.join(exc))
     nven = X['venue'].nunique()
     print('Exchanges: %d filas · %d venues (%s) · disponibilidad=%s'
           % (len(X), nven, ', '.join(sorted(X.venue.unique())[:12]), mode))
@@ -411,9 +435,49 @@ def main():
     print('GMX %s → %s · corte %s · ventana evaluada %s → %s (intersección GMX ∩ exchanges)'
           % (OL.iso(T[0]), OL.iso(T[-1]), OL.iso(cut_ms), OL.iso(lo_ms), OL.iso(hi_ms - 1)))
     if lo_ms >= cut_ms:
-        print('⚠ los datos por exchange empiezan después del corte: no hay TRAIN para breadth.')
+        print('⚠⚠ market_ex_1s empieza (%s) DESPUÉS del corte %s: no hay TRAIN para breadth. '
+              'Todo lo que se vea es POST. Para tener TRAIN/POST dentro de market_ex_1s hay que '
+              'fijar un corte nuevo ANTES de mirar resultados, p.ej. --cut "AAAA-MM-DD HH:MM:SS".'
+              % (OL.iso(lo_ms), OL.iso(cut_ms)))
+    else:
+        print('Horas evaluadas: TRAIN %.1f h · POST %.1f h'
+              % ((min(cut_ms, hi_ms) - lo_ms) / 3.6e6, max(0, hi_ms - max(cut_ms, lo_ms)) / 3.6e6))
 
-    B = breadth_at(X, [T[i] for i, _ in cands])
+    # instante D de cada señal (ver docstring "Reloj")
+    Tc = np.array([T[i] for i, _ in cands], dtype='float64')
+    Gs = G.sort_values(['src', 'recv'], kind='mergesort')
+    src_s = Gs['src'].to_numpy(float)
+    recv_s = Gs['recv'].to_numpy(float)
+    if a.clock == 'local' and np.isfinite(recv_s).mean() > 0.99:
+        suf = np.minimum.accumulate(np.where(np.isfinite(recv_s), recv_s, np.inf)[::-1])[::-1]
+        k = np.searchsorted(src_s, Tc, side='right')          # quotes con source_ts > T_N
+        D = np.where(k < len(suf), suf[np.minimum(k, len(suf) - 1)], np.nan)
+        lag = D - Tc
+        fin = np.isfinite(lag)
+        print('Reloj local: D - T_N mediana %.0f ms · p05 %.0f · p95 %.0f'
+              % (np.median(lag[fin]), np.percentile(lag[fin], 5), np.percentile(lag[fin], 95)))
+        if np.median(lag[fin]) < 0 or np.median(lag[fin]) > 15_000:
+            print('⚠⚠ desfasaje raro entre el reloj local y source_ts de GMX: revisar relojes '
+                  '(NTP) antes de confiar en el breadth')
+        D = np.where(fin, D, Tc + 1e15)                         # sin D -> sin datos -> bFew
+    else:
+        if a.clock == 'local':
+            print('⚠ gmx_price sin ts de recepción utilizable: se usa T_N (reloj GMX)')
+        D = Tc
+    B = breadth_at(X, D, a.fresh)
+
+    # participación por venue (sobre todos los cruces candidatos en la ventana evaluada)
+    inwin = (Tc >= lo_ms) & (Tc < hi_ms)
+    print('Participación por venue (%% de cruces en los que el venue es válido, fresh=%s):'
+          % a.fresh)
+    for v in sorted(X.venue.unique()):
+        print('  %-18s filas %8d · ' % (v, (X.venue == v).sum()) +
+              ' · '.join('%ds %5.1f%%' % (L, B[L]['per_venue'][v][inwin].mean() * 100
+                                          if inwin.any() else 0) for L in LAGS))
+    print('Venues válidos por cruce: ' + ' · '.join(
+        '%ds mediana %.0f (>=%d en %.0f%%)' % (L, np.median(B[L]['valid'][inwin]) if inwin.any() else 0,
+                                             MIN_VENUES, (B[L]['valid'][inwin] >= MIN_VENUES).mean() * 100
+                                             if inwin.any() else 0) for L in LAGS))
 
     variants = [('BASE', None)] + [('B%d_%ds' % (round(t * 100), L), (t, L))
                                    for L in LAGS for t in THRESHOLDS]
