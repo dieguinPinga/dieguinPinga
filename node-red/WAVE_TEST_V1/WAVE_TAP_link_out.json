@@ -1,0 +1,14 @@
+[
+    {
+        "id": "04b4d5cb69aea2e2",
+        "type": "link out",
+        "name": "TAP → WAVE_TEST",
+        "mode": "link",
+        "links": [
+            "470c79f73372bf79"
+        ],
+        "x": 1030,
+        "y": 420,
+        "wires": []
+    }
+]

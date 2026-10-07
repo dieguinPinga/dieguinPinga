@@ -1,0 +1,185 @@
+[
+    {
+        "id": "3536e7e4b94faa8d",
+        "type": "tab",
+        "label": "WAVE_TEST_V1",
+        "disabled": false,
+        "info": "WAVE_TEST_V1 · ¿Tiene WAVE poder predictivo? (sólo medición, sin trading)\n\nWAVE_RAW_V1: NORMALIZER x4 (salida 1) --cables manuales--> [link out TAP → WAVE_TEST]\nWAVE_TEST_V1: [link in WAVE TAP IN] --> [WAVE TEST EVAL] --5 s--> [Debug línea] / [Debug detalle]\n\nRecibe los MISMOS eventos normalizados que el WAVE RAW ENGINE (no PULSE/TELEMETRY).\nRecalcula las ventanas con código copiado literalmente del engine.\nMuestra cada 250 ms (grilla fija de reloj local): dirección = signo(ALL.delta_usd_250ms),\nfuerza = |ALL.delta_usd_250ms|. Precio: mid Binance (principal) y mediana de retornos de mid (control).\nHorizontes +100/+250/+500/+1000/+2000/+5000 ms, cerrados \"as-of\" con eventos de t_recv <= t0+h.\nTodo en RAM. Sin disco, sin DB, sin context store, sin órdenes.\n\nCABLEADO MANUAL EN WAVE_RAW_V1 (no lo hace el import):\n1) Abrir el tab WAVE_RAW_V1. Importar WAVE_TAP_link_out.json con \"Import to: current flow\"\n   (o crear a mano un nodo \"link out\" llamado TAP → WAVE_TEST, modo \"Send to all connected link nodes\",\n   y marcar como destino \"WAVE TAP IN\" del tab WAVE_TEST_V1).\n2) Agregar 4 cables, desde la SALIDA 1 (superior, \"eventos -> engine\") de:\n   NORMALIZER · BINANCE, NORMALIZER · COINBASE, NORMALIZER · KRAKEN, NORMALIZER · OKX\n   hacia el nodo TAP → WAVE_TEST. NO usar la salida 2 (resync -> adapter).\n3) Deploy. Los cables existentes hacia WAVE RAW ENGINE quedan como están."
+    },
+    {
+        "id": "176783a1ac6caece",
+        "type": "comment",
+        "z": "3536e7e4b94faa8d",
+        "name": "ARQUITECTURA · WAVE_TEST_V1 (abrir para leer)",
+        "info": "WAVE_TEST_V1 · ¿Tiene WAVE poder predictivo? (sólo medición, sin trading)\n\nWAVE_RAW_V1: NORMALIZER x4 (salida 1) --cables manuales--> [link out TAP → WAVE_TEST]\nWAVE_TEST_V1: [link in WAVE TAP IN] --> [WAVE TEST EVAL] --5 s--> [Debug línea] / [Debug detalle]\n\nRecibe los MISMOS eventos normalizados que el WAVE RAW ENGINE (no PULSE/TELEMETRY).\nRecalcula las ventanas con código copiado literalmente del engine.\nMuestra cada 250 ms (grilla fija de reloj local): dirección = signo(ALL.delta_usd_250ms),\nfuerza = |ALL.delta_usd_250ms|. Precio: mid Binance (principal) y mediana de retornos de mid (control).\nHorizontes +100/+250/+500/+1000/+2000/+5000 ms, cerrados \"as-of\" con eventos de t_recv <= t0+h.\nTodo en RAM. Sin disco, sin DB, sin context store, sin órdenes.",
+        "x": 230,
+        "y": 40,
+        "wires": []
+    },
+    {
+        "id": "e48a40395774b89a",
+        "type": "comment",
+        "z": "3536e7e4b94faa8d",
+        "name": "CABLEADO MANUAL requerido en WAVE_RAW_V1 (abrir)",
+        "info": "CABLEADO MANUAL EN WAVE_RAW_V1 (no lo hace el import):\n1) Abrir el tab WAVE_RAW_V1. Importar WAVE_TAP_link_out.json con \"Import to: current flow\"\n   (o crear a mano un nodo \"link out\" llamado TAP → WAVE_TEST, modo \"Send to all connected link nodes\",\n   y marcar como destino \"WAVE TAP IN\" del tab WAVE_TEST_V1).\n2) Agregar 4 cables, desde la SALIDA 1 (superior, \"eventos -> engine\") de:\n   NORMALIZER · BINANCE, NORMALIZER · COINBASE, NORMALIZER · KRAKEN, NORMALIZER · OKX\n   hacia el nodo TAP → WAVE_TEST. NO usar la salida 2 (resync -> adapter).\n3) Deploy. Los cables existentes hacia WAVE RAW ENGINE quedan como están.",
+        "x": 230,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "6ba7fc773110c215",
+        "type": "comment",
+        "z": "3536e7e4b94faa8d",
+        "name": "Salidas cada 5 s: 1) línea compacta 2) detalle 3) DUMP de muestras (a pedido)",
+        "info": "Línea: WAVE TEST | n=<muestras> dir=<direccionales> eval=<evaluables> | <h> <mean signed bps> <hit% sin ties> t<tie%> ...\nDetalle: counts, queue, strength (fuerza bruta + terciles PROVISIONALES), primary_binance_mid (all/up/down/weak/medium/strong por horizonte),\nsecondary_median_mid, baseline_random_direction (sólo sanity check), last_samples.\nDUMP: últimas 2000 muestras completas (inject manual).",
+        "x": 610,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "470c79f73372bf79",
+        "type": "link in",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TAP IN",
+        "links": [
+            "04b4d5cb69aea2e2"
+        ],
+        "x": 140,
+        "y": 180,
+        "wires": [
+            [
+                "3399e4c97b847338"
+            ]
+        ]
+    },
+    {
+        "id": "3399e4c97b847338",
+        "type": "function",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TEST EVAL",
+        "func": "// Event-driven: cada mensaje del tap avanza el reloj de muestreo/cierre y luego se aplica.\n// La salida humana (cada 5 s) la genera un timer en \"On Start\" que sólo LEE acumuladores.\nglobalThis.__WAVE_TEST__.onMsg(msg);\nreturn null;",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "// =====================================================================\n// WAVE_TEST_V1 · WAVE TEST EVAL\n// ---------------------------------------------------------------------\n// ¿Tiene WAVE poder predictivo? Mide, sin look-ahead, qué hace el mid de\n// Binance tras cada observación direccional de WAVE.\n//\n// ENTRADA: copia (tap) de los mensajes que los 4 NORMALIZER envían al\n//          WAVE RAW ENGINE: { kind:'events'|'conn'|'nstats', exchange, t_recv, payload }\n// SEÑAL  : muestreo en una grilla fija de 250 ms (reloj local). En cada borde T:\n//          A = ALL.delta_usd_250ms (flujo agresor BUY-SELL consolidado, 250 ms)\n//          dirección = signo(A): UP / DOWN / NEUTRAL (A = 0)\n//          fuerza   = |A| en USD (bruta, SIEMPRE registrada)\n//          + B, C, D, movimiento de precio, spread, etc. para reanálisis.\n// PRECIO : mid = (best_bid + best_ask) / 2.  Principal: Binance.\n//          Control: mediana de los retornos de mid de los exchanges disponibles.\n// SIN LOOK-AHEAD: todo se rige por local_receive_timestamp (t_recv).\n//          Antes de aplicar un mensaje con t_recv = x se ejecuta advance(x):\n//            1) se toman las muestras de los bordes T < x\n//            2) se cierran los horizontes con vencimiento T+h < x\n//          con el estado que contiene SOLO eventos de t_recv <= T (o <= T+h).\n//          Un timer de 50 ms hace lo mismo con x = now - 100 ms si no llegan\n//          eventos (feed caído). Nunca se usa un evento posterior al instante medido.\n// Todo en RAM. Sin disco, sin DB, sin context store, sin órdenes.\n// =====================================================================\nconst EXCHANGES = ['binance', 'coinbase', 'kraken', 'okx'];\nconst WINDOWS = [100, 250, 500, 1000];    // mismas ventanas que el WAVE RAW ENGINE\nconst RES_CAP = 2048;                     // requerido por Stat (copiado del engine)\nconst SAMPLE_MS = 250;                    // 1 observación por intervalo de 250 ms\nconst HORIZONS = [100, 250, 500, 1000, 2000, 5000];\nconst HKEYS = ['100ms', '250ms', '500ms', '1s', '2s', '5s'];\nconst REF_EX = 'binance';                 // precio objetivo principal\nconst REF_STALE_MS = 2000;                // mid con más de 2 s sin update => no válido\nconst WARMUP_MS = 2000;                   // las ventanas necesitan llenarse\nconst TICK_MS = 50;                       // timer de respaldo (feed caído)\nconst GRACE_MS = 100;                     // margen para eventos aún en cola de Node-RED\nconst MAX_CATCHUP = 40;                   // máx. bordes a recuperar de golpe (10 s)\nconst MAX_PENDING = 400;                  // tope duro de la cola de señales pendientes\nconst REPORT_MS = 5000;                   // salida humana cada 5 s\nconst AGG_CAP = 4096;                     // reservoir para mediana/p25/p75 (media y conteos exactos)\nconst TERCILE_MIN_N = 60;                 // mínimo de señales previas para terciles provisionales\nconst RING_SAMPLES = 2000;                // últimas observaciones guardadas para DUMP\nconst TIE_EPS = 1e-6;                     // |retorno| < 1e-6 bps => tie (mid sin cambio)\nconst W250 = WINDOWS.indexOf(250);\nconst MID_HIST_MS = 1500;                 // historia de mids de Binance para movimientos previos\nconst MID_HIST_CAP = 5000;                // tope duro de esa historia\n\n// ======== CÓDIGO COPIADO LITERALMENTE DEL WAVE RAW ENGINE (ventanas) ========\nfunction r(x, d) {\n    if (x === null || x === undefined || !isFinite(x)) return null;\n    const k = Math.pow(10, d === undefined ? 2 : d);\n    return Math.round(x * k) / k;\n}\n\n// ---------- estadística por segundo: exacta en n/mean/min/max, percentiles por reservoir ----------\nfunction Stat() { this.reset(); }\nStat.prototype.reset = function () { this.n = 0; this.sum = 0; this.min = Infinity; this.max = -Infinity; this.res = []; };\nStat.prototype.add = function (v) {\n    if (!isFinite(v)) return;\n    this.n++; this.sum += v;\n    if (v < this.min) this.min = v;\n    if (v > this.max) this.max = v;\n    if (this.res.length < RES_CAP) this.res.push(v);\n    else { const j = Math.floor(Math.random() * this.n); if (j < RES_CAP) this.res[j] = v; }\n};\nStat.prototype.summary = function (d) {\n    if (!this.n) return null;\n    const a = this.res.slice().sort(function (x, y) { return x - y; });\n    const q = function (p) { return a[Math.min(a.length - 1, Math.round(p * (a.length - 1)))]; };\n    return { n: this.n, mean: r(this.sum / this.n, d), p50: r(q(0.5), d), p95: r(q(0.95), d), min: r(this.min, d), max: r(this.max, d) };\n};\n\n// ---------- deque O(1) amortizado sobre array con cabeza móvil ----------\nfunction Deque() { this.a = []; this.h = 0; }\nDeque.prototype.len = function () { return this.a.length - this.h; };\nDeque.prototype.push = function (x) { this.a.push(x); };\nDeque.prototype.front = function () { return this.a[this.h]; };\nDeque.prototype.back = function () { return this.a[this.a.length - 1]; };\nDeque.prototype.shift = function () { const x = this.a[this.h]; this.a[this.h++] = undefined; return x; };\nDeque.prototype.pop = function () { return this.a.pop(); };\nDeque.prototype.compact = function () {\n    if (this.h > 1024 && this.h * 2 > this.a.length) { this.a = this.a.slice(this.h); this.h = 0; }\n};\n\n// ---------- ventana móvil de trades ----------\n// sumas incrementales + deques monótonos para max/min intraventana (O(1) amortizado)\nfunction TradeWin(ms) {\n    this.ms = ms; this.q = new Deque(); this.mx = new Deque(); this.mn = new Deque();\n    this.n = 0; this.frames = 0; this.usd = 0; this.buy = 0; this.sell = 0; this.ref = null;\n}\nTradeWin.prototype.push = function (rec) {\n    this.q.push(rec);\n    this.n++; this.usd += rec.usd;\n    if (rec.s > 0) this.buy += rec.usd; else if (rec.s < 0) this.sell += rec.usd;\n    if (rec.f) this.frames++;\n    if (rec.p !== null) {\n        while (this.mx.len() && this.mx.back().p <= rec.p) this.mx.pop();\n        this.mx.push(rec);\n        while (this.mn.len() && this.mn.back().p >= rec.p) this.mn.pop();\n        this.mn.push(rec);\n    }\n};\nTradeWin.prototype.evict = function (now) {\n    const cut = now - this.ms, q = this.q;\n    while (q.len() && q.front().t <= cut) {\n        const x = q.shift();\n        this.n--; this.usd -= x.usd;\n        if (x.s > 0) this.buy -= x.usd; else if (x.s < 0) this.sell -= x.usd;\n        if (x.f) this.frames--;\n        if (x.p !== null) this.ref = x.p; // precio vigente al inicio de la ventana\n        if (this.mx.len() && this.mx.front() === x) this.mx.shift();\n        if (this.mn.len() && this.mn.front() === x) this.mn.shift();\n    }\n    if (this.n === 0) { this.usd = 0; this.buy = 0; this.sell = 0; this.frames = 0; } // sin deriva de coma flotante\n    q.compact(); this.mx.compact(); this.mn.compact();\n};\nTradeWin.prototype.metrics = function (last, withPrice) {\n    const s = this.ms / 1000;\n    const o = {\n        msgs: this.frames, trades: this.n, tps: r(this.n / s, 1),\n        usd: r(this.usd, 0), buy_usd: r(this.buy, 0), sell_usd: r(this.sell, 0), delta_usd: r(this.buy - this.sell, 0)\n    };\n    if (!withPrice) return o;\n    const ref = this.ref !== null ? this.ref : (this.q.len() ? this.q.front().p : null);\n    if (ref === null || last === null || !(ref > 0)) {\n        o.move_bps = null; o.max_up_bps = null; o.max_dn_bps = null; o.range_bps = null;\n        return o;\n    }\n    const hi = Math.max(ref, this.mx.len() ? this.mx.front().p : ref);\n    const lo = Math.min(ref, this.mn.len() ? this.mn.front().p : ref);\n    o.move_bps = r((last - ref) / ref * 1e4, 2);\n    o.max_up_bps = r((hi - ref) / ref * 1e4, 2);\n    o.max_dn_bps = r((lo - ref) / ref * 1e4, 2);\n    o.range_bps = r((hi - lo) / ref * 1e4, 2);\n    return o;\n};\n\nfunction TradeStream() { this.wins = WINDOWS.map(function (ms) { return new TradeWin(ms); }); this.last = null; this.total = 0; this.usdTotal = 0; }\nTradeStream.prototype.push = function (rec) {\n    for (const w of this.wins) { w.push(rec); w.evict(rec.t); }\n    if (rec.p !== null) this.last = rec.p;\n    this.total++; this.usdTotal += rec.usd;\n};\nTradeStream.prototype.evict = function (now) { for (const w of this.wins) w.evict(now); };\n\n// ---------- estado del libro por exchange + velocidad del imbalance ----------\nfunction BookWin(ms) { this.ms = ms; this.q = new Deque(); this.n = 0; this.ref1 = null; this.ref10 = null; }\nBookWin.prototype.evict = function (now) {\n    const cut = now - this.ms;\n    while (this.q.len() && this.q.front().t <= cut) {\n        const x = this.q.shift();\n        this.n--; this.ref1 = x.i1; this.ref10 = x.i10;\n    }\n    this.q.compact();\n};\n\nfunction imb(b, a) { return (b !== null && a !== null && b + a > 0) ? (b - a) / (b + a) : null; }\n\nfunction BookState() {\n    this.bid = null; this.bq = null; this.ask = null; this.aq = null;\n    this.b5 = null; this.a5 = null; this.b10 = null; this.a10 = null;\n    this.i1 = null; this.i5 = null; this.i10 = null; this.total = 0; this.channels = {};\n    this.wins = WINDOWS.map(function (ms) { return new BookWin(ms); });\n}\nBookState.prototype.push = function (ev, t) {\n    if (ev.best_bid !== null && ev.best_ask !== null) {\n        this.bid = ev.best_bid; this.bq = ev.best_bid_qty; this.ask = ev.best_ask; this.aq = ev.best_ask_qty;\n    }\n    if (ev.bid_qty5 !== null && ev.ask_qty5 !== null) { this.b5 = ev.bid_qty5; this.a5 = ev.ask_qty5; }\n    if (ev.bid_qty10 !== null && ev.ask_qty10 !== null) { this.b10 = ev.bid_qty10; this.a10 = ev.ask_qty10; }\n    this.i1 = imb(this.bq, this.aq);\n    this.i5 = imb(this.b5, this.a5);\n    this.i10 = imb(this.b10, this.a10);\n    this.total++;\n    this.channels[ev.channel] = (this.channels[ev.channel] || 0) + 1;\n    const smp = { t: t, i1: this.i1, i10: this.i10 };\n    for (const w of this.wins) { w.q.push(smp); w.n++; w.evict(t); }\n};\nBookState.prototype.evict = function (now) { for (const w of this.wins) w.evict(now); };\nBookState.prototype.clear = function () {\n    this.bid = this.bq = this.ask = this.aq = null;\n    this.b5 = this.a5 = this.b10 = this.a10 = null;\n    this.i1 = this.i5 = this.i10 = null;\n};\nBookState.prototype.spreadBps = function () {\n    if (this.bid === null || this.ask === null) return null;\n    const mid = (this.bid + this.ask) / 2;\n    return mid > 0 ? (this.ask - this.bid) / mid * 1e4 : null;\n};\nBookState.prototype.winMetrics = function (w) {\n    const s = w.ms / 1000;\n    const ref1 = w.ref1 !== null ? w.ref1 : (w.q.len() ? w.q.front().i1 : null);\n    const ref10 = w.ref10 !== null ? w.ref10 : (w.q.len() ? w.q.front().i10 : null);\n    return {\n        updates: w.n, ups: r(w.n / s, 1),\n        imb_vel_per_s: (ref1 !== null && this.i1 !== null) ? r((this.i1 - ref1) / s, 3) : null,\n        imb10_vel_per_s: (ref10 !== null && this.i10 !== null) ? r((this.i10 - ref10) / s, 3) : null\n    };\n};\n// ======================= fin del código copiado ============================\n\nfunction sgn(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); }\n\nfunction medianOf(a) {\n    if (!a.length) return null;\n    const v = a.slice().sort(function (x, y) { return x - y; });\n    const m = v.length >> 1;\n    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;\n}\n\n// ---------- acumulador de resultados por horizonte/grupo ----------\nfunction Agg() { this.n = 0; this.sum = 0; this.hits = 0; this.misses = 0; this.ties = 0; this.res = []; }\nAgg.prototype.add = function (v) {\n    this.n++; this.sum += v;\n    if (Math.abs(v) < TIE_EPS) this.ties++; else if (v > 0) this.hits++; else this.misses++;\n    if (this.res.length < AGG_CAP) this.res.push(v);\n    else { const j = Math.floor(Math.random() * this.n); if (j < AGG_CAP) this.res[j] = v; }\n};\nAgg.prototype.summary = function () {\n    const dec = this.hits + this.misses;\n    const o = {\n        n_valid: this.n, hits: this.hits, misses: this.misses, ties: this.ties,\n        hit_rate_pct: dec ? r(this.hits / dec * 100, 1) : null,\n        tie_rate_pct: this.n ? r(this.ties / this.n * 100, 1) : null,\n        mean_signed_bps: this.n ? r(this.sum / this.n, 3) : null,\n        median_signed_bps: null, p25_signed_bps: null, p75_signed_bps: null\n    };\n    if (this.res.length) {\n        const a = Float64Array.from(this.res).sort();\n        const q = function (p) { return a[Math.min(a.length - 1, Math.round(p * (a.length - 1)))]; };\n        o.median_signed_bps = r(q(0.5), 3); o.p25_signed_bps = r(q(0.25), 3); o.p75_signed_bps = r(q(0.75), 3);\n    }\n    return o;\n};\n\nfunction newResults(groups) {\n    const o = {};\n    for (const k of HKEYS) { o[k] = {}; for (const g of groups) o[k][g] = new Agg(); }\n    return o;\n}\n\nconst PRIMARY_GROUPS = ['all', 'up', 'down', 'weak', 'medium', 'strong'];\n\nfunction newState() {\n    const now = Date.now();\n    const S = {\n        t0: now, startT: now, nextT: Math.ceil(now / SAMPLE_MS) * SAMPLE_MS, lastAdv: 0, seq: 0,\n        ex: {}, all: new TradeStream(),\n        q: [], head: 0, ptr: HORIZONS.map(function () { return 0; }),\n        ring: [], strength: new Agg(), terc: null,\n        primary: newResults(PRIMARY_GROUPS),\n        secondary: newResults(['all', 'up', 'down']),\n        baseline: newResults(['all']),\n        c: {\n            n_total_samples: 0, n_warmup: 0, n_skipped_intervals: 0,\n            n_directional: 0, n_up: 0, n_down: 0, n_neutral: 0,\n            n_no_ref: 0, n_evaluated: 0,\n            pending_max_seen: 0, pending_dropped: 0, horizons_expired: 0, late_events: 0,\n            invalid_ref_by_h: {}, invalid_sec_by_h: {}\n        }\n    };\n    for (const k of HKEYS) { S.c.invalid_ref_by_h[k] = 0; S.c.invalid_sec_by_h[k] = 0; }\n    for (const e of EXCHANGES) S.ex[e] = { trades: new TradeStream(), book: new BookState(), bookT: 0 };\n    S.midHist = new Deque(); // [{t, mid}] de Binance, para el movimiento de mid ANTES de t0\n    return S;\n}\n\nlet S = newState();\n\n// mid \"as-of\" el instante at: último mid conocido, si es reciente\nfunction midOf(e, at) {\n    const X = S.ex[e];\n    const b = X.book;\n    if (b.bid === null || b.ask === null || !X.bookT) return null;\n    if (at - X.bookT > REF_STALE_MS) return null;\n    return (b.bid + b.ask) / 2;\n}\n\n// mid de Binance as-of 'at' (último valor con t <= at) desde la historia\nfunction binanceMidAt(at) {\n    const a = S.midHist.a;\n    let lo = S.midHist.h, hi = a.length - 1, ans = null;\n    while (lo <= hi) {\n        const m = (lo + hi) >> 1;\n        if (a[m].t <= at) { ans = a[m]; lo = m + 1; } else hi = m - 1;\n    }\n    return ans ? ans.mid : null;\n}\n\nfunction pushBinanceMid(t) {\n    const B = S.ex.binance.book;\n    if (B.bid === null || B.ask === null) return;\n    const mid = (B.bid + B.ask) / 2;\n    const H = S.midHist;\n    if (H.len() && H.back().mid === mid) return;\n    H.push({ t: t, mid: mid });\n    // conservar MID_HIST_MS + el último valor anterior (es el \"as-of\" del borde de la ventana)\n    while (H.len() > 1 && (H.a[H.h + 1].t <= t - MID_HIST_MS || H.len() > MID_HIST_CAP)) H.shift();\n    H.compact();\n}\n\nfunction bps(a, b) { return (a !== null && b !== null && b > 0) ? r((a / b - 1) * 1e4, 3) : null; }\n\n// =====================================================================\n// MUESTRA en el borde t0 (estado = todos los eventos con t_recv <= t0)\n// =====================================================================\nfunction sample(T) {\n    S.c.n_total_samples++;\n    if (T - S.startT < WARMUP_MS) { S.c.n_warmup++; return; }\n    for (const e of EXCHANGES) { S.ex[e].trades.evict(T); S.ex[e].book.evict(T); }\n    S.all.evict(T);\n\n    const wa = S.all.wins[W250];\n    const A = wa.buy - wa.sell;\n    const sg = A > 0 ? 1 : (A < 0 ? -1 : 0);\n    const per = {};\n    const imb10s = [];\n    const movesByW = {};\n    for (const ms of WINDOWS) movesByW[ms] = [];\n    let breadth = 0, active = 0;\n    const mids0 = {};\n    for (const e of EXCHANGES) {\n        const X = S.ex[e];\n        const w = X.trades.wins[W250];\n        const d = w.buy - w.sell;\n        const B = X.book;\n        const mid = midOf(e, T);\n        if (w.n > 0) active++;\n        if (sg !== 0 && sgn(d) === sg) breadth++;\n        const mv = {};\n        for (const tw of X.trades.wins) {\n            const m = tw.metrics(X.trades.last, true).move_bps;  // misma definición que el engine\n            mv[tw.ms] = m;\n            if (m !== null) movesByW[tw.ms].push(m);\n        }\n        if (B.i10 !== null) imb10s.push(B.i10);\n        if (mid !== null) mids0[e] = mid;\n        per[e] = {\n            delta_usd_250ms: r(d, 0), trades_250ms: w.n,\n            price_move_100ms_bps: mv[100], price_move_250ms_bps: mv[250], price_move_500ms_bps: mv[500], price_move_1000ms_bps: mv[1000],\n            mid: mid, spread_bps: r(B.spreadBps(), 3),\n            imb1: r(B.i1, 4), imb5: r(B.i5, 4), imb10: r(B.i10, 4),\n            imb_vel_250ms_per_s: B.winMetrics(B.wins[W250]).imb_vel_per_s,\n            book_age_ms: X.bookT ? T - X.bookT : null, stale: mid === null\n        };\n    }\n    const p0 = midOf(REF_EX, T);\n    const bn = per.binance;\n    const pre = {};\n    for (const ms of WINDOWS) {\n        pre['price_move_' + ms + 'ms_bps_binance'] = bn['price_move_' + ms + 'ms_bps'];\n        pre['price_move_' + ms + 'ms_bps_median'] = r(medianOf(movesByW[ms]), 3);\n        pre['binance_mid_move_' + ms + 'ms_bps'] = p0 === null ? null : bps(p0, binanceMidAt(T - ms));\n    }\n    const rec = {\n        id: ++S.seq,\n        t0: T,\n        direction: sg > 0 ? 'UP' : (sg < 0 ? 'DOWN' : 'NEUTRAL'),\n        sign: sg,\n        delta_usd_250ms: r(A, 0),                                // A\n        strength_abs_usd: r(Math.abs(A), 0),                     // fuerza bruta (siempre)\n        buy_usd_250ms: r(wa.buy, 0),\n        sell_usd_250ms: r(wa.sell, 0),\n        usd_250ms: r(wa.usd, 0),\n        trades_250ms: wa.n,\n        delta_usd_100ms: r(S.all.wins[0].buy - S.all.wins[0].sell, 0),\n        delta_usd_500ms: r(S.all.wins[2].buy - S.all.wins[2].sell, 0),\n        delta_usd_1000ms: r(S.all.wins[3].buy - S.all.wins[3].sell, 0),\n        flow_imbalance_250ms: wa.usd > 0 ? r(A / wa.usd, 4) : null,   // B\n        breadth: breadth,                                        // C: exchanges con delta_250 del mismo signo\n        active_exchanges: active,                                //    exchanges con trades en 250 ms\n        book_imbalance: {                                        // D\n            imb1_binance: bn.imb1, imb5_binance: bn.imb5, imb10_binance: bn.imb10,\n            imb10_mean: imb10s.length ? r(imb10s.reduce(function (s, x) { return s + x; }, 0) / imb10s.length, 4) : null,\n            imb_vel_250ms_per_s_binance: bn.imb_vel_250ms_per_s\n        },\n        spread_bps_binance: bn.spread_bps,\n        pre_move: pre,                                           // movimiento YA ocurrido antes de t0\n        exchanges: per,\n        p0: p0, p0_age_ms: bn.book_age_ms,\n        tercile_provisional: null,\n        future: {},\n        // internos\n        _rnd: 0, _done: 0, _mids0: mids0\n    };\n    S.ring.push(rec);\n    if (S.ring.length > RING_SAMPLES) S.ring.shift();\n\n    if (sg === 0) { S.c.n_neutral++; return; }\n    S.c.n_directional++;\n    if (sg > 0) S.c.n_up++; else S.c.n_down++;\n    // tercil PROVISIONAL con límites calculados sólo con señales anteriores\n    if (S.terc) rec.tercile_provisional = rec.strength_abs_usd <= S.terc[0] ? 'weak' : (rec.strength_abs_usd <= S.terc[1] ? 'medium' : 'strong');\n    S.strength.add(rec.strength_abs_usd);\n    if (p0 === null) { S.c.n_no_ref++; return; }   // Binance stale/caído: no evaluable\n    rec._rnd = Math.random() < 0.5 ? -1 : 1;         // baseline aleatoria (sanity check)\n    S.c.n_evaluated++;\n    S.q.push(rec);\n    while (S.q.length - S.head > MAX_PENDING) dropOldest();\n    const live = S.q.length - S.head;\n    if (live > S.c.pending_max_seen) S.c.pending_max_seen = live;\n}\n\n// cierre del horizonte k de la señal s, con el estado as-of t0 + h\nfunction resolve(s, k) {\n    const key = HKEYS[k];\n    const at = s.t0 + HORIZONS[k];\n    const f = { p: null, ret_bps: null, signed_bps: null, outcome: null, sec_signed_bps: null };\n    const p1 = midOf(REF_EX, at);\n    if (p1 === null) {\n        S.c.invalid_ref_by_h[key]++;\n    } else {\n        const ret = (p1 / s.p0 - 1) * 1e4;\n        const signed = ret * s.sign;\n        f.p = p1; f.ret_bps = r(ret, 3); f.signed_bps = r(signed, 3);\n        f.outcome = Math.abs(signed) < TIE_EPS ? 'tie' : (signed > 0 ? 'hit' : 'miss');\n        const P = S.primary[key];\n        P.all.add(signed);\n        P[s.sign > 0 ? 'up' : 'down'].add(signed);\n        if (s.tercile_provisional) P[s.tercile_provisional].add(signed);\n        S.baseline[key].all.add(ret * s._rnd);\n    }\n    // control secundario: mediana de retornos de mid por exchange (>= 2 exchanges no stale)\n    const rets = [];\n    for (const e of EXCHANGES) {\n        const m0 = s._mids0[e];\n        if (m0 === undefined) continue;\n        const m1 = midOf(e, at);\n        if (m1 !== null) rets.push((m1 / m0 - 1) * 1e4);\n    }\n    if (rets.length >= 2) {\n        const v = medianOf(rets) * s.sign;\n        f.sec_signed_bps = r(v, 3);\n        S.secondary[key].all.add(v);\n        S.secondary[key][s.sign > 0 ? 'up' : 'down'].add(v);\n    } else {\n        S.c.invalid_sec_by_h[key]++;\n    }\n    s.future[key] = f;\n    s._done++;\n}\n\n// tope duro: descartar la señal pendiente más antigua (sólo ante anomalías)\nfunction dropOldest() {\n    const s = S.q[S.head];\n    for (let k = 0; k < HORIZONS.length; k++) {\n        if (S.ptr[k] <= S.head) { S.ptr[k] = S.head + 1; S.c.horizons_expired++; }\n    }\n    S.q[S.head] = undefined;\n    S.head++;\n    S.c.pending_dropped++;\n    void s;\n}\n\nfunction advance(x) {\n    S.lastAdv = x;\n    if (x - S.nextT > MAX_CATCHUP * SAMPLE_MS) {   // salto de reloj / event loop bloqueado\n        const skip = Math.floor((x - S.nextT) / SAMPLE_MS);\n        S.c.n_skipped_intervals += skip;\n        S.nextT += skip * SAMPLE_MS;\n    }\n    while (S.nextT < x) { sample(S.nextT); S.nextT += SAMPLE_MS; }\n    // cerrar horizontes vencidos (cada puntero avanza en orden temporal)\n    for (let k = 0; k < HORIZONS.length; k++) {\n        const h = HORIZONS[k];\n        while (S.ptr[k] < S.q.length && S.q[S.ptr[k]].t0 + h < x) { resolve(S.q[S.ptr[k]], k); S.ptr[k]++; }\n    }\n    // retirar las señales con todos sus horizontes cerrados\n    while (S.head < S.q.length && S.q[S.head]._done >= HORIZONS.length) { S.q[S.head] = undefined; S.head++; }\n    if (S.head > 512) {\n        S.q = S.q.slice(S.head);\n        for (let k = 0; k < S.ptr.length; k++) S.ptr[k] -= S.head;\n        S.head = 0;\n    }\n}\n\n// aplica eventos: mismas reglas que WAVE RAW ENGINE.onEvents (trades -> ventanas, book -> estado)\nfunction apply(msg) {\n    const X = S.ex[msg.exchange];\n    if (!X) return;\n    const t = msg.t_recv;\n    const evs = msg.payload;\n    let first = true;\n    for (let i = 0; i < evs.length; i++) {\n        const ev = evs[i];\n        if (ev.kind === 'trade') {\n            const rec = { t: t, p: ev.price, usd: ev.usd, s: ev.side === 'BUY' ? 1 : (ev.side === 'SELL' ? -1 : 0), f: first };\n            first = false;\n            X.trades.push(rec);\n            S.all.push({ t: t, p: null, usd: rec.usd, s: rec.s, f: rec.f });\n        } else if (ev.kind === 'book') {\n            X.book.push(ev, t);\n            X.bookT = t;\n            if (X === S.ex.binance) pushBinanceMid(t);\n        }\n    }\n}\n\nfunction onMsg(msg) {\n    if (!msg) return;\n    if (msg.kind === 'events') {\n        const t = msg.t_recv;\n        if (typeof t !== 'number' || !Array.isArray(msg.payload)) return;\n        if (t > S.lastAdv) advance(t);\n        else if (t < S.lastAdv) S.c.late_events++;\n        apply(msg);\n    } else if (msg.kind === 'conn') {\n        const X = S.ex[msg.exchange];\n        if (X && msg.conn === 'book' && msg.event === 'close') {\n            X.book.clear(); X.bookT = 0;   // libro desconocido hasta el próximo snapshot => mid no válido\n            if (X === S.ex.binance) { S.midHist = new Deque(); }\n        }\n    } else if (msg.topic === 'reset') {\n        S = newState();\n        report();\n    } else if (msg.topic === 'dump') {\n        node.send([null, null, { topic: 'wave_test_v1/samples', payload: S.ring.map(compactRec) }], false);\n    }\n}\n\nfunction compactRec(s) {\n    const o = {};\n    for (const k in s) if (k.charAt(0) !== '_') o[k] = s[k];\n    return o;\n}\n\n// =====================================================================\n// SALIDA HUMANA cada 5 s (sólo lectura de acumuladores)\n// =====================================================================\nfunction fmtH(sm) {\n    if (!sm || !sm.n_valid) return 'n/a';\n    const m = sm.mean_signed_bps;\n    return (m >= 0 ? '+' : '') + m.toFixed(2) + 'bps ' + (sm.hit_rate_pct === null ? '-' : sm.hit_rate_pct.toFixed(1) + '%') + ' t' + sm.tie_rate_pct.toFixed(0) + '%';\n}\n\nfunction report() {\n    const now = Date.now();\n    // terciles provisionales: límites desde TODAS las señales previas (ventana expansiva)\n    if (S.strength.n >= TERCILE_MIN_N) {\n        const a = Float64Array.from(S.strength.res).sort();\n        const q = function (p) { return a[Math.min(a.length - 1, Math.round(p * (a.length - 1)))]; };\n        S.terc = [q(1 / 3), q(2 / 3)];\n    }\n    const primary = {}, secondary = {}, baseline = {};\n    for (const k of HKEYS) {\n        primary[k] = {};\n        for (const g of PRIMARY_GROUPS) primary[k][g] = S.primary[k][g].summary();\n        secondary[k] = { all: S.secondary[k].all.summary(), up: S.secondary[k].up.summary(), down: S.secondary[k].down.summary() };\n        baseline[k] = S.baseline[k].all.summary();\n    }\n    let dist = null;\n    if (S.strength.res.length) {\n        const a = Float64Array.from(S.strength.res).sort();\n        const q = function (p) { return r(a[Math.min(a.length - 1, Math.round(p * (a.length - 1)))], 0); };\n        dist = { n: S.strength.n, p10: q(0.1), p25: q(0.25), p50: q(0.5), p75: q(0.75), p90: q(0.9), p99: q(0.99), max: q(1) };\n    }\n    const c = S.c;\n    const detail = {\n        ts: now, iso: new Date(now).toISOString(), uptime_s: Math.round((now - S.t0) / 1000),\n        config: { sample_ms: SAMPLE_MS, horizons: HKEYS, reference: 'binance_mid', secondary: 'median_mid_return_all_exchanges',\n            signal: 'sign(ALL.delta_usd_250ms)', strength: 'abs(ALL.delta_usd_250ms)', ref_stale_ms: REF_STALE_MS, tie_eps_bps: TIE_EPS },\n        counts: {\n            n_total_samples: c.n_total_samples, n_warmup: c.n_warmup, n_skipped_intervals: c.n_skipped_intervals,\n            n_directional: c.n_directional, n_up: c.n_up, n_down: c.n_down, n_neutral: c.n_neutral,\n            n_no_ref: c.n_no_ref, n_evaluated: c.n_evaluated,\n            n_valid_by_h: HKEYS.reduce(function (o, k) { o[k] = S.primary[k].all.n; return o; }, {}),\n            invalid_ref_by_h: c.invalid_ref_by_h, invalid_secondary_by_h: c.invalid_sec_by_h\n        },\n        queue: { pending: S.q.length - S.head, pending_max_seen: c.pending_max_seen, max_pending: MAX_PENDING,\n            pending_dropped: c.pending_dropped, horizons_expired: c.horizons_expired, late_events: c.late_events },\n        strength: { field: 'abs(ALL.delta_usd_250ms)', unit: 'USD', distribution: dist,\n            terciles_provisional: { thresholds_usd: S.terc ? [r(S.terc[0], 0), r(S.terc[1], 0)] : null,\n                note: 'límites expansivos que cambian durante la corrida: sólo diagnóstico, NO prueba de monotonía' } },\n        primary_binance_mid: primary,\n        secondary_median_mid: secondary,\n        baseline_random_direction: baseline,\n        last_samples: S.ring.slice(-3).map(compactRec)\n    };\n    const line = 'WAVE TEST | n=' + c.n_total_samples + ' dir=' + c.n_directional + ' eval=' + c.n_evaluated +\n        HKEYS.map(function (k) { return ' | ' + k + ' ' + fmtH(primary[k].all); }).join('');\n    node.send([{ topic: 'wave_test_v1/line', payload: line }, { topic: 'wave_test_v1/detail', payload: detail }, null], false);\n    node.status({ fill: 'green', shape: 'dot', text: 'n=' + c.n_total_samples + ' dir=' + c.n_directional + ' pend=' + (S.q.length - S.head) });\n}\n\nconst tick = setInterval(function () {\n    const x = Date.now() - GRACE_MS;\n    if (x > S.lastAdv) advance(x);\n}, TICK_MS);\nconst rep = setInterval(report, REPORT_MS);\n\nglobalThis.__WAVE_TEST__ = { onMsg: onMsg, stop: function () { clearInterval(tick); clearInterval(rep); } };\n",
+        "finalize": "if (globalThis.__WAVE_TEST__) globalThis.__WAVE_TEST__.stop();",
+        "libs": [],
+        "outputLabels": [
+            "línea 5 s",
+            "detalle 5 s",
+            "dump muestras"
+        ],
+        "x": 380,
+        "y": 180,
+        "wires": [
+            [
+                "986839e16d563784"
+            ],
+            [
+                "a02481d676cb145b"
+            ],
+            [
+                "d0f747e317473863"
+            ]
+        ]
+    },
+    {
+        "id": "ab24c963cdd04873",
+        "type": "inject",
+        "z": "3536e7e4b94faa8d",
+        "name": "RESET TEST",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "reset",
+        "x": 150,
+        "y": 240,
+        "wires": [
+            [
+                "3399e4c97b847338"
+            ]
+        ]
+    },
+    {
+        "id": "b21e6458a11af93c",
+        "type": "inject",
+        "z": "3536e7e4b94faa8d",
+        "name": "DUMP SAMPLES (últimas 2000)",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "dump",
+        "x": 180,
+        "y": 280,
+        "wires": [
+            [
+                "3399e4c97b847338"
+            ]
+        ]
+    },
+    {
+        "id": "986839e16d563784",
+        "type": "debug",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TEST (5 s)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 640,
+        "y": 140,
+        "wires": []
+    },
+    {
+        "id": "a02481d676cb145b",
+        "type": "debug",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TEST detalle (5 s)",
+        "active": false,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 650,
+        "y": 180,
+        "wires": []
+    },
+    {
+        "id": "d0f747e317473863",
+        "type": "debug",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TEST samples (DUMP manual)",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 670,
+        "y": 220,
+        "wires": []
+    }
+]

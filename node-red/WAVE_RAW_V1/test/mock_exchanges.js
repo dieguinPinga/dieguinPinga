@@ -56,11 +56,34 @@ function Market(mid) {
     // trade sintético: agresor BUY ejecuta en el ask, SELL en el bid
     M.trade = () => {
         const buy = Math.random() < 0.5;
-        return { buy, price: buy ? M.bestAsk()[0] : M.bestBid()[0], qty: r8(0.0001 + Math.random() * 0.2) };
+        const t = { buy, price: buy ? M.bestAsk()[0] : M.bestBid()[0], qty: r8(0.0001 + Math.random() * 0.2) };
+        FLOW.push({ t: Date.now(), usd: (buy ? 1 : -1) * t.price * t.qty });
+        return t;
+    };
+    // desplaza todo el libro 'delta' USD (usado sólo por el modo PLANT)
+    M.shift = (delta) => {
+        for (const side of ['bids', 'asks']) {
+            const moved = new Map();
+            for (const [p, q] of M[side]) moved.set(r1(p + delta), q);
+            M[side] = moved;
+        }
     };
     return M;
 }
+const FLOW = []; // flujo agresor de TODOS los mocks (BUY +usd, SELL -usd)
 const MK = { binance: Market(60000), coinbase: Market(60010), kraken: Market(59990), okx: Market(60005) };
+// MODO PLANT (sólo pruebas de WAVE_TEST_V1): cada 250 ms el mid de Binance se mueve, con 100 ms de
+// retraso, en la dirección del flujo agresor consolidado de los últimos 250 ms => señal predictiva conocida.
+if (process.env.PLANT === '1') {
+    setInterval(() => {
+        const now = Date.now();
+        while (FLOW.length && FLOW[0].t < now - 250) FLOW.shift();
+        const d = FLOW.reduce((a, x) => a + x.usd, 0);
+        if (d !== 0) setTimeout(() => MK.binance.shift(d > 0 ? 3 : -3), 100);
+    }, 250);
+} else {
+    setInterval(() => { const now = Date.now(); while (FLOW.length && FLOW[0].t < now - 1000) FLOW.shift(); }, 1000);
+}
 
 function server(port, name, onConn) {
     const srv = http.createServer();
