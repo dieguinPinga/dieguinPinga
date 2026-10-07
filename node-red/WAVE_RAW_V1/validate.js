@@ -67,6 +67,23 @@ for (const n of nodes.filter((x) => (x.libs || []).some((l) => l.module === 'ws'
     check(/c\.ws\.ping\(\)/.test(n.initialize), n.name + ': ping de protocolo');
 }
 
+// Coinbase TRADE: feed individual de Coinbase Exchange 'matches', NO Advanced Trade market_trades
+{
+    const ad = nodes.find((n) => n.name === 'WS ADAPTER · COINBASE');
+    const nz = nodes.find((n) => n.name === 'NORMALIZER · COINBASE');
+    const m = /const CONNS = (\[[\s\S]*?\]);\n/.exec(ad.initialize);
+    const conns = JSON.parse(m[1]);
+    const tr = conns.find((c) => c.id === 'trade');
+    const subs = JSON.stringify(tr.subs);
+    check(tr.url === 'wss://ws-feed.exchange.coinbase.com' && /"matches"/.test(subs) && !/market_trades/.test(subs),
+        'Coinbase TRADE usa ws-feed.exchange.coinbase.com canal "matches" (no market_trades)');
+    check(!/ch === 'market_trades'|channel: 'market_trades'/.test(nz.initialize), 'el normalizer de Coinbase ya no procesa market_trades');
+    check(/ty === 'match'/.test(nz.initialize) && /if \(raw === 'buy'\) return CB_SIDE_FIELD_IS_MAKER \? 'SELL'/.test(nz.initialize) && /const CB_SIDE_FIELD_IS_MAKER = true;/.test(nz.initialize),
+        'Coinbase match: side maker invertido a taker (buy->SELL, sell->BUY)');
+    const bk = conns.find((c) => c.id === 'book');
+    check(bk.url === 'wss://advanced-trade-ws.coinbase.com' && /"level2"/.test(JSON.stringify(bk.subs)), 'Coinbase BOOK sigue en Advanced Trade level2');
+}
+
 // el procesamiento principal no depende de timers: el body del engine procesa cada msg
 check(/onMsg\(msg\)/.test(engine.func) && /function onEvents\(msg\)/.test(engine.initialize), 'ENGINE procesa cada mensaje en el body (event-driven)');
 check(/setInterval\(emit, EMIT_EVERY_MS\)/.test(engine.initialize) && !/onEvents\(/.test(engine.initialize.slice(engine.initialize.indexOf('function emit()'), engine.initialize.indexOf('// sonda de lag'))),

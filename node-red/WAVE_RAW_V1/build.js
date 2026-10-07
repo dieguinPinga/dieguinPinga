@@ -36,14 +36,15 @@ const EXCHANGES = {
         title: 'COINBASE',
         product: 'BTC-USD',
         conns: [
-            { id: 'trade', url: 'wss://advanced-trade-ws.coinbase.com', appPing: null, subs: [
-                { type: 'subscribe', product_ids: ['BTC-USD'], channel: 'market_trades' },
-                { type: 'subscribe', product_ids: ['BTC-USD'], channel: 'heartbeats' }] },
+            { id: 'trade', url: 'wss://ws-feed.exchange.coinbase.com', appPing: null, subs: [
+                { type: 'subscribe', product_ids: ['BTC-USD'], channels: ['matches', 'heartbeat'] }] },
             { id: 'book', url: 'wss://advanced-trade-ws.coinbase.com', appPing: null, subs: [
                 { type: 'subscribe', product_ids: ['BTC-USD'], channel: 'level2' },
                 { type: 'subscribe', product_ids: ['BTC-USD'], channel: 'heartbeats' }] }
         ],
-        note: '// Canales de mercado públicos: no requieren JWT. Hay que suscribirse dentro de 5s tras conectar.\n' +
+        note: '// TRADE: Coinbase Exchange feed, canal "matches" = 1 mensaje por trade individual (sin batching).\n' +
+              '//        "heartbeat" 1/s mantiene viva la conexión y trae last_trade_id (detección de trades perdidos).\n' +
+              '// BOOK : Advanced Trade level2 (público, sin JWT; suscribirse dentro de 5s tras conectar).\n' +
               '// trades y level2 van en conexiones separadas (el snapshot L2 es grande y no debe frenar los trades).\n'
     },
     kraken: {
@@ -130,7 +131,9 @@ const ARCH = [
     'Símbolos: Binance BTCUSDT, Coinbase BTC-USD, Kraken BTC/USD, OKX BTC-USDT (USD vs USDT difieren',
     'unos bps: por eso el consolidado suma flujos y usa la MEDIANA de los movimientos por exchange).',
     'Latencia aparente = local_receive_timestamp - exchange_timestamp: depende de la sincronización NTP',
-    'del servidor (chrony/timesyncd). Binance spot bookTicker/depth no traen timestamp => latencia null.'
+    'del servidor (chrony/timesyncd). Binance spot bookTicker/depth no traen timestamp => latencia null.',
+    'Coinbase: TRADE = Exchange feed "matches" (1 trade por mensaje; side = maker => se invierte a taker);',
+    'BOOK = Advanced Trade level2.'
 ].join('\n');
 
 const nodes = [];

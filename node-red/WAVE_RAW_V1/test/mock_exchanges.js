@@ -114,25 +114,26 @@ server(BASE + 2, 'coinbase', (ws) => {
     const env = (channel, events) => ({ channel, client_id: '', timestamp: new Date().toISOString().replace('Z', '123Z'), sequence_num: seq++, events });
     ws.on('message', (d) => {
         const m = JSON.parse(d.toString());
+        if (Array.isArray(m.channels)) { // ===== Coinbase EXCHANGE feed (ws-feed): matches + heartbeat =====
+            send(ws, { type: 'subscriptions', channels: m.channels.map((name) => ({ name, product_ids: m.product_ids })) });
+            let tid = 5000, xseq = 900000, skipDone = false;
+            send(ws, { type: 'last_match', trade_id: tid, sequence: xseq, maker_order_id: 'a', taker_order_id: 'b', time: new Date().toISOString(), product_id: 'BTC-USD', size: '1', price: '1.00', side: 'buy' });
+            every(ws, 1000, () => send(ws, { type: 'heartbeat', sequence: xseq, last_trade_id: tid, product_id: 'BTC-USD', time: new Date().toISOString() }));
+            every(ws, 9, () => { // trades individuales, uno por mensaje
+                const t = MK.coinbase.trade();
+                tid++;
+                xseq += 1 + Math.floor(Math.random() * 20); // sequence del producto: salta (otros mensajes del libro)
+                // FALLO: a los 9s se "pierden" 3 trades (trade_id salta) => missed_trades = 3
+                if (!skipDone && el() > 9000) { skipDone = true; tid += 3; log('coinbase: 3 TRADES PERDIDOS'); }
+                // Exchange: 'side' = lado de la orden MAKER
+                send(ws, { type: 'match', trade_id: tid, sequence: xseq, maker_order_id: 'm', taker_order_id: 't', time: new Date(Date.now() - 3).toISOString().replace('Z', '456Z'), product_id: 'BTC-USD', size: t.qty.toFixed(8), price: t.price.toFixed(2), side: t.buy ? 'sell' : 'buy' });
+            });
+            return;
+        }
         send(ws, env('subscriptions', [{ subscriptions: { [m.channel]: m.product_ids } }]));
         if (m.channel === 'heartbeats') {
             let c = 0;
             every(ws, 1000, () => send(ws, env('heartbeats', [{ current_time: new Date().toISOString(), heartbeat_counter: c++ }])));
-        }
-        if (m.channel === 'market_trades') {
-            // snapshot histórico (debe ignorarse)
-            send(ws, env('market_trades', [{ type: 'snapshot', trades: [{ trade_id: '1', product_id: 'BTC-USD', price: '1.00', size: '1', side: 'BUY', time: new Date().toISOString() }] }]));
-            let id = 10;
-            every(ws, 50, () => {
-                const n = 1 + Math.floor(Math.random() * 3);
-                const trades = [];
-                for (let i = 0; i < n; i++) {
-                    const t = MK.coinbase.trade();
-                    // Advanced Trade: 'side' = lado del MAKER
-                    trades.push({ trade_id: String(id++), product_id: 'BTC-USD', price: t.price.toFixed(2), size: t.qty.toFixed(8), side: t.buy ? 'SELL' : 'BUY', time: new Date(Date.now() - 30).toISOString().replace('Z', '456789Z') });
-                }
-                send(ws, env('market_trades', [{ type: 'update', trades }]));
-            });
         }
         if (m.channel === 'level2') {
             isBook = true;

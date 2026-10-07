@@ -1,21 +1,26 @@
 // =====================================================================
-// COINBASE Advanced Trade · BTC-USD   (wss://advanced-trade-ws.coinbase.com)
-//  trade : canal market_trades. El primer evento 'snapshot' trae trades HISTÓRICOS
-//          (se ignoran como control). Los 'update' son trades nuevos (en lotes).
-//          SEMÁNTICA DE LADO: la doc de Advanced Trade define 'side' como el lado
-//          del MAKER => agresor = lado opuesto. Configurable abajo y verificado en
-//          vivo con side_check (precio del trade vs BBO previo).
-//          exchange_timestamp = trade.time (ISO con µs/ns)
-//  book  : canal level2 (mensajes channel 'l2_data'): primer evento 'snapshot' con
-//          el libro COMPLETO y luego 'update' con new_quantity ABSOLUTA por nivel
+// COINBASE · BTC-USD
+//  trade : Coinbase EXCHANGE feed (wss://ws-feed.exchange.coinbase.com), canal
+//          'matches': UN mensaje {type:'match'} por trade, en tiempo real (sin el
+//          batching de ~250 ms de Advanced Trade market_trades, que ya NO se usa).
+//          SEMÁNTICA DE LADO: en Coinbase Exchange 'side' es el lado de la orden
+//          MAKER => agresor/taker = lado opuesto ('sell' => BUY, 'buy' => SELL).
+//          Verificado en vivo con side_check (precio del trade vs BBO previo).
+//          El primer 'last_match' tras suscribir es histórico => se ignora.
+//          Continuidad: trade_id consecutivo por producto; el 'heartbeat' (1/s)
+//          trae last_trade_id => trades perdidos se cuentan como gaps.
+//          exchange_timestamp = time (ISO con µs).
+//  book  : Advanced Trade (wss://advanced-trade-ws.coinbase.com) canal level2
+//          (mensajes channel 'l2_data'): primer evento 'snapshot' con el libro
+//          COMPLETO y luego 'update' con new_quantity ABSOLUTA por nivel
 //          (0 => borrar nivel). Se mantiene el libro completo en memoria (escalera
 //          ordenada) y se emite sólo BBO + top5/top10.
 //          Huecos de sequence_num o libro cruzado persistente => resync.
-//  heartbeats: mantiene viva la conexión en momentos sin actividad.
+//          heartbeats: mantiene viva la conexión en momentos sin actividad.
 // =====================================================================
 const CB_SIDE_FIELD_IS_MAKER = true;
 
-const CB = { book: new Book(), snapshots: 0, histTradesSkipped: 0, seqResync: true, gapTimes: [] };
+const CB = { book: new Book(), snapshots: 0, histTradesSkipped: 0, seqResync: true, gapTimes: [], lastTradeId: null, missedTrades: 0 };
 
 // Salvaguarda: si los "huecos" de sequence_num fueran frecuentísimos (semántica distinta
 // a la esperada), no entrar en un bucle de resync: se cuentan y se desactiva el resync por gap.
@@ -31,6 +36,7 @@ function cbGap(c) {
 }
 
 function onConnReset(c) {
+    if (c.id === 'trade') CB.lastTradeId = null; // tras reconectar, la continuidad de trade_id arranca de nuevo
     if (c.id === 'book') {
         CB.book.clear();
         N.bbo.bid = N.bbo.bq = N.bbo.ask = N.bbo.aq = null;
@@ -39,16 +45,65 @@ function onConnReset(c) {
 
 function extraStats() {
     return { book_levels_bid: CB.book.bids.size(), book_levels_ask: CB.book.asks.size(),
-        snapshots: CB.snapshots, seq_resync_enabled: CB.seqResync, hist_trades_skipped: CB.histTradesSkipped, side_field_is_maker: CB_SIDE_FIELD_IS_MAKER };
+        snapshots: CB.snapshots, seq_resync_enabled: CB.seqResync, hist_trades_skipped: CB.histTradesSkipped, missed_trades: CB.missedTrades, side_field_is_maker: CB_SIDE_FIELD_IS_MAKER };
 }
 
 function cbAggressor(raw) {
-    if (raw === 'BUY') return CB_SIDE_FIELD_IS_MAKER ? 'SELL' : 'BUY';
-    if (raw === 'SELL') return CB_SIDE_FIELD_IS_MAKER ? 'BUY' : 'SELL';
+    if (raw === 'buy') return CB_SIDE_FIELD_IS_MAKER ? 'SELL' : 'BUY';
+    if (raw === 'sell') return CB_SIDE_FIELD_IS_MAKER ? 'BUY' : 'SELL';
     return null;
 }
 
+// ---------- TRADE: Coinbase Exchange 'matches' (1 trade por frame) ----------
+function cbTradeId(m) {
+    const id = num(m.trade_id);
+    if (id === null) return;
+    if (CB.lastTradeId !== null && id > CB.lastTradeId + 1) {
+        CB.missedTrades += id - CB.lastTradeId - 1;
+        N.conns.trade.gaps++;
+    }
+    if (CB.lastTradeId === null || id > CB.lastTradeId) CB.lastTradeId = id;
+}
+
+function handleTradeFrame(c, txt, t) {
+    let m;
+    try { m = JSON.parse(txt); } catch (e) { c.invalid++; return; }
+    if (!m || typeof m !== 'object') { c.invalid++; return; }
+    const ty = m.type;
+    if (ty === 'match') {
+        if (m.product_id && m.product_id !== PRODUCT) { c.control++; return; }
+        const p = num(m.price), q = num(m.size);
+        if (!(p > 0) || !(q >= 0)) { c.invalid++; return; }
+        cbTradeId(m);
+        emitEvents(c, t, 'trade', [makeTrade(p, q, cbAggressor(m.side), parseIsoMs(m.time), t,
+            { instrument: m.product_id, trade_id: m.trade_id, raw_side: m.side, sequence: m.sequence })]);
+        return;
+    }
+    if (ty === 'last_match') { // histórico: sólo fija la referencia de trade_id
+        CB.histTradesSkipped++;
+        const id = num(m.trade_id);
+        if (id !== null && CB.lastTradeId === null) CB.lastTradeId = id;
+        c.control++;
+        return;
+    }
+    if (ty === 'heartbeat') {
+        const lt = num(m.last_trade_id);
+        if (lt !== null && CB.lastTradeId !== null && lt > CB.lastTradeId) { // el feed ya emitió trades que no vimos
+            CB.missedTrades += lt - CB.lastTradeId;
+            c.gaps++;
+            CB.lastTradeId = lt;
+        }
+        c.control++;
+        return;
+    }
+    if (ty === 'subscriptions') { c.control++; return; }
+    if (ty === 'error') { c.invalid++; warnRL('err-trade', 'error: ' + (m.message || '') + ' ' + (m.reason || '')); return; }
+    c.invalid++;
+}
+
+// ---------- BOOK: Advanced Trade level2 ----------
 function handleFrame(c, txt, t) {
+    if (c.id === 'trade') { handleTradeFrame(c, txt, t); return; }
     let m;
     try { m = JSON.parse(txt); } catch (e) { c.invalid++; return; }
     if (!m || typeof m !== 'object') { c.invalid++; return; }
@@ -57,22 +112,6 @@ function handleFrame(c, txt, t) {
     const seqOk = seqCheck(c, ch, m.sequence_num);
     if (!seqOk && c.id === 'book') cbGap(c); // en la conexión del libro cualquier hueco invalida el libro
     if (ch === 'heartbeats' || ch === 'subscriptions') { c.control++; return; }
-
-    if (ch === 'market_trades') {
-        const evs = [];
-        for (const e of (m.events || [])) {
-            if (e.type !== 'update') { CB.histTradesSkipped += (e.trades || []).length; continue; }
-            for (const tr of (e.trades || [])) {
-                if (tr.product_id && tr.product_id !== PRODUCT) continue;
-                const p = num(tr.price), q = num(tr.size);
-                if (!(p > 0) || !(q >= 0)) { c.invalid++; continue; }
-                evs.push(makeTrade(p, q, cbAggressor(tr.side), parseIsoMs(tr.time), t, { instrument: tr.product_id, trade_id: tr.trade_id, raw_side: tr.side }));
-            }
-        }
-        if (evs.length) emitEvents(c, t, 'trade', evs);
-        else c.control++;
-        return;
-    }
 
     if (ch === 'l2_data') {
         if (c.awaitingResync) { c.dropped++; return; }

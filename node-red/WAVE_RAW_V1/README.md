@@ -26,11 +26,11 @@ No incluye dashboard, MySQL, escritura a disco, context store, órdenes, señale
 | Exchange | Trades | Lado agresor | Book |
 |---|---|---|---|
 | Binance `BTCUSDT` | `@trade`, 1 trade por mensaje | `m=true` (el comprador es maker) ⇒ **SELL**; `m=false` ⇒ **BUY** | `@bookTicker` (BBO en tiempo real) + `@depth10@100ms` (top 10 completo, sin snapshot REST) |
-| Coinbase `BTC-USD` | `market_trades` (el snapshot histórico inicial se ignora) | `side` es el lado del **maker** ⇒ agresor = opuesto (`CB_SIDE_FIELD_IS_MAKER`) | `level2`: snapshot completo + updates con cantidad absoluta; libro completo en memoria; un gap de `sequence_num` dispara resync |
+| Coinbase `BTC-USD` | **Exchange feed** `wss://ws-feed.exchange.coinbase.com`, canal `matches`: 1 mensaje por trade, sin el batching de ~250 ms de `market_trades` (`last_match` histórico ignorado; `trade_id` + `heartbeat.last_trade_id` ⇒ trades perdidos en `missed_trades`) | `side` es el lado de la orden **maker** ⇒ agresor = opuesto (`sell`⇒BUY, `buy`⇒SELL; `CB_SIDE_FIELD_IS_MAKER`) | Advanced Trade `level2`: snapshot completo + updates con cantidad absoluta; libro completo en memoria; un gap de `sequence_num` dispara resync |
 | Kraken `BTC/USD` | v2 `trade` | `side` = lado del taker | v2 `book` depth 10: snapshot + updates, truncado a 10 niveles y checksum CRC32 verificado |
 | OKX `BTC-USDT` | `trades-all` (endpoint `/business`, sin agregación) | `side` = lado del taker | `bbo-tbt` (tick a tick) + `books` (400 niveles: snapshot + updates con continuidad `prevSeqId`/`seqId`; checksum si viene distinto de 0) |
 
-`side_check_agree_pct` en el PULSE compara cada trade contra el BBO previo: precio ≥ ask ⇒ BUY, precio ≤ bid ⇒ SELL. Con datos reales debería quedar claramente por encima de 70–80 %. Si quedara muy bajo, la semántica de ese exchange estaría invertida. Este control es la verificación en vivo de la convención de Coinbase.
+`side_check_agree_pct` en el PULSE compara cada trade contra el BBO previo: precio ≥ ask ⇒ BUY, precio ≤ bid ⇒ SELL. Con datos reales debería quedar claramente por encima de 70–80 %. Si quedara muy bajo, la semántica de ese exchange estaría invertida. Este control es la verificación en vivo de la convención maker⇒taker de Coinbase.
 
 ## Qué mirar en el PULSE (1 Hz)
 
@@ -63,7 +63,7 @@ node test/run_e2e.js <dir-con-node-red-instalado> 50   # Node-RED real + exchang
 La prueba e2e levanta servidores que imitan el formato de cada exchange e inyecta cuatro fallos:
 
 - un socket cortado (Binance);
-- un gap de secuencia (Coinbase);
+- un gap de secuencia en el libro y 3 trades perdidos (Coinbase);
 - un gap de `seqId` (OKX);
 - un feed mudo con el socket abierto (Kraken).
 
