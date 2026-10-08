@@ -48,3 +48,27 @@ node test/run_e2e.js <dir-node-red> 75          # mercado simulado sin señal: d
 node test/run_e2e.js <dir-node-red> 75 plant    # señal plantada (el mid de Binance sigue al flujo con 100 ms de retraso)
 node test/run_e2e.js <dir-node-red> 40 notap    # referencia de carga del engine sin el tap
 ```
+
+## Export de reportes a disco
+
+`WAVE TEST EXPORT` escribe un JSON completo en `/home/plapopepo/wave_reports`. Si el directorio no existe, lo crea. Para usar otro directorio, definí la variable de entorno `WAVE_REPORT_DIR`.
+
+Archivos que genera:
+
+- `WAVE_TEST_LATEST.json`: se sobreescribe en cada export, tanto en el automático (inject **AUTO EXPORT**, cada 5 min) como en el manual.
+- `WAVE_TEST_YYYY-MM-DD_HH-mm-ss.json`: solo con el inject **EXPORT REPORT**. Se conservan los últimos 100.
+
+Contenido del reporte: `generated_at`, `uptime_s`, `config`, `counts`, `queue`, `strength`, `primary_binance_mid`, `secondary_median_mid`, `baseline_random_direction`, `samples_meta` y `samples`, con las últimas 500 muestras completas (`pre_move` y `future`).
+
+Peso medido: ~2.8 KB por muestra, así que con 500 muestras el reporte ocupa ~1.4 MB. El histórico ocupa como máximo ~140 MB.
+
+Cómo escribe:
+
+- La escritura es atómica: primero `.tmp`, después `fsync` y por último `rename`.
+- Es asíncrona y va por bloques de 50 muestras, así que no bloquea la llegada de eventos.
+
+El código de `WAVE TEST EVAL` no cambia. El export usa sus salidas existentes:
+
+1. espera el próximo detalle, que sale cada ≤5 s;
+2. pide un DUMP de muestras;
+3. escribe el archivo.

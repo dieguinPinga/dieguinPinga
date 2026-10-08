@@ -39,7 +39,24 @@ check(all.every((n) => allowed.has(n.type)), 'sólo nodos core (tab/comment/func
 const code = test.filter((n) => n.type === 'function').map((n) => [n.func, n.initialize, n.finalize].join('\n')).join('\n');
 const low = JSON.stringify(all).toLowerCase();
 check(!/mysql/.test(low) && !all.some((n) => /^ui[_-]|dashboard/.test(n.type)), 'sin MySQL ni Dashboard');
-check(!/require\(\s*['"]fs['"]|writefile|appendfile|createwritestream/i.test(code), 'sin escritura a disco');
+const exp = test.find((n) => n.name === 'WAVE TEST EXPORT');
+const codeNoExport = test.filter((n) => n.type === 'function' && n !== exp).map((n) => [n.func, n.initialize, n.finalize].join('\n')).join('\n');
+check(!/require\(\s*['"]fs['"]|writefile|appendfile|createwritestream|fs\.promises/i.test(codeNoExport) && test.filter((n) => (n.libs || []).some((l) => l.module === 'fs')).every((n) => n === exp),
+    'sólo WAVE TEST EXPORT accede a disco');
+check(exp && /const REPORT_DIR = env\.get\('WAVE_REPORT_DIR'\) \|\| '\/home\/plapopepo\/wave_reports';/.test(exp.initialize) && /MAX_HISTORY = 100;/.test(exp.initialize) && /N_SAMPLES = 500;/.test(exp.initialize),
+    'EXPORT: directorio /home/plapopepo/wave_reports, 500 muestras, máx. 100 históricos');
+check(/\.tmp/.test(exp.initialize) && /fh\.sync\(\)/.test(exp.initialize) && /fs\.promises\.rename/.test(exp.initialize) && !/Sync\(/.test(exp.initialize.replace(/fh\.sync\(\)/g, '')),
+    'EXPORT: escritura atómica (.tmp + fsync + rename) y sólo APIs asíncronas');
+const auto = test.find((n) => n.name === 'AUTO EXPORT (cada 5 min)');
+check(auto && auto.repeat === '300' && auto.topic === 'export_auto' && auto.wires[0][0] === exp.id, 'AUTO EXPORT cada 300 s -> EXPORT');
+check(test.find((n) => n.name === 'EXPORT REPORT').wires[0][0] === exp.id, 'EXPORT REPORT (manual) -> EXPORT');
+// EVAL: código idéntico a la versión ya probada (sólo cambian sus cables de salida)
+const prevTest = JSON.parse(require('child_process').execSync('git show 0546b6f:node-red/WAVE_TEST_V1/WAVE_TEST_V1.json', { cwd: __dirname }).toString());
+const pe = prevTest.find((n) => n.name === 'WAVE TEST EVAL'), ce = test.find((n) => n.name === 'WAVE TEST EVAL');
+check(pe.initialize === ce.initialize && pe.func === ce.func && pe.finalize === ce.finalize && pe.id === ce.id, 'WAVE TEST EVAL: código e ID idénticos a la versión probada');
+check(JSON.stringify(ce.wires) === JSON.stringify([[pe.wires[0][0]], [pe.wires[1][0], exp.id], [exp.id]]), 'EVAL: salida1 -> línea, salida2 -> detalle + EXPORT, salida3 -> EXPORT (reenvía DUMP manual al Debug)');
+check(JSON.stringify(exp.wires) === JSON.stringify([[ce.id], [pe.wires[2][0]], [test.find((n) => n.name === 'WAVE EXPORT estado').id]]), 'EXPORT: salida1 -> EVAL (dump), salida2 -> Debug DUMP, salida3 -> Debug estado');
+check(prevTest.filter((n) => n.id !== pe.id).every((o) => JSON.stringify(o) === JSON.stringify(test.find((n) => n.id === o.id)) || o.type === 'tab' || o.type === 'debug'), 'resto de nodos previos del test sin cambios (salvo posición del Debug DUMP)');
 check(!/\b(flow|global|context)\.set\(/.test(code), 'sin context store');
 check(!/\/order|create_order|place_order|addorder/i.test(code), 'sin órdenes');
 

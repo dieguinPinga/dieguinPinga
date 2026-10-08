@@ -69,10 +69,14 @@ check(all.every((n) => types.has(n.type)), 'sólo nodos core: ' + [...new Set(al
 const code = all.filter((n) => n.type === 'function').map((n) => [n.func, n.initialize, n.finalize].join('\n')).join('\n');
 check(!all.some((n) => /mysql/i.test(n.type)) && !/require\(['"]mysql|mysql\./i.test(code) && !all.some((n) => (n.libs || []).some((l) => /mysql/i.test(l.module))), 'sin MySQL (ni nodos, ni libs, ni código; sólo aparece en comentarios "NO hay MySQL")');
 check(!all.some((n) => /^ui[_-]|dashboard/.test(n.type)), 'sin Dashboard');
-check(!/require\(\s*['"]fs['"]|writeFile|appendFile|createWriteStream/.test(code) && !all.some((n) => n.type === 'file'), 'sin escritura a disco');
+const exp = all.find((n) => n.name === 'WAVE TEST EXPORT');
+const codeNoExp = all.filter((n) => n.type === 'function' && n !== exp).map((n) => [n.func, n.initialize, n.finalize].join('\n')).join('\n');
+check(!/require\(\s*['"]fs['"]|writeFile|appendFile|createWriteStream|fs\.promises/.test(codeNoExp) && !all.some((n) => n.type === 'file') &&
+    all.filter((n) => (n.libs || []).some((l) => l.module === 'fs')).every((n) => n === exp) && exp.z !== '35b7a74832889057',
+    'disco: sólo WAVE TEST EXPORT (tab WAVE_TEST_V1) escribe, en /home/plapopepo/wave_reports; WAVE_RAW_V1 sin acceso a disco');
 check(!/\b(flow|global|context)\.set\(/.test(code), 'sin context store');
 check(!/\/order|create_order|place_order|addorder|"op":"order"/i.test(code), 'sin órdenes');
-check(all.filter((n) => n.type === 'debug').every((d) => all.some((n) => (n.name === 'WAVE RAW ENGINE' || n.name === 'WAVE TEST EVAL') && n.wires.some((o) => o.includes(d.id)))), 'Debug sólo en salidas 1 Hz del ENGINE y 5 s/manual del TEST');
+check(all.filter((n) => n.type === 'debug').every((d) => all.some((n) => (n.name === 'WAVE RAW ENGINE' || n.name === 'WAVE TEST EVAL' || n.name === 'WAVE TEST EXPORT') && n.wires.some((o) => o.includes(d.id)))), 'Debug sólo en salidas 1 Hz del ENGINE, 5 s/manual del TEST y estado del EXPORT');
 for (const n of all.filter((x) => x.type === 'function')) {
     try {
         new vm.Script('(async function(msg,__send__,__done__){ var node={};\n' + n.func + '\n})');

@@ -76,10 +76,11 @@
                 "986839e16d563784"
             ],
             [
-                "a02481d676cb145b"
+                "a02481d676cb145b",
+                "3f79e0e3e3e5cb51"
             ],
             [
-                "d0f747e317473863"
+                "3f79e0e3e3e5cb51"
             ]
         ]
     },
@@ -179,7 +180,122 @@
         "statusVal": "",
         "statusType": "auto",
         "x": 670,
-        "y": 220,
+        "y": 480,
+        "wires": []
+    },
+    {
+        "id": "43b874da96274788",
+        "type": "comment",
+        "z": "3536e7e4b94faa8d",
+        "name": "EXPORT · reporte JSON completo a disco (manual + cada 5 min)",
+        "info": "WAVE_TEST_LATEST.json se sobreescribe en cada export (manual o automático).\nEXPORT REPORT (manual) crea además WAVE_TEST_YYYY-MM-DD_HH-mm-ss.json; se conservan los últimos 100.\nDirectorio: /home/plapopepo/wave_reports (se crea solo; override opcional con la variable de entorno WAVE_REPORT_DIR).\nContenido: generated_at, uptime_s, config, counts, queue, strength, primary_binance_mid, secondary_median_mid,\nbaseline_random_direction y las últimas 500 muestras completas (pre_move + future).\nEscritura atómica (.tmp + fsync + rename), asíncrona y por bloques: no bloquea el procesamiento de eventos.\nFlujo: pedido -> espera el próximo detalle de EVAL (<= 5 s) -> pide DUMP -> escribe.",
+        "x": 260,
+        "y": 340,
+        "wires": []
+    },
+    {
+        "id": "946c891cbcd3ffb7",
+        "type": "inject",
+        "z": "3536e7e4b94faa8d",
+        "name": "EXPORT REPORT",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "export",
+        "x": 150,
+        "y": 400,
+        "wires": [
+            [
+                "3f79e0e3e3e5cb51"
+            ]
+        ]
+    },
+    {
+        "id": "bea402af97fced46",
+        "type": "inject",
+        "z": "3536e7e4b94faa8d",
+        "name": "AUTO EXPORT (cada 5 min)",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "300",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "export_auto",
+        "x": 170,
+        "y": 440,
+        "wires": [
+            [
+                "3f79e0e3e3e5cb51"
+            ]
+        ]
+    },
+    {
+        "id": "3f79e0e3e3e5cb51",
+        "type": "function",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE TEST EXPORT",
+        "func": "// Recibe: export / export_auto (injects), detalle 5 s y DUMP de WAVE TEST EVAL.\n// Toda la lógica y la escritura (asíncrona) viven en \"On Start\".\nglobalThis.__WAVE_EXPORT__.onMsg(msg);\nreturn null;",
+        "outputs": 3,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "// =====================================================================\n// WAVE_TEST_V1 · WAVE TEST EXPORT\n// ---------------------------------------------------------------------\n// Exporta un reporte JSON completo para análisis externo.\n// NO toca la lógica de WAVE TEST EVAL: sólo usa sus salidas existentes.\n//   1) llega 'export' (inject manual) o 'export_auto' (inject cada 5 min)\n//   2) espera el próximo DETALLE de EVAL (salida 2, cada 5 s) => counts/queue/stats frescos\n//   3) pide un DUMP a EVAL (topic 'dump') => muestras del mismo instante (±ms)\n//   4) arma el reporte con las últimas 500 muestras y lo escribe de forma ASÍNCRONA\n//      y por partes (cede el event loop entre bloques): nunca en la ruta de eventos.\n// Escritura atómica: <archivo>.tmp -> fsync -> rename.\n//   WAVE_TEST_LATEST.json                    (manual y automático, se sobreescribe)\n//   WAVE_TEST_YYYY-MM-DD_HH-mm-ss.json       (sólo manual; se conservan los últimos 100)\n// Salidas: 1 -> EVAL (pedido de dump) · 2 -> Debug DUMP manual (reenvío) · 3 -> Debug estado del export\n// =====================================================================\n// directorio de reportes (override opcional: variable de entorno WAVE_REPORT_DIR)\nconst REPORT_DIR = env.get('WAVE_REPORT_DIR') || '/home/plapopepo/wave_reports';\nconst LATEST_NAME = 'WAVE_TEST_LATEST.json';\nconst HIST_PREFIX = 'WAVE_TEST_';\nconst HIST_RE = /^WAVE_TEST_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}\\.json$/;\nconst MAX_HISTORY = 100;\nconst N_SAMPLES = 500;\nconst CHUNK = 50;                 // muestras serializadas por bloque antes de ceder el event loop\nconst TIMEOUT_MS = 15000;         // detalle (<= 5 s) + dump deben llegar antes\nconst EXPORT_VERSION = 1;\n\nconst X = {\n    lastDetail: null,\n    job: null,                    // { trigger, phase: 'wait_detail'|'wait_dump'|'writing', t, timer }\n    busy: false,\n    stats: { ok: 0, failed: 0, skipped_busy: 0, last_file: null, last_bytes: null, last_ms: null, last_error: null }\n};\n\nconst pad = (n) => (n < 10 ? '0' : '') + n;\nfunction stamp(d) {   // hora local del miniPC\n    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '_' + pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds());\n}\nconst yieldLoop = () => new Promise((res) => setTimeout(res, 0)); // setImmediate no existe en el sandbox del Function node\n\nfunction status(fill, text) { node.status({ fill: fill, shape: 'dot', text: text }); }\nfunction report(o) { node.send([null, null, { topic: 'wave_test_v1/export', payload: o }], false); }\n\nfunction startJob(trigger) {\n    if (X.job || X.busy) {\n        X.stats.skipped_busy++;\n        report({ ok: false, trigger: trigger, error: 'export en curso: pedido ignorado' });\n        return;\n    }\n    X.job = { trigger: trigger, phase: 'wait_detail', t: Date.now() };\n    X.job.timer = setTimeout(function () { failJob('timeout esperando detalle/dump de WAVE TEST EVAL'); }, TIMEOUT_MS);\n    status('blue', 'export ' + trigger + ': esperando detalle');\n}\n\nfunction failJob(err) {\n    const j = X.job;\n    if (j && j.timer) clearTimeout(j.timer);\n    X.job = null;\n    X.stats.failed++;\n    X.stats.last_error = err;\n    status('red', 'export falló: ' + err);\n    node.warn('[WAVE EXPORT] ' + err);\n    report({ ok: false, trigger: j ? j.trigger : null, error: err });\n}\n\nfunction onDetail(d) {\n    X.lastDetail = d;\n    const j = X.job;\n    if (j && j.phase === 'wait_detail') {\n        j.phase = 'wait_dump';\n        j.detail = d;\n        node.send([{ topic: 'dump' }, null, null], false);   // EVAL responde por su salida 3\n    }\n}\n\nfunction onSamples(msg) {\n    const j = X.job;\n    if (!j || j.phase !== 'wait_dump') {\n        node.send([null, msg, null], false);                  // DUMP manual: se reenvía al Debug como antes\n        return;\n    }\n    clearTimeout(j.timer);\n    j.phase = 'writing';\n    const all = Array.isArray(msg.payload) ? msg.payload : [];\n    const samples = all.slice(-N_SAMPLES);\n    X.job = null;\n    X.busy = true;\n    write(j, samples).then(function (res) {\n        X.busy = false;\n        X.stats.ok++;\n        X.stats.last_file = res.file; X.stats.last_bytes = res.bytes; X.stats.last_ms = res.ms; X.stats.last_error = null;\n        status('green', j.trigger + ' OK ' + Math.round(res.bytes / 1024) + ' KB · ' + res.ms + ' ms · ' + new Date().toLocaleTimeString());\n        report(Object.assign({ ok: true, trigger: j.trigger }, res));\n    }).catch(function (e) {\n        X.busy = false;\n        X.stats.failed++;\n        X.stats.last_error = String(e && e.message || e);\n        status('red', 'export falló: ' + X.stats.last_error);\n        node.warn('[WAVE EXPORT] ' + X.stats.last_error);\n        report({ ok: false, trigger: j.trigger, error: X.stats.last_error });\n    });\n}\n\n// escribe en <final>.tmp, fsync, y recién entonces rename => nunca queda un JSON truncado\nasync function writeAtomic(finalPath, writer) {\n    const tmp = finalPath + '.tmp';\n    const fh = await fs.promises.open(tmp, 'w');\n    let bytes = 0;\n    try {\n        await writer(async function (s) { await fh.write(s); bytes += Buffer.byteLength(s); });\n        await fh.sync();\n    } finally {\n        await fh.close();\n    }\n    await fs.promises.rename(tmp, finalPath);\n    return bytes;\n}\n\nasync function write(j, samples) {\n    const t0 = Date.now();\n    const d = j.detail;\n    const now = new Date();\n    const head = {\n        export_version: EXPORT_VERSION,\n        generated_at: now.toISOString(),\n        generated_at_local: stamp(now),\n        trigger: j.trigger,\n        uptime_s: d.uptime_s,\n        detail_ts: d.ts,\n        detail_iso: d.iso,\n        config: d.config,\n        counts: d.counts,\n        queue: d.queue,\n        strength: d.strength,\n        primary_binance_mid: d.primary_binance_mid,\n        secondary_median_mid: d.secondary_median_mid,\n        baseline_random_direction: d.baseline_random_direction,\n        samples_meta: {\n            n: samples.length, max: N_SAMPLES,\n            first_t0: samples.length ? samples[0].t0 : null,\n            last_t0: samples.length ? samples[samples.length - 1].t0 : null,\n            note: 'incluye muestras NEUTRAL; las más recientes pueden tener horizontes aún abiertos (future incompleto)'\n        }\n    };\n    await fs.promises.mkdir(REPORT_DIR, { recursive: true });\n    const latest = path.join(REPORT_DIR, LATEST_NAME);\n    const bytes = await writeAtomic(latest, async function (put) {\n        const h = JSON.stringify(head);\n        await put(h.slice(0, -1) + ',\"samples\":[');\n        for (let i = 0; i < samples.length; i += CHUNK) {\n            const part = samples.slice(i, i + CHUNK).map(function (s) { return JSON.stringify(s); }).join(',');\n            await put((i ? ',' : '') + part);\n            await yieldLoop();                                 // cede el event loop entre bloques\n        }\n        await put(']}');\n    });\n    const res = { file: latest, bytes: bytes, samples: samples.length };\n    if (j.trigger === 'manual') {\n        const hist = path.join(REPORT_DIR, HIST_PREFIX + stamp(now) + '.json');\n        await fs.promises.copyFile(latest, hist + '.tmp');\n        await fs.promises.rename(hist + '.tmp', hist);\n        res.history_file = hist;\n        res.history_deleted = await prune();\n    }\n    res.ms = Date.now() - t0;\n    return res;\n}\n\n// conserva sólo los últimos MAX_HISTORY históricos (orden por nombre = orden cronológico)\nasync function prune() {\n    const names = (await fs.promises.readdir(REPORT_DIR)).filter(function (n) { return HIST_RE.test(n); }).sort();\n    const extra = names.slice(0, Math.max(0, names.length - MAX_HISTORY));\n    for (const n of extra) await fs.promises.unlink(path.join(REPORT_DIR, n));\n    return extra.length;\n}\n\n// limpieza de .tmp huérfanos de una ejecución interrumpida\nfs.promises.readdir(REPORT_DIR).then(function (names) {\n    return Promise.all(names.filter(function (n) { return /^WAVE_TEST_.*\\.json\\.tmp$/.test(n); })\n        .map(function (n) { return fs.promises.unlink(path.join(REPORT_DIR, n)).catch(function () {}); }));\n}).catch(function () { /* el directorio todavía no existe */ });\n\nstatus('grey', 'listo · dir ' + REPORT_DIR);\n\nglobalThis.__WAVE_EXPORT__ = {\n    onMsg: function (msg) {\n        if (!msg) return;\n        if (msg.topic === 'export') startJob('manual');\n        else if (msg.topic === 'export_auto') startJob('auto');\n        else if (msg.topic === 'wave_test_v1/detail') onDetail(msg.payload);\n        else if (msg.topic === 'wave_test_v1/samples') onSamples(msg);\n    },\n    stop: function () { if (X.job && X.job.timer) clearTimeout(X.job.timer); X.job = null; }\n};\n",
+        "finalize": "if (globalThis.__WAVE_EXPORT__) globalThis.__WAVE_EXPORT__.stop();",
+        "libs": [
+            {
+                "var": "fs",
+                "module": "fs"
+            },
+            {
+                "var": "path",
+                "module": "path"
+            }
+        ],
+        "outputLabels": [
+            "pedido de dump -> EVAL",
+            "DUMP manual -> Debug",
+            "estado del export"
+        ],
+        "x": 420,
+        "y": 420,
+        "wires": [
+            [
+                "3399e4c97b847338"
+            ],
+            [
+                "d0f747e317473863"
+            ],
+            [
+                "2497a0d05baca28e"
+            ]
+        ]
+    },
+    {
+        "id": "2497a0d05baca28e",
+        "type": "debug",
+        "z": "3536e7e4b94faa8d",
+        "name": "WAVE EXPORT estado",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 660,
+        "y": 420,
         "wires": []
     }
 ]

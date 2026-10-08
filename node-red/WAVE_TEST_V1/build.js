@@ -17,6 +17,7 @@ const b = engineSrc.indexOf('// ---------- telemetría de recepción');
 if (a < 0 || b < 0) throw new Error('no se encontraron las clases de ventanas en engine.js');
 const engineWindows = engineSrc.slice(a, b).trim();
 const evalSrc = fs.readFileSync(path.join(__dirname, 'src', 'eval.js'), 'utf8').replace('/*__ENGINE_WINDOWS__*/', engineWindows);
+const exportSrc = fs.readFileSync(path.join(__dirname, 'src', 'export.js'), 'utf8');
 
 const TAB = id('tab');
 const TAP = id('tap/link-out');
@@ -25,6 +26,8 @@ const EVAL = id('eval');
 const DBG_LINE = id('debug/line');
 const DBG_DETAIL = id('debug/detail');
 const DBG_DUMP = id('debug/dump');
+const EXPORT = id('export');
+const DBG_EXPORT = id('debug/export');
 
 const ARCH = [
     'WAVE_TEST_V1 · ¿Tiene WAVE poder predictivo? (sólo medición, sin trading)',
@@ -68,7 +71,7 @@ const testNodes = [
         outputs: 3, timeout: 0, noerr: 0, initialize: evalSrc,
         finalize: 'if (globalThis.__WAVE_TEST__) globalThis.__WAVE_TEST__.stop();', libs: [],
         outputLabels: ['línea 5 s', 'detalle 5 s', 'dump muestras'],
-        x: 380, y: 180, wires: [[DBG_LINE], [DBG_DETAIL], [DBG_DUMP]] },
+        x: 380, y: 180, wires: [[DBG_LINE], [DBG_DETAIL, EXPORT], [EXPORT]] },
     { id: id('inject/reset'), type: 'inject', z: TAB, name: 'RESET TEST', props: [{ p: 'topic', vt: 'str' }],
         repeat: '', crontab: '', once: false, onceDelay: 0.1, topic: 'reset', x: 150, y: 240, wires: [[EVAL]] },
     { id: id('inject/dump'), type: 'inject', z: TAB, name: 'DUMP SAMPLES (últimas 2000)', props: [{ p: 'topic', vt: 'str' }],
@@ -78,7 +81,31 @@ const testNodes = [
     { id: DBG_DETAIL, type: 'debug', z: TAB, name: 'WAVE TEST detalle (5 s)', active: false, tosidebar: true, console: false, tostatus: false,
         complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 650, y: 180, wires: [] },
     { id: DBG_DUMP, type: 'debug', z: TAB, name: 'WAVE TEST samples (DUMP manual)', active: true, tosidebar: true, console: false, tostatus: false,
-        complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 670, y: 220, wires: [] }
+        complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 670, y: 480, wires: [] },
+    // ---------------- EXPORT de reportes (no toca la lógica de EVAL) ----------------
+    { id: id('comment/export'), type: 'comment', z: TAB, name: 'EXPORT · reporte JSON completo a disco (manual + cada 5 min)',
+        info: 'WAVE_TEST_LATEST.json se sobreescribe en cada export (manual o automático).\n' +
+              'EXPORT REPORT (manual) crea además WAVE_TEST_YYYY-MM-DD_HH-mm-ss.json; se conservan los últimos 100.\n' +
+              'Directorio: /home/plapopepo/wave_reports (se crea solo; override opcional con la variable de entorno WAVE_REPORT_DIR).\n' +
+              'Contenido: generated_at, uptime_s, config, counts, queue, strength, primary_binance_mid, secondary_median_mid,\n' +
+              'baseline_random_direction y las últimas 500 muestras completas (pre_move + future).\n' +
+              'Escritura atómica (.tmp + fsync + rename), asíncrona y por bloques: no bloquea el procesamiento de eventos.\n' +
+              'Flujo: pedido -> espera el próximo detalle de EVAL (<= 5 s) -> pide DUMP -> escribe.', x: 260, y: 340, wires: [] },
+    { id: id('inject/export'), type: 'inject', z: TAB, name: 'EXPORT REPORT', props: [{ p: 'topic', vt: 'str' }],
+        repeat: '', crontab: '', once: false, onceDelay: 0.1, topic: 'export', x: 150, y: 400, wires: [[EXPORT]] },
+    { id: id('inject/export-auto'), type: 'inject', z: TAB, name: 'AUTO EXPORT (cada 5 min)', props: [{ p: 'topic', vt: 'str' }],
+        repeat: '300', crontab: '', once: false, onceDelay: 0.1, topic: 'export_auto', x: 170, y: 440, wires: [[EXPORT]] },
+    { id: EXPORT, type: 'function', z: TAB, name: 'WAVE TEST EXPORT',
+        func: '// Recibe: export / export_auto (injects), detalle 5 s y DUMP de WAVE TEST EVAL.\n' +
+              '// Toda la lógica y la escritura (asíncrona) viven en "On Start".\n' +
+              'globalThis.__WAVE_EXPORT__.onMsg(msg);\nreturn null;',
+        outputs: 3, timeout: 0, noerr: 0, initialize: exportSrc,
+        finalize: 'if (globalThis.__WAVE_EXPORT__) globalThis.__WAVE_EXPORT__.stop();',
+        libs: [{ var: 'fs', module: 'fs' }, { var: 'path', module: 'path' }],
+        outputLabels: ['pedido de dump -> EVAL', 'DUMP manual -> Debug', 'estado del export'],
+        x: 420, y: 420, wires: [[EVAL], [DBG_DUMP], [DBG_EXPORT]] },
+    { id: DBG_EXPORT, type: 'debug', z: TAB, name: 'WAVE EXPORT estado', active: true, tosidebar: true, console: false, tostatus: false,
+        complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 660, y: 420, wires: [] }
 ];
 
 // snippet separado: sin 'z' => el editor lo coloca en el tab ACTIVO al importar con "current flow"
