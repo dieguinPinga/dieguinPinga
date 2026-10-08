@@ -53,7 +53,23 @@ check(test.find((n) => n.name === 'EXPORT REPORT').wires[0][0] === exp.id, 'EXPO
 // EVAL: código idéntico a la versión ya probada (sólo cambian sus cables de salida)
 const prevTest = JSON.parse(require('child_process').execSync('git show 0546b6f:node-red/WAVE_TEST_V1/WAVE_TEST_V1.json', { cwd: __dirname }).toString());
 const pe = prevTest.find((n) => n.name === 'WAVE TEST EVAL'), ce = test.find((n) => n.name === 'WAVE TEST EVAL');
-check(pe.initialize === ce.initialize && pe.func === ce.func && pe.finalize === ce.finalize && pe.id === ce.id, 'WAVE TEST EVAL: código e ID idénticos a la versión probada');
+// EVAL: la lógica de señal/ventanas/muestreo/horizontes debe ser textualmente idéntica a la versión
+// anterior (48f4705); sólo cambia la ruta de entrada (reorder buffer) y el timer.
+const prevEvalSrc = JSON.parse(require('child_process').execSync('git show 48f4705:node-red/WAVE_TEST_V1/WAVE_TEST_V1.json', { cwd: __dirname }).toString())
+    .find((n) => n.name === 'WAVE TEST EVAL').initialize;
+const fnText = (src, name) => { const i = src.indexOf('function ' + name + '('); if (i < 0) return null; const j = src.indexOf('\n}\n', i); return src.slice(i, j + 2); };
+for (const f of ['sample', 'resolve', 'advance', 'apply', 'midOf', 'dropOldest', 'binanceMidAt', 'pushBinanceMid', 'Agg', 'newResults', 'newState'].filter((f) => f !== 'newState')) {
+    check(fnText(prevEvalSrc, f) !== null && fnText(prevEvalSrc, f) === fnText(ce.initialize, f), 'EVAL: function ' + f + '() idéntica a la versión anterior');
+}
+const constBlock = (src) => src.slice(src.indexOf('const EXCHANGES ='), src.indexOf('const TICK_MS'));
+check(constBlock(prevEvalSrc) === constBlock(ce.initialize), 'EVAL: constantes de muestreo/horizontes/ventanas idénticas (SAMPLE_MS, HORIZONS, WINDOWS, REF_*, MAX_PENDING...)');
+const engSrc0 = fs.readFileSync(path.join(__dirname, '..', 'WAVE_RAW_V1', 'src', 'engine.js'), 'utf8');
+const engSlice0 = engSrc0.slice(engSrc0.indexOf('function r(x, d) {'), engSrc0.indexOf('// ---------- telemetría de recepción')).trim();
+check(prevEvalSrc.includes(engSlice0) && ce.initialize.includes(engSlice0), 'EVAL: ventanas del engine copiadas literalmente (sin cambios)');
+check(/const REORDER_MS = 250;/.test(ce.initialize) && /flush\(Date\.now\(\) - REORDER_MS\)/.test(ce.initialize) && /late_beyond_buffer\+\+/.test(ce.initialize),
+    'EVAL: reorder buffer de 250 ms con watermark (timer + llegada) y late_beyond_buffer');
+check(!/GRACE_MS/.test(ce.initialize), 'EVAL: ya no avanza el reloj con now - 100 ms sin ordenar');
+check(pe.func === ce.func && pe.finalize === ce.finalize && pe.id === ce.id, 'WAVE TEST EVAL: mismo ID, body y finalize');
 const lab = test.find((n) => n.name === 'WAVE LAB STORE');
 check(JSON.stringify(ce.wires) === JSON.stringify([[pe.wires[0][0]], [pe.wires[1][0], exp.id, lab.id], [exp.id]]), 'EVAL: salida1 -> línea, salida2 -> detalle + EXPORT + LAB, salida3 -> EXPORT');
 check(JSON.stringify(exp.wires) === JSON.stringify([[ce.id], [test.find((n) => n.name === 'WAVE TEST samples (DUMP manual)').id], [test.find((n) => n.name === 'WAVE EXPORT estado').id], [lab.id]]), 'EXPORT: salida1 -> EVAL (dump), 2 -> Debug DUMP, 3 -> Debug estado, 4 -> LAB');

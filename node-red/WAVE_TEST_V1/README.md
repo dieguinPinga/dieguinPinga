@@ -44,6 +44,7 @@ Los terciles de fuerza son **provisionales**, porque sus límites cambian durant
 ```
 node build.js && node validate.js
 node test/unit_lookahead.js
+node test/unit_reorder.js                       # stream desordenado == mismo stream ordenado; late_beyond_buffer
 node test/run_e2e.js <dir-node-red> 75          # mercado simulado sin señal: debe dar ≈ 0 bps
 node test/run_e2e.js <dir-node-red> 75 plant    # señal plantada (el mid de Binance sigue al flujo con 100 ms de retraso)
 node test/run_e2e.js <dir-node-red> 40 notap    # referencia de carga del engine sin el tap
@@ -89,3 +90,23 @@ La página se abre en `http://<host>:1880/wave-lab`. Es oscura, horizontal y se 
 
 - **Rutas:** cuelgan de `httpNodeRoot`, que por defecto es `/`. Si configuraste `httpNodeAuth`, también se aplica aquí.
 - **Lo que no cambió:** `WAVE TEST EVAL` no se modificó. En `WAVE TEST EXPORT` solo cambió el ruteo de los DUMP: las muestras van al LAB y el Debug muestra solo los DUMP pedidos a mano.
+
+## Reorder buffer (orden estricto por `t_recv`)
+
+`WAVE TEST EVAL` no aplica los mensajes en el orden en que llegan al tap. Primero los acumula en un buffer en RAM ordenado por `(t_recv, orden de llegada)` y recién los entrega a `advance()` y `apply()` cuando `t_recv <= watermark`, con `watermark = now − 250 ms`.
+
+- Un timer de 50 ms mueve el watermark aunque el feed se detenga.
+- Un mensaje que llega con `t_recv <= watermark`, es decir, después de que ese instante ya se procesó, no se inserta en ventanas pasadas. Se cuenta en `late_beyond_buffer` y se descarta solo del TEST.
+
+La telemetría aparece en `queue` (detalle y export):
+
+| Campo | Qué mide |
+|---|---|
+| `reorder_buffer_current` / `reorder_buffer_max` | Mensajes en el buffer ahora y el máximo visto. |
+| `late_beyond_buffer` | Mensajes descartados por llegar después del watermark. |
+| `out_of_order_events` | Mensajes que llegaron fuera de orden. |
+| `lateness_ms` (p50/p95/p99/max) | Cuánto llega cada mensaje detrás del `t_recv` más nuevo ya visto. |
+| `arrival_delay_ms` (p50/p95/p99/max) | `now − t_recv` al llegar al tap. |
+| `watermark_lag_ms` | Distancia entre el reloj y el watermark. |
+
+`sample()`, `resolve()`, `advance()`, `apply()`, las ventanas y las constantes de muestreo y horizontes son textualmente idénticas a la versión anterior; `validate.js` lo verifica. `test/unit_reorder.js` comprueba que un stream de ~83.000 mensajes, con ~74.500 llegados fuera de orden (hasta 200 ms), produce muestras, estadísticas y baseline idénticos al mismo stream ordenado.

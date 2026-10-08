@@ -18,8 +18,13 @@
 //            1) se toman las muestras de los bordes T < x
 //            2) se cierran los horizontes con vencimiento T+h < x
 //          con el estado que contiene SOLO eventos de t_recv <= T (o <= T+h).
-//          Un timer de 50 ms hace lo mismo con x = now - 100 ms si no llegan
-//          eventos (feed caído). Nunca se usa un evento posterior al instante medido.
+//          REORDER BUFFER (250 ms): los mensajes del tap se acumulan en RAM ordenados
+//          por t_recv y sólo se entregan cuando t_recv <= watermark = now - 250 ms.
+//          Así advance()/apply() ven un stream ESTRICTAMENTE ordenado por t_recv.
+//          Un timer de 50 ms mueve el watermark aunque el feed se detenga.
+//          Un mensaje que llega con t_recv <= watermark (ya entregado) NO se inserta
+//          en ventanas ya procesadas: se cuenta como late_beyond_buffer y se descarta
+//          sólo en el TEST. Nunca se usa un evento posterior al instante medido.
 // Todo en RAM. Sin disco, sin DB, sin context store, sin órdenes.
 // =====================================================================
 const EXCHANGES = ['binance', 'coinbase', 'kraken', 'okx'];
@@ -31,8 +36,10 @@ const HKEYS = ['100ms', '250ms', '500ms', '1s', '2s', '5s'];
 const REF_EX = 'binance';                 // precio objetivo principal
 const REF_STALE_MS = 2000;                // mid con más de 2 s sin update => no válido
 const WARMUP_MS = 2000;                   // las ventanas necesitan llenarse
-const TICK_MS = 50;                       // timer de respaldo (feed caído)
-const GRACE_MS = 100;                     // margen para eventos aún en cola de Node-RED
+const TICK_MS = 50;                       // timer: mueve el watermark aunque no lleguen eventos
+const REORDER_MS = 250;                   // reorder buffer: retraso de entrega al evaluador
+const REORDER_CAP = 50000;                // tope duro de mensajes en el buffer (sólo ante anomalías)
+const LAT_CAP = 4096;                     // reservoir para p50/p95/p99 de lateness
 const MAX_CATCHUP = 40;                   // máx. bordes a recuperar de golpe (10 s)
 const MAX_PENDING = 400;                  // tope duro de la cola de señales pendientes
 const REPORT_MS = 5000;                   // salida humana cada 5 s
@@ -105,11 +112,14 @@ function newState() {
             n_directional: 0, n_up: 0, n_down: 0, n_neutral: 0,
             n_no_ref: 0, n_evaluated: 0,
             pending_max_seen: 0, pending_dropped: 0, horizons_expired: 0, late_events: 0,
+            reorder_buffer_max: 0, late_beyond_buffer: 0, out_of_order_events: 0, reorder_forced: 0, reorder_delivered: 0,
             invalid_ref_by_h: {}, invalid_sec_by_h: {}
         }
     };
     for (const k of HKEYS) { S.c.invalid_ref_by_h[k] = 0; S.c.invalid_sec_by_h[k] = 0; }
     for (const e of EXCHANGES) S.ex[e] = { trades: new TradeStream(), book: new BookState(), bookT: 0 };
+    // reorder buffer: [{t, seq, msg}] ordenado por (t_recv, orden de llegada)
+    S.rb = { a: [], h: 0, seq: 0, wm: 0, maxSeen: 0, lateness: new LatStat(), arrival: new LatStat() };
     S.midHist = new Deque(); // [{t, mid}] de Binance, para el movimiento de mid ANTES de t0
     return S;
 }
@@ -345,13 +355,12 @@ function apply(msg) {
     }
 }
 
-function onMsg(msg) {
-    if (!msg) return;
+// ---------- entrega al evaluador (lógica original de onMsg, ahora en orden estricto) ----------
+function deliver(msg) {
     if (msg.kind === 'events') {
         const t = msg.t_recv;
-        if (typeof t !== 'number' || !Array.isArray(msg.payload)) return;
         if (t > S.lastAdv) advance(t);
-        else if (t < S.lastAdv) S.c.late_events++;
+        else if (t < S.lastAdv) S.c.late_events++;   // con el reorder buffer debe quedar en 0
         apply(msg);
     } else if (msg.kind === 'conn') {
         const X = S.ex[msg.exchange];
@@ -359,6 +368,85 @@ function onMsg(msg) {
             X.book.clear(); X.bookT = 0;   // libro desconocido hasta el próximo snapshot => mid no válido
             if (X === S.ex.binance) { S.midHist = new Deque(); }
         }
+    }
+}
+
+// ---------- reorder buffer ----------
+// reservoir con generador propio (LCG): NO consume Math.random, así la secuencia aleatoria
+// del evaluador (baseline) es exactamente la misma que sin reorder buffer
+function LatStat() { this.n = 0; this.max = 0; this.res = []; this.rng = 12345; }
+LatStat.prototype.add = function (v) {
+    this.n++;
+    if (v > this.max) this.max = v;
+    if (this.res.length < LAT_CAP) this.res.push(v);
+    else {
+        this.rng = (Math.imul(this.rng, 1664525) + 1013904223) >>> 0;
+        const j = this.rng % this.n;
+        if (j < LAT_CAP) this.res[j] = v;
+    }
+};
+LatStat.prototype.summary = function () {
+    if (!this.n) return { n: 0, p50: null, p95: null, p99: null, max: null };
+    const a = Float64Array.from(this.res).sort();
+    const q = function (p) { return a[Math.min(a.length - 1, Math.round(p * (a.length - 1)))]; };
+    return { n: this.n, p50: q(0.5), p95: q(0.95), p99: q(0.99), max: this.max };
+};
+
+function rbInsert(t, msg) {
+    const R = S.rb;
+    const now = Date.now();
+    // lateness = cuánto llega "detrás" del t_recv más nuevo ya visto (0 si llega en orden)
+    const late = t < R.maxSeen ? R.maxSeen - t : 0;
+    if (t > R.maxSeen) R.maxSeen = t;
+    R.lateness.add(late);
+    R.arrival.add(Math.max(0, now - t));
+    if (late > 0) S.c.out_of_order_events++;
+    if (t <= R.wm) { S.c.late_beyond_buffer++; return; }   // ya entregado hasta el watermark: se descarta sólo en el TEST
+    const it = { t: t, seq: ++R.seq, msg: msg };
+    const a = R.a;
+    let i = a.length;
+    if (i === R.h || a[i - 1].t <= t) a.push(it);           // caso normal: llega en orden
+    else {                                                  // inserción binaria por (t, seq)
+        let lo = R.h, hi = i;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (a[m].t <= t) lo = m + 1; else hi = m; }
+        a.splice(lo, 0, it);
+    }
+    const len = a.length - R.h;
+    if (len > S.c.reorder_buffer_max) S.c.reorder_buffer_max = len;
+    while (a.length - R.h > REORDER_CAP) {                  // tope duro: entregar el más viejo
+        const x = a[R.h]; a[R.h] = undefined; R.h++;
+        S.c.reorder_forced++;
+        if (x.t > R.wm) R.wm = x.t;
+        S.c.reorder_delivered++;
+        deliver(x.msg);
+    }
+}
+
+// entrega en orden todo lo que tenga t_recv <= W y luego avanza el reloj del evaluador hasta W
+function flush(W) {
+    const R = S.rb;
+    if (W <= R.wm) return;
+    const a = R.a;
+    while (R.h < a.length && a[R.h].t <= W) {
+        const x = a[R.h]; a[R.h] = undefined; R.h++;
+        S.c.reorder_delivered++;
+        deliver(x.msg);
+    }
+    R.wm = W;
+    if (R.h > 4096 && R.h * 2 > a.length) { R.a = a.slice(R.h); R.h = 0; }
+    if (W > S.lastAdv) advance(W);
+}
+
+function onMsg(msg) {
+    if (!msg) return;
+    if (msg.kind === 'events') {
+        const t = msg.t_recv;
+        if (typeof t !== 'number' || !Array.isArray(msg.payload)) return;
+        rbInsert(t, msg);
+        flush(Date.now() - REORDER_MS);
+    } else if (msg.kind === 'conn') {
+        rbInsert(typeof msg.t === 'number' ? msg.t : Date.now(), msg);   // ordenado con los eventos
+        flush(Date.now() - REORDER_MS);
     } else if (msg.topic === 'reset') {
         S = newState();
         report();
@@ -416,7 +504,12 @@ function report() {
             invalid_ref_by_h: c.invalid_ref_by_h, invalid_secondary_by_h: c.invalid_sec_by_h
         },
         queue: { pending: S.q.length - S.head, pending_max_seen: c.pending_max_seen, max_pending: MAX_PENDING,
-            pending_dropped: c.pending_dropped, horizons_expired: c.horizons_expired, late_events: c.late_events },
+            pending_dropped: c.pending_dropped, horizons_expired: c.horizons_expired, late_events: c.late_events,
+            reorder_buffer_ms: REORDER_MS, reorder_buffer_current: S.rb.a.length - S.rb.h, reorder_buffer_max: c.reorder_buffer_max,
+            late_beyond_buffer: c.late_beyond_buffer, out_of_order_events: c.out_of_order_events,
+            reorder_forced: c.reorder_forced, reorder_delivered: c.reorder_delivered,
+            watermark_lag_ms: S.rb.wm ? now - S.rb.wm : null,
+            lateness_ms: S.rb.lateness.summary(), arrival_delay_ms: S.rb.arrival.summary() },
         strength: { field: 'abs(ALL.delta_usd_250ms)', unit: 'USD', distribution: dist,
             terciles_provisional: { thresholds_usd: S.terc ? [r(S.terc[0], 0), r(S.terc[1], 0)] : null,
                 note: 'límites expansivos que cambian durante la corrida: sólo diagnóstico, NO prueba de monotonía' } },
@@ -432,8 +525,7 @@ function report() {
 }
 
 const tick = setInterval(function () {
-    const x = Date.now() - GRACE_MS;
-    if (x > S.lastAdv) advance(x);
+    flush(Date.now() - REORDER_MS);   // vacía el buffer y mueve el reloj aunque el feed se detenga
 }, TICK_MS);
 const rep = setInterval(report, REPORT_MS);
 

@@ -12,24 +12,29 @@ const ev = nodes.find((n) => n.name === 'WAVE TEST EVAL');
 
 const sent = [];
 const timers = [];
+// reloj virtual: el reorder buffer entrega cuando t_recv <= now - 250 ms
+const CLOCK = { now: Date.now() };
+class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(CLOCK.now); } static now() { return CLOCK.now; } }
 const sb = {
     node: { send: (m) => sent.push(m), status: () => {}, warn: () => {}, error: (e) => { throw new Error(e); } },
     setInterval: (fn) => { timers.push(fn); return timers.length; }, clearInterval: () => {},
-    Date, Math, JSON, Float64Array, Object, Array, Number, console
+    Date: FakeDate, Math, JSON, Float64Array, Object, Array, Number, console
 };
 vm.createContext(sb);
 vm.runInContext('(function(){\n' + ev.initialize + '\n})()', sb);
 const W = sb.globalThis ? sb.globalThis.__WAVE_TEST__ : vm.runInContext('globalThis.__WAVE_TEST__', sb);
-const report = timers[1]; // [0] = tick 50 ms (no se usa: sólo camino event-driven), [1] = reporte 5 s
+const tick = timers[0];   // [0] = tick 50 ms (vacía el reorder buffer)
+const report = timers[1]; // [1] = reporte 5 s
 const near = (a, b, m) => assert(a !== null && Math.abs(a - b) < 1e-9, m + ' (' + a + ' vs ' + b + ')');
 const lastDetail = () => { sent.length = 0; report(); return sent[0][1].payload; };
 
 const base = Math.ceil(Date.now() / 250) * 250 + 3000;   // pasado el warm-up
 const T1 = base + 250;
-const book = (ex, t, bid, ask) => W.onMsg({ kind: 'events', exchange: ex, ekind: 'book', t_recv: t,
+const arrive = (t) => { if (t > CLOCK.now) CLOCK.now = t; };   // llegada en t_recv (en orden)
+const book = (ex, t, bid, ask) => arrive(t) || W.onMsg({ kind: 'events', exchange: ex, ekind: 'book', t_recv: t,
     payload: [{ kind: 'book', exchange: ex, channel: 'bbo', best_bid: bid, best_bid_qty: 1, best_ask: ask, best_ask_qty: 1,
         bid_qty5: null, ask_qty5: null, bid_qty10: null, ask_qty10: null, exchange_timestamp: null, local_receive_timestamp: t }] });
-const trade = (ex, t, side, usd, price) => W.onMsg({ kind: 'events', exchange: ex, ekind: 'trade', t_recv: t,
+const trade = (ex, t, side, usd, price) => arrive(t) || W.onMsg({ kind: 'events', exchange: ex, ekind: 'trade', t_recv: t,
     payload: [{ kind: 'trade', exchange: ex, price: price, quantity: usd / price, usd: usd, side: side, exchange_timestamp: t - 1, local_receive_timestamp: t }] });
 
 // --- escenario ---
@@ -47,6 +52,7 @@ book('kraken', T1 + 101, 100.04, 100.06);           // kraken mid 100.05
 book('binance', T1 + 400, 99.89, 99.91);            // dispara el cierre de +250ms (as-of t0+250 = 99.90)
 book('binance', T1 + 1900, 99.89, 99.91);           // último update de Binance: el mid sigue en 99.90 (sin cambio)
 trade('okx', T1 + 7000, 'BUY', 1, 100);             // avanza el reloj: +500ms..+5s vencidos
+CLOCK.now = T1 + 7000 + 250; tick();               // watermark = T1+7000: entrega todo lo pendiente
 
 const d = lastDetail();
 // buscar la muestra de T1 en el DUMP
