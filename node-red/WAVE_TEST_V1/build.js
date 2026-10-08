@@ -18,6 +18,8 @@ if (a < 0 || b < 0) throw new Error('no se encontraron las clases de ventanas en
 const engineWindows = engineSrc.slice(a, b).trim();
 const evalSrc = fs.readFileSync(path.join(__dirname, 'src', 'eval.js'), 'utf8').replace('/*__ENGINE_WINDOWS__*/', engineWindows);
 const exportSrc = fs.readFileSync(path.join(__dirname, 'src', 'export.js'), 'utf8');
+const labSrc = fs.readFileSync(path.join(__dirname, 'src', 'lab_store.js'), 'utf8');
+const labPage = fs.readFileSync(path.join(__dirname, 'src', 'lab_page.html'), 'utf8');
 
 const TAB = id('tab');
 const TAP = id('tap/link-out');
@@ -28,6 +30,10 @@ const DBG_DETAIL = id('debug/detail');
 const DBG_DUMP = id('debug/dump');
 const EXPORT = id('export');
 const DBG_EXPORT = id('debug/export');
+const LAB = id('lab/store');
+const LAB_PAGE = id('lab/page');
+const LAB_RES_HTML = id('lab/res-html');
+const LAB_RES_JSON = id('lab/res-json');
 
 const ARCH = [
     'WAVE_TEST_V1 · ¿Tiene WAVE poder predictivo? (sólo medición, sin trading)',
@@ -71,11 +77,11 @@ const testNodes = [
         outputs: 3, timeout: 0, noerr: 0, initialize: evalSrc,
         finalize: 'if (globalThis.__WAVE_TEST__) globalThis.__WAVE_TEST__.stop();', libs: [],
         outputLabels: ['línea 5 s', 'detalle 5 s', 'dump muestras'],
-        x: 380, y: 180, wires: [[DBG_LINE], [DBG_DETAIL, EXPORT], [EXPORT]] },
+        x: 380, y: 180, wires: [[DBG_LINE], [DBG_DETAIL, EXPORT, LAB], [EXPORT]] },
     { id: id('inject/reset'), type: 'inject', z: TAB, name: 'RESET TEST', props: [{ p: 'topic', vt: 'str' }],
         repeat: '', crontab: '', once: false, onceDelay: 0.1, topic: 'reset', x: 150, y: 240, wires: [[EVAL]] },
     { id: id('inject/dump'), type: 'inject', z: TAB, name: 'DUMP SAMPLES (últimas 2000)', props: [{ p: 'topic', vt: 'str' }],
-        repeat: '', crontab: '', once: false, onceDelay: 0.1, topic: 'dump', x: 180, y: 280, wires: [[EVAL]] },
+        repeat: '', crontab: '', once: false, onceDelay: 0.1, topic: 'dump', x: 180, y: 280, wires: [[EXPORT]] },
     { id: DBG_LINE, type: 'debug', z: TAB, name: 'WAVE TEST (5 s)', active: true, tosidebar: true, console: false, tostatus: false,
         complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 640, y: 140, wires: [] },
     { id: DBG_DETAIL, type: 'debug', z: TAB, name: 'WAVE TEST detalle (5 s)', active: false, tosidebar: true, console: false, tostatus: false,
@@ -99,13 +105,36 @@ const testNodes = [
         func: '// Recibe: export / export_auto (injects), detalle 5 s y DUMP de WAVE TEST EVAL.\n' +
               '// Toda la lógica y la escritura (asíncrona) viven en "On Start".\n' +
               'globalThis.__WAVE_EXPORT__.onMsg(msg);\nreturn null;',
-        outputs: 3, timeout: 0, noerr: 0, initialize: exportSrc,
+        outputs: 4, timeout: 0, noerr: 0, initialize: exportSrc,
         finalize: 'if (globalThis.__WAVE_EXPORT__) globalThis.__WAVE_EXPORT__.stop();',
         libs: [{ var: 'fs', module: 'fs' }, { var: 'path', module: 'path' }],
-        outputLabels: ['pedido de dump -> EVAL', 'DUMP manual -> Debug', 'estado del export'],
-        x: 420, y: 420, wires: [[EVAL], [DBG_DUMP], [DBG_EXPORT]] },
+        outputLabels: ['pedido de dump -> EVAL', 'DUMP manual -> Debug', 'estado del export', 'muestras -> WAVE LAB'],
+        x: 420, y: 420, wires: [[EVAL], [DBG_DUMP], [DBG_EXPORT], [LAB]] },
     { id: DBG_EXPORT, type: 'debug', z: TAB, name: 'WAVE EXPORT estado', active: true, tosidebar: true, console: false, tostatus: false,
-        complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 660, y: 420, wires: [] }
+        complete: 'payload', targetType: 'msg', statusVal: '', statusType: 'auto', x: 660, y: 420, wires: [] },
+    // ---------------- WAVE LAB: dashboard HTTP (sólo nodos core, sin paquetes) ----------------
+    { id: id('comment/lab'), type: 'comment', z: TAB, name: 'WAVE LAB · dashboard en http://<host>:1880/wave-lab (sólo visualización)',
+        info: 'Página oscura y horizontal servida por nodos core (http in / template / http response): no requiere Dashboard 2.0 ni paquetes.\n' +
+              'Consume SÓLO el detalle de WAVE TEST EVAL (cada 5 s) y, mientras la página está abierta, un DUMP cada 10 s para "¿llegamos tarde?".\n' +
+              'GET  /wave-lab          página\nGET  /wave-lab/data     estado JSON (la página lo consulta cada 2 s; responde desde memoria)\n' +
+              'POST /wave-lab/reset    envía a EVAL el mismo {topic:"reset"} que el inject RESET TEST\n' +
+              'GET  /wave-lab/export   descarga JSON (config, counts, queue, strength, resultados, baseline, últimas 500 muestras). No escribe a disco.\n' +
+              'Las rutas cuelgan de httpNodeRoot (por defecto "/"). Si tenés httpNodeAuth, también aplica aquí.', x: 270, y: 540, wires: [] },
+    { id: id('lab/http-page'), type: 'http in', z: TAB, name: 'GET /wave-lab', url: '/wave-lab', method: 'get', upload: false, swaggerDoc: '', x: 140, y: 600, wires: [[LAB_PAGE]] },
+    { id: LAB_PAGE, type: 'template', z: TAB, name: 'WAVE LAB página', field: 'payload', fieldType: 'msg', format: 'html', syntax: 'plain',
+        template: labPage, output: 'str', x: 360, y: 600, wires: [[LAB_RES_HTML]] },
+    { id: LAB_RES_HTML, type: 'http response', z: TAB, name: 'HTML', statusCode: '', headers: { 'content-type': 'text/html; charset=utf-8' }, x: 560, y: 600, wires: [] },
+    { id: id('lab/http-data'), type: 'http in', z: TAB, name: 'GET /wave-lab/data', url: '/wave-lab/data', method: 'get', upload: false, swaggerDoc: '', x: 150, y: 660, wires: [[LAB]] },
+    { id: id('lab/http-reset'), type: 'http in', z: TAB, name: 'POST /wave-lab/reset', url: '/wave-lab/reset', method: 'post', upload: false, swaggerDoc: '', x: 160, y: 700, wires: [[LAB]] },
+    { id: id('lab/http-export'), type: 'http in', z: TAB, name: 'GET /wave-lab/export', url: '/wave-lab/export', method: 'get', upload: false, swaggerDoc: '', x: 160, y: 740, wires: [[LAB]] },
+    { id: LAB, type: 'function', z: TAB, name: 'WAVE LAB STORE',
+        func: '// Sólo lectura: guarda el detalle de EVAL / las muestras y atiende las rutas /wave-lab/*.\n' +
+              'globalThis.__WAVE_LAB__.onMsg(msg);\nreturn null;',
+        outputs: 2, timeout: 0, noerr: 0, initialize: labSrc,
+        finalize: 'if (globalThis.__WAVE_LAB__) globalThis.__WAVE_LAB__.stop();', libs: [],
+        outputLabels: ['http response', 'reset / dump -> EVAL'],
+        x: 420, y: 700, wires: [[LAB_RES_JSON], [EVAL]] },
+    { id: LAB_RES_JSON, type: 'http response', z: TAB, name: 'JSON', statusCode: '', headers: {}, x: 640, y: 700, wires: [] }
 ];
 
 // snippet separado: sin 'z' => el editor lo coloca en el tab ACTIVO al importar con "current flow"

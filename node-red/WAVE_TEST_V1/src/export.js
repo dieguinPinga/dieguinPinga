@@ -12,6 +12,8 @@
 //   WAVE_TEST_LATEST.json                    (manual y automático, se sobreescribe)
 //   WAVE_TEST_YYYY-MM-DD_HH-mm-ss.json       (sólo manual; se conservan los últimos 100)
 // Salidas: 1 -> EVAL (pedido de dump) · 2 -> Debug DUMP manual (reenvío) · 3 -> Debug estado del export
+//          4 -> WAVE LAB STORE (toda muestra recibida, sin clonar; sólo lectura)
+// El inject DUMP SAMPLES pasa por aquí (topic 'dump') para que sólo los DUMP manuales lleguen al Debug.
 // =====================================================================
 // directorio de reportes (override opcional: variable de entorno WAVE_REPORT_DIR)
 const REPORT_DIR = env.get('WAVE_REPORT_DIR') || '/home/plapopepo/wave_reports';
@@ -28,6 +30,7 @@ const X = {
     lastDetail: null,
     job: null,                    // { trigger, phase: 'wait_detail'|'wait_dump'|'writing', t, timer }
     busy: false,
+    manualDump: false,            // DUMP SAMPLES pedido a mano => su respuesta va al Debug
     stats: { ok: 0, failed: 0, skipped_busy: 0, last_file: null, last_bytes: null, last_ms: null, last_error: null }
 };
 
@@ -38,7 +41,7 @@ function stamp(d) {   // hora local del miniPC
 const yieldLoop = () => new Promise((res) => setTimeout(res, 0)); // setImmediate no existe en el sandbox del Function node
 
 function status(fill, text) { node.status({ fill: fill, shape: 'dot', text: text }); }
-function report(o) { node.send([null, null, { topic: 'wave_test_v1/export', payload: o }], false); }
+function report(o) { node.send([null, null, { topic: 'wave_test_v1/export', payload: o }, null], false); }
 
 function startJob(trigger) {
     if (X.job || X.busy) {
@@ -68,14 +71,18 @@ function onDetail(d) {
     if (j && j.phase === 'wait_detail') {
         j.phase = 'wait_dump';
         j.detail = d;
-        node.send([{ topic: 'dump' }, null, null], false);   // EVAL responde por su salida 3
+        node.send([{ topic: 'dump' }, null, null, null], false);   // EVAL responde por su salida 3
     }
 }
 
 function onSamples(msg) {
+    node.send([null, null, null, msg], false);                // WAVE LAB: misma referencia, sin copia
     const j = X.job;
     if (!j || j.phase !== 'wait_dump') {
-        node.send([null, msg, null], false);                  // DUMP manual: se reenvía al Debug como antes
+        if (X.manualDump) {                                   // DUMP manual: al Debug como antes
+            X.manualDump = false;
+            node.send([null, { topic: msg.topic, payload: msg.payload }, null, null], false);
+        }
         return;
     }
     clearTimeout(j.timer);
@@ -186,6 +193,7 @@ globalThis.__WAVE_EXPORT__ = {
         if (!msg) return;
         if (msg.topic === 'export') startJob('manual');
         else if (msg.topic === 'export_auto') startJob('auto');
+        else if (msg.topic === 'dump') { X.manualDump = true; node.send([{ topic: 'dump' }, null, null, null], false); }
         else if (msg.topic === 'wave_test_v1/detail') onDetail(msg.payload);
         else if (msg.topic === 'wave_test_v1/samples') onSamples(msg);
     },

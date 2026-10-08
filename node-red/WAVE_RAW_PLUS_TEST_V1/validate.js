@@ -64,7 +64,7 @@ const tr = conns.find((c) => c.id === 'trade');
 check(tr.url === 'wss://ws-feed.exchange.coinbase.com' && /"matches"/.test(JSON.stringify(tr.subs)) && !/market_trades/.test(JSON.stringify(tr.subs)), 'Coinbase TRADE = Exchange feed "matches" (sin market_trades)');
 check(/ty === 'match'/.test(all.find((n) => n.name === 'NORMALIZER · COINBASE').initialize), 'NORMALIZER Coinbase procesa mensajes match');
 
-const types = new Set(['tab', 'comment', 'function', 'inject', 'debug', 'link in', 'link out']);
+const types = new Set(['tab', 'comment', 'function', 'inject', 'debug', 'link in', 'link out', 'http in', 'http response', 'template']);
 check(all.every((n) => types.has(n.type)), 'sólo nodos core: ' + [...new Set(all.map((n) => n.type))].join(', '));
 const code = all.filter((n) => n.type === 'function').map((n) => [n.func, n.initialize, n.finalize].join('\n')).join('\n');
 check(!all.some((n) => /mysql/i.test(n.type)) && !/require\(['"]mysql|mysql\./i.test(code) && !all.some((n) => (n.libs || []).some((l) => /mysql/i.test(l.module))), 'sin MySQL (ni nodos, ni libs, ni código; sólo aparece en comentarios "NO hay MySQL")');
@@ -75,6 +75,8 @@ check(!/require\(\s*['"]fs['"]|writeFile|appendFile|createWriteStream|fs\.promis
     all.filter((n) => (n.libs || []).some((l) => l.module === 'fs')).every((n) => n === exp) && exp.z !== '35b7a74832889057',
     'disco: sólo WAVE TEST EXPORT (tab WAVE_TEST_V1) escribe, en /home/plapopepo/wave_reports; WAVE_RAW_V1 sin acceso a disco');
 check(!/\b(flow|global|context)\.set\(/.test(code), 'sin context store');
+check(all.filter((n) => n.type === 'http in').every((n) => n.z !== '35b7a74832889057' && /^\/wave-lab(\/|$)/.test(n.url)), 'endpoints HTTP sólo en WAVE_TEST_V1 bajo /wave-lab');
+check(!all.some((n) => /^ui-|^ui_|flowfuse/i.test(n.type)), 'sin nodos de Dashboard (página servida con nodos core)');
 check(!/\/order|create_order|place_order|addorder|"op":"order"/i.test(code), 'sin órdenes');
 check(all.filter((n) => n.type === 'debug').every((d) => all.some((n) => (n.name === 'WAVE RAW ENGINE' || n.name === 'WAVE TEST EVAL' || n.name === 'WAVE TEST EXPORT') && n.wires.some((o) => o.includes(d.id)))), 'Debug sólo en salidas 1 Hz del ENGINE, 5 s/manual del TEST y estado del EXPORT');
 for (const n of all.filter((x) => x.type === 'function')) {

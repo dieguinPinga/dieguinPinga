@@ -72,3 +72,20 @@ El código de `WAVE TEST EVAL` no cambia. El export usa sus salidas existentes:
 1. espera el próximo detalle, que sale cada ≤5 s;
 2. pide un DUMP de muestras;
 3. escribe el archivo.
+
+## WAVE LAB (dashboard)
+
+La página se abre en `http://<host>:1880/wave-lab`. Es oscura, horizontal y se sirve con nodos core (`http in`, `template`, `http response`), así que no requiere Dashboard 2.0 ni paquetes.
+
+- **Datos:** consume solo el detalle de `WAVE TEST EVAL` (cada 5 s). Mientras la página está abierta, pide además un DUMP cada 10 s para la sección "¿llegamos tarde?". Con la página cerrada no agrega ninguna carga.
+- **Endpoints:**
+
+  | Ruta | Qué hace |
+  |---|---|
+  | `GET /wave-lab` | Sirve la página. |
+  | `GET /wave-lab/data` | Devuelve el estado en JSON, desde memoria. |
+  | `POST /wave-lab/reset` | Envía el mismo `{topic:'reset'}` que el inject RESET TEST. |
+  | `GET /wave-lab/export` | Descarga un JSON con las últimas 500 muestras. No escribe a disco. |
+
+- **Rutas:** cuelgan de `httpNodeRoot`, que por defecto es `/`. Si configuraste `httpNodeAuth`, también se aplica aquí.
+- **Lo que no cambió:** `WAVE TEST EVAL` no se modificó. En `WAVE TEST EXPORT` solo cambió el ruteo de los DUMP: las muestras van al LAB y el Debug muestra solo los DUMP pedidos a mano.
