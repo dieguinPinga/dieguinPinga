@@ -1,0 +1,26 @@
+(/MENU_MOLINOS
+🏭 Seleccioná el material
+/MOL_SOPLADO
+/MOL_CAJONES_ADI
+/MOL_CAJONES_PP
+/MOL_SILLAS
+/MOL_TAPITAS
+/MOL_BAZAR
+/MOL_BALDES
+/MOL_ROTOMOLDEO
+/MOL_TAPON_AGUA
+/MOL_OTROS
+)
+
+# MENU_COLOIDALES y MENU_EXTRUSORAS: PENDIENTES.
+# Copiar textualmente el cuerpo (título + líneas /...) de UNO de los bloques
+# /psto_COLOIDAL_* y /psto_EXTRUSORA_* actuales, después de verificar que los
+# tres de cada familia son idénticos. El cuestionario no estaba en lo enviado.
+#
+# (/MENU_COLOIDALES
+# <título y ramas copiadas de /psto_COLOIDAL_1>
+# )
+#
+# (/MENU_EXTRUSORAS
+# <título y ramas copiadas de /psto_EXTRUSORA_1>
+# )
