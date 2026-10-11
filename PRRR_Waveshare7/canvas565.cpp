@@ -101,13 +101,15 @@ void Canvas565::markDirty(int x, int y, int w, int h) {
   if (y2 > r.y2) r.y2 = y2;
 }
 
-void Canvas565::publish(lv_obj_t* canvasObj, int screenX, int screenY) {
+size_t Canvas565::publish(lv_obj_t* canvasObj, int screenX, int screenY) {
+  size_t copied = 0;
   for (int i = 0; i < _dirtyCount; i++) {
     const Rect& r = _dirty[i];
     size_t rowBytes = (size_t)(r.x2 - r.x1 + 1) * sizeof(lv_color_t);
     for (int y = r.y1; y <= r.y2; y++) {
       memcpy(_front + y * _w + r.x1, _back + y * _w + r.x1, rowBytes);
     }
+    copied += rowBytes * (size_t)(r.y2 - r.y1 + 1);
     lv_area_t a;
     a.x1 = screenX + r.x1;
     a.y1 = screenY + r.y1;
@@ -116,4 +118,5 @@ void Canvas565::publish(lv_obj_t* canvasObj, int screenX, int screenY) {
     lv_obj_invalidate_area(canvasObj, &a);
   }
   _dirtyCount = 0;
+  return copied;
 }

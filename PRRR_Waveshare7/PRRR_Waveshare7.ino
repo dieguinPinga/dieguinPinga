@@ -48,6 +48,8 @@ static unsigned long lastPublish = 0;
 static unsigned long publishIntervalMs = PRRR_PUBLISH_INTERVAL_MS;
 static uint32_t publishLockFails = 0;
 static uint32_t publishMaxLockWaitUs = 0;
+static uint32_t publishMaxHeldUs = 0;     // tiempo con el lock tomado (copia + textos)
+static size_t publishMaxBytes = 0;        // bytes copiados al lv_canvas en una publicacion
 static unsigned long lastLiveTailDraw = 0;
 static unsigned long lastFullDraw = 0;
 static unsigned long lastFlowDraw = 0;
@@ -263,9 +265,12 @@ static bool publishFrame(bool withHeader, int lockTimeoutMs) {
   }
   const uint32_t waitUs = (uint32_t)(esp_timer_get_time() - t0);
   if (waitUs > publishMaxLockWaitUs) publishMaxLockWaitUs = waitUs;
-  canvas.publish(uiCanvas(), CANVAS_X, CANVAS_Y);
+  const size_t bytes = canvas.publish(uiCanvas(), CANVAS_X, CANVAS_Y);
   if (withHeader) uiApply(snap);
   lvUnlock();
+  const uint32_t heldUs = (uint32_t)(esp_timer_get_time() - t0) - waitUs;
+  if (heldUs > publishMaxHeldUs) publishMaxHeldUs = heldUs;
+  if (bytes > publishMaxBytes) publishMaxBytes = bytes;
   return true;
 }
 
@@ -324,6 +329,22 @@ static void handleSerialCommands() {
   }
 }
 
+// Aviso inmediato de reescalado (como maximo 1 linea por segundo), para poder
+// mirar la pantalla y el monitor serie al mismo tiempo.
+static void printRescaleEvents(unsigned long nowMs) {
+  static uint32_t lastPrinted = 0;
+  static unsigned long lastPrintMs = 0;
+  if (chartDiag.rescales == lastPrinted || nowMs - lastPrintMs < 1000) return;
+  uint32_t n = chartDiag.rescales - lastPrinted;
+  lastPrinted = chartDiag.rescales;
+  lastPrintMs = nowMs;
+  double oldSpan = chartDiag.lastOldMax - chartDiag.lastOldMin;
+  double newSpan = chartDiag.lastNewMax - chartDiag.lastNewMin;
+  Serial.printf("[ESCALA] %lu reescalado(s). Ultimo: %.2f..%.2f -> %.2f..%.2f (rango %.2f -> %.2f, %+.1f%%)\n",
+                (unsigned long)n, chartDiag.lastOldMin, chartDiag.lastOldMax, chartDiag.lastNewMin, chartDiag.lastNewMax,
+                oldSpan, newSpan, oldSpan > 0 ? (newSpan - oldSpan) / oldSpan * 100.0 : 0.0);
+}
+
 static void printSummary(unsigned long nowMs) {
 #if PRRR_SERIAL_SUMMARY_MS > 0
   if (nowMs - lastSummary < PRRR_SERIAL_SUMMARY_MS) return;
@@ -358,6 +379,26 @@ static void printSummary(unsigned long nowMs) {
   prevFrames = st.frames;
   publishLockFails = 0;
   publishMaxLockWaitUs = 0;
+
+  // Escala y redibujados completos del grafico en los ultimos 10 s
+  static ChartDiag prevChart = {};
+  static RenderDiag prevRender = {};
+  uint32_t nFull = renderDiag.fullCount - prevRender.fullCount;
+  uint64_t sumFull = renderDiag.fullSumUs - prevRender.fullSumUs;
+  Serial.printf("[CHART] reescalados=%lu avancesColumna=%lu derivasSinRedibujo=%lu completos=%lu "
+                "tCompleto_avg=%.1fms tCompleto_max=%.1fms colas=%lu tCola_max=%.1fms pubMax=%uKB lockTenidoMax=%.1fms\n",
+                (unsigned long)(chartDiag.rescales - prevChart.rescales),
+                (unsigned long)(chartDiag.bucketAdvances - prevChart.bucketAdvances),
+                (unsigned long)(chartDiag.rangeDrifts - prevChart.rangeDrifts),
+                (unsigned long)nFull, nFull ? (sumFull / nFull) / 1000.0 : 0.0, renderDiag.fullMaxUs / 1000.0,
+                (unsigned long)(renderDiag.tailCount - prevRender.tailCount), renderDiag.tailMaxUs / 1000.0,
+                (unsigned)(publishMaxBytes / 1024), publishMaxHeldUs / 1000.0);
+  prevChart = chartDiag;
+  renderDiag.fullMaxUs = 0;
+  renderDiag.tailMaxUs = 0;
+  prevRender = renderDiag;
+  publishMaxBytes = 0;
+  publishMaxHeldUs = 0;
 #endif
 }
 
@@ -499,6 +540,7 @@ void loop() {
     }
   }
 
+  printRescaleEvents(nowMs);
   printSummary(nowMs);
   delay(2);
 }

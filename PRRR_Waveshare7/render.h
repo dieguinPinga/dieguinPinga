@@ -6,6 +6,14 @@
 // Nivel de diagnostico activo (1..5, ver prrr_config.h). Solo lo cambia loop().
 extern int g_diagLevel;
 
+// Diagnostico: tiempos de dibujo en el buffer trasero (microsegundos)
+struct RenderDiag {
+  uint32_t fullCount, fullMaxUs;
+  uint64_t fullSumUs;
+  uint32_t tailCount, tailMaxUs;
+};
+extern RenderDiag renderDiag;
+
 void renderBegin(Canvas565* canvas);
 void drawStaticFrames();
 

@@ -69,6 +69,8 @@ static float binSellAccum = 0.0f;
 float aggressorBuyBTCs = 0.0f;
 float aggressorSellBTCs = 0.0f;
 
+ChartDiag chartDiag = {};
+
 uint32_t tradeCountBin = 0;
 uint32_t tradeCountCb = 0;
 
@@ -352,6 +354,20 @@ static void ingestChartSample(double price, float flowDelta) {
   double newMin = 0.0;
   double newMax = 1.0;
   computeChartRange(&newMin, &newMax);
+
+  // Diagnostico: mismas comparaciones que el original, solo se cuentan
+  bool rangeChangedDiag = chartRangeChanged(oldMin, oldMax, newMin, newMax);
+  if (bucketAdvanced) chartDiag.bucketAdvances++;
+  if (rangeChangedDiag) {
+    chartDiag.rescales++;
+    chartDiag.lastOldMin = oldMin;
+    chartDiag.lastOldMax = oldMax;
+    chartDiag.lastNewMin = newMin;
+    chartDiag.lastNewMax = newMax;
+    chartDiag.lastRescaleMs = nowMs;
+  } else if (!bucketAdvanced && (newMin != oldMin || newMax != oldMax)) {
+    chartDiag.rangeDrifts++;
+  }
 
   bool needFullRedraw = bucketAdvanced || chartRangeChanged(oldMin, oldMax, newMin, newMax);
   // (7in) Un redibujado completo pendiente no se cancela con un trade posterior.

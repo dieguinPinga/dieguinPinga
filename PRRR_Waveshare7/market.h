@@ -69,6 +69,16 @@ extern uint8_t ledR, ledG, ledB;
 extern float aggressorBuyBTCs;
 extern float aggressorSellBTCs;
 
+// Diagnostico de escala (solo mide; no cambia el algoritmo original)
+struct ChartDiag {
+  uint32_t rescales;        // chartRangeChanged() == true -> redibujado completo
+  uint32_t bucketAdvances;  // columna nueva -> redibujado completo
+  uint32_t rangeDrifts;     // el rango cambio pero por debajo del umbral -> solo cola
+  double lastOldMin, lastOldMax, lastNewMin, lastNewMax;
+  unsigned long lastRescaleMs;
+};
+extern ChartDiag chartDiag;
+
 // Contadores para el resumen por Serial
 extern uint32_t tradeCountBin;
 extern uint32_t tradeCountCb;

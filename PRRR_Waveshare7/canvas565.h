@@ -33,7 +33,8 @@ public:
   void markDirty(int x, int y, int w, int h);
   bool hasDirty() const { return _dirtyCount > 0; }
   // Requiere esp_lv_adapter_lock() tomado por el llamador.
-  void publish(lv_obj_t* canvasObj, int screenX, int screenY);
+  // Devuelve los bytes copiados (diagnostico).
+  size_t publish(lv_obj_t* canvasObj, int screenX, int screenY);
 
   static inline lv_color_t toLv(uint16_t c) {
     lv_color_t o;

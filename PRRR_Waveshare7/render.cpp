@@ -3,9 +3,11 @@
 #include "render.h"
 #include "market.h"
 #include "color565.h"
+#include <esp_timer.h>
 
 static Canvas565* gfx = nullptr;
 int g_diagLevel = PRRR_DIAG_LEVEL_DEFAULT;
+RenderDiag renderDiag = {};
 
 void renderBegin(Canvas565* canvas) {
   gfx = canvas;
@@ -548,9 +550,14 @@ void drawChartArea() {
     chartTailDirty = false;
     return;
   }
+  const int64_t t0 = esp_timer_get_time();
   gfx->fillRect(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H, COLOR_BLACK);
   drawChart(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H);
   gfx->fillRect(PRICE_MARKER_X, CHART_INNER_Y, PRICE_MARKER_W, CHART_INNER_H, COLOR_BLACK);
+  const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+  renderDiag.fullCount++;
+  renderDiag.fullSumUs += dt;
+  if (dt > renderDiag.fullMaxUs) renderDiag.fullMaxUs = dt;
   gfx->markDirty(CHART_INNER_X, CHART_INNER_Y, PRICE_MARKER_X + PRICE_MARKER_W - CHART_INNER_X, CHART_INNER_H);
   chartDirty = false;
   chartTailDirty = false;
@@ -561,7 +568,11 @@ void drawTailRegionDefault() {
     chartTailDirty = false;
     return;
   }
+  const int64_t t0 = esp_timer_get_time();
   drawTailRegion(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H);
+  const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+  renderDiag.tailCount++;
+  if (dt > renderDiag.tailMaxUs) renderDiag.tailMaxUs = dt;
 }
 
 void drawLivePriceTailDefault() {
