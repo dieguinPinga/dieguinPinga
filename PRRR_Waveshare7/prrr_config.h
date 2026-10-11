@@ -55,6 +55,10 @@ const unsigned long liveTailIntervalMs = 120;
 const unsigned long flowDrawIntervalMs = 240;    // (7in) orig 120: el rio+waterfall ahora cubren ~200 KB por cuadro
 const unsigned long fullRedrawMinIntervalMs = 120; // (7in) limite de redibujados completos del grafico
 const unsigned long ledUpdateIntervalMs = 50;
+// (7in) Publicacion hacia LVGL: una por cuadro como maximo. Con el adaptador de la
+// demo (full_refresh) cada publicacion redibuja las 800x480 lineas completas.
+const unsigned long publishIntervalMs = 120;
+const int publishLockTimeoutMs = 60;   // la tarea LVGL retiene el lock mientras espera el VSYNC
 const float FLOW_BAR_MAX_BTCS = 2.0f;  // subir si en ventanas largas el rio queda muy gordo
 
 // -------------------- Pantalla (7in) --------------------

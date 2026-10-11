@@ -1,7 +1,11 @@
 # PRRR BITCOIN — Waveshare ESP32-S3-Touch-LCD-7 (800×480)
 
 Port del monitor PRRR (ESP32 + ST7789 172×320) a la **Waveshare ESP32-S3-Touch-LCD-7**
-(ST7262 RGB, táctil GT911, 8 MB PSRAM) usando **LVGL 8.3.11** y **ESP32_Display_Panel**.
+(ST7262 RGB, táctil GT911, 8 MB PSRAM) usando **LVGL 8.3.11**, **ESP32_Display_Panel** y el
+adaptador **`esp_lv_adapter_arduino`** de la demo `09_lvgl_v8_demo` probada en la placa.
+
+La carpeta es autosuficiente: trae el adaptador y `esp_panel_board_custom_conf.h` de esa demo.
+Solo hay que configurar el WiFi (ver "Instalación").
 
 Se conservaron los cálculos, los WebSockets y la estética del original: precio ponderado por
 flujo, buckets lógicos, SMA 25/55, LONG/SHORT, BTC/s, río de flujo con dithering, waterfall
@@ -12,16 +16,17 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
 
 ## Qué está verificado y qué no
 
-| Verificado | Cómo |
-|---|---|
-| Compila sin errores con ESP32 core **3.3.12**, placa *Waveshare ESP32-S3-Touch-LCD-7*, PSRAM Enabled, 8 MB, Huge APP | `arduino-cli` con ESP32_Display_Panel 1.0.5, ESP32_IO_Expander 1.1.1, esp-lib-utils 0.3.0, lvgl 8.3.11, WebSockets 2.7.3, ArduinoJson 7.4.2. Usa 52 % de flash y 17 % de RAM interna |
-| Lógica de cálculo, dibujo y LVGL | Mismos archivos `.cpp` compilados en una PC con LVGL real y trades sintéticos. Las capturas de `docs/` salen de esa simulación, incluido un toque simulado en los botones de ventana |
-| **No verificado en hardware** | FPS real, uso del ancho de banda de la PSRAM y conexión con exchanges reales desde este sketch. Ver "Primer arranque" |
+| Estado | Qué | Cómo |
+|---|---|---|
+| **Compilado** | La carpeta completa, con el adaptador y la configuración de la demo, compila sin errores para ESP32 core **3.3.12**, placa *Waveshare ESP32-S3-Touch-LCD-7*, PSRAM Enabled, Flash 8 MB, Huge APP, CPU 240 MHz. Usa 50 % de flash y 17 % de RAM interna | `arduino-cli` con ESP32_Display_Panel 1.0.5, ESP32_IO_Expander 1.1.1, esp-lib-utils 0.3.0, lvgl 8.3.11, WebSockets 2.7.3, ArduinoJson 7.4.2 |
+| **Compilado** | El firmware toma `esp_panel_board_custom_conf.h` de esta carpeta | El binario contiene `Waveshare:ESP32-S3-Touch-LCD-7` y el driver ST7262 |
+| **Simulado** | Cálculos, dibujo, interfaz LVGL, toque en los botones y cambio de ventana, con LVGL en modo `full_refresh` y doble buffer como el adaptador. ~8 cuadros completos por segundo | Los mismos `.cpp` compilados en una PC con LVGL 8.3.11 real y trades sintéticos. Las capturas de `docs/` salen de ahí |
+| **Pendiente en la placa** | FPS y carga de CPU reales, ancho de banda de la PSRAM con la pantalla completa redibujándose, espera del lock durante el VSYNC, táctil GT911 real y WebSockets reales desde este sketch | Ver "Primer arranque" |
 
 ## Arquitectura
 
 ```
- Tarea LVGL (lvgl_v8_port, prioridad 2)      Tarea loop() (Arduino, prioridad 1)
+ Tarea LVGL (esp_lv_adapter, prioridad 2)    Tarea loop() (Arduino, prioridad 1)
  ───────────────────────────────────────     ─────────────────────────────────────────
  lv_timer_handler(): refresco + táctil        feedsLoop(): WiFi + wsBinance/wsCoinbase.loop()
         │                                         └─ callbacks → market.cpp (solo datos)
@@ -29,9 +34,9 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
         │ requestedWindow ───────────────────▶   marketApplyWindow() si hay pedido
         │                                         render.cpp → Canvas565 (buffer TRASERO, PSRAM)
         │                                         publishFrame():
-        │◀──── lvgl_port_lock(20 ms) ─────────      copia rects sucios → buffer del lv_canvas
-        │                                            uiApply(textos ya formateados)
-        │                                          lvgl_port_unlock()
+        │◀── esp_lv_adapter_lock(60 ms) ──────      copia rects sucios → buffer del lv_canvas
+        │     (máx. 1 vez cada 120 ms)               uiApply(textos ya formateados)
+        │                                          esp_lv_adapter_unlock()
 ```
 
 - **Ningún callback WebSocket llama a LVGL.** Los callbacks solo actualizan el modelo, igual
@@ -39,15 +44,42 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
 - El dibujo por píxeles (lento) se hace **fuera** del lock, en un buffer privado. Bajo el lock
   solo se copian las zonas modificadas y se asignan los textos ya armados. Así LVGL nunca
   muestra un cuadro a medio dibujar y la red no queda bloqueada esperando a la pantalla.
-- Si el lock está ocupado (`lvgl_port_lock(20)` falla), las zonas sucias se conservan y se
-  publican en la vuelta siguiente.
+- Si el lock está ocupado (`esp_lv_adapter_lock(60)` falla), las zonas sucias se conservan y
+  se publican en la vuelta siguiente.
+
+### Qué cambió al usar el adaptador de la demo
+
+El adaptador usa los **dos framebuffers del panel RGB como buffers de LVGL** (`full_refresh`).
+Eso tiene dos consecuencias para el PRRR:
+
+1. **Cualquier invalidación redibuja las 800×480 líneas completas.** Antes, el río, la cola
+   del gráfico y los textos se publicaban cada uno a su ritmo, y eso habría provocado 10–25
+   redibujados completos por segundo. Ahora `publishFrame()` junta todo y publica **como
+   máximo una vez cada 120 ms** (`publishIntervalMs`). La actualización parcial sigue
+   ahorrando trabajo donde importa: el PRRR solo vuelve a dibujar las zonas que cambiaron y
+   solo copia esos rectángulos al lienzo de LVGL.
+2. **La tarea LVGL retiene el lock mientras espera el VSYNC** (`flush_cb` →
+   `ulTaskNotifyTake`). Por eso el timeout del lock subió de 20 a 60 ms
+   (`publishLockTimeoutMs`). Si no alcanza, no se pierde nada: se reintenta en la vuelta
+   siguiente.
+
+`canvas.publish()` sigue siendo correcto con este modo: escribe en el buffer del `lv_canvas`
+siempre con el lock tomado, así que LVGL nunca lo lee a medio copiar. `lv_obj_invalidate_area()`
+recibe coordenadas absolutas de pantalla y dispara el redibujado.
+
+El orden de `setup()` es el de la demo: `Board::init` → framebuffers y bounce buffer →
+`Board::begin` → `esp_lv_adapter_init` → `register_display` → `register_touch` →
+`esp_lv_adapter_start` → creación de la interfaz con el lock tomado. El `lvgl_v8_port` de la
+versión anterior se eliminó: no hay dos implementaciones mezcladas.
 - Serial: solo eventos de conexión y un resumen cada 10 s. Nunca se imprime cada trade.
 
 ### Archivos
 
 | Archivo | Contenido |
 |---|---|
-| `PRRR_Waveshare7.ino` | `setup()` (inicialización de la placa como el ejemplo oficial), `loop()`, formato de textos y `publishFrame()` |
+| `PRRR_Waveshare7.ino` | `setup()` (misma secuencia que 09_lvgl_v8_demo), `loop()`, formato de textos y `publishFrame()` |
+| `esp_lv_adapter_arduino.h/.cpp` | Adaptador LVGL de la demo, **sin modificar**: tarea LVGL, tick, lock, display RGB y táctil |
+| `esp_panel_board_custom_conf.h` | Configuración de la placa de la demo, **sin modificar**: pines RGB, GT911, CH422G y backlight |
 | `prrr_config.h` | Colores, tiempos, geometría 800×480, ventanas y activación por etapas |
 | `market.h/.cpp` | Modelo original: exchanges, precio ponderado, buckets, SMA, flujo, LED virtual |
 | `feeds.h/.cpp` | WiFi multi-red y WebSockets Binance/Coinbase (mismos endpoints) |
@@ -123,46 +155,31 @@ Las que ya tenés: **ESP32_Display_Panel** (con sus dependencias **ESP32_IO_Expa
 **esp-lib-utils**), **lvgl 8.3.11**, **WebSockets** (Markus Sattler, `WebSocketsClient`) y
 **ArduinoJson 7.x**. No hacen falta Arduino_GFX ni Adafruit_NeoPixel.
 
-### 2. Archivos de puerto (desde tu demo que funciona)
+### 2. `lv_conf.h`
 
-Copiá a la carpeta `PRRR_Waveshare7/` estos archivos de tu ejemplo **`09_lvgl_v8_demo`**:
-
-- `lvgl_v8_port.h`
-- `lvgl_v8_port.cpp`
-- `esp_panel_board_supported_conf.h` y, si existen, `esp_panel_board_custom_conf.h`,
-  `esp_panel_drivers_conf.h` y `esp_utils_conf.h`
-
-No están en el repositorio a propósito. Son los que ya probaste con tu placa, así que traen
-la configuración de pines, el anti-tearing y el bounce buffer que te funcionaron.
-
-**Comprobación:** abrí el `.ino` de esa demo y buscá estas dos líneas:
-
-```cpp
-Board *board = new Board();
-lvgl_port_init(board->getLCD(), board->getTouch());
-```
-
-Si las tiene, la API coincide con este proyecto (ESP32_Display_Panel 1.x). Si en cambio usa
-`ESP_Panel *panel = new ESP_Panel();`, es la API 0.x: actualizá ESP32_Display_Panel o avisame
-para adaptar `setup()`.
-
-### 3. `lv_conf.h`
-
-Usá el mismo `lv_conf.h` de la demo, en el mismo lugar donde lo tengas (normalmente
-`Documentos/Arduino/libraries/lv_conf.h`). Revisá:
+Usá el mismo `lv_conf.h` con el que compila la demo `09_lvgl_v8_demo`, en el mismo lugar
+(normalmente `Documentos/Arduino/libraries/lv_conf.h`). No hace falta tocarlo, pero conviene
+revisar:
 
 | Opción | Valor |
 |---|---|
 | `LV_COLOR_DEPTH` | `16` (si no, el sketch da error de compilación a propósito) |
 | `LV_COLOR_16_SWAP` | `0` para RGB |
-| `LV_USE_CANVAS` | `1` |
-| `LV_FONT_MONTSERRAT_12/14/16/20/24/28/48` | `1` (si falta alguna se usa una más chica) |
+| `LV_USE_CANVAS` | `1` (viene así por defecto) |
+| `LV_FONT_MONTSERRAT_12/14/16/20/24/28/48` | `1`. Si falta alguna, se usa una más chica y compila igual |
 | `LV_USE_PERF_MONITOR` | Recomendado `0`: si está en 1, el contador de FPS tapa la línea de estado. Útil activarlo un rato para medir |
 
-### 4. WiFi
+### 3. WiFi
 
-Copiá `wifi_secrets.example.h` como **`wifi_secrets.h`** y completá tus redes. Se prueban en
-orden, igual que en el original. `wifi_secrets.h` está en `.gitignore`.
+En el ZIP ya viene un **`wifi_secrets.h`** con datos de ejemplo: abrilo (es una pestaña del
+IDE) y poné tus redes. Se prueban en orden, igual que en el original. En el repositorio ese
+archivo está en `.gitignore`. Si lo bajás desde GitHub, copiá `wifi_secrets.example.h` como
+`wifi_secrets.h`.
+
+### 4. Nada más que copiar
+
+El adaptador `esp_lv_adapter_arduino` y `esp_panel_board_custom_conf.h` ya están en la
+carpeta. No uses `esp_panel_board_supported_conf.h` ni `lvgl_v8_port.*` en esta carpeta.
 
 ### 5. Menú Herramientas
 
@@ -198,8 +215,11 @@ Para ir paso a paso, poné los tres en `0` (solo precio en vivo y gráfico) y ac
 Salida esperada por Serial:
 
 ```
-[PRRR] Inicializando placa
-[PRRR] Inicializando LVGL
+[PRRR] 1 - Board init
+[PRRR] 2 - Board begin
+[PRRR] 3 - LVGL init
+[PRRR] 4 - LVGL start
+[PRRR] 5 - Interfaz creada
 [WiFi] Conectado a MiRed, IP: 192.168.1.191
 [BIN] Conectado a: /ws/btcusdt@trade
 [CB] Conectado a: /
@@ -220,11 +240,12 @@ conectado pero sin precio hace más de 15 s; rojo = desconectado.
 
 | Síntoma | Qué revisar |
 |---|---|
-| `Falta lvgl_v8_port.h` | Paso 2 |
-| `Falta wifi_secrets.h` | Paso 4 |
-| `PRRR requiere LV_COLOR_DEPTH 16` | Paso 3 |
+| `Falta wifi_secrets.h` | Paso 3 |
+| `PRRR requiere LV_COLOR_DEPTH 16` | Paso 2 |
+| El Serial se queda en `[PRRR] 1`…`5` | Muestra en qué paso de la inicialización de pantalla se detuvo, con la misma numeración que la demo |
 | `PSRAM no detectada` | Herramientas → PSRAM |
-| Imagen que se corre o parpadea al dibujar el waterfall | Ancho de banda de la PSRAM. Subí `flowDrawIntervalMs` (240 → 400) o desactivá el waterfall para confirmarlo. En `lvgl_v8_port.h`, `LVGL_PORT_AVOID_TEARING_MODE` según la guía del ejemplo oficial |
+| Imagen que se corre, parpadea o va lenta | Ancho de banda de la PSRAM con redibujado completo. Subí `publishIntervalMs` (120 → 200) y `flowDrawIntervalMs` (240 → 400), o desactivá el waterfall para confirmarlo |
+| El precio deja de actualizarse mientras se mueve la pantalla | La tarea LVGL (prioridad 2) le quita CPU a `loop()`. Subí `publishIntervalMs` |
 | Colores invertidos (rojo↔azul o raros) | `LV_COLOR_16_SWAP` debe ser 0 |
 | El táctil no cambia la ventana | Probá primero el táctil con la demo. El Serial imprime `[PRRR] Ventana -> 5m` al tocar |
 

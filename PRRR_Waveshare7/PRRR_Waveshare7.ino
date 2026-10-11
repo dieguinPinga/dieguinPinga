@@ -3,23 +3,22 @@
 //  Port del monitor PRRR (ESP32 + ST7789 172x320) a LVGL 8.3 + ESP32_Display_Panel.
 //
 //  Arquitectura:
-//   - Tarea LVGL (creada por lvgl_v8_port): refresco de pantalla y tactil.
+//   - Tarea LVGL (creada por esp_lv_adapter_start(), adaptador de la demo
+//     09_lvgl_v8_demo de Waveshare): lv_timer_handler(), refresco RGB y tactil.
 //   - Tarea loop(): WiFi + WebSockets (callbacks -> market.cpp), calculos y
 //     dibujo por pixeles en un buffer privado (Canvas565, PSRAM).
-//   - Unico punto de contacto: publishFrame(), que con lvgl_port_lock() copia
-//     las zonas modificadas al lv_canvas y actualiza textos. Ningun callback de
-//     red toca LVGL; el tactil solo deja un pedido atomico (uiTakeRequestedWindow).
+//   - Unico punto de contacto: publishFrame(), que con esp_lv_adapter_lock()
+//     copia las zonas modificadas al lv_canvas y actualiza textos, a ritmo fijo
+//     (publishIntervalMs). Ningun callback de red toca LVGL; el tactil solo deja
+//     un pedido atomico (uiTakeRequestedWindow).
 // =====================================================================
 #include <Arduino.h>
 #include <esp_display_panel.hpp>
+#include <esp_err.h>
 #include <lvgl.h>
 #include <esp_heap_caps.h>
 
-#if __has_include("lvgl_v8_port.h")
-#include "lvgl_v8_port.h"
-#else
-#error "Falta lvgl_v8_port.h/.cpp: copialos desde tu ejemplo 09_lvgl_v8_demo (ver README.md)."
-#endif
+#include "esp_lv_adapter_arduino.h"
 
 #include "prrr_config.h"
 #include "market.h"
@@ -36,6 +35,7 @@ static Canvas565 canvas;
 static bool uiReady = false;
 
 static unsigned long lastDraw = 0;
+static unsigned long lastPublish = 0;
 static unsigned long lastLiveTailDraw = 0;
 static unsigned long lastFullDraw = 0;
 static unsigned long lastFlowDraw = 0;
@@ -222,14 +222,25 @@ static void buildSnapshot(UiSnapshot& s) {
   buildScaleLabels(s);
 }
 
+// Lock del adaptador (mutex recursivo). La tarea LVGL lo toma durante
+// lv_timer_handler(), que en modo RGB full-refresh incluye esperar el fin de
+// cuadro del panel: por eso el timeout es mas holgado que un lock "corto".
+static bool lvLock(int timeoutMs) {
+  return esp_lv_adapter_lock(timeoutMs) == ESP_OK;
+}
+
+static void lvUnlock() {
+  esp_lv_adapter_unlock();
+}
+
 // Unico lugar donde loop() toca LVGL.
 static bool publishFrame(bool withHeader, int lockTimeoutMs) {
   static UiSnapshot snap;
   if (withHeader) buildSnapshot(snap);
-  if (!lvgl_port_lock(lockTimeoutMs)) return false;
+  if (!lvLock(lockTimeoutMs)) return false;
   canvas.publish(uiCanvas(), CANVAS_X, CANVAS_Y);
   if (withHeader) uiApply(snap);
-  lvgl_port_unlock();
+  lvUnlock();
   return true;
 }
 
@@ -274,33 +285,62 @@ void setup() {
 
   if (!psramFound()) haltWithError("[PRRR] ERROR: PSRAM no detectada. Tools > PSRAM: OPI PSRAM / Enabled.");
 
-  // Inicializacion de pantalla tomada del ejemplo lvgl_v8_port de ESP32_Display_Panel
-  Serial.println("[PRRR] Inicializando placa");
+  // ---- Pantalla y tactil: misma secuencia que 09_lvgl_v8_demo (probada en la placa) ----
+  Serial.println("[PRRR] 1 - Board init");
   board = new Board();
-  board->init();
-#if LVGL_PORT_AVOID_TEARING_MODE
-  auto lcd = board->getLCD();
-  lcd->configFrameBufferNumber(LVGL_PORT_DISP_BUFFER_NUM);
-#if ESP_PANEL_DRIVERS_BUS_ENABLE_RGB && CONFIG_IDF_TARGET_ESP32S3
-  auto lcd_bus = lcd->getBus();
+  if ((board == nullptr) || !board->init()) haltWithError("[PRRR] ERROR: board->init() fallo");
+
+  const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_0;
+  const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;
+  const uint8_t frame_buffer_count = esp_lv_adapter_get_required_frame_buffer_count(tear_mode, rotation);
+
+  LCD* lcd = board->getLCD();
+  if (lcd == nullptr) haltWithError("[PRRR] ERROR: LCD no disponible");
+
+  auto* lcd_bus = lcd->getBus();
   if (lcd_bus->getBasicAttributes().type == ESP_PANEL_BUS_TYPE_RGB) {
+    lcd->configFrameBufferNumber(frame_buffer_count);
     static_cast<BusRGB*>(lcd_bus)->configRGB_BounceBufferSize(lcd->getFrameWidth() * 10);
   }
-#endif
-#endif
-  if (!board->begin()) haltWithError("[PRRR] ERROR: board->begin() fallo. Revisar esp_panel_board_supported_conf.h");
 
-  Serial.println("[PRRR] Inicializando LVGL");
-  lvgl_port_init(board->getLCD(), board->getTouch());
+  Serial.println("[PRRR] 2 - Board begin");
+  if (!board->begin()) haltWithError("[PRRR] ERROR: board->begin() fallo. Revisar esp_panel_board_custom_conf.h");
 
+  Serial.println("[PRRR] 3 - LVGL init");
+  esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();
+  adapter_config.task_stack_size = 12 * 1024;
+  adapter_config.task_priority = 2;
+  adapter_config.task_core_id = ARDUINO_RUNNING_CORE;
+  if (esp_lv_adapter_init(&adapter_config) != ESP_OK) haltWithError("[PRRR] ERROR: esp_lv_adapter_init");
+
+  esp_lv_adapter_display_config_t disp_config =
+      ESP_LV_ADAPTER_DISPLAY_RGB_DEFAULT_CONFIG(lcd, (uint16_t)lcd->getFrameWidth(), (uint16_t)lcd->getFrameHeight(), rotation);
+  disp_config.profile.use_psram = true;
+  lv_display_t* disp = esp_lv_adapter_register_display(&disp_config);
+  if (disp == nullptr) haltWithError("[PRRR] ERROR: esp_lv_adapter_register_display");
+
+  if (board->getTouch() != nullptr) {
+    esp_lv_adapter_touch_config_t touch_config = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, board->getTouch());
+    if (esp_lv_adapter_register_touch(&touch_config) == nullptr) {
+      Serial.println("[PRRR] AVISO: no se pudo registrar el tactil");
+    }
+  } else {
+    Serial.println("[PRRR] AVISO: tactil no disponible (los botones de ventana no responderan)");
+  }
+
+  // ---- Modelo y lienzo (PSRAM) antes de arrancar la tarea LVGL ----
   if (!marketInit()) haltWithError("[PRRR] ERROR: sin PSRAM para el historial");
   if (!canvas.begin(CANVAS_W, CANVAS_H)) haltWithError("[PRRR] ERROR: sin PSRAM para el lienzo");
   renderBegin(&canvas);
 
-  lvgl_port_lock(-1);
+  Serial.println("[PRRR] 4 - LVGL start");
+  if (esp_lv_adapter_start() != ESP_OK) haltWithError("[PRRR] ERROR: esp_lv_adapter_start");
+
+  lvLock(-1);
   uiInit(canvas.frontBuffer(), CANVAS_W, CANVAS_H);
-  lvgl_port_unlock();
+  lvUnlock();
   uiReady = true;
+  Serial.println("[PRRR] 5 - Interfaz creada");
 
   drawStaticFrames();
   drawChartArea();
@@ -352,10 +392,16 @@ void loop() {
     flowDirty = false;
   }
 
-  // 4) Publicar en LVGL (lock corto; si esta ocupado se reintenta en la proxima vuelta)
+  // 4) Publicar en LVGL a ritmo fijo. El adaptador redibuja la pantalla completa
+  //    (full_refresh con doble framebuffer) ante cualquier invalidacion, asi que se
+  //    juntan cola, rio, waterfall y textos en una sola publicacion por cuadro.
+  //    Si el lock esta ocupado, las zonas sucias se conservan y se reintenta.
   bool headerDue = (nowMs - lastDraw >= drawIntervalMs);
-  if (canvas.hasDirty() || headerDue) {
-    if (publishFrame(headerDue, 20) && headerDue) lastDraw = nowMs;
+  if ((canvas.hasDirty() || headerDue) && (nowMs - lastPublish >= publishIntervalMs)) {
+    if (publishFrame(headerDue, publishLockTimeoutMs)) {
+      lastPublish = nowMs;
+      if (headerDue) lastDraw = nowMs;
+    }
   }
 
   printSummary(nowMs);

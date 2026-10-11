@@ -1,5 +1,5 @@
 // Interfaz LVGL: textos, indicadores y botones tactiles sobre el lienzo.
-// uiInit() y uiApply() SOLO se llaman con lvgl_port_lock() tomado.
+// uiInit() y uiApply() SOLO se llaman con esp_lv_adapter_lock() tomado.
 // UiSnapshot se arma fuera del lock (en loop), asi el lock dura lo minimo.
 #pragma once
 #include <Arduino.h>
