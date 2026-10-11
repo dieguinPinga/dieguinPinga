@@ -4,14 +4,27 @@
 #pragma once
 #include <Arduino.h>
 
-// -------------------- Etapas (para probar paso a paso) --------------------
-// Etapa 1: precio en vivo + grafico de precio  -> todo en 0
-// Etapa 2: + SMA 25/55 y LONG/SHORT              -> PRRR_ENABLE_SMA 1
-// Etapa 3: + rio de flujo                         -> PRRR_ENABLE_FLOW_BAND 1
-// Etapa 4: + waterfall                            -> PRRR_ENABLE_WATERFALL 1
-#define PRRR_ENABLE_SMA        1
-#define PRRR_ENABLE_FLOW_BAND  1
-#define PRRR_ENABLE_WATERFALL  1
+// -------------------- Diagnostico de render --------------------
+// Nivel inicial (se cambia en caliente enviando 1..5 por el monitor serie):
+//   1 = solo textos (el lienzo de pixeles ni se muestra)
+//   2 = textos + grafico de precio
+//   3 = + SMA 25/55 y LONG/SHORT
+//   4 = + rio de flujo
+//   5 = + waterfall (PRRR completo)
+#define PRRR_DIAG_LEVEL_DEFAULT 5
+
+// Modo de presentacion LVGL con los dos framebuffers RGB (se cambia con 'd' / 'f'):
+//   1 = direct: LVGL redibuja solo lo que cambio, siempre en el framebuffer oculto
+//   0 = full_refresh: el modo original del adaptador, redibuja 800x480 en cada cambio
+#define PRRR_LV_DIRECT_MODE 1
+
+// Lineas del bounce buffer RGB (la demo usa 10). 800*480 debe ser multiplo de
+// 800*N: valores validos 10, 12, 16, 20, 24... Mas lineas = mas margen frente a
+// la PSRAM ocupada, a costa de 2*N*1600 bytes de RAM interna.
+#define PRRR_BOUNCE_BUFFER_LINES 10
+
+// Ritmo maximo de publicacion hacia LVGL (se cambia con '+' / '-')
+#define PRRR_PUBLISH_INTERVAL_MS 200
 
 // Resumen por Serial cada N ms (0 = desactivado). Nunca se imprime cada trade.
 #define PRRR_SERIAL_SUMMARY_MS 10000UL
@@ -55,9 +68,6 @@ const unsigned long liveTailIntervalMs = 120;
 const unsigned long flowDrawIntervalMs = 240;    // (7in) orig 120: el rio+waterfall ahora cubren ~200 KB por cuadro
 const unsigned long fullRedrawMinIntervalMs = 120; // (7in) limite de redibujados completos del grafico
 const unsigned long ledUpdateIntervalMs = 50;
-// (7in) Publicacion hacia LVGL: una por cuadro como maximo. Con el adaptador de la
-// demo (full_refresh) cada publicacion redibuja las 800x480 lineas completas.
-const unsigned long publishIntervalMs = 120;
 const int publishLockTimeoutMs = 60;   // la tarea LVGL retiene el lock mientras espera el VSYNC
 const float FLOW_BAR_MAX_BTCS = 2.0f;  // subir si en ventanas largas el rio queda muy gordo
 

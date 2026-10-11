@@ -11,12 +11,21 @@
 //     copia las zonas modificadas al lv_canvas y actualiza textos, a ritmo fijo
 //     (publishIntervalMs). Ningun callback de red toca LVGL; el tactil solo deja
 //     un pedido atomico (uiTakeRequestedWindow).
+//   - Presentacion: dos framebuffers RGB en PSRAM. LVGL dibuja SIEMPRE en el
+//     oculto; el adaptador lo presenta y espera a que esp_lcd suelte el anterior
+//     antes de volver a dibujar. En modo "direct" solo se redibuja lo que cambio.
+//
+//  Diagnostico por monitor serie (115200, enviar un caracter):
+//   1..5  nivel de render (1 textos, 2 +precio, 3 +SMA, 4 +flujo, 5 +waterfall)
+//   d / f modo LVGL direct / full_refresh      + / -  publicacion mas lenta / rapida
+//   ?     ayuda y estado
 // =====================================================================
 #include <Arduino.h>
 #include <esp_display_panel.hpp>
 #include <esp_err.h>
 #include <lvgl.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 
 #include "esp_lv_adapter_arduino.h"
 
@@ -36,6 +45,9 @@ static bool uiReady = false;
 
 static unsigned long lastDraw = 0;
 static unsigned long lastPublish = 0;
+static unsigned long publishIntervalMs = PRRR_PUBLISH_INTERVAL_MS;
+static uint32_t publishLockFails = 0;
+static uint32_t publishMaxLockWaitUs = 0;
 static unsigned long lastLiveTailDraw = 0;
 static unsigned long lastFullDraw = 0;
 static unsigned long lastFlowDraw = 0;
@@ -74,10 +86,13 @@ static void formatAR(double value, int decimals, char* outBuf, size_t bufSize) {
   }
   intWithDots[outIdx] = '\0';
 
+  if (bufSize == 0) return;
+  outBuf[0] = '\0';
+  if (neg) strlcat(outBuf, "-", bufSize);
+  strlcat(outBuf, intWithDots, bufSize);
   if (decimals > 0) {
-    snprintf(outBuf, bufSize, "%s%s,%s", neg ? "-" : "", intWithDots, decPart);
-  } else {
-    snprintf(outBuf, bufSize, "%s%s", neg ? "-" : "", intWithDots);
+    strlcat(outBuf, ",", bufSize);
+    strlcat(outBuf, decPart, bufSize);
   }
 }
 
@@ -110,7 +125,7 @@ static void formatExchangeLine(const char* name, const ExchangeData& ex, float s
 // Escala de precios con valores redondos (complementa los ticks del original).
 static void buildScaleLabels(UiSnapshot& s) {
   s.scaleCount = 0;
-  if (histCount < 2) return;
+  if (histCount < 2 || g_diagLevel < 2) return;
   double minP, maxP;
   computeChartRange(&minP, &maxP);
   double span = maxP - minP;
@@ -176,11 +191,11 @@ static void buildSnapshot(UiSnapshot& s) {
   formatAR(totalFlowBTCs, 2, flowNum, sizeof(flowNum));
   snprintf(s.flow, sizeof(s.flow), "BTC/s %s", flowNum);
 
-#if PRRR_ENABLE_SMA
-  s.trend = (currentTrendSignal == SIGNAL_LONG) ? 1 : (currentTrendSignal == SIGNAL_SHORT ? 2 : 0);
-#else
-  s.trend = 0;
-#endif
+  if (g_diagLevel >= 3) {
+    s.trend = (currentTrendSignal == SIGNAL_LONG) ? 1 : (currentTrendSignal == SIGNAL_SHORT ? 2 : 0);
+  } else {
+    s.trend = 0;
+  }
 
   // Exchanges y ponderacion
   bool bFresh = isFresh(binance);
@@ -208,9 +223,9 @@ static void buildSnapshot(UiSnapshot& s) {
   if (flowWindowSeconds * 1000UL != chartWindowMs) {
     char fw[16];
     formatDuration(flowWindowSeconds, fw, sizeof(fw));
-    snprintf(s.windowInfo, sizeof(s.windowInfo), "%s  %ss/col  flujo %s", win, col, fw);
+    snprintf(s.windowInfo, sizeof(s.windowInfo), "%s %ss/col flujo %s  D%d", win, col, fw, g_diagLevel);
   } else {
-    snprintf(s.windowInfo, sizeof(s.windowInfo), "Ventana %s  %ss/col", win, col);
+    snprintf(s.windowInfo, sizeof(s.windowInfo), "Ventana %s  %ss/col  D%d", win, col, g_diagLevel);
   }
 
   const char* ssid = feedsWifiSsid();
@@ -234,10 +249,20 @@ static void lvUnlock() {
 }
 
 // Unico lugar donde loop() toca LVGL.
+// Garantia: el buffer del lv_canvas (frontBuffer) solo se escribe aca, con el
+// lock tomado; LVGL solo lo lee dentro de lv_timer_handler(), tambien con el lock.
+// El dibujo del PRRR ocurre en el buffer trasero de Canvas565, que LVGL no ve.
+// Los framebuffers del panel solo los escribe LVGL, siempre el oculto.
 static bool publishFrame(bool withHeader, int lockTimeoutMs) {
   static UiSnapshot snap;
   if (withHeader) buildSnapshot(snap);
-  if (!lvLock(lockTimeoutMs)) return false;
+  const int64_t t0 = esp_timer_get_time();
+  if (!lvLock(lockTimeoutMs)) {
+    publishLockFails++;
+    return false;
+  }
+  const uint32_t waitUs = (uint32_t)(esp_timer_get_time() - t0);
+  if (waitUs > publishMaxLockWaitUs) publishMaxLockWaitUs = waitUs;
   canvas.publish(uiCanvas(), CANVAS_X, CANVAS_Y);
   if (withHeader) uiApply(snap);
   lvUnlock();
@@ -248,6 +273,55 @@ static bool publishFrame(bool withHeader, int lockTimeoutMs) {
 void appPublishStatus() {
   if (!uiReady) return;
   publishFrame(true, 200);
+}
+
+// -------------------- Diagnostico --------------------
+static void applyDiagLevel(int level) {
+  if (level < 1) level = 1;
+  if (level > 5) level = 5;
+  g_diagLevel = level;
+  lvLock(-1);
+  uiSetDiagLevel(level);
+  lvUnlock();
+  drawStaticFrames();   // borra todo el lienzo y dibuja solo los marcos activos
+  chartDirty = true;
+  flowDirty = true;
+  lastDraw = 0;
+  static const char* names[] = { "", "solo textos", "+ grafico precio", "+ SMA", "+ flujo", "+ waterfall" };
+  Serial.printf("[DIAG] nivel %d (%s)\n", level, names[level]);
+}
+
+static void printDiagHelp() {
+  esp_lv_adapter_stats_t st;
+  lvLock(-1);
+  esp_lv_adapter_get_stats(&st, false);
+  lvUnlock();
+  Serial.printf("[DIAG] nivel=%d modo=%s publicacion=%lums bounce=%d lineas\n", g_diagLevel,
+                st.direct_mode ? "direct" : "full_refresh", publishIntervalMs, PRRR_BOUNCE_BUFFER_LINES);
+  Serial.println("[DIAG] 1..5 nivel | d direct | f full_refresh | + publicar mas lento | - mas rapido | ? estado");
+}
+
+static void handleSerialCommands() {
+  while (Serial.available() > 0) {
+    int c = Serial.read();
+    if (c >= '1' && c <= '5') {
+      applyDiagLevel(c - '0');
+    } else if (c == 'd' || c == 'f') {
+      lvLock(-1);
+      esp_lv_adapter_set_rgb_direct_mode(c == 'd');
+      lvUnlock();
+      Serial.printf("[DIAG] modo LVGL: %s\n", c == 'd' ? "direct" : "full_refresh");
+    } else if (c == '+') {
+      publishIntervalMs += 40;
+      if (publishIntervalMs > 1000) publishIntervalMs = 1000;
+      Serial.printf("[DIAG] publicacion cada %lu ms\n", publishIntervalMs);
+    } else if (c == '-') {
+      publishIntervalMs = (publishIntervalMs > 80) ? publishIntervalMs - 40 : 40;
+      Serial.printf("[DIAG] publicacion cada %lu ms\n", publishIntervalMs);
+    } else if (c == '?') {
+      printDiagHelp();
+    }
+  }
 }
 
 static void printSummary(unsigned long nowMs) {
@@ -268,6 +342,22 @@ static void printSummary(unsigned long nowMs) {
                 totalFlowBTCs, histCount, (int)currentTrendSignal,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+  // Render: cuadros/s, dibujos sobre el buffer visible (debe ser 0), tiempos
+  static uint32_t prevFrames = 0;
+  esp_lv_adapter_stats_t st;
+  lvLock(-1);
+  esp_lv_adapter_get_stats(&st, true);
+  lvUnlock();
+  Serial.printf("[RENDER] D%d %s fps=%.1f sobreVisible=%lu lvgl_avg=%lums lvgl_max=%lums vsync_max=%lums "
+                "lockFallos=%lu lockEsperaMax=%lums pub=%lums\n",
+                g_diagLevel, st.direct_mode ? "direct" : "full", (st.frames - prevFrames) / dt,
+                (unsigned long)st.render_on_visible, (unsigned long)(st.handler_avg_us / 1000),
+                (unsigned long)(st.handler_max_us / 1000), (unsigned long)(st.vsync_wait_max_us / 1000),
+                (unsigned long)publishLockFails, (unsigned long)(publishMaxLockWaitUs / 1000), publishIntervalMs);
+  prevFrames = st.frames;
+  publishLockFails = 0;
+  publishMaxLockWaitUs = 0;
 #endif
 }
 
@@ -300,7 +390,7 @@ void setup() {
   auto* lcd_bus = lcd->getBus();
   if (lcd_bus->getBasicAttributes().type == ESP_PANEL_BUS_TYPE_RGB) {
     lcd->configFrameBufferNumber(frame_buffer_count);
-    static_cast<BusRGB*>(lcd_bus)->configRGB_BounceBufferSize(lcd->getFrameWidth() * 10);
+    static_cast<BusRGB*>(lcd_bus)->configRGB_BounceBufferSize(lcd->getFrameWidth() * PRRR_BOUNCE_BUFFER_LINES);
   }
 
   Serial.println("[PRRR] 2 - Board begin");
@@ -316,6 +406,7 @@ void setup() {
   esp_lv_adapter_display_config_t disp_config =
       ESP_LV_ADAPTER_DISPLAY_RGB_DEFAULT_CONFIG(lcd, (uint16_t)lcd->getFrameWidth(), (uint16_t)lcd->getFrameHeight(), rotation);
   disp_config.profile.use_psram = true;
+  disp_config.profile.direct_mode = (PRRR_LV_DIRECT_MODE != 0);  // PRRR: ver prrr_config.h
   lv_display_t* disp = esp_lv_adapter_register_display(&disp_config);
   if (disp == nullptr) haltWithError("[PRRR] ERROR: esp_lv_adapter_register_display");
 
@@ -338,6 +429,7 @@ void setup() {
 
   lvLock(-1);
   uiInit(canvas.frontBuffer(), CANVAS_W, CANVAS_H);
+  uiSetDiagLevel(g_diagLevel);
   lvUnlock();
   uiReady = true;
   Serial.println("[PRRR] 5 - Interfaz creada");
@@ -346,11 +438,14 @@ void setup() {
   drawChartArea();
   publishFrame(true, -1);
 
+  printDiagHelp();
   feedsBegin();
   lastDraw = millis();
 }
 
 void loop() {
+  handleSerialCommands();
+
   // 1) Red: los callbacks solo actualizan el modelo
   feedsLoop();
   updateFlows();

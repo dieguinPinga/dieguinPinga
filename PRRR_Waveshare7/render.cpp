@@ -5,6 +5,7 @@
 #include "color565.h"
 
 static Canvas565* gfx = nullptr;
+int g_diagLevel = PRRR_DIAG_LEVEL_DEFAULT;
 
 void renderBegin(Canvas565* canvas) {
   gfx = canvas;
@@ -444,10 +445,10 @@ static void drawTailRegion(int x, int y, int w, int h) {
     drawPriceStepLink(prevX, prevY, currX, currY, tailColor);
     drawPricePoint2px(currX, currY, tailColor);
 
-#if PRRR_ENABLE_SMA
-    drawTailSmaSegment(prevIdx, lastIdx, prevX, currX, minP, maxP, y, h, SMA_SLOW_PERIOD, COLOR_SMA_SLOW, COLOR_SMA_SLOW_DARK);
-    drawTailSmaSegment(prevIdx, lastIdx, prevX, currX, minP, maxP, y, h, SMA_FAST_PERIOD, COLOR_SMA_FAST, COLOR_SMA_FAST_DARK);
-#endif
+    if (g_diagLevel >= 3) {
+      drawTailSmaSegment(prevIdx, lastIdx, prevX, currX, minP, maxP, y, h, SMA_SLOW_PERIOD, COLOR_SMA_SLOW, COLOR_SMA_SLOW_DARK);
+      drawTailSmaSegment(prevIdx, lastIdx, prevX, currX, minP, maxP, y, h, SMA_FAST_PERIOD, COLOR_SMA_FAST, COLOR_SMA_FAST_DARK);
+    }
   }
 
   gfx->markDirty(prevX, y, xEnd - prevX + 1 + 1, h);
@@ -457,10 +458,10 @@ static void drawTailRegion(int x, int y, int w, int h) {
 static void drawChart(int x, int y, int w, int h) {
   if (histCount < 2) return;  // "Esperando datos..." lo muestra una etiqueta LVGL
   drawPriceLineOnly(x, y, w, h);
-#if PRRR_ENABLE_SMA
-  drawSMAForPeriod(x, y, w, h, SMA_SLOW_PERIOD, COLOR_SMA_SLOW);
-  drawSMAForPeriod(x, y, w, h, SMA_FAST_PERIOD, COLOR_SMA_FAST);
-#endif
+  if (g_diagLevel >= 3) {
+    drawSMAForPeriod(x, y, w, h, SMA_SLOW_PERIOD, COLOR_SMA_SLOW);
+    drawSMAForPeriod(x, y, w, h, SMA_FAST_PERIOD, COLOR_SMA_FAST);
+  }
 }
 
 static void drawPriceScaleTicks(int x, int y, int h, double minP, double maxP) {
@@ -532,14 +533,21 @@ static void drawLivePriceTail(int x, int y, int w, int h) {
 // -------------------- API --------------------
 void drawStaticFrames() {
   gfx->fillRect(0, 0, gfx->width(), gfx->height(), COLOR_BLACK);
-  gfx->drawRect(CHART_BOX_X, CHART_BOX_Y, CHART_BOX_W, CHART_BOX_H, COLOR_DARKGRAY);
-  gfx->drawRect(FLOW_BOX_X, FLOW_BOX_Y, FLOW_BOX_W, FLOW_BOX_H, COLOR_DARKGRAY);
-  gfx->drawRect(WF_BOX_X, WF_HIST_BOX_Y, WF_BOX_W, WF_HIST_BOX_H, COLOR_DARKGRAY);
-  gfx->drawRect(WF_BOX_X, WF_LIVE_BOX_Y, WF_BOX_W, WF_LIVE_BOX_H, COLOR_DARKGRAY);
+  if (g_diagLevel >= 2) gfx->drawRect(CHART_BOX_X, CHART_BOX_Y, CHART_BOX_W, CHART_BOX_H, COLOR_DARKGRAY);
+  if (g_diagLevel >= 4) gfx->drawRect(FLOW_BOX_X, FLOW_BOX_Y, FLOW_BOX_W, FLOW_BOX_H, COLOR_DARKGRAY);
+  if (g_diagLevel >= 5) {
+    gfx->drawRect(WF_BOX_X, WF_HIST_BOX_Y, WF_BOX_W, WF_HIST_BOX_H, COLOR_DARKGRAY);
+    gfx->drawRect(WF_BOX_X, WF_LIVE_BOX_Y, WF_BOX_W, WF_LIVE_BOX_H, COLOR_DARKGRAY);
+  }
   gfx->markDirty(0, 0, gfx->width(), gfx->height());
 }
 
 void drawChartArea() {
+  if (g_diagLevel < 2) {
+    chartDirty = false;
+    chartTailDirty = false;
+    return;
+  }
   gfx->fillRect(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H, COLOR_BLACK);
   drawChart(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H);
   gfx->fillRect(PRICE_MARKER_X, CHART_INNER_Y, PRICE_MARKER_W, CHART_INNER_H, COLOR_BLACK);
@@ -549,23 +557,27 @@ void drawChartArea() {
 }
 
 void drawTailRegionDefault() {
+  if (g_diagLevel < 2) {
+    chartTailDirty = false;
+    return;
+  }
   drawTailRegion(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H);
 }
 
 void drawLivePriceTailDefault() {
+  if (g_diagLevel < 2) return;
   drawLivePriceTail(CHART_INNER_X, CHART_INNER_Y, CHART_INNER_W, CHART_INNER_H);
 }
 
 void drawFlowBandArea() {
-#if PRRR_ENABLE_FLOW_BAND
+  if (g_diagLevel < 4) return;
   gfx->fillRect(FLOW_INNER_X, FLOW_INNER_Y, FLOW_INNER_W, FLOW_INNER_H, COLOR_BLACK);
   drawFlowBand(FLOW_INNER_X, FLOW_INNER_Y, FLOW_INNER_W, FLOW_INNER_H);
   gfx->markDirty(FLOW_INNER_X, FLOW_INNER_Y, FLOW_INNER_W, FLOW_INNER_H);
-#endif
 }
 
 void drawWaterfallArea() {
-#if PRRR_ENABLE_WATERFALL
+  if (g_diagLevel < 5) return;
   const int ix = WF_BOX_X + 1;
   const int iw = WF_BOX_W - 2;
   const int histY = WF_HIST_BOX_Y + 1;
@@ -580,5 +592,4 @@ void drawWaterfallArea() {
   gfx->fillRect(ix, liveY, iw, liveH, COLOR_BLACK);
   drawLiveFlowFront(ix, liveY, iw, liveH);
   gfx->markDirty(ix, liveY, iw, liveH);
-#endif
 }

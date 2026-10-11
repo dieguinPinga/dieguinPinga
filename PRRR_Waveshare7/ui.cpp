@@ -64,6 +64,11 @@ static lv_obj_t* aggrBar;
 static lv_obj_t* aggrFill;
 static lv_obj_t* lblAggr;
 static lv_obj_t* lblWaiting;
+static lv_obj_t* lblLegend;
+static lv_obj_t* lblFlowTitle;
+static lv_obj_t* lblWfTitle;
+static lv_obj_t* lblLiveTitle;
+static int currentDiagLevel = -1;
 static lv_obj_t* lblWindowInfo;
 static lv_obj_t* lblStatus;
 static lv_obj_t* scaleLabels[UI_SCALE_LABELS];
@@ -187,29 +192,20 @@ void uiInit(lv_color_t* canvasBuffer, int canvasW, int canvasH) {
   lblCb = makeLabel(scr, FONT_16, COLOR_COINBASE, 270, 94, "COINBASE --");
   lv_obj_set_style_text_color(lblCb, lv_color_make(0x40, 0x90, 0xFF), 0);
 
-  makeLabel(scr, FONT_12, COLOR_GRAY, 478, 90, "PESO");
+  makeLabel(scr, FONT_12, COLOR_GRAY, 488, 90, "PESO");
   weightBar = makeBox(scr, 560, 91, WEIGHT_BAR_W, 12, COLOR_COINBASE, 3);
   weightFill = makeBox(weightBar, 0, 0, WEIGHT_BAR_W / 2, 12, COLOR_BINANCE, 0);
 
-  lblAggr = makeLabel(scr, FONT_12, COLOR_GRAY, 478, 106, "AGRESOR");
+  lblAggr = makeLabel(scr, FONT_12, COLOR_GRAY, 488, 106, "AGRESOR");
   aggrBar = makeBox(scr, 560, 107, WEIGHT_BAR_W, 12, COLOR_DARKGRAY, 3);
   aggrFill = makeBox(aggrBar, 0, 0, 0, 12, 0x05E0, 0);
 
   // ---- Leyendas sobre el lienzo ----
-  lv_obj_t* legend = makeLabel(scr, FONT_14, COLOR_LIGHTGRAY, CHART_INNER_X + 6, CANVAS_Y + CHART_INNER_Y + 3, "");
-  lv_label_set_recolor(legend, true);
-#if PRRR_ENABLE_SMA
-  lv_label_set_text(legend, "PRECIO  #4060FF SMA25#  #FF2000 SMA55#");
-#else
-  lv_label_set_text(legend, "PRECIO");
-#endif
-#if PRRR_ENABLE_FLOW_BAND
-  makeLabel(scr, FONT_12, COLOR_GRAY, FLOW_INNER_X + 4, CANVAS_Y + FLOW_INNER_Y + 2, "FLUJO BTC/s (color: tendencia SMA)");
-#endif
-#if PRRR_ENABLE_WATERFALL
-  makeLabel(scr, FONT_12, COLOR_GRAY, WF_BOX_X + 5, CANVAS_Y + WF_HIST_BOX_Y + 3, "WATERFALL");
-  makeLabel(scr, FONT_12, COLOR_GRAY, WF_BOX_X + 5, CANVAS_Y + WF_LIVE_BOX_Y + 3, "VIVO");
-#endif
+  lblLegend = makeLabel(scr, FONT_14, COLOR_LIGHTGRAY, CHART_INNER_X + 6, CANVAS_Y + CHART_INNER_Y + 3, "PRECIO");
+  lv_label_set_recolor(lblLegend, true);
+  lblFlowTitle = makeLabel(scr, FONT_12, COLOR_GRAY, FLOW_INNER_X + 4, CANVAS_Y + FLOW_INNER_Y + 2, "FLUJO BTC/s (color: tendencia SMA)");
+  lblWfTitle = makeLabel(scr, FONT_12, COLOR_GRAY, WF_BOX_X + 5, CANVAS_Y + WF_HIST_BOX_Y + 3, "WATERFALL");
+  lblLiveTitle = makeLabel(scr, FONT_12, COLOR_GRAY, WF_BOX_X + 5, CANVAS_Y + WF_LIVE_BOX_Y + 3, "VIVO");
 
   lblWaiting = makeLabel(scr, FONT_20, COLOR_LIGHTGRAY, 0, 0, "Esperando datos...");
   lv_obj_set_pos(lblWaiting, CHART_INNER_X + CHART_INNER_W / 2 - 90, CANVAS_Y + CHART_INNER_Y + CHART_INNER_H / 2 - 10);
@@ -250,6 +246,19 @@ void uiInit(lv_color_t* canvasBuffer, int canvasW, int canvasH) {
   lblStatus = makeLabel(scr, FONT_14, COLOR_GRAY, infoX, btnY + 22, "Boot...");
   lv_obj_set_width(lblStatus, SCREEN_W - infoX - 6);
   lv_label_set_long_mode(lblStatus, LV_LABEL_LONG_DOT);
+}
+
+void uiSetDiagLevel(int level) {
+  if (level == currentDiagLevel) return;
+  currentDiagLevel = level;
+  // Nivel 1: el lienzo se oculta, asi LVGL ni siquiera lee su buffer
+  setHidden(canvasObj, level < 2);
+  setHidden(lblLegend, level < 2);
+  lv_label_set_text(lblLegend, level >= 3 ? "PRECIO  #4060FF SMA25#  #FF2000 SMA55#" : "PRECIO");
+  setHidden(lblFlowTitle, level < 4);
+  setHidden(lblWfTitle, level < 5);
+  setHidden(lblLiveTitle, level < 5);
+  setHidden(trendBox, level < 3);
 }
 
 void uiApply(const UiSnapshot& s) {
@@ -302,7 +311,7 @@ void uiApply(const UiSnapshot& s) {
   }
   setTextIfChanged(lblAggr, s.aggressor);
 
-  setHidden(lblWaiting, !s.waiting);
+  setHidden(lblWaiting, !s.waiting || currentDiagLevel < 2);
 
   for (int i = 0; i < UI_SCALE_LABELS; i++) {
     if (i < s.scaleCount) {

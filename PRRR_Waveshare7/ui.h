@@ -40,3 +40,5 @@ lv_obj_t* uiCanvas();
 void uiApply(const UiSnapshot& s);
 // Ventana pedida por el tactil (-1 si no hay pedido). Seguro entre tareas.
 int uiTakeRequestedWindow();
+// Muestra/oculta lienzo y titulos segun el nivel de diagnostico (con el lock tomado).
+void uiSetDiagLevel(int level);

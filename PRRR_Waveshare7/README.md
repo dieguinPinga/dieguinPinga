@@ -12,7 +12,7 @@ flujo, buckets lógicos, SMA 25/55, LONG/SHORT, BTC/s, río de flujo con ditheri
 en perspectiva, escala de ticks y actualización parcial. El sketch original quedó como
 referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
 
-![Simulación del port, ventana 5m](docs/simulador_5m.png)
+![Simulación del port, nivel D5 completo](docs/simulador_d5.png)
 
 ## Qué está verificado y qué no
 
@@ -20,8 +20,9 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
 |---|---|---|
 | **Compilado** | La carpeta completa, con el adaptador y la configuración de la demo, compila sin errores para ESP32 core **3.3.12**, placa *Waveshare ESP32-S3-Touch-LCD-7*, PSRAM Enabled, Flash 8 MB, Huge APP, CPU 240 MHz. Usa 50 % de flash y 17 % de RAM interna | `arduino-cli` con ESP32_Display_Panel 1.0.5, ESP32_IO_Expander 1.1.1, esp-lib-utils 0.3.0, lvgl 8.3.11, WebSockets 2.7.3, ArduinoJson 7.4.2 |
 | **Compilado** | El firmware toma `esp_panel_board_custom_conf.h` de esta carpeta | El binario contiene `Waveshare:ESP32-S3-Touch-LCD-7` y el driver ST7262 |
-| **Simulado** | Cálculos, dibujo, interfaz LVGL, toque en los botones y cambio de ventana, con LVGL en modo `full_refresh` y doble buffer como el adaptador. ~8 cuadros completos por segundo | Los mismos `.cpp` compilados en una PC con LVGL 8.3.11 real y trades sintéticos. Las capturas de `docs/` salen de ahí |
-| **Pendiente en la placa** | FPS y carga de CPU reales, ancho de banda de la PSRAM con la pantalla completa redibujándose, espera del lock durante el VSYNC, táctil GT911 real y WebSockets reales desde este sketch | Ver "Primer arranque" |
+| **Simulado** | Cálculos, dibujo, interfaz LVGL, toque, cambio de ventana y los 5 niveles de diagnóstico, con dos framebuffers como el panel. En 9.376 cuadros nunca se dibujó sobre el buffer visible, y la imagen en modo direct es **idéntica píxel a píxel** a la de full_refresh en los 6 casos comparados. Direct redibuja ~136.000 px por cuadro en lugar de 384.000 | Los mismos `.cpp` compilados en una PC con LVGL 8.3.11 real y trades sintéticos. Las capturas de `docs/` salen de ahí |
+| **Visto en la placa (versión anterior)** | Arranca, conecta y dibuja, pero con artefactos (texto punteado, rayitas) | Ver "Artefactos visuales" |
+| **Pendiente en la placa** | Si el modo direct elimina los artefactos; FPS y tiempos reales del resumen `[RENDER]` | Ver "Diagnóstico en la placa" |
 
 ## Arquitectura
 
@@ -35,7 +36,7 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
         │                                         render.cpp → Canvas565 (buffer TRASERO, PSRAM)
         │                                         publishFrame():
         │◀── esp_lv_adapter_lock(60 ms) ──────      copia rects sucios → buffer del lv_canvas
-        │     (máx. 1 vez cada 120 ms)               uiApply(textos ya formateados)
+        │     (máx. 1 vez cada 200 ms)               uiApply(textos ya formateados)
         │                                          esp_lv_adapter_unlock()
 ```
 
@@ -47,38 +48,61 @@ referencia en `original/PRRR_ST7789_original/` (sin las claves WiFi).
 - Si el lock está ocupado (`esp_lv_adapter_lock(60)` falla), las zonas sucias se conservan y
   se publican en la vuelta siguiente.
 
-### Qué cambió al usar el adaptador de la demo
+- Serial: solo eventos de conexión, el resumen `[PRRR]`/`[RENDER]` cada 10 s y los
+  comandos de diagnóstico. Nunca se imprime cada trade.
 
-El adaptador usa los **dos framebuffers del panel RGB como buffers de LVGL** (`full_refresh`).
-Eso tiene dos consecuencias para el PRRR:
+### Garantía: nunca se dibuja sobre lo que se está mostrando
 
-1. **Cualquier invalidación redibuja las 800×480 líneas completas.** Antes, el río, la cola
-   del gráfico y los textos se publicaban cada uno a su ritmo, y eso habría provocado 10–25
-   redibujados completos por segundo. Ahora `publishFrame()` junta todo y publica **como
-   máximo una vez cada 120 ms** (`publishIntervalMs`). La actualización parcial sigue
-   ahorrando trabajo donde importa: el PRRR solo vuelve a dibujar las zonas que cambiaron y
-   solo copia esos rectángulos al lienzo de LVGL.
-2. **La tarea LVGL retiene el lock mientras espera el VSYNC** (`flush_cb` →
-   `ulTaskNotifyTake`). Por eso el timeout del lock subió de 20 a 60 ms
-   (`publishLockTimeoutMs`). Si no alcanza, no se pierde nada: se reintenta en la vuelta
-   siguiente.
+Hay tres buffers en juego, y cada uno tiene un solo escritor:
 
-`canvas.publish()` sigue siendo correcto con este modo: escribe en el buffer del `lv_canvas`
-siempre con el lock tomado, así que LVGL nunca lo lee a medio copiar. `lv_obj_invalidate_area()`
-recibe coordenadas absolutas de pantalla y dispara el redibujado.
+| Buffer | Quién escribe | Quién lee | Protección |
+|---|---|---|---|
+| Buffer trasero de `Canvas565` (PSRAM) | `loop()` (dibujo del PRRR) | `canvas.publish()` en `loop()` | Misma tarea: no hay concurrencia |
+| Buffer del `lv_canvas` (`frontBuffer`) | `canvas.publish()`, solo con `esp_lv_adapter_lock()` | LVGL dentro de `lv_timer_handler()`, también con el lock | Mutex del adaptador |
+| Framebuffers del panel (2, PSRAM) | Solo LVGL, siempre en el **oculto** | El panel RGB (bounce buffer) | `flush_cb` presenta el buffer recién dibujado y espera `on_frame_buf_complete` de esp_lcd antes de que LVGL vuelva a dibujar en el otro |
+
+Revisé el código de esp_lcd de ESP-IDF 5.5 (el del core 3.3.12): `on_frame_buf_complete`
+se dispara en el instante en que el panel deja de leer el framebuffer anterior. La espera del
+adaptador es correcta. Además, el adaptador ahora **cuenta** cada cuadro dibujado sobre el
+buffer visible (`sobreVisible` en el resumen `[RENDER]`). Tiene que ser siempre 0.
+
+### Artefactos visuales: causa probable y corrección
+
+Con el modo original del adaptador (`full_refresh`), **cada** cambio, aunque sea un número,
+obliga a LVGL a redibujar las 800×480 líneas en la PSRAM. El PRRR cambia algo cada 120 ms:
+eran ~8 redibujados completos por segundo (~1,5–2 MB de escrituras por cuadro). Mientras
+tanto, el panel RGB necesita leer ~32 MB/s de esa misma PSRAM para refrescarse. Si la copia
+hacia el bounce buffer llega tarde, el panel vuelve a mostrar un trozo viejo del bounce
+buffer, es decir, píxeles de unas líneas más arriba. Eso produce texto punteado y rayitas que
+"siguen al contenido", porque son copias de contenido cercano. La demo de LVGL casi no se
+redibuja, por eso no mostraba el problema.
+
+Cambios de esta versión:
+
+1. **Modo `direct` (por defecto).** LVGL dibuja solo las zonas que cambiaron en el framebuffer
+   oculto, y al cuadro siguiente copia esas mismas zonas al otro buffer
+   (`refr_sync_areas` de LVGL 8.3). Es el modo 3 "direct" del `lvgl_v8_port` de Espressif:
+   mismo `flush_cb` (presentar en el último flush y esperar), sin la copia de pantalla
+   completa. En la simulación baja de 384.000 a ~136.000 px por cuadro, con imagen idéntica.
+2. **Publicación cada 200 ms** en vez de 120 ms (`PRRR_PUBLISH_INTERVAL_MS`).
+3. **Bounce buffer configurable** (`PRRR_BOUNCE_BUFFER_LINES`, 10 como la demo). Si con
+   direct todavía aparecen artefactos, probá 20: le da al panel el doble de margen.
+4. **Modo `full_refresh` disponible** (`d`/`f` por serie) para comparar en la placa.
+
+Cambios en el adaptador (`esp_lv_adapter_arduino.*`, marcados `PRRR:`): campo
+`profile.direct_mode`, `esp_lv_adapter_set_rgb_direct_mode()` y `esp_lv_adapter_get_stats()`.
+Sin `direct_mode` se comporta exactamente como el de la demo.
 
 El orden de `setup()` es el de la demo: `Board::init` → framebuffers y bounce buffer →
 `Board::begin` → `esp_lv_adapter_init` → `register_display` → `register_touch` →
-`esp_lv_adapter_start` → creación de la interfaz con el lock tomado. El `lvgl_v8_port` de la
-versión anterior se eliminó: no hay dos implementaciones mezcladas.
-- Serial: solo eventos de conexión y un resumen cada 10 s. Nunca se imprime cada trade.
+`esp_lv_adapter_start` → creación de la interfaz con el lock tomado.
 
 ### Archivos
 
 | Archivo | Contenido |
 |---|---|
 | `PRRR_Waveshare7.ino` | `setup()` (misma secuencia que 09_lvgl_v8_demo), `loop()`, formato de textos y `publishFrame()` |
-| `esp_lv_adapter_arduino.h/.cpp` | Adaptador LVGL de la demo, **sin modificar**: tarea LVGL, tick, lock, display RGB y táctil |
+| `esp_lv_adapter_arduino.h/.cpp` | Adaptador LVGL de la demo (tarea LVGL, tick, lock, display RGB y táctil) con modo direct y estadísticas agregados, marcados `PRRR:` |
 | `esp_panel_board_custom_conf.h` | Configuración de la placa de la demo, **sin modificar**: pines RGB, GT911, CH422G y backlight |
 | `prrr_config.h` | Colores, tiempos, geometría 800×480, ventanas y activación por etapas |
 | `market.h/.cpp` | Modelo original: exchanges, precio ponderado, buckets, SMA, flujo, LED virtual |
@@ -200,17 +224,7 @@ no sirve para esta placa.
 
 Abrí `PRRR_Waveshare7/PRRR_Waveshare7.ino` → Verificar → Subir. Monitor serie a 115200.
 
-## Primer arranque y verificación por etapas
-
-En `prrr_config.h`:
-
-```cpp
-#define PRRR_ENABLE_SMA        1
-#define PRRR_ENABLE_FLOW_BAND  1
-#define PRRR_ENABLE_WATERFALL  1
-```
-
-Para ir paso a paso, poné los tres en `0` (solo precio en vivo y gráfico) y activalos de a uno.
+## Primer arranque
 
 Salida esperada por Serial:
 
@@ -226,12 +240,56 @@ Salida esperada por Serial:
 [PRRR] precio=112345.67 BIN=on 112345.60 (18.0 msg/s) CB=on 112347.10 (4.2 msg/s) flujo=1.234 BTC/s cols=37 senal=1 heap=... psram=...
 ```
 
-- **Etapa 1:** precio grande cambiando de color y puntos BIN/CB en verde. Con la ventana ORIG
-  aparece una columna nueva cada ~13 s; con **1m**, cada 0,45 s.
-- **Etapa 2:** las SMA aparecen cuando hay 25 y 55 columnas (con 1m, ~11 s y ~25 s). Después
-  se muestra LONG/SHORT.
-- **Etapa 3–4:** el río y el waterfall se mueven cada 240 ms.
+- Precio grande cambiando de color y puntos BIN/CB en verde. Con la ventana ORIG aparece una
+  columna nueva cada ~13 s; con **1m**, cada 0,45 s.
+- Las SMA aparecen cuando hay 25 y 55 columnas (con 1m, ~11 s y ~25 s). Después se muestra
+  LONG/SHORT.
 - `heap`/`psram` del resumen tienen que mantenerse estables.
+
+## Diagnóstico en la placa
+
+Con el monitor serie abierto a 115200, enviá un carácter (sin fin de línea o con él, da
+igual). El nivel activo se ve abajo a la derecha de la pantalla (`D1`…`D5`).
+
+| Comando | Efecto |
+|---|---|
+| `1` | Solo textos. El lienzo de píxeles se oculta: LVGL ni siquiera lo lee |
+| `2` | + gráfico de precio y escala |
+| `3` | + SMA 25/55 y LONG/SHORT |
+| `4` | + río de flujo |
+| `5` | + waterfall (PRRR completo) |
+| `d` / `f` | Modo LVGL direct / full_refresh |
+| `+` / `-` | Publicar 40 ms más lento / más rápido |
+| `?` | Estado actual |
+
+Nivel y modo iniciales: `PRRR_DIAG_LEVEL_DEFAULT` y `PRRR_LV_DIRECT_MODE` en
+`prrr_config.h`.
+
+![Niveles 1 a 4 en la simulación](docs/diagnostico_niveles_1a4.png)
+
+Cada 10 s aparece una línea así:
+
+```
+[RENDER] D5 direct fps=5.0 sobreVisible=0 lvgl_avg=18ms lvgl_max=41ms vsync_max=25ms lockFallos=0 lockEsperaMax=22ms pub=200ms
+```
+
+| Campo | Qué indica |
+|---|---|
+| `fps` | Cuadros presentados por segundo (~5 con publicación cada 200 ms) |
+| `sobreVisible` | Cuadros dibujados sobre el buffer visible. **Debe ser 0.** Si no lo es, el problema está en la sincronización del adaptador |
+| `lvgl_avg` / `lvgl_max` | Duración de `lv_timer_handler()` con dibujo + espera de VSYNC |
+| `vsync_max` | Espera de fin de cuadro más larga (~25 ms a 16 MHz es normal) |
+| `lockFallos` / `lockEsperaMax` | Cuántas veces `loop()` no consiguió el lock en 60 ms y la espera más larga |
+
+Secuencia sugerida para aislar los artefactos:
+
+1. Arrancá como viene (`D5`, direct). Si se ven bien, el problema era el `full_refresh`.
+2. Si todavía hay artefactos, enviá `1`. Si desaparecen solo con textos, subí de a uno (`2`,
+   `3`, `4`, `5`) y anotá en qué nivel vuelven.
+3. Enviá `f` en ese mismo nivel. Si con `full_refresh` empeora, es ancho de banda de PSRAM:
+   probá `+` (publicar más lento) y `PRRR_BOUNCE_BUFFER_LINES 20`.
+4. Si aparecen aun en `D1` con `sobreVisible=0`, el problema no está en el lienzo del PRRR
+   (solo hay etiquetas LVGL). Pasame las líneas `[RENDER]` y una foto.
 
 Colores de los puntos de exchange: verde = conectado y con datos frescos; amarillo =
 conectado pero sin precio hace más de 15 s; rojo = desconectado.
@@ -244,8 +302,9 @@ conectado pero sin precio hace más de 15 s; rojo = desconectado.
 | `PRRR requiere LV_COLOR_DEPTH 16` | Paso 2 |
 | El Serial se queda en `[PRRR] 1`…`5` | Muestra en qué paso de la inicialización de pantalla se detuvo, con la misma numeración que la demo |
 | `PSRAM no detectada` | Herramientas → PSRAM |
-| Imagen que se corre, parpadea o va lenta | Ancho de banda de la PSRAM con redibujado completo. Subí `publishIntervalMs` (120 → 200) y `flowDrawIntervalMs` (240 → 400), o desactivá el waterfall para confirmarlo |
-| El precio deja de actualizarse mientras se mueve la pantalla | La tarea LVGL (prioridad 2) le quita CPU a `loop()`. Subí `publishIntervalMs` |
+| Texto punteado, rayitas, basura que sigue al contenido | Ver "Diagnóstico en la placa" |
+| Imagen que se corre, parpadea o va lenta | Ancho de banda de la PSRAM. Probá `+` por serie, `PRRR_BOUNCE_BUFFER_LINES 20` o `flowDrawIntervalMs` 400 |
+| El precio deja de actualizarse mientras se mueve la pantalla | La tarea LVGL (prioridad 2) le quita CPU a `loop()`. Probá `+` por serie |
 | Colores invertidos (rojo↔azul o raros) | `LV_COLOR_16_SWAP` debe ser 0 |
 | El táctil no cambia la ventana | Probá primero el táctil con la demo. El Serial imprime `[PRRR] Ventana -> 5m` al tocar |
 

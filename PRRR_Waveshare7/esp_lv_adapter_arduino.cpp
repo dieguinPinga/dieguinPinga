@@ -14,7 +14,16 @@ using namespace esp_panel::drivers;
 typedef struct {
     bool initialized;
     bool started;
-    bool rgb_full_refresh;
+    bool rgb_full_refresh;          // doble framebuffer RGB (full_refresh o direct_mode)
+    bool rgb_direct_mode;           // PRRR
+    void *visible_fb;               // PRRR: framebuffer que el panel esta mostrando
+    // PRRR: estadisticas
+    volatile uint32_t st_frames;
+    volatile uint32_t st_render_on_visible;
+    uint32_t st_handler_max_us;
+    uint64_t st_handler_sum_us;
+    uint32_t st_handler_count;
+    uint32_t st_vsync_wait_max_us;
     esp_lv_adapter_config_t config;
     SemaphoreHandle_t lvgl_mux;
     TaskHandle_t lvgl_task_handle;
@@ -46,7 +55,17 @@ static void lvgl_worker(void *arg)
     uint32_t delay_ms = s_ctx.config.task_max_delay_ms;
     while (true) {
         if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            const int64_t t0 = esp_timer_get_time();
             delay_ms = lv_timer_handler();
+            const uint32_t dt = (uint32_t)(esp_timer_get_time() - t0);
+            // PRRR: solo se cuentan las vueltas que realmente dibujaron algo
+            if (dt > 1000) {
+                if (dt > s_ctx.st_handler_max_us) {
+                    s_ctx.st_handler_max_us = dt;
+                }
+                s_ctx.st_handler_sum_us += dt;
+                s_ctx.st_handler_count++;
+            }
             esp_lv_adapter_unlock();
         }
 
@@ -84,10 +103,24 @@ static void flush_cb(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t 
     }
 
     if (s_ctx.rgb_full_refresh) {
+        // Valido para full_refresh y direct_mode: LVGL ya dibujo en color_map (buffer
+        // oculto). Se lo presenta y se espera a que el panel deje de leer el anterior
+        // (on_frame_buf_complete de esp_lcd) antes de que LVGL vuelva a dibujar en el.
         if (lv_disp_flush_is_last(disp_drv)) {
+            // PRRR: verificacion de que nunca se dibujo sobre el buffer visible
+            if ((s_ctx.st_frames > 0) && (color_map == s_ctx.visible_fb)) {
+                s_ctx.st_render_on_visible = s_ctx.st_render_on_visible + 1;
+            }
+            const int64_t t0 = esp_timer_get_time();
             lcd->switchFrameBufferTo(color_map);
             ulTaskNotifyValueClear(nullptr, ULONG_MAX);
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            const uint32_t wait_us = (uint32_t)(esp_timer_get_time() - t0);
+            if (wait_us > s_ctx.st_vsync_wait_max_us) {
+                s_ctx.st_vsync_wait_max_us = wait_us;
+            }
+            s_ctx.visible_fb = color_map;
+            s_ctx.st_frames = s_ctx.st_frames + 1;
         }
         lv_disp_flush_ready(disp_drv);
         return;
@@ -179,6 +212,8 @@ lv_display_t *esp_lv_adapter_register_display(const esp_lv_adapter_display_confi
         if ((s_ctx.buf1 != nullptr) && (s_ctx.buf2 != nullptr)) {
             buffer_bytes = width * height * sizeof(lv_color_t);
             s_ctx.rgb_full_refresh = true;
+            s_ctx.rgb_direct_mode = config->profile.direct_mode;  // PRRR
+            s_ctx.visible_fb = s_ctx.buf1;  // esp_lcd arranca mostrando el framebuffer 0
         }
     }
 
@@ -213,7 +248,9 @@ lv_display_t *esp_lv_adapter_register_display(const esp_lv_adapter_display_confi
     s_ctx.disp_drv.flush_cb = flush_cb;
     s_ctx.disp_drv.draw_buf = &s_ctx.draw_buf;
     s_ctx.disp_drv.user_data = s_ctx.lcd;
-    s_ctx.disp_drv.full_refresh = s_ctx.rgb_full_refresh;
+    // PRRR: direct_mode en lugar de full_refresh si se pidio
+    s_ctx.disp_drv.full_refresh = s_ctx.rgb_full_refresh && !s_ctx.rgb_direct_mode;
+    s_ctx.disp_drv.direct_mode = s_ctx.rgb_full_refresh && s_ctx.rgb_direct_mode;
 
     s_ctx.display = lv_disp_drv_register(&s_ctx.disp_drv);
     if (s_ctx.display == nullptr) {
@@ -335,4 +372,37 @@ esp_err_t esp_lv_adapter_deinit(void)
 
     memset(&s_ctx, 0, sizeof(s_ctx));
     return ESP_OK;
+}
+
+// PRRR: cambio de modo en caliente (con el lock tomado). Se invalida la pantalla
+// completa para que el primer cuadro del modo nuevo reescriba todo el buffer oculto.
+void esp_lv_adapter_set_rgb_direct_mode(bool direct_mode)
+{
+    if ((s_ctx.display == nullptr) || !s_ctx.rgb_full_refresh) {
+        return;
+    }
+    s_ctx.rgb_direct_mode = direct_mode;
+    s_ctx.disp_drv.full_refresh = !direct_mode;
+    s_ctx.disp_drv.direct_mode = direct_mode;
+    lv_obj_invalidate(lv_scr_act());
+}
+
+void esp_lv_adapter_get_stats(esp_lv_adapter_stats_t *out, bool reset)
+{
+    if (out == nullptr) {
+        return;
+    }
+    out->frames = s_ctx.st_frames;
+    out->render_on_visible = s_ctx.st_render_on_visible;
+    out->handler_max_us = s_ctx.st_handler_max_us;
+    out->handler_avg_us = s_ctx.st_handler_count ? (uint32_t)(s_ctx.st_handler_sum_us / s_ctx.st_handler_count) : 0;
+    out->vsync_wait_max_us = s_ctx.st_vsync_wait_max_us;
+    out->direct_mode = s_ctx.rgb_direct_mode;
+    if (reset) {
+        s_ctx.st_render_on_visible = 0;
+        s_ctx.st_handler_max_us = 0;
+        s_ctx.st_handler_sum_us = 0;
+        s_ctx.st_handler_count = 0;
+        s_ctx.st_vsync_wait_max_us = 0;
+    }
 }

@@ -3,6 +3,9 @@
 #pragma once
 #include "canvas565.h"
 
+// Nivel de diagnostico activo (1..5, ver prrr_config.h). Solo lo cambia loop().
+extern int g_diagLevel;
+
 void renderBegin(Canvas565* canvas);
 void drawStaticFrames();
 

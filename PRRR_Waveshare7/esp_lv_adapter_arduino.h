@@ -1,5 +1,9 @@
 #pragma once
 
+// Adaptador LVGL de la demo 09_lvgl_v8_demo (Waveshare).
+// PRRR: cambios marcados "PRRR:" -> modo RGB "direct" opcional y estadisticas
+// de diagnostico. Sin esos campos se comporta exactamente como el original.
+
 #include <Arduino.h>
 #include <esp_err.h>
 #include <esp_display_panel.hpp>
@@ -36,6 +40,11 @@ typedef struct {
 
 typedef struct {
     bool use_psram;
+    // PRRR: false = full_refresh (original: redibuja 800x480 completos en cada cambio)
+    //       true  = direct_mode (LVGL redibuja solo las zonas invalidadas en el
+    //               framebuffer oculto y sincroniza el otro; mismo esquema que el
+    //               modo 3 "direct" del lvgl_v8_port de Espressif)
+    bool direct_mode;
 } esp_lv_adapter_profile_t;
 
 typedef struct {
@@ -58,6 +67,16 @@ typedef struct {
 #define ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, touch) \
     { (disp), (touch) }
 
+// PRRR: estadisticas de diagnostico (acumuladas desde el ultimo reset)
+typedef struct {
+    uint32_t frames;                 // cuadros presentados (swap de framebuffer)
+    uint32_t render_on_visible;      // cuadros dibujados sobre el buffer visible (debe ser 0)
+    uint32_t handler_max_us;         // lv_timer_handler() mas largo (incluye espera de VSYNC)
+    uint32_t handler_avg_us;
+    uint32_t vsync_wait_max_us;      // espera de fin de cuadro mas larga
+    bool direct_mode;
+} esp_lv_adapter_stats_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -72,6 +91,11 @@ esp_err_t esp_lv_adapter_lock(int32_t timeout_ms);
 void esp_lv_adapter_unlock(void);
 lv_display_t *esp_lv_adapter_register_display(const esp_lv_adapter_display_config_t *config);
 lv_indev_t *esp_lv_adapter_register_touch(const esp_lv_adapter_touch_config_t *config);
+
+// PRRR: llamar con esp_lv_adapter_lock() tomado. Solo tiene efecto con doble framebuffer RGB.
+void esp_lv_adapter_set_rgb_direct_mode(bool direct_mode);
+// PRRR: copia las estadisticas y, si reset es true, las reinicia.
+void esp_lv_adapter_get_stats(esp_lv_adapter_stats_t *out, bool reset);
 
 #ifdef __cplusplus
 }
