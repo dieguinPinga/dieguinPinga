@@ -1,0 +1,23 @@
+# Servicio de USUARIO (no de sistema): PipeWire corre en la sesión de diego.
+# NO se instala solo. Ver README, sección "Funcionamiento continuo (systemd)".
+[Unit]
+Description=Estación de vigilancia audiovisual (vigd)
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vigilancia
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/vad-venv/bin/python -m vigd -c %h/vigilancia-data/config/config.toml all
+Restart=on-failure
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=90
+UMask=0077
+Nice=5
+NoNewPrivileges=yes
+MemoryMax=2500M
+
+[Install]
+WantedBy=default.target

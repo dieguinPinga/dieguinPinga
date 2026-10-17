@@ -1,0 +1,76 @@
+# Configuración de la estación de vigilancia (vigd).
+# Copiar a ~/vigilancia-data/config/config.toml y hacer:  chmod 600 ~/vigilancia-data/config/config.toml
+# Toda opción omitida usa el valor por defecto que se muestra aquí.
+
+[general]
+data_dir = "~/vigilancia-data"     # directorio EXCLUSIVO del proyecto (base, clips, logs)
+retention_days = 7                 # eventos más viejos se borran (salvo favoritos)
+min_free_gb = 20                   # si el disco baja de esto, se borran los eventos más antiguos
+max_storage_gb = 100               # tope de espacio para clips del proyecto
+log_level = "INFO"
+webhook_url = ""                   # p. ej. "http://127.0.0.1:1880/vigilancia/evento" (flujo Node-RED opcional)
+
+[audio]
+enabled = true
+source = "alsa_input.pci-0000_00_1f.3.analog-stereo"   # fuente PipeWire/Pulse (no se cambia el predeterminado)
+vad_aggressiveness = 2             # 0..3 (WebRTC VAD)
+energy_margin_db = 12.0            # dB sobre el ruido ambiente para considerar "sonido"
+voice_margin_db = 6.0              # dB sobre el ambiente para evaluar voz
+voice_min_ratio = 0.5              # proporción de tramas con voz en la ventana de 0,5 s
+sound_min_ratio = 0.3
+impulse_jump_db = 20.0             # subida brusca = "impulsivo"
+ring_seconds = 20                  # buffer circular en memoria (debe superar pre/post-roll)
+
+[video]
+enabled = true
+device = "/dev/video0"             # no asumir que /dev/video1 es otra cámara
+input_format = "yuyv422"
+width = 640
+height = 480
+capture_fps = 30                   # lo que entrega la cámara
+record_fps = 15                    # lo que se graba (menos CPU y disco)
+crf = 28                           # calidad H.264 (más alto = archivo más chico)
+preset = "veryfast"
+segment_seconds = 4                # tamaño de los segmentos del buffer rodante en disco
+buffer_seconds = 60                # cuánto video "previo" se conserva sin evento
+analysis_fps = 5
+pixel_threshold = 22               # diferencia de gris por píxel (0..255)
+min_area = 0.008                   # fracción mínima de la imagen que debe cambiar (0,8 %)
+min_frames = 3                     # cuadros seguidos con cambio para disparar (0,6 s)
+light_change_brightness = 18       # salto de brillo global que se evalúa como cambio de luz
+dark_brightness = 18               # por debajo, la cámara se informa como "oscuro"
+# Zonas a ignorar (ventanas, TV, cortinas): [x, y, ancho, alto] en fracciones de la imagen
+ignore_zones = []
+# ignore_zones = [[0.70, 0.00, 0.30, 0.40]]
+
+[events]
+pre_roll_s = 5                     # segundos previos al disparo que se guardan
+post_roll_s = 6                    # segundos posteriores al último disparo
+merge_gap_s = 8                    # disparos separados por menos de esto = mismo evento
+max_event_s = 300                  # eventos más largos se dividen (quedan enlazados)
+video_on_audio = true              # guardar video también cuando sólo hubo sonido
+min_voice_s = 0.6
+min_voice_ratio = 0.25
+
+[web]
+# Escuchar SOLO en localhost y en la IP de Tailscale de la notebook (tailscale ip -4).
+# No usar 0.0.0.0 salvo que sepas que el puerto no está expuesto.
+bind = ["127.0.0.1"]
+# bind = ["127.0.0.1", "100.x.y.z"]
+port = 8765
+user = "diego"
+password_hash = ""                 # generar con:  python -m vigd hash-password
+session_hours = 72
+secure_cookie = false              # true si se sirve detrás de HTTPS (p. ej. tailscale serve)
+api_token = ""                     # opcional, sólo lectura (GET /api/*), para Node-RED u otros
+
+[transcription]
+enabled = true
+python = "/home/diego/vad-venv/bin/python"   # intérprete que tenga faster-whisper
+model = "small"
+compute_type = "int8"
+cpu_threads = 2
+language = "es"
+min_mem_available_mb = 1200        # no cargar Whisper si hay menos memoria libre
+unload_after_s = 600               # liberar el modelo tras 10 min sin trabajo
+nice = 15                          # prioridad baja: la captura siempre va primero

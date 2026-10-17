@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vigilancia — Ingresar</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="login">
+<form method="post" action="/login" class="login-box">
+  <h1>Vigilancia</h1>
+  <p id="err" class="error" hidden></p>
+  <label>Usuario <input name="user" autocomplete="username" required autofocus></label>
+  <label>Contraseña <input name="password" type="password" autocomplete="current-password" required></label>
+  <button type="submit">Ingresar</button>
+  <p class="muted">Acceso sólo por Tailscale o red local.</p>
+</form>
+<script src="/static/login.js"></script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+[
+  {
+    "id": "vig0tab000000001",
+    "type": "tab",
+    "label": "Vigilancia (vigd)",
+    "disabled": false,
+    "info": "Integración OPCIONAL con la estación de vigilancia.\n\n1. Completar VIGD_TOKEN en las variables de esta pestaña (mismo valor que web.api_token en config.toml).\n2. Para recibir eventos al instante, poner en config.toml:\n   webhook_url = \"http://127.0.0.1:1880/vigilancia/evento\"\n\nNo modifica otros flujos.",
+    "env": [
+      {
+        "name": "VIGD_URL",
+        "value": "http://127.0.0.1:8765",
+        "type": "str"
+      },
+      {
+        "name": "VIGD_TOKEN",
+        "value": "",
+        "type": "str"
+      }
+    ]
+  },
+  {
+    "id": "vig0in0000000001",
+    "z": "vig0tab000000001",
+    "type": "http in",
+    "name": "Webhook de eventos",
+    "url": "/vigilancia/evento",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 150,
+    "y": 80,
+    "wires": [
+      [
+        "vig0fn0000000001",
+        "vig0fn0000000002"
+      ]
+    ]
+  },
+  {
+    "id": "vig0fn0000000002",
+    "z": "vig0tab000000001",
+    "type": "function",
+    "name": "Responder OK",
+    "func": "msg.payload = { ok: true };\nmsg.statusCode = 200;\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 120,
+    "wires": [
+      [
+        "vig0res000000001"
+      ]
+    ]
+  },
+  {
+    "id": "vig0res000000001",
+    "z": "vig0tab000000001",
+    "type": "http response",
+    "name": "",
+    "statusCode": "",
+    "headers": {},
+    "x": 570,
+    "y": 120,
+    "wires": []
+  },
+  {
+    "id": "vig0fn0000000001",
+    "z": "vig0tab000000001",
+    "type": "function",
+    "name": "Resumen del evento",
+    "func": "const e = msg.payload || {};\nconst nombres = {voz:'Voz', movimiento_sonido:'Movimiento y sonido', movimiento:'Movimiento', impulsivo:'Sonido impulsivo', sonido:'Sonido', sin_clasificar:'Sin clasificar'};\nconst hora = new Date((e.started_at || 0) * 1000).toLocaleString('es-AR');\nconst dur = e.duration ? Math.round(e.duration) + ' s' : '';\nmsg.evento = e;\nmsg.topic = 'vigilancia/evento/' + (e.category || 'desconocido');\nmsg.payload = `${nombres[e.category] || e.category} · ${hora} · ${dur}` + (e.transcript ? ` · \"${e.transcript}\"` : '');\nnode.status({fill:'green', shape:'dot', text: msg.payload.slice(0, 40)});\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 390,
+    "y": 60,
+    "wires": [
+      [
+        "vig0dbg000000001"
+      ]
+    ]
+  },
+  {
+    "id": "vig0dbg000000001",
+    "z": "vig0tab000000001",
+    "type": "debug",
+    "name": "Evento recibido",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 610,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "vig0inj000000001",
+    "z": "vig0tab000000001",
+    "type": "inject",
+    "name": "Cada 60 s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "60",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "10",
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 140,
+    "y": 200,
+    "wires": [
+      [
+        "vig0fn0000000003"
+      ]
+    ]
+  },
+  {
+    "id": "vig0fn0000000003",
+    "z": "vig0tab000000001",
+    "type": "function",
+    "name": "Consultar /api/status",
+    "func": "msg.url = env.get('VIGD_URL') + '/api/status';\nmsg.method = 'GET';\nmsg.headers = { Authorization: 'Bearer ' + (env.get('VIGD_TOKEN') || '') };\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 350,
+    "y": 200,
+    "wires": [
+      [
+        "vig0req000000001"
+      ]
+    ]
+  },
+  {
+    "id": "vig0req000000001",
+    "z": "vig0tab000000001",
+    "type": "http request",
+    "name": "vigd",
+    "method": "use",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 540,
+    "y": 200,
+    "wires": [
+      [
+        "vig0fn0000000004"
+      ]
+    ]
+  },
+  {
+    "id": "vig0fn0000000004",
+    "z": "vig0tab000000001",
+    "type": "function",
+    "name": "¿Algo anda mal?",
+    "outputs": 1,
+    "func": "if (msg.statusCode !== 200) {\n  node.status({fill:'red', shape:'ring', text:'HTTP ' + msg.statusCode});\n  msg.payload = 'vigd no responde (HTTP ' + msg.statusCode + '). ¿Falta VIGD_TOKEN?';\n  return msg;\n}\nconst c = msg.payload.components || {};\nconst mal = Object.entries(c).filter(([k, v]) => !['ok', 'deshabilitado'].includes(v.state)).map(([k, v]) => `${k}: ${v.state}`);\nnode.status(mal.length ? {fill:'yellow', shape:'dot', text: mal.join(', ')} : {fill:'green', shape:'dot', text:'todo ok'});\nif (!mal.length) return null;\nmsg.payload = 'Vigilancia con problemas: ' + mal.join(', ');\nreturn msg;",
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 730,
+    "y": 200,
+    "wires": [
+      [
+        "vig0dbg000000002"
+      ]
+    ]
+  },
+  {
+    "id": "vig0dbg000000002",
+    "z": "vig0tab000000001",
+    "type": "debug",
+    "name": "Alerta de estado",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 930,
+    "y": 200,
+    "wires": []
+  }
+]

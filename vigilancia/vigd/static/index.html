@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1216">
+<title>Vigilancia</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Vigilancia</div>
+  <div class="indicators">
+    <span id="ind-mic" class="ind off" title="Micrófono"><i></i>MIC</span>
+    <span id="ind-cam" class="ind off" title="Cámara"><i></i>CAM</span>
+    <span id="ind-live" class="live" title="Actualización en vivo"></span>
+    <form method="post" action="/logout"><button class="ghost small" type="submit">Salir</button></form>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button data-tab="events" class="active" role="tab">Eventos</button>
+  <button data-tab="stats" role="tab">Estadísticas</button>
+  <button data-tab="status" role="tab">Estado</button>
+</nav>
+
+<main>
+  <section id="tab-events">
+    <details id="snap-box">
+      <summary>Vista reciente de la cámara</summary>
+      <div class="snap-wrap"><img id="snap" alt="Último cuadro grabado"></div>
+      <div class="row"><span id="snap-info" class="muted"></span><button id="snap-refresh" type="button" class="small">Actualizar</button></div>
+    </details>
+
+    <form id="filters" autocomplete="off">
+      <div class="chips" id="type-chips">
+        <button type="button" data-type="" class="chip active">Todos</button>
+        <button type="button" data-type="voz" class="chip">Voz</button>
+        <button type="button" data-type="sonido" class="chip">Sonido</button>
+        <button type="button" data-type="movimiento" class="chip">Movimiento</button>
+        <button type="button" data-type="impulsivo" class="chip">Impulsivo</button>
+        <button type="button" data-type="favoritos" class="chip">★ Favoritos</button>
+      </div>
+      <div class="row">
+        <label>Desde <input type="date" id="f-from"></label>
+        <label>Hasta <input type="date" id="f-to"></label>
+      </div>
+      <div class="row">
+        <input type="search" id="f-q" placeholder="Buscar en transcripciones" maxlength="200">
+        <button type="submit">Buscar</button>
+        <button type="button" id="f-clear" class="ghost">Limpiar</button>
+      </div>
+    </form>
+
+    <button id="new-banner" class="banner" hidden>Hay eventos nuevos — tocar para ver</button>
+    <ul id="list" class="list"></ul>
+    <p id="list-empty" class="muted center" hidden>No hay eventos para mostrar.</p>
+    <button id="more" class="more" hidden>Cargar más</button>
+  </section>
+
+  <section id="tab-stats" hidden>
+    <div class="row"><label>Período
+      <select id="stats-days"><option value="7">7 días</option><option value="14">14 días</option><option value="30">30 días</option></select></label></div>
+    <div id="stats-totals" class="kpis"></div>
+    <h3>Eventos por día</h3>
+    <div id="stats-days-chart" class="bars"></div>
+    <h3>Últimas 24 horas, por hora</h3>
+    <div id="stats-hours-chart" class="hours"></div>
+    <h3>Almacenamiento</h3>
+    <table id="stats-storage" class="kv"></table>
+  </section>
+
+  <section id="tab-status" hidden>
+    <div id="status-list" class="status-list"></div>
+    <h3>Nivel del micrófono</h3>
+    <div class="meter"><div id="meter-floor" class="meter-floor"></div><div id="meter-bar" class="meter-bar"></div></div>
+    <p id="meter-text" class="muted"></p>
+  </section>
+</main>
+
+<dialog id="detail">
+  <div class="dlg-head">
+    <button id="d-prev" type="button" class="ghost" aria-label="Evento más nuevo">‹</button>
+    <div id="d-title" class="dlg-title"></div>
+    <button id="d-next" type="button" class="ghost" aria-label="Evento anterior">›</button>
+    <button id="d-close" type="button" class="ghost" aria-label="Cerrar">✕</button>
+  </div>
+  <div id="d-body"></div>
+  <div class="dlg-actions">
+    <button id="d-star" type="button">☆ Favorito</button>
+    <button id="d-transcribe" type="button">Transcribir</button>
+    <a id="d-dl-video" class="button" download hidden>Descargar video</a>
+    <a id="d-dl-audio" class="button" download hidden>Descargar audio</a>
+    <button id="d-delete" type="button" class="danger">Eliminar</button>
+  </div>
+</dialog>
+
+<footer class="muted">Este sistema graba audio y video. Informá a las personas que puedan ser grabadas y evitá espacios privados.</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
