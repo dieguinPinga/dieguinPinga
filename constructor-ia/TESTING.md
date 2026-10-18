@@ -12,7 +12,7 @@ python3 -m unittest discover -s tests -t . -v
 | Archivo | Cubre |
 |---|---|
 | `tests/test_units.py` (26) | Configuración y límites (rechazo de 0.0.0.0, LAN, puertos 1880/3306/11434/11435/18789, Ollama 11434), scrypt, sesiones, expiración, invalidación por cambio de contraseña, limitador de intentos, validación de misiones, extracción y validación de código, presupuesto de prompt, no filtración de casos ocultos, estructura del filtro seccomp, comando y verificación del limitador cgroup (con archivos de cgroup simulados), redacción de secretos, parser de borradores. |
-| `tests/test_sandbox.py` (23) | Ejecutor con **Bubblewrap y seccomp reales** frente a entradas adversariales: solución correcta/incorrecta, errores de sintaxis e importación, excepciones esperadas, bucle infinito, bloqueo a nivel de módulo, intento de leer casos ocultos / memoria del arnés / `/home`, red (1.1.1.1, 11434, 11435, 1880), escritura fuera de `/tmp`, falsificación de resultados y muerte del arnés, proceso nieto con `setsid` + `os._exit`, ptrace/userns, inundación de salida, modo programa, pruebas del operador, cancelación, timeout global, HMAC adulterado, limpieza de temporales, bloqueo si los límites no se verifican. |
+| `tests/test_sandbox.py` (30) | Ejecutor con **Bubblewrap y seccomp reales** frente a entradas adversariales: solución correcta/incorrecta, errores de sintaxis e importación, excepciones esperadas, bucle infinito, bloqueo a nivel de módulo, intento de leer casos ocultos / memoria del arnés / `/home`, red (1.1.1.1, 11434, 11435, 1880), escritura fuera de `/tmp`, falsificación de resultados y muerte del arnés, proceso nieto con `setsid` + `os._exit`, ptrace/userns, inundación de salida, modo programa, pruebas del operador, cancelación, timeout global, HMAC adulterado, limpieza de temporales, bloqueo si los límites no se verifican. |
 | `tests/test_engine.py` (10) | Motor y cola con Ollama simulado: aprobación al primer intento sin re-ejecución, reparación con errores reales, fallo tras 3 intentos, cancelación durante la generación (Ollama recibe la desconexión), cancelación en cola y orden FIFO con una sola inferencia simultánea, Ollama caído, ejecutor bloqueado nunca aprueba, recuperación tras caída (`interrumpida`, no se re-ejecuta, reencolar crea misión nueva), apagado marca `interrumpida`, chat y borrador (sin ejecutar nada). |
 | `tests/test_web.py` (12) | Servidor HTTP real: estáticos y cabeceras de seguridad, traversal en estáticos, 401 sin sesión en todas las rutas (misiones, archivos, descargas, SSE…), login fallido y Origin ajeno, Host no permitido (DNS rebinding), CSRF ausente/incorrecto, Origin ajeno, Content-Type, flujo completo misión → archivos → descarga → aprobación humana, archivo alterado en disco rechazado, entradas inválidas, conversación, SSE, `/api/status` sin secretos, logout, registros y auditoría sin secretos. |
 
@@ -20,7 +20,7 @@ python3 -m unittest discover -s tests -t . -v
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 71 tests in 41.250s
+Ran 78 tests in 45.769s
 OK
 ```
 
@@ -34,11 +34,31 @@ Además se verificó manualmente en ese entorno:
   reparada hasta aprobarse, consola en vivo, diferencias, chat, estado; sin errores de
   consola ni violaciones de CSP.
 
+### Regresión: OOM en `selftest --stress mem` (v0.1.1)
+
+Síntoma en la VivoBook: `El arnés no produjo un resultado válido (código -15)`
+aunque el kernel registró `Memory cgroup out of memory: Killed process … (python3.12)`.
+Causa: con `OOMPolicy=stop` (valor por defecto de systemd) el OOM del proceso de
+prueba hace que systemd detenga toda la unidad `cia-job-*.scope` con SIGTERM,
+incluido el arnés, antes de que firme el resultado; además el anfitrión no leía
+`memory.events`, así que no podía distinguirlo de un fallo del supervisor.
+
+Corrección: la unidad usa `OOMPolicy=continue` (el kernel mata solo al proceso
+que excede `memory.max`; los límites no cambian); el arnés espera a que el
+anfitrión cierre stdin para que este lea `memory.events` con el cgroup vivo; el
+resultado sin firma con `oom_kill > 0` se clasifica `oom` (fallo verificado por
+memoria, nunca éxito) y sin evidencia sigue siendo `error`; `selftest --stress mem`
+solo pasa con SIGKILL **y** `oom_kill ≥ 1`.
+
+Pruebas en `OomRegressionTests` y `MemStressVerdictTests` (cgroup simulado, bwrap
+real). El OOM real del kernel y `OOMPolicy=continue` solo se pueden comprobar en
+la VivoBook (V2).
+
 ### Qué es simulado
 
 - **Ollama**: `tests/fake_ollama.py` imita `/api/chat` en streaming NDJSON, `/api/tags`,
   `/api/ps`, `/api/version`. No se probó con `qwen3:4b-instruct` real.
-- **Límites cgroup**: en las pruebas se usa `NullLimiter` (solo construible desde código de
+- **Límites cgroup y `memory.events`**: en las pruebas se usa `NullLimiter` o un cgroup simulado en un directorio temporal (solo construible desde código de
   prueba, no seleccionable por configuración). La lectura/validación de `memory.max`,
   `pids.max` y `cpu.max` se probó con archivos de cgroup simulados.
 
@@ -50,8 +70,8 @@ hacerse antes de habilitar el arranque automático.
 | # | Comprobación | Comando / procedimiento | Esperado |
 |---|---|---|---|
 | V1 | Autodiagnóstico | `~/constructor-ia/bin/constructor-ia selftest` | Todas `[OK]`, incluido `limites_cgroup` con `memory.max=268435456`, `pids.max=32`, `cpu.max=50000 100000`; “AISLAMIENTO OPERATIVO” |
-| V2 | Memoria | `constructor-ia selftest --stress mem` | `stress_mem: código=-9` (matado por OOM del scope), sin `sobrevivio`; Vigilanti sigue funcionando |
-| V3 | Fork bomb | `constructor-ia selftest --stress fork` | `stdout='limite N …'` con N < 32 |
+| V2 | Memoria | `constructor-ia selftest --stress mem` | `[OK] limite_memoria: código=-9 memory.events oom_kill=1` (o más), `stress_mem: código=-9`, sin `sobrevivio`, “AISLAMIENTO OPERATIVO”; `journalctl -k` muestra `Memory cgroup out of memory: Killed process … (python3.12)`; Vigilanti sigue funcionando |
+| V3 | Fork bomb | `constructor-ia selftest --stress fork` | `[OK] limite_tareas: limite N …` con N < 32 |
 | V4 | Huérfanos | `constructor-ia selftest --stress orphan`, luego `pgrep -u diego -f 'time.sleep(600)'` | limpieza verificada = True; `pgrep` sin resultados |
 | V5 | Bucle sin fin del arnés | `constructor-ia selftest --stress spin` | estado `timeout` a los 20 s; `systemctl --user list-units 'cia-job-*'` vacío |
 | V6 | Ollama CPU real | Misión de ejemplo (abajo) | Petición visible en `journalctl` de `ollama-cpu`; código generado guardado |

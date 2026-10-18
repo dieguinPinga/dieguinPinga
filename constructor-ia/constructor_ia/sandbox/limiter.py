@@ -42,6 +42,11 @@ class SystemdScopeLimiter:
         return [self.systemd_run, "--user", "--scope", "--quiet", "--collect", f"--unit={unit}",
                 "-p", f"MemoryMax={self.memory_bytes}", "-p", "MemorySwapMax=0",
                 "-p", f"TasksMax={self.tasks}", "-p", f"CPUQuota={self.cpu_percent}%",
+                # Con la política por defecto (stop), un OOM del código evaluado hace que
+                # systemd detenga TODA la unidad (SIGTERM al arnés) y se pierde el resultado
+                # firmado. "continue" deja que el kernel mate solo al proceso que excedió
+                # memory.max; el límite sigue igual y la limpieza final no cambia.
+                "-p", "OOMPolicy=continue",
                 "--", *cmd]
 
     def cgroup_of(self, pid: int) -> Path | None:
@@ -94,6 +99,21 @@ class SystemdScopeLimiter:
             raise LimiterError("Límites de cgroup no aplicados: " + ", ".join(problems))
         return info
 
+    def memory_events(self, cg: str | None) -> dict | None:
+        """Contadores de memory.events del cgroup (oom, oom_kill, max…); None si no se pueden leer."""
+        if not cg:
+            return None
+        try:
+            text = Path(cg, "memory.events").read_text()
+        except OSError:
+            return None
+        events = {}
+        for line in text.splitlines():
+            key, _, value = line.partition(" ")
+            if value.strip().isdigit():
+                events[key] = int(value)
+        return events
+
     def kill(self, unit: str) -> None:
         if not UNIT_RE.match(unit):
             return
@@ -139,6 +159,9 @@ class NullLimiter:
 
     def verify(self, pid, unit, wait_s=5.0, alive=None):
         return {"verified": False, "note": "sin límites (modo de prueba)"}
+
+    def memory_events(self, cg):
+        return None
 
     def kill(self, unit):
         pass

@@ -186,4 +186,5 @@ unidades transitorias `cia-job-*.scope` propias.
 | Copia manual de la base | `~/constructor-ia/bin/constructor-ia backup` (copia consistente con la API de SQLite). |
 | Contraseña olvidada | `~/constructor-ia/bin/constructor-ia passwd diego`. |
 | Ejecución bloqueada | Estado → *Repetir autodiagnóstico*, o `constructor-ia selftest` y ver qué comprobación falla. |
+| `selftest` bloqueado con `Unknown assignment: OOMPolicy=continue` | systemd demasiado antiguo para `OOMPolicy` en scopes (Mint 22.3 trae 255, que sí lo admite). Comprobar: `systemd-run --user --scope -p OOMPolicy=continue true`. No desactivar el control: la ejecución permanece bloqueada (fallo cerrado). |
 | Versión nueva defectuosa | `~/constructor-ia/bin/rollback.sh`. |

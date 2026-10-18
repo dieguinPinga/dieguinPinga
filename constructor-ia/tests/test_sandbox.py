@@ -4,12 +4,15 @@ En este entorno de CI no hay gestor systemd de usuario, por lo que el
 limitador de cgroups se sustituye por NullLimiter (los límites de memoria,
 tareas y CPU se verifican en la VivoBook con `constructor-ia selftest --stress`).
 """
+import os
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
-from constructor_ia.sandbox.executor import Executor
-from constructor_ia.sandbox.limiter import LimiterError, NullLimiter
+from constructor_ia.sandbox.executor import Executor, mem_stress_verdict
+from constructor_ia.sandbox.limiter import LimiterError, NullLimiter, SystemdScopeLimiter
 
 from .helpers import bwrap_works, make_cfg
 
@@ -246,3 +249,105 @@ class BlockedExecutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeCgroupLimiter(NullLimiter):
+    """Limitador de prueba con un cgroup simulado: memory.events lo escribe la prueba."""
+
+    name = "fake-cgroup-test-only"
+
+    def __init__(self, cg_dir, oom_kill):
+        self.cg = cg_dir
+        (cg_dir / "memory.events").write_text(f"low 0\nhigh 0\nmax 3\noom 1\noom_kill {oom_kill}\noom_group_kill 0\n")
+        self.pid = None
+        self.reads_while_alive = 0
+
+    def verify(self, pid, unit, wait_s=5.0, alive=None):
+        self.pid = pid
+        return {"verified": True, "cgroup": str(self.cg)}
+
+    def memory_events(self, cg):
+        if self.pid and os.path.exists(f"/proc/{self.pid}"):
+            with open(f"/proc/{self.pid}/stat") as fh:
+                if fh.read().split(") ")[1][0] != "Z":
+                    self.reads_while_alive += 1
+        return SystemdScopeLimiter(1, 1, 1).memory_events(cg)
+
+
+@unittest.skipUnless(bwrap_works(), "bubblewrap no disponible")
+class OomRegressionTests(unittest.TestCase):
+    """Regresión: VivoBook, selftest --stress mem → 'El arnés no produjo un resultado válido (código -15)'."""
+
+    def executor(self, oom_kill):
+        cfg = make_cfg(sandbox_timeout_s=15, sandbox_case_timeout_s=2)
+        lim = _FakeCgroupLimiter(Path(tempfile.mkdtemp()), oom_kill)
+        ex = Executor(cfg, limiter=lim)
+        ex.enabled = True
+        return ex, lim
+
+    # El arnés muere por SIGTERM, como cuando systemd detiene la unidad tras un OOM.
+    KILL_HARNESS = "import os, signal\nos.kill(os.getppid(), signal.SIGTERM)\ndef sumar(a, b):\n    return a + b\n"
+
+    def test_supervisor_killed_with_oom_evidence_is_oom_not_ok(self):
+        ex, _ = self.executor(oom_kill=1)
+        r = ex.run(self.KILL_HARNESS, SPEC, None)
+        self.assertEqual(r.status, "oom")
+        self.assertIsNone(r.result)
+        self.assertIn("oom_kill=1", r.reason)
+        self.assertEqual(r.oom_kills, 1)
+        self.assertTrue(r.cleanup_verified)
+
+    def test_supervisor_killed_without_oom_is_error(self):
+        ex, _ = self.executor(oom_kill=0)
+        r = ex.run(self.KILL_HARNESS, SPEC, None)
+        self.assertEqual(r.status, "error")
+        self.assertIn("oom_kill=0", r.reason)
+        self.assertIsNone(r.result)
+
+    def test_unreadable_memory_events_is_error(self):
+        ex = Executor(make_cfg(sandbox_timeout_s=15), limiter=NullLimiter(), allow_unverified_limits=True)
+        ex.enabled = True
+        r = ex.run(self.KILL_HARNESS, SPEC, None)
+        self.assertEqual(r.status, "error")
+        self.assertIn("no disponible", r.reason)
+
+    def test_oom_killed_child_is_reported_and_confirmed(self):
+        # Con OOMPolicy=continue el kernel mata solo al hijo; el arnés sigue y firma el resultado.
+        ex, lim = self.executor(oom_kill=1)
+        code = "import os, signal\ndef sumar(a, b):\n    os.kill(os.getpid(), signal.SIGKILL)\n"
+        t0 = time.monotonic()
+        r = ex.run(code, SPEC, None)
+        self.assertEqual(r.status, "ok", r.reason)
+        self.assertEqual(r.result["passed"], 0)
+        self.assertEqual(r.result["oom_kills"], 1)
+        self.assertIn("confirmado: límite de memoria", r.result["cases"][0]["detail"])
+        self.assertGreater(lim.reads_while_alive, 0, "memory.events se leyó con el arnés aún vivo")
+        self.assertLess(time.monotonic() - t0, 10, "el anfitrión cierra stdin y el arnés no queda esperando")
+        self.assertTrue(r.cleanup_verified)
+
+    def test_normal_run_not_delayed_by_handshake(self):
+        ex, _ = self.executor(oom_kill=0)
+        t0 = time.monotonic()
+        r = ex.run("def sumar(a, b):\n    return a + b\n", SPEC, None)
+        self.assertEqual((r.status, r.result["passed"], r.oom_kills), ("ok", 3, 0))
+        self.assertLess(time.monotonic() - t0, 5)
+
+
+class MemStressVerdictTests(unittest.TestCase):
+    def test_verdicts(self):
+        ok = {"code": -9, "stdout": ""}
+        self.assertTrue(mem_stress_verdict(ok, 1)[0])
+        self.assertFalse(mem_stress_verdict(ok, 0)[0], "SIGKILL sin oom_kill no verifica el límite")
+        self.assertFalse(mem_stress_verdict(ok, None)[0])
+        self.assertFalse(mem_stress_verdict({"code": -15, "stdout": ""}, 1)[0], "-15 nunca es éxito")
+        self.assertFalse(mem_stress_verdict({"code": 0, "stdout": "sobrevivio\n"}, 0)[0])
+        self.assertFalse(mem_stress_verdict(None, 1)[0])
+
+    def test_wrap_and_memory_events_parsing(self):
+        lim = SystemdScopeLimiter(256, 32, 50)
+        self.assertIn("OOMPolicy=continue", lim.wrap(["x"], "cia-job-0123456789abcdef"))
+        d = Path(tempfile.mkdtemp())
+        (d / "memory.events").write_text("low 0\nhigh 0\nmax 12\noom 2\noom_kill 1\noom_group_kill 0\n")
+        self.assertEqual(lim.memory_events(str(d))["oom_kill"], 1)
+        self.assertIsNone(lim.memory_events(str(d / "no-existe")))
+        self.assertIsNone(lim.memory_events(None))

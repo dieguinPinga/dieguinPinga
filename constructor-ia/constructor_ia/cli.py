@@ -124,6 +124,8 @@ def cmd_selftest(args) -> int:
         if key in probe:
             r = probe[key]
             print(f"{key}: código={r['code']} timeout={r['timeout']} stdout={r['stdout'].strip()[:200]!r}")
+    if "mem" in stress and "exec" in report:
+        print("memory.events oom_kill:", report["exec"].get("oom_kills"))
     if "stress_orphan" in probe:
         print("stress_orphan: proceso nieto lanzado; limpieza verificada =", report["exec"]["cleanup_verified"])
     if "spin" in stress:

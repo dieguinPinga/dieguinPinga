@@ -33,7 +33,7 @@ STDERR_CAP = 64 * 1024
 
 @dataclass
 class ExecResult:
-    status: str  # ok | timeout | cancelled | error | blocked
+    status: str  # ok | oom | timeout | cancelled | error | blocked
     reason: str = ""
     result: dict | None = None
     stderr: str = ""
@@ -41,10 +41,13 @@ class ExecResult:
     cleanup_verified: bool = False
     duration_ms: int = 0
     unit: str = ""
+    # Procesos matados por el límite de memoria según memory.events (None = no se pudo leer).
+    oom_kills: int | None = None
 
     def summary(self) -> dict:
         return {"status": self.status, "reason": self.reason, "limits": self.limits,
-                "cleanup_verified": self.cleanup_verified, "duration_ms": self.duration_ms, "unit": self.unit}
+                "cleanup_verified": self.cleanup_verified, "duration_ms": self.duration_ms, "unit": self.unit,
+                "oom_kills": self.oom_kills}
 
 
 class _Reader(threading.Thread):
@@ -197,12 +200,20 @@ class Executor:
             writer = threading.Thread(target=self._feed, args=(proc, data), daemon=True)
             writer.start()
             deadline = t0 + self.cfg.sandbox_timeout_s
+            cg = res.limits.get("cgroup")
+            stdin_open = True
             while True:
                 try:
                     proc.wait(timeout=0.2)
                     break
                 except subprocess.TimeoutExpired:
                     pass
+                res.oom_kills = self._oom_kills(cg, res.oom_kills)
+                if stdin_open and not writer.is_alive() and (out.overflow or self._result_ready(out)):
+                    # El arnés espera el cierre de stdin: el cgroup sigue vivo para una lectura final.
+                    res.oom_kills = self._oom_kills(cg, res.oom_kills)
+                    self._close_stdin(proc)
+                    stdin_open = False
                 if cancel.is_set():
                     self._kill(proc, unit)
                     res.status, res.reason = "cancelled", "Cancelada por el operador"
@@ -211,6 +222,8 @@ class Executor:
                     self._kill(proc, unit)
                     res.status, res.reason = "timeout", f"Tiempo máximo de ejecución agotado ({self.cfg.sandbox_timeout_s} s)"
                     break
+            # Última lectura: el cgroup puede seguir existiendo un instante tras la salida.
+            res.oom_kills = self._oom_kills(cg, res.oom_kills)
             out.join(2)
             err.join(2)
             res.stderr = err.buf.decode("utf-8", "replace")[-4000:]
@@ -218,10 +231,23 @@ class Executor:
                 return res
             parsed = self._parse(out.buf.decode("utf-8", "replace"), nonce)
             if parsed is None:
-                res.status = "error"
-                res.reason = (f"El arnés no produjo un resultado válido (código {proc.returncode})."
-                              + (" Salida truncada." if out.overflow else ""))
+                if res.oom_kills:
+                    # Causa verificada por el kernel, no un fallo del supervisor. Sigue sin ser éxito.
+                    res.status = "oom"
+                    res.reason = (f"Se superó el límite de memoria del sandbox ({self.cfg.sandbox_memory_mb} MiB): "
+                                  f"memory.events oom_kill={res.oom_kills}; el arnés no pudo informar resultados "
+                                  f"(código {proc.returncode}).")
+                else:
+                    res.status = "error"
+                    res.reason = (f"El arnés no produjo un resultado válido (código {proc.returncode}; "
+                                  f"memory.events oom_kill={res.oom_kills if res.oom_kills is not None else 'no disponible'})."
+                                  + (" Salida truncada." if out.overflow else ""))
                 return res
+            parsed["oom_kills"] = res.oom_kills
+            if res.oom_kills:
+                for c in parsed.get("cases", []):
+                    if "SIGKILL" in str(c.get("detail", "")):
+                        c["detail"] += f" — confirmado: límite de memoria ({self.cfg.sandbox_memory_mb} MiB, memory.events)"
             res.status, res.result = "ok", parsed
             return res
         except (OSError, RuntimeError, LimiterError) as e:
@@ -246,11 +272,30 @@ class Executor:
 
     @staticmethod
     def _feed(proc, data: bytes) -> None:
+        # stdin queda abierto: el arnés no termina hasta que el anfitrión lea memory.events.
         try:
             proc.stdin.write(data)
-            proc.stdin.close()
+            proc.stdin.flush()
         except OSError:
             pass
+
+    @staticmethod
+    def _close_stdin(proc) -> None:
+        try:
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    @staticmethod
+    def _result_ready(out: "_Reader") -> bool:
+        buf = bytes(out.buf)
+        return b"CIA-RESULT " in buf and buf.endswith(b"\n")
+
+    def _oom_kills(self, cg: str | None, previous: int | None) -> int | None:
+        events = self.limiter.memory_events(cg)
+        if events is None:
+            return previous
+        return max(previous or 0, events.get("oom_kill", 0))
 
     def _kill(self, proc, unit: str) -> None:
         self.limiter.kill(unit)
@@ -337,6 +382,12 @@ class Executor:
         check("entorno_limpio", set(p["env_keys"]) <= {"PATH", "HOME", "LANG", "PWD", "PYTHONDONTWRITEBYTECODE"},
               p["env_keys"])
         check("limpieza_procesos", res.cleanup_verified, res.cleanup_verified)
+        if "mem" in (stress or []):
+            check("limite_memoria", *mem_stress_verdict(p.get("stress_mem"), res.oom_kills))
+        if "fork" in (stress or []):
+            fork = p.get("stress_fork") or {}
+            check("limite_tareas", str(fork.get("stdout", "")).startswith("limite"),
+                  str(fork.get("stdout", "")).strip()[:120] or "sin salida")
         return self._finish(report)
 
     def _finish(self, report: dict) -> dict:
@@ -346,3 +397,21 @@ class Executor:
         self.enabled = report["ok"]
         self.disabled_reason = "" if report["ok"] else "falló el autodiagnóstico del aislamiento: " + ", ".join(failed)
         return report
+
+
+def mem_stress_verdict(stress_mem: dict | None, oom_kills: int | None) -> tuple[bool, str]:
+    """La prueba de memoria solo pasa si el kernel confirma el OOM del proceso que excedió el límite.
+
+    Un código -9 sin oom_kill registrado (o un -15, o "sobrevivio") NO prueba que el límite funcione.
+    """
+    if not stress_mem:
+        return False, "sin resultado de la prueba de memoria"
+    code, out = stress_mem.get("code"), str(stress_mem.get("stdout", ""))
+    detail = f"código={code} memory.events oom_kill={oom_kills if oom_kills is not None else 'no disponible'}"
+    if "sobrevivio" in out:
+        return False, "el proceso superó el límite sin ser terminado; " + detail
+    if code != -9:
+        return False, "el proceso no terminó por SIGKILL; " + detail
+    if not oom_kills:
+        return False, "SIGKILL sin oom_kill registrado en memory.events; causa no verificada; " + detail
+    return True, detail

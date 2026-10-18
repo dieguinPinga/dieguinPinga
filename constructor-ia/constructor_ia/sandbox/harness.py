@@ -458,7 +458,6 @@ def probe(opts, timeout, cpu_s):
 def main():
     line = sys.stdin.buffer.readline(4_000_000)
     req = json.loads(line)
-    sys.stdin.close()
     nonce = bytes.fromhex(req["nonce"])
     nondump = set_nondumpable()
     timeout = int(req.get("case_timeout", 5))
@@ -485,6 +484,24 @@ def main():
     mac = hmac.new(nonce, body.encode(), hashlib.sha256).hexdigest()
     sys.stdout.write("CIA-RESULT " + body + " " + mac + "\n")
     sys.stdout.flush()
+    wait_for_host()
+
+
+def wait_for_host(limit_s=30):
+    """Mantiene vivo el cgroup hasta que el anfitrión lea memory.events y cierre stdin."""
+    deadline = time.monotonic() + limit_s
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        r, _, _ = select.select([0], [], [], remaining)
+        if not r:
+            return
+        try:
+            if not os.read(0, 4096):
+                return
+        except OSError:
+            return
 
 
 if __name__ == "__main__":
