@@ -44,6 +44,10 @@ class App:
         self._status_cache: tuple[float, dict] = (0.0, {})
         self._status_lock = threading.Lock()
         self._maint_stop = threading.Event()
+        from .web.preview import PreviewTokens
+
+        self.previews = PreviewTokens(cfg.web_preview_minutes)
+        self.preview_available = False  # True solo cuando el servidor de vista previa está escuchando
 
     def start(self, run_selftest: bool = True) -> None:
         stale = self.executor.limiter.cleanup_stale()
@@ -134,4 +138,7 @@ class App:
                                    "cpu_percent": self.cfg.sandbox_cpu_percent,
                                    "timeout_s": self.cfg.sandbox_timeout_s}},
             "workers": {"missions": self.mission_worker.is_alive(), "chat": self.chat_worker.is_alive()},
+            "web": {"enabled": self.cfg.web_enabled, "preview": self.preview_available,
+                    "preview_port": self.cfg.web_preview_port, "model": self.cfg.web_model.name,
+                    "node_check": os.path.exists(self.cfg.web_node)},
         }

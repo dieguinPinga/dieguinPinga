@@ -310,8 +310,9 @@ async function viewMission(v, args) {
   const attemptsBox = h("div", { class: "panel" });
   const filesBox = h("div", { class: "panel" });
   const viewer = h("div", { class: "panel", hidden: true });
+  const webBox = h("div", { class: "panel", hidden: true });
   const apprBox = h("div", { class: "panel" });
-  v.replaceChildren(info, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, filesBox, viewer, apprBox);
+  v.replaceChildren(info, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, webBox, filesBox, viewer, apprBox);
   let data = null, lastEv = 0, clock = null;
 
   function addEvent(ev) {
@@ -361,13 +362,15 @@ async function viewMission(v, args) {
         h("dt", { text: "Modelo" }), h("dd", { class: "mono", text: m.model }),
         h("dt", { text: "Intento" }), h("dd", { text: `${m.attempt} de ${m.max_attempts}` }),
         h("dt", { text: "Tiempo" }), elapsed,
-        h("dt", { text: "Pruebas" }), h("dd", { text: `${spec.mode === "script" ? "Programa (stdin/stdout)" : `Función ${spec.function}`} · ${(spec.cases || []).length} casos${spec.tests_py ? " + pruebas avanzadas" : ""}` }),
+        h("dt", { text: "Pruebas" }), h("dd", { text: spec.mode === "web" ? `Página web / Tablero · ${(spec.checks || []).length} requisitos + verificaciones automáticas`
+          : `${spec.mode === "script" ? "Programa (stdin/stdout)" : `Función ${spec.function}`} · ${(spec.cases || []).length} casos${spec.tests_py ? " + pruebas avanzadas" : ""}` }),
         m.error ? h("dt", { text: "Motivo" }) : "", m.error ? h("dd", { class: "bad", text: m.error }) : ""),
       h("details", {}, h("summary", { text: "Descripción" }), h("p", { style: "white-space:pre-wrap", text: m.description })),
       actions);
     renderAttempts();
     renderFiles();
     renderApprovals();
+    renderWeb();
   }
 
   function renderAttempts() {
@@ -389,7 +392,7 @@ async function viewMission(v, args) {
         for (const c of res.cases) {
           tb.append(h("tr", {},
             h("td", {}, h("span", { class: `badge ${c.ok ? "ok" : "bad"}`, text: c.ok ? "ok" : c.status })),
-            h("td", { class: "small", text: `${c.kind === "prueba" ? c.name : "#" + c.n}${c.visible ? "" : " (oculto)"}` }),
+            h("td", { class: "small", text: `${c.name || "#" + c.n}${c.visible ? "" : " (oculto)"}` }),
             h("td", { class: "mono small", text: c.kind === "script" ? JSON.stringify(c.stdin).slice(0, 120) : (c.args ? JSON.stringify(c.args).slice(0, 120) : "") }),
             h("td", { class: "mono small", text: c.got !== undefined ? String(c.got).slice(0, 200) : "" }),
             h("td", { class: "mono small", text: c.expected !== undefined ? String(c.expected).slice(0, 200) : "" }),
@@ -400,6 +403,48 @@ async function viewMission(v, args) {
       }
       attemptsBox.append(det);
     }
+  }
+
+  let webSelected = null, webChosen = false;
+  renderWeb.key = null;
+  function renderWeb() {
+    const m = data.mission;
+    if (!m.spec || m.spec.mode !== "web") { webBox.hidden = true; return; }
+    webBox.hidden = false;
+    const versions = data.attempts.filter((a) => data.files.some((f) => f.rel_path.startsWith(`intento-${a.n}/web/`))).map((a) => String(a.n));
+    if (data.files.some((f) => f.rel_path.startsWith("final/web/"))) versions.push("final");
+    if (!versions.length) {
+      webBox.replaceChildren(h("h2", { text: "Proyecto web" }), h("p", { class: "muted small", text: "Todavía no hay archivos del proyecto." }));
+      return;
+    }
+    const key = versions.join(",");
+    if (key === renderWeb.key) return;  // no reconstruir (ni cerrar la vista previa) si nada cambió
+    renderWeb.key = key;
+    if (!webChosen || !versions.includes(webSelected)) webSelected = versions[versions.length - 1];
+    const sel = h("select", {}, ...versions.map((v) => h("option", { value: v, text: v === "final" ? "Versión aprobada (final)" : `Intento ${v}` })));
+    sel.value = webSelected;
+    sel.addEventListener("change", () => { webSelected = sel.value; webChosen = true; zip.href = zipHref(); frameBox.replaceChildren(); });
+    const zipHref = () => `/api/missions/${encodeURIComponent(mid)}/zip?attempt=${encodeURIComponent(sel.value)}`;
+    const zip = h("a", { class: "btn ghost small", href: zipHref(), text: "Descargar ZIP" });
+    const frameBox = h("div", { class: "mt" });
+    const open = h("button", { class: "btn small", type: "button", text: "Vista previa", onclick: async () => {
+      try {
+        const r = await api("POST", `/api/missions/${encodeURIComponent(mid)}/preview`, { attempt: sel.value });
+        if (location.protocol === "https:" && !r.origin) {
+          frameBox.replaceChildren(h("p", { class: "bad small", text: "Con HTTPS la vista previa necesita web.preview_origin (ver INSTALL.md). Mientras tanto, use la descarga ZIP." }));
+          return;
+        }
+        const url = (r.origin || `${location.protocol}//${location.hostname}:${r.port}`) + r.path;
+        frameBox.replaceChildren(
+          h("div", { class: "banner warn", text: "Vista previa NO confiable: corre en un origen separado, aislada del panel, sin acceso a la sesión ni a la API. Sus datos de localStorage se comparten entre vistas previas." }),
+          h("iframe", { class: "preview", src: url, title: `Vista previa ${r.label}`, referrerpolicy: "no-referrer",
+            sandbox: "allow-scripts allow-same-origin allow-forms allow-modals", allow: "" }),
+          h("p", { class: "small" }, h("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "Abrir en una pestaña aparte" }),
+            h("span", { class: "muted", text: ` · el enlace vence en ${Math.round(r.expires_in / 60)} min` })));
+      } catch (e) { frameBox.replaceChildren(h("p", { class: "bad small", text: e.message })); }
+    } });
+    webBox.replaceChildren(h("h2", { text: "Proyecto web" }),
+      h("div", { class: "row" }, sel, open, zip), frameBox);
   }
 
   function renderFiles() {
@@ -494,7 +539,8 @@ async function viewNew(v) {
   const desc = h("textarea", { rows: 6, maxlength: 6000, placeholder: "Describí qué tiene que hacer el programa, con detalles y casos especiales." });
   desc.value = d.description || "";
   const mode = h("select", {}, h("option", { value: "funcion", text: "Función de Python (recibe valores y devuelve un resultado)" }),
-    h("option", { value: "script", text: "Programa (lee texto de entrada e imprime una salida)" }));
+    h("option", { value: "script", text: "Programa (lee texto de entrada e imprime una salida)" }),
+    h("option", { value: "web", text: "Página web / Tablero (HTML, CSS y JavaScript)" }));
   mode.value = d.mode || "funcion";
   const fn = h("input", { type: "text", class: "code", maxlength: 64, value: d.function || "", placeholder: "nombre_de_funcion" });
   const fnWrap = h("div", {}, h("label", { text: "Nombre de la función" }), fn);
@@ -510,7 +556,19 @@ async function viewNew(v) {
     const row = h("div", { class: "case" });
     const vis = h("input", { type: "checkbox" });
     vis.checked = c.visible !== false;
-    if (mode.value === "funcion") {
+    if (mode.value === "web") {
+      const tipo = h("select", {}, ...[["selector", "Debe existir el elemento (selector)"], ["texto", "Debe mostrar el texto"],
+        ["js_contiene", "El JavaScript debe usar"], ["css_contiene", "El CSS debe incluir"]].map(([v, t]) => h("option", { value: v, text: t })));
+      tipo.value = c.tipo || "selector";
+      const valor = h("input", { type: "text", class: "code", maxlength: 200, value: c.valor || "",
+        placeholder: "Ej.: button   ·   textarea, input[type=text]   ·   #lista   ·   localStorage" });
+      row.append(h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Tipo de requisito" }), tipo),
+        h("div", {}, h("label", { text: "Valor" }), valor)));
+      row.read = () => {
+        if (!valor.value.trim()) throw new Error("Hay un requisito sin valor");
+        return { tipo: tipo.value, valor: valor.value.trim(), visible: vis.checked };
+      };
+    } else if (mode.value === "funcion") {
       const args = h("input", { type: "text", class: "code", placeholder: 'Ej.: 2, 3   o   "hola", [1, 2]' });
       args.value = c.args ? c.args.map((a) => JSON.stringify(a)).join(", ") : "";
       const exp = h("input", { type: "text", class: "code", placeholder: "Ej.: 5   o   \"texto\"   o   [1, 2]" });
@@ -543,10 +601,31 @@ async function viewNew(v) {
       h("button", { class: "btn ghost small", type: "button", text: "Quitar", onclick: () => row.remove() })));
     return row;
   }
+  const casesTitle = h("h2", { style: "margin-top:1rem" });
+  const casesHelp = h("p", { class: "muted small" });
+  const advanced = h("details", { style: "margin-top:.8rem" }, h("summary", { text: "Pruebas avanzadas en Python (opcional, solo modo función)" }),
+    h("p", { class: "muted small", text: "Funciones test_*(sol). Use sol.nombre(args) para llamar a la solución. Corren dentro del sandbox." }), tests);
+  const example = h("button", { class: "btn ghost small", type: "button", text: "Cargar ejemplo: tablero de mensajes", onclick: () => {
+    title.value = "Tablero de mensajes";
+    desc.value = "Tablero web con tema oscuro. Un área de texto para escribir un mensaje y un botón para agregarlo. " +
+      "Los mensajes se muestran en una lista (el más nuevo arriba) con la cantidad de palabras de cada uno, y un " +
+      "contador del total de palabras. Los mensajes se guardan en localStorage y se recuperan al recargar. " +
+      "Botón para borrar todo con confirmación. Diseño cómodo en celular.";
+    resetCases([{ tipo: "selector", valor: "textarea" }, { tipo: "selector", valor: "button" },
+      { tipo: "selector", valor: "ul, ol" }, { tipo: "js_contiene", valor: "localStorage" },
+      { tipo: "js_contiene", valor: "addEventListener" }, { tipo: "css_contiene", valor: "background" }]);
+  } });
   function resetCases(list) {
     cases.replaceChildren();
-    for (const c of list.length ? list : [{}, {}]) cases.append(caseRow(c));
+    const web = mode.value === "web";
+    for (const c of list.length ? list : (web ? [{ tipo: "selector" }, { tipo: "js_contiene" }] : [{}, {}])) cases.append(caseRow(c));
     fnWrap.hidden = mode.value !== "funcion";
+    advanced.hidden = mode.value !== "funcion";
+    example.hidden = !web;
+    casesTitle.textContent = web ? "Requisitos verificables de la página" : "Casos de prueba de aceptación";
+    casesHelp.textContent = web
+      ? "Además se verifican siempre, dentro del sandbox: estructura HTML, sintaxis de HTML/CSS/JS, que las referencias entre archivos existan, y que no haya recursos externos ni JavaScript en línea. El comportamiento en el navegador se revisa en la vista previa."
+      : "Estos casos los definís vos y el modelo no puede modificarlos. La misión solo se aprueba si todos pasan en el sandbox.";
   }
   mode.addEventListener("change", () => resetCases([]));
   resetCases(d.cases || []);
@@ -556,7 +635,8 @@ async function viewNew(v) {
     let caseData;
     try { caseData = [...cases.children].map((r) => r.read()); } catch (e) { err.textContent = e.message; return; }
     const body = {
-      title: title.value, description: desc.value, mode: mode.value, function: fn.value.trim(), cases: caseData,
+      title: title.value, description: desc.value, mode: mode.value, function: fn.value.trim(),
+      cases: mode.value === "web" ? [] : caseData, checks: mode.value === "web" ? caseData : undefined,
       tests_py: tests.value, max_attempts: parseInt(attempts.value, 10) || 3,
       cases_reviewed: reviewed.checked, authorize_execution: authorize.checked,
     };
@@ -575,13 +655,11 @@ async function viewNew(v) {
     d.title ? h("div", { class: "banner warn", text: "Borrador generado por la IA: revisá con cuidado los casos de prueba; son los que deciden si el código se aprueba." }) : "",
     h("label", { text: "Título" }), title,
     h("label", { text: "Descripción del trabajo" }), desc,
-    h("label", { text: "Tipo de resultado" }), mode, fnWrap,
-    h("h2", { style: "margin-top:1rem", text: "Casos de prueba de aceptación" }),
-    h("p", { class: "muted small", text: "Estos casos los definís vos y el modelo no puede modificarlos. La misión solo se aprueba si todos pasan en el sandbox." }),
+    h("label", { text: "Tipo de resultado" }), mode, fnWrap, h("div", { style: "margin-top:.5rem" }, example),
+    casesTitle, casesHelp,
     cases,
-    h("button", { class: "btn ghost small", type: "button", text: "+ Agregar caso", onclick: () => cases.append(caseRow({})) }),
-    h("details", { style: "margin-top:.8rem" }, h("summary", { text: "Pruebas avanzadas en Python (opcional, solo modo función)" }),
-      h("p", { class: "muted small", text: "Funciones test_*(sol). Use sol.nombre(args) para llamar a la solución. Corren dentro del sandbox." }), tests),
+    h("button", { class: "btn ghost small", type: "button", text: "+ Agregar", onclick: () => cases.append(caseRow({})) }),
+    advanced,
     h("label", { text: "Máximo de intentos" }), attempts,
     h("label", { class: "check" }, reviewed, "Revisé los casos de prueba y son correctos."),
     h("label", { class: "check" }, authorize, "Autorizo ejecutar el código generado únicamente dentro del ejecutor aislado (sin red, sin acceso a mis archivos)."),

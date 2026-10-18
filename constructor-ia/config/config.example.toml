@@ -41,6 +41,17 @@ temperature = 0.5
 timeout_s = 240
 think = false
 
+[ollama.web]
+# Modelo para misiones «Página web / Tablero» (varios archivos: necesita más contexto).
+# Memoria aproximada de la caché KV de qwen3:4b: ~147 KB por token → 6144 tokens ≈ 0,9 GB
+# (además del modelo, ~2,5 GB). Si la VivoBook queda justa de RAM, bajar a 4096/2560.
+name = "qwen3:4b-instruct"
+num_ctx = 6144
+num_predict = 3072
+temperature = 0.2
+timeout_s = 600
+think = false
+
 [engine]
 max_attempts = 3
 max_attempts_limit = 6
@@ -62,3 +73,22 @@ event_days = 60
 max_events_per_mission = 2000
 log_max_bytes = 2000000
 log_backups = 3
+
+[web]
+# Taller Web: generación de sitios y tableros (HTML/CSS/JS locales).
+enabled = true
+# Vista previa en un ORIGEN SEPARADO (otro puerto, mismas direcciones de escucha que el panel).
+# Si el puerto no puede abrirse, la vista previa se deshabilita y queda la descarga ZIP.
+preview_enabled = true
+preview_port = 8767
+# Solo con Tailscale Serve/HTTPS (ver INSTALL.md §6): origen HTTPS de la vista previa
+# y origen HTTPS del panel autorizado a enmarcarla.
+preview_origin = ""
+panel_origins = []
+preview_minutes = 120
+max_files = 12
+max_file_kb = 100
+max_total_kb = 400
+# Node del sistema para "node --check" dentro del sandbox (debe estar bajo /usr).
+# Si no existe, se usa una comprobación heurística de JavaScript.
+node = "/usr/bin/node"

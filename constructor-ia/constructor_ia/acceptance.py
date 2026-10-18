@@ -59,7 +59,7 @@ def validate_mission(data: dict, max_attempts_limit: int, default_attempts: int)
     if data.get("cases_reviewed") is not True:
         raise SpecError("Debe confirmar que revisó los casos de prueba")
     mode = data.get("mode", "funcion")
-    if mode not in ("funcion", "script"):
+    if mode not in ("funcion", "script", "web"):
         raise SpecError("Modo inválido")
     attempts = data.get("max_attempts", default_attempts)
     if not isinstance(attempts, int) or isinstance(attempts, bool) or not 1 <= attempts <= max_attempts_limit:
@@ -70,6 +70,8 @@ def validate_mission(data: dict, max_attempts_limit: int, default_attempts: int)
         raise SpecError(f"Se admiten como máximo {MAX_CASES} casos")
     cases = []
     spec: dict = {"mode": mode}
+    if mode == "web":
+        return _validate_web(data, title, description, attempts)
     if mode == "funcion":
         spec["function"] = _identifier(str(data.get("function", "")), "Nombre de función")
         for i, c in enumerate(raw_cases, 1):
@@ -129,3 +131,30 @@ def validate_mission(data: dict, max_attempts_limit: int, default_attempts: int)
         raise SpecError("La especificación de pruebas es demasiado grande")
     return {"title": title, "description": description, "spec": spec, "tests_py": tests_py,
             "max_attempts": attempts}
+
+
+WEB_CHECK_TYPES = ("selector", "texto", "js_contiene", "css_contiene")
+SELECTOR_RE = re.compile(r"^[A-Za-z0-9_\-#.\[\]=\"' ,*]{1,200}$")
+
+
+def _validate_web(data: dict, title: str, description: str, attempts: int) -> dict:
+    """Misión «Página web / Tablero»: requisitos verificables definidos por el operador."""
+    raw = data.get("checks", [])
+    if not isinstance(raw, list) or len(raw) > 30:
+        raise SpecError("Se admiten como máximo 30 requisitos")
+    checks = []
+    for i, c in enumerate(raw, 1):
+        if not isinstance(c, dict) or c.get("tipo") not in WEB_CHECK_TYPES:
+            raise SpecError(f"Requisito {i}: tipo inválido")
+        valor = c.get("valor")
+        if not isinstance(valor, str) or not valor.strip() or len(valor) > 200 or "\x00" in valor:
+            raise SpecError(f"Requisito {i}: valor vacío o demasiado largo")
+        if c["tipo"] == "selector" and not SELECTOR_RE.match(valor.strip()):
+            raise SpecError(f"Requisito {i}: selector no admitido (use etiqueta, #id, .clase o [atributo])")
+        checks.append({"tipo": c["tipo"], "valor": valor.strip(), "visible": bool(c.get("visible", True))})
+    if not checks:
+        raise SpecError("Defina al menos un requisito verificable de la página (p. ej. selector: button)")
+    if (data.get("tests_py") or "").strip():
+        raise SpecError("Las pruebas avanzadas en Python no se aplican a misiones web")
+    spec = {"mode": "web", "entry": "index.html", "checks": checks}
+    return {"title": title, "description": description, "spec": spec, "tests_py": "", "max_attempts": attempts}

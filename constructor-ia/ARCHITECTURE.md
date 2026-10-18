@@ -72,6 +72,19 @@ cliente solo recarga datos cuando llega un evento relevante (con *debounce*).
 **Retención**: limpieza horaria de eventos (60 días), máx. 2000 eventos por
 misión, registro rotativo (2 MB × 3), auditoría 1 año, sesiones vencidas.
 
+## Taller Web (v0.2.0)
+
+```
+webproject.py   extracción de "### archivo: ruta" (lista blanca), fusión con el intento previo, ZIP, prompts
+engine.py       _run_web / _attempt_web: generar → fusionar → guardar intento-N/web → verificar en sandbox
+sandbox/harness.py  run_web_checks: HTML (html.parser), CSS, JS (node --check o heurística), referencias, requisitos
+web/preview.py  servidor de vista previa (puerto 8767): tokens en memoria, solo estáticos, CSP sandbox
+web/server.py   POST /api/missions/<id>/preview · GET /api/missions/<id>/zip · bloqueo Sec-Fetch-Site
+```
+
+El ejecutor recibe un diccionario de archivos en lugar de `solucion.py`; el comando del sandbox y
+sus límites son los mismos. Las misiones web usan `[ollama.web]` (contexto mayor). Detalle en TALLER_WEB.md.
+
 ## Ollama directo vs. OpenClaw
 
 | Función | Implementación |

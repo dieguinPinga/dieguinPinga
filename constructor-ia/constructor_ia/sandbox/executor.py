@@ -117,7 +117,7 @@ class Executor:
         args += [self.python_path(), "-I", "-S", "/work/harness/harness.py"]
         return args
 
-    def _prepare_dir(self, code: str | None) -> Path:
+    def _prepare_dir(self, code: str | None, files: dict[str, str] | None = None) -> Path:
         runs = self.cfg.runs_dir
         runs.mkdir(parents=True, exist_ok=True, mode=0o700)
         run_dir = Path(os.path.realpath(runs)) / f"run-{secrets.token_hex(8)}"
@@ -127,10 +127,18 @@ class Executor:
         for name in ("harness.py", "child_runner.py"):
             shutil.copyfile(PAYLOAD_DIR / name, run_dir / "harness" / name)
             os.chmod(run_dir / "harness" / name, 0o444)
-        sol = run_dir / "code" / "solucion.py"
-        fd = os.open(sol, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(code or "")
+        if files is None:
+            files = {"solucion.py": code or ""}
+        from ..webproject import valid_path
+
+        for rel, content in files.items():
+            if rel != "solucion.py" and not valid_path(rel):
+                raise RuntimeError(f"ruta de proyecto inválida: {rel[:80]}")
+            target = run_dir / "code" / rel
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
         os.chmod(run_dir / "code", 0o555)
         os.chmod(run_dir / "harness", 0o555)
         return run_dir
@@ -142,26 +150,36 @@ class Executor:
                 os.chmod(run_dir / sub, 0o700)
             except OSError:
                 pass
+        for dirpath, dirnames, _ in os.walk(run_dir):
+            for d in dirnames:
+                try:
+                    os.chmod(os.path.join(dirpath, d), 0o700)
+                except OSError:
+                    pass
         shutil.rmtree(run_dir, ignore_errors=True)
 
     # Ejecución ------------------------------------------------------------
     def run(self, code: str, spec: dict, tests_py: str | None, cancel: threading.Event | None = None,
-            _probe: dict | None = None, _skip_enabled_check: bool = False) -> ExecResult:
+            _probe: dict | None = None, _skip_enabled_check: bool = False,
+            files: dict[str, str] | None = None) -> ExecResult:
         if not _skip_enabled_check and not self.enabled:
             return ExecResult("blocked", reason=f"Ejecución bloqueada: {self.disabled_reason}")
         with self._lock:  # una ejecución a la vez
-            return self._run(code, spec, tests_py, cancel or threading.Event(), _probe)
+            return self._run(code, spec, tests_py, cancel or threading.Event(), _probe, files)
 
-    def _run(self, code, spec, tests_py, cancel, probe_opts) -> ExecResult:
+    def _run(self, code, spec, tests_py, cancel, probe_opts, files=None) -> ExecResult:
         t0 = time.monotonic()
         unit = f"cia-job-{secrets.token_hex(8)}"
-        run_dir = self._prepare_dir(code)
+        run_dir = self._prepare_dir(code, files)
         nonce = secrets.token_bytes(32)
         payload = {"nonce": nonce.hex(), "case_timeout": self.cfg.sandbox_case_timeout_s}
         if probe_opts is not None:
             payload.update(mode="probe", probe=probe_opts)
         else:
             payload.update(mode="test", spec=spec, tests_py=tests_py or "")
+            if spec.get("mode") == "web":
+                # Node del sistema (bajo /usr, visible en el sandbox en solo lectura) para node --check.
+                payload["node"] = self.cfg.web_node if os.path.exists(self.cfg.web_node) else ""
         data = (json.dumps(payload) + "\n").encode()
         bpf_fd = None
         res = ExecResult("error", unit=unit)

@@ -16,11 +16,13 @@ python3 -m unittest discover -s tests -t . -v
 | `tests/test_engine.py` (10) | Motor y cola con Ollama simulado: aprobación al primer intento sin re-ejecución, reparación con errores reales, fallo tras 3 intentos, cancelación durante la generación (Ollama recibe la desconexión), cancelación en cola y orden FIFO con una sola inferencia simultánea, Ollama caído, ejecutor bloqueado nunca aprueba, recuperación tras caída (`interrumpida`, no se re-ejecuta, reencolar crea misión nueva), apagado marca `interrumpida`, chat y borrador (sin ejecutar nada). |
 | `tests/test_web.py` (12) | Servidor HTTP real: estáticos y cabeceras de seguridad, traversal en estáticos, 401 sin sesión en todas las rutas (misiones, archivos, descargas, SSE…), login fallido y Origin ajeno, Host no permitido (DNS rebinding), CSRF ausente/incorrecto, Origin ajeno, Content-Type, flujo completo misión → archivos → descarga → aprobación humana, archivo alterado en disco rechazado, entradas inválidas, conversación, SSE, `/api/status` sin secretos, logout, registros y auditoría sin secretos. |
 
+| `tests/test_taller_web.py` (26) | Taller Web: extracción de varios archivos, rechazo de rutas peligrosas (`..`, `/etc/passwd`, `./../`, tipos no permitidos), límites, fusión con el intento previo, ZIP; validación de misiones y configuración web; CSP de la vista previa; verificación en sandbox real (proyecto correcto con y sin node, `node --check` con módulos, errores heurísticos de JS, recursos externos, scripts y eventos en línea, referencias rotas, rutas absolutas, ids duplicados o inexistentes, requisitos del operador, el JS nunca se ejecuta); motor (reparación que reutiliza archivos, versiones por intento, rutas maliciosas nunca escritas); servidor de vista previa (token, cabeceras, sin cookies, 404 ante traversal y tokens vencidos, 405 en POST, Host); el panel enmarca solo la vista previa y rechaza `Sec-Fetch-Site: same-site`; ZIP autenticado; fallback a ZIP. |
+
 ### Resultado de la última ejecución (entorno de desarrollo de Claude)
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 78 tests in 45.769s
+Ran 104 tests in 52.457s   (v0.2.0; incluye Taller Web)
 OK
 ```
 
@@ -33,6 +35,12 @@ Además se verificó manualmente en ese entorno:
 - Interfaz en Chromium (390×844 y 1280×860): login, nueva misión, misión fallida y
   reparada hasta aprobarse, consola en vivo, diferencias, chat, estado; sin errores de
   consola ni violaciones de CSP.
+
+Taller Web (v0.2.0), además, en Chromium real con modelo simulado: misión web creada desde la
+interfaz con el ejemplo precargado, fallida en el intento 1 (falta `js/app.js`), corregida en el 2
+reutilizando `index.html` y `css/estilo.css`; en la vista previa se agregaron mensajes, se contaron
+7 palabras y los datos persistieron al reabrir. Desde dentro de la vista previa: cookie vacía,
+`top.location` → SecurityError, `fetch` al panel y a Internet bloqueados por CSP, `window.open` bloqueado.
 
 ### Regresión: OOM en `selftest --stress mem` (v0.1.1)
 

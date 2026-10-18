@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,19 @@ class Config:
     ollama_url: str = "http://127.0.0.1:11435"
     builder: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:4b-instruct"))
     chat: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:1.7b", num_predict=768, temperature=0.5, timeout_s=240))
+    web_model: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:4b-instruct", num_ctx=6144,
+                                                                       num_predict=3072, timeout_s=600))
+
+    web_enabled: bool = True
+    web_preview_enabled: bool = True
+    web_preview_port: int = 8767
+    web_preview_origin: str = ""
+    web_panel_origins: list[str] = field(default_factory=list)
+    web_preview_minutes: int = 120
+    web_max_files: int = 12
+    web_max_file_kb: int = 100
+    web_max_total_kb: int = 400
+    web_node: str = "/usr/bin/node"
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -147,6 +161,7 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     engine = raw.get("engine", {})
     sandbox = raw.get("sandbox", {})
     retention = raw.get("retention", {})
+    web = raw.get("web", {})
 
     data_dir = Path(server.get("data_dir", base_dir / "data")).expanduser()
     if not data_dir.is_absolute():
@@ -183,6 +198,29 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     cfg.ollama_url = _validate_ollama_url(_str(ollama, "url", cfg.ollama_url))
     cfg.builder = _model(ollama.get("builder", {}), cfg.builder)
     cfg.chat = _model(ollama.get("chat", {}), cfg.chat)
+    cfg.web_model = _model(ollama.get("web", {}), cfg.web_model)
+
+    cfg.web_enabled = _bool(web, "enabled", cfg.web_enabled)
+    cfg.web_preview_enabled = _bool(web, "preview_enabled", cfg.web_preview_enabled)
+    cfg.web_preview_port = _int(web, "preview_port", cfg.web_preview_port, 1024, 65535)
+    if cfg.web_preview_port in RESERVED_PORTS or cfg.web_preview_port == cfg.port:
+        raise ConfigError("web.preview_port debe ser distinto del panel y de los servicios existentes")
+    origin = web.get("preview_origin", "")
+    if not isinstance(origin, str) or (origin and not re.match(r"^https?://[A-Za-z0-9.\[\]:-]+$", origin)):
+        raise ConfigError("web.preview_origin debe ser un origen como https://equipo.tailnet.ts.net:8444")
+    cfg.web_preview_origin = origin.rstrip("/")
+    panel_origins = web.get("panel_origins", [])
+    if not isinstance(panel_origins, list) or not all(
+            isinstance(o, str) and re.match(r"^https?://[A-Za-z0-9.*\[\]:-]+$", o) for o in panel_origins):
+        raise ConfigError("web.panel_origins debe ser una lista de orígenes https://host:puerto")
+    cfg.web_panel_origins = list(panel_origins)
+    cfg.web_preview_minutes = _int(web, "preview_minutes", cfg.web_preview_minutes, 5, 1440)
+    cfg.web_max_files = _int(web, "max_files", cfg.web_max_files, 1, 40)
+    cfg.web_max_file_kb = _int(web, "max_file_kb", cfg.web_max_file_kb, 4, 512)
+    cfg.web_max_total_kb = _int(web, "max_total_kb", cfg.web_max_total_kb, 16, 2048)
+    cfg.web_node = _str(web, "node", cfg.web_node)
+    if not cfg.web_node.startswith("/usr/"):
+        raise ConfigError("web.node debe estar bajo /usr (es lo único visible dentro del sandbox)")
 
     cfg.max_attempts_limit = _int(engine, "max_attempts_limit", cfg.max_attempts_limit, 1, 10)
     cfg.max_attempts = _int(engine, "max_attempts", cfg.max_attempts, 1, cfg.max_attempts_limit)

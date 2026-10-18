@@ -16,7 +16,7 @@ from pathlib import Path
 from .db import Database
 
 MISSION_ID_RE = re.compile(r"^M\d{8}-[0-9a-f]{6}$")
-REL_RE = re.compile(r"^(?:[a-z0-9_-]{1,40}/){0,2}[A-Za-z0-9_.-]{1,64}$")
+REL_RE = re.compile(r"^(?:[a-z0-9_-]{1,40}/){0,4}[A-Za-z0-9_.-]{1,64}$")
 MAX_READ = 2_000_000
 
 

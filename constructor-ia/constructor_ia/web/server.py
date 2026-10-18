@@ -27,6 +27,7 @@ from ..acceptance import SpecError, validate_mission
 from ..app import App
 from ..auth import Session
 from ..events import event_dict
+from .. import webproject
 from ..files import MISSION_ID_RE, FileStoreError
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,25 @@ SECURITY_HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
 }
+
+
+def host_name(header: str | None) -> str:
+    host = (header or "").strip().lower()
+    if host.startswith("["):
+        return host[1:host.find("]")] if "]" in host else ""
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def host_allowed(allowed_hosts: list[str], header: str | None) -> bool:
+    host = host_name(header)
+    if not host:
+        return False
+    for allowed in allowed_hosts:
+        if allowed.startswith(".") and host.endswith(allowed) and len(host) > len(allowed):
+            return True
+        if host == allowed:
+            return True
+    return False
 
 
 class HttpError(Exception):
@@ -138,6 +158,8 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, body: bytes, ctype: str, extra: dict | None = None, cache: str = "no-store"):
         self.send_response(status)
         for k, v in SECURITY_HEADERS.items():
+            if k == "Content-Security-Policy":
+                v += self._frame_src()
             self.send_header(k, v)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -148,23 +170,24 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _frame_src(self) -> str:
+        """Permite enmarcar SOLO el origen separado de la vista previa (otro puerto)."""
+        cfg = self.app.cfg
+        if not (cfg.web_enabled and cfg.web_preview_enabled and self.app.preview_available):
+            return ""
+        origins = []
+        if cfg.web_preview_origin:
+            origins.append(cfg.web_preview_origin)
+        name = host_name(self.headers.get("Host"))
+        if name and re.match(r"^[a-z0-9.-]+$|^[0-9a-f:]+$", name):
+            origins.append(f"http://{'[' + name + ']' if ':' in name else name}:{cfg.web_preview_port}")
+        return f"; frame-src {' '.join(origins)}" if origins else ""
+
     def _json(self, status: int, obj, extra: dict | None = None):
         self._send(status, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8", extra)
 
     def _host_ok(self) -> bool:
-        host = (self.headers.get("Host") or "").strip().lower()
-        if host.startswith("["):
-            host = host[1:host.find("]")] if "]" in host else ""
-        else:
-            host = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
-        if not host:
-            return False
-        for allowed in self.app.cfg.allowed_hosts:
-            if allowed.startswith(".") and host.endswith(allowed) and len(host) > len(allowed):
-                return True
-            if host == allowed:
-                return True
-        return False
+        return host_allowed(self.app.cfg.allowed_hosts, self.headers.get("Host"))
 
     def _session(self) -> tuple[Session | None, str | None]:
         raw = self.headers.get("Cookie")
@@ -238,6 +261,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(421, {"error": "Host no permitido. Agregue el nombre a server.allowed_hosts."})
                 return
             path = urlsplit(self.path).path
+            if path.startswith("/api/") and self.headers.get("Sec-Fetch-Site") in ("same-site", "cross-site"):
+                # Otro puerto del mismo equipo (vista previa, Node-RED, Vigilanti…) es "same-site" y
+                # recibiría la cookie: la API solo atiende peticiones del propio origen.
+                self._json(403, {"error": "Petición desde otro origen bloqueada"})
+                return
             if method == "GET" and (path == "/" or path.startswith("/static/") or path in ("/favicon.ico",)):
                 self._static(path)
                 return
@@ -318,7 +346,11 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", "/api/me")
     def api_me(self, s: Session):
-        self._json(200, {"username": s.username, "csrf": s.csrf, "version": VERSION})
+        cfg = self.app.cfg
+        self._json(200, {"username": s.username, "csrf": s.csrf, "version": VERSION,
+                         "web": {"enabled": cfg.web_enabled,
+                                 "preview": cfg.web_preview_enabled and self.app.preview_available,
+                                 "preview_port": cfg.web_preview_port, "preview_origin": cfg.web_preview_origin or None}})
 
     # Estado ------------------------------------------------------------
     @route("GET", "/api/status")
@@ -540,6 +572,61 @@ class Handler(BaseHTTPRequestHandler):
                     "Esta aprobación no instaló nada. Para aplicarlo, descargue el archivo, verifique la suma con\n"
                     "  sha256sum <archivo>\ny cópielo manualmente al destino revisado por usted.\n")
         self.app.files.save(mid, f"paquete/aprobacion-{approval['id']}.txt", manifest, "paquete")
+
+    # Taller Web --------------------------------------------------------
+    def _web_prefix(self, mid: str, which: str | None) -> tuple[str, str]:
+        row = self._mission(mid)
+        if json.loads(row["spec_json"]).get("mode") != "web":
+            raise HttpError(409, "La misión no es de tipo «Página web / Tablero»")
+        if which in (None, "", "final"):
+            if row["final_attempt"]:
+                return "final/web/", "final"
+            which = str(row["attempt"])
+        if not str(which).isdigit() or not 1 <= int(which) <= 20:
+            raise HttpError(400, "Intento inválido")
+        return f"intento-{int(which)}/web/", f"intento-{int(which)}"
+
+    def _web_files(self, mid: str, prefix: str) -> dict[str, bytes]:
+        rows = self.app.db.all("SELECT id, rel_path FROM files WHERE mission_id=? AND substr(rel_path, 1, ?)=?",
+                               (mid, len(prefix), prefix))
+        out = {}
+        for r in rows:
+            rel = r["rel_path"][len(prefix):]
+            if not webproject.valid_path(rel):
+                continue
+            try:
+                out[rel] = self.app.files.read(r["id"])[1]
+            except FileStoreError as e:
+                raise HttpError(409, str(e)) from None
+        if not out:
+            raise HttpError(404, "Ese intento no tiene archivos del proyecto")
+        return out
+
+    @route("GET", r"/api/missions/([A-Za-z0-9-]{1,30})/zip")
+    def api_zip(self, s: Session, mid):
+        prefix, label = self._web_prefix(mid, self._query().get("attempt"))
+        files = self._web_files(mid, prefix)
+        data = webproject.build_zip(files, f"{mid}-{label}")
+        self.app.db.audit("descarga_zip", username=s.username, target=f"{mid}/{label}", ip=self._ip())
+        self._send(200, data, "application/zip",
+                   {"Content-Disposition": f'attachment; filename="{mid}-{label}.zip"'})
+
+    @route("POST", r"/api/missions/([A-Za-z0-9-]{1,30})/preview")
+    def api_preview(self, s: Session, mid):
+        cfg = self.app.cfg
+        if not (cfg.web_enabled and cfg.web_preview_enabled and self.app.preview_available):
+            raise HttpError(409, "Vista previa deshabilitada; use la descarga ZIP")
+        data = self._body()
+        which = data.get("attempt")
+        prefix, label = self._web_prefix(mid, None if which is None else str(which))
+        files = self._web_files(mid, prefix)
+        if "index.html" not in files:
+            raise HttpError(409, "El proyecto no tiene index.html")
+        token = self.app.previews.create(mid, prefix)
+        self.app.db.audit("vista_previa", username=s.username, target=f"{mid}/{label}", ip=self._ip())
+        self._json(201, {"path": f"/p/{token}/index.html", "port": cfg.web_preview_port,
+                         "origin": cfg.web_preview_origin or None, "label": label,
+                         "expires_in": cfg.web_preview_minutes * 60})
 
     # Conversaciones ----------------------------------------------------
     def _conv(self, cid: str):

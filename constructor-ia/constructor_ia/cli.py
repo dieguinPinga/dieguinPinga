@@ -43,6 +43,15 @@ def cmd_serve(args) -> int:
         log.error("No se pudo abrir el puerto %d: %s", cfg.port, e)
         app.stop()
         return 1
+    if cfg.web_enabled and cfg.web_preview_enabled:
+        from .web.preview import serve_preview
+
+        try:
+            servers += serve_preview(app)
+            app.preview_available = True
+        except OSError as e:
+            log.error("Vista previa DESHABILITADA: no se pudo abrir el puerto %d (%s); queda la descarga ZIP",
+                      cfg.web_preview_port, e)
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())

@@ -29,6 +29,14 @@ if command -v curl >/dev/null; then
 fi
 inf "unidades de sandbox activas: $(systemctl --user list-units --plain --no-legend 'cia-job-*.scope' 2>/dev/null | wc -l)"
 
+sec "Taller Web"
+PPORT="$("$PREFIX/venv/bin/python3" -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb")).get("web",{}).get("preview_port",8767))' "$PREFIX/config/config.toml" 2>/dev/null || echo 8767)"
+if command -v ss >/dev/null; then
+  L="$(ss -Hltn "sport = :$PPORT" 2>/dev/null)"
+  [ -n "$L" ] && inf "vista previa escuchando: $(echo "$L" | awk '{print $4}' | tr '\n' ' ')" || inf "vista previa: nadie escucha en :$PPORT"
+fi
+[ -x /usr/bin/node ] && ok "node para verificación de sintaxis: $(/usr/bin/node --version)" || inf "sin /usr/bin/node: la sintaxis JS se verifica con heurística"
+
 sec "Ollama CPU (11435)"
 if command -v curl >/dev/null; then
   V="$(curl -fsS -m 3 http://127.0.0.1:11435/api/version 2>/dev/null)" && ok "disponible $V" || bad "no responde en 127.0.0.1:11435"

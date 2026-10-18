@@ -103,3 +103,4 @@ details summary { cursor: pointer; color: var(--muted); }
 }
 .mt { margin-top: .5rem; } .mt2 { margin-top: .9rem; } .mb { margin-bottom: .8rem; }
 .scroll-x { overflow-x: auto; } .pre-wrap { white-space: pre-wrap; }
+iframe.preview { width: 100%; height: 70vh; border: 1px solid var(--line); border-radius: 10px; background: #fff; }

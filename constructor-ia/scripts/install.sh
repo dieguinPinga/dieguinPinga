@@ -42,6 +42,15 @@ if command -v ss >/dev/null && ss -Hltn "sport = :$PORT" | grep -q .; then
   fi
 fi
 
+PPORT=8767
+if [ -f "$PREFIX/config/config.toml" ]; then
+  PPORT="$("$PY" -c 'import sys,tomllib; print(tomllib.load(open(sys.argv[1],"rb")).get("web",{}).get("preview_port",8767))' "$PREFIX/config/config.toml")"
+fi
+if command -v ss >/dev/null && ss -Hltn "sport = :$PPORT" | grep -q . \
+   && ! systemctl --user is-active --quiet constructor-ia.service 2>/dev/null; then
+  warn "El puerto $PPORT (vista previa del Taller Web) está ocupado: la vista previa quedará deshabilitada (ZIP disponible). Cambie web.preview_port."
+fi
+
 say "Instalando en $PREFIX"
 mkdir -p "$PREFIX" "$PREFIX/config" "$PREFIX/data" "$PREFIX/bin"
 chmod 700 "$PREFIX" "$PREFIX/config" "$PREFIX/data"
@@ -50,7 +59,7 @@ STAGE="$PREFIX/app.new"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 for item in constructor_ia static config/config.example.toml systemd scripts tests \
-            README.md ARCHITECTURE.md SECURITY.md INSTALL.md TESTING.md requirements.txt; do
+            README.md ARCHITECTURE.md SECURITY.md INSTALL.md TESTING.md TALLER_WEB.md requirements.txt; do
   [ -e "$SRC/$item" ] || continue
   mkdir -p "$STAGE/$(dirname "$item")"
   cp -R "$SRC/$item" "$STAGE/$item"

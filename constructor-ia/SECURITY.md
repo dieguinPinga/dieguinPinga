@@ -99,6 +99,21 @@ tokens), el laboratorio `~/agente-constructor/` y los datos de Constructor IA.
   `diagnostico.sh` solo consulta (`is-active`).
 - El servicio propio tiene prioridad baja (`CPUWeight=50`, `IOWeight=50`, `Nice=5`) y límites de memoria.
 
+### G. Taller Web (v0.2.0)
+
+- El modelo solo produce texto. Las rutas de archivos se validan con una lista blanca antes de tocar
+  el disco (sin `..`, sin rutas absolutas, solo `html/css/js/mjs/json/svg/txt/md`). Se escriben con
+  `O_EXCL|O_NOFOLLOW` y se montan solo lectura en el sandbox.
+- Todo el análisis (HTML, CSS, JS, referencias, requisitos) corre **dentro del sandbox**, con los
+  mismos límites, seccomp y política de bloqueo. El JS generado nunca se ejecuta: `node --check` solo
+  analiza la sintaxis.
+- La vista previa es una superficie no confiable, en un origen separado, sin cookies ni acceso a la
+  API, con CSP `sandbox`. Detalle en [TALLER_WEB.md](TALLER_WEB.md#modelo-de-seguridad-de-la-vista-previa).
+- La API del panel rechaza `Sec-Fetch-Site: same-site|cross-site`: ni la vista previa ni otros
+  servicios del mismo equipo (Node-RED, Vigilanti) pueden usar la cookie del panel.
+- Aplicar un proyecto web a un sistema real sigue requiriendo la solicitud y aprobación humana, y la
+  aplicación manual por SSH.
+
 ## Riesgos restantes (honestos)
 
 1. **El aislamiento no es una garantía frente a un atacante con un 0-day del
@@ -127,7 +142,10 @@ tokens), el laboratorio `~/agente-constructor/` y los datos de Constructor IA.
    terceros sin revisarlo.
 9. **Calidad del modelo**: un modelo de 4B puede no resolver tareas complejas;
    el sistema no lo oculta: falla tras los intentos configurados.
-10. **Prompt injection en el chat**: el chat no tiene herramientas ni puede
+10. **Vista previa web**: `localStorage` compartido entre todas las vistas previas; el JS generado
+    corre en el navegador del operador (aislado del panel). Si panel y vista previa se publicaran en
+    el mismo origen mediante un proxy, el aislamiento se perdería.
+11. **Prompt injection en el chat**: el chat no tiene herramientas ni puede
     ejecutar nada; el peor caso es una respuesta engañosa.
 
 ## Auditoría del prototipo (`~/agente-constructor/`)

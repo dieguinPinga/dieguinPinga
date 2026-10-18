@@ -373,6 +373,472 @@ def run_operator_tests(tests_py, timeout, cpu_s):
     return results
 
 
+# --- Taller Web: verificación estática de proyectos HTML/CSS/JS -------------
+# Todo el análisis de archivos generados ocurre aquí, dentro del sandbox.
+
+WEB_ROOT = "/work/code"
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+OPTIONAL_END = {"html", "head", "body", "p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead",
+                "tbody", "tfoot", "colgroup", "rp", "rt", "caption"}
+
+
+def load_project():
+    files = {}
+    for dirpath, _dirs, names in os.walk(WEB_ROOT):
+        for name in names:
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, WEB_ROOT)
+            with open(full, "rb") as fh:
+                files[rel] = fh.read(1_000_001).decode("utf-8", "replace")
+    return files
+
+
+def is_external(url):
+    u = url.strip().lower()
+    return u.startswith(("http:", "https:", "ftp:", "//", "ws:", "wss:"))
+
+
+def resolve_ref(base_file, url):
+    """Ruta local relativa al proyecto, o None si no es un archivo local (ancla, mailto, data:, etc.)."""
+    u = url.strip()
+    if not u or u.startswith(("#", "mailto:", "tel:", "data:", "blob:")):
+        return None
+    u = u.split("#", 1)[0].split("?", 1)[0]
+    if not u:
+        return None
+    if u.startswith("/"):
+        return os.path.normpath(u.lstrip("/"))
+    return os.path.normpath(os.path.join(os.path.dirname(base_file), u))
+
+
+class HtmlScan:
+    def __init__(self, text):
+        import html.parser
+
+        scan = self
+        self.elements, self.errors, self.text_parts = [], [], []
+        self.doctype = False
+        self.inline_scripts = 0
+        stack = []
+        self._in_script = False
+
+        class P(html.parser.HTMLParser):
+            def handle_decl(self, decl):
+                if decl.lower().startswith("doctype html"):
+                    scan.doctype = True
+
+            def handle_starttag(self, tag, attrs):
+                a = {k.lower(): (v or "") for k, v in attrs}
+                scan.elements.append((tag, a))
+                for k, v in a.items():
+                    if k.startswith("on"):
+                        scan.errors.append(f"atributo de evento en línea <{tag} {k}> (bloqueado por CSP; usar addEventListener)")
+                    if v.strip().lower().startswith("javascript:"):
+                        scan.errors.append(f"URL javascript: en <{tag} {k}>")
+                if tag == "base":
+                    scan.errors.append("<base> no está permitido")
+                if tag == "script":
+                    scan._in_script = not a.get("src")
+                    scan._script_text = ""
+                if tag not in VOID_TAGS:
+                    stack.append((tag, self.getpos()[0]))
+
+            def handle_startendtag(self, tag, attrs):
+                self.handle_starttag(tag, attrs)
+                if tag not in VOID_TAGS and stack and stack[-1][0] == tag:
+                    stack.pop()
+
+            def handle_endtag(self, tag):
+                if tag in VOID_TAGS:
+                    return
+                if tag == "script" and scan._in_script:
+                    if scan._script_text.strip():
+                        scan.inline_scripts += 1
+                    scan._in_script = False
+                names = [t for t, _ in stack]
+                if tag not in names:
+                    scan.errors.append(f"etiqueta de cierre </{tag}> sin apertura (línea {self.getpos()[0]})")
+                    return
+                while stack:
+                    t, line = stack.pop()
+                    if t == tag:
+                        break
+                    if t not in OPTIONAL_END:
+                        scan.errors.append(f"<{t}> abierta en la línea {line} no se cerró antes de </{tag}>")
+
+            def handle_data(self, data):
+                if scan._in_script:
+                    scan._script_text += data
+                elif not stack or stack[-1][0] not in ("style", "script"):
+                    scan.text_parts.append(data)
+
+        p = P(convert_charrefs=True)
+        try:
+            p.feed(text)
+            p.close()
+        except Exception as e:  # noqa: BLE001
+            self.errors.append(f"HTML no analizable: {type(e).__name__}: {e}")
+        for t, line in stack:
+            if t not in OPTIONAL_END:
+                self.errors.append(f"<{t}> abierta en la línea {line} nunca se cerró")
+        if self.inline_scripts:
+            self.errors.append(f"{self.inline_scripts} script(s) en línea: el JavaScript debe ir en archivos .js")
+
+    def tags(self, name):
+        return [a for t, a in self.elements if t == name]
+
+    @property
+    def ids(self):
+        return [a["id"] for _, a in self.elements if a.get("id")]
+
+    @property
+    def text(self):
+        return " ".join(" ".join(self.text_parts).split())
+
+
+def strip_css_comments(text):
+    out, i, errors = [], 0, []
+    while i < len(text):
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                errors.append("comentario /* sin cerrar")
+                break
+            i = j + 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out), errors
+
+
+def check_css(text):
+    body, errors = strip_css_comments(text)
+    depth, quote = 0, None
+    for ch in body:
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth < 0:
+                errors.append("llave '}' de más")
+                depth = 0
+    if quote:
+        errors.append("cadena sin cerrar")
+    if depth:
+        errors.append(f"{depth} llave(s) '{{' sin cerrar")
+    import re
+
+    refs = re.findall(r"url\(\s*['\"]?([^'\")]+)['\"]?\s*\)", body)
+    for m in re.findall(r"@import\s+(?:url\()?\s*['\"]?([^'\");\s]+)", body):
+        refs.append(m)
+    return errors, refs
+
+
+JS_KEYWORDS_BEFORE_REGEX = {"return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "throw",
+                            "case", "do", "else", "yield", "await"}
+
+
+def js_heuristic(text):
+    """Comprobación conservadora sin Node: cadenas, comentarios, plantillas y paréntesis balanceados."""
+    errors, stack, i, n = [], [], 0, len(text)
+    pairs = {")": "(", "]": "[", "}": "{"}
+    last = ""  # último token significativo, para distinguir / de división y de regex
+    line = 1
+    while i < n:
+        c = text[i]
+        if c == "\n":
+            line += 1
+        if c in " \t\r\n":
+            i += 1
+            continue
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j < 0:
+                errors.append(f"comentario sin cerrar (línea {line})")
+                break
+            line += text.count("\n", i, j)
+            i = j + 2
+            continue
+        if c in "\"'":
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            if j >= n or text[j] != c:
+                errors.append(f"cadena sin cerrar (línea {line})")
+                break
+            i, last = j + 1, "str"
+            continue
+        if c == "`":
+            stack.append(("`", line))
+            i += 1
+            while i < n:
+                if text[i] == "\\":
+                    i += 2
+                    continue
+                if text[i] == "`":
+                    stack.pop()
+                    i += 1
+                    break
+                if text.startswith("${", i):
+                    stack.append(("${", line))
+                    i += 2
+                    break
+                if text[i] == "\n":
+                    line += 1
+                i += 1
+            last = "str"
+            continue
+        if c == "/" and (last in ("", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "op")
+                         or last in JS_KEYWORDS_BEFORE_REGEX):
+            j, in_class = i + 1, False
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            if j >= n or text[j] != "/":
+                errors.append(f"expresión regular sin cerrar (línea {line})")
+                break
+            i, last = j + 1, "re"
+            continue
+        if c in "([{":
+            stack.append((c, line))
+            last = c
+        elif c in ")]}":
+            if c == "}" and stack and stack[-1][0] == "${":
+                stack.pop()
+                # continuar dentro de la plantilla
+                i += 1
+                while i < n:
+                    if text[i] == "\\":
+                        i += 2
+                        continue
+                    if text[i] == "`":
+                        stack.pop()
+                        i += 1
+                        break
+                    if text.startswith("${", i):
+                        stack.append(("${", line))
+                        i += 2
+                        break
+                    i += 1
+                last = "str"
+                continue
+            if not stack or stack[-1][0] != pairs[c]:
+                errors.append(f"'{c}' inesperado (línea {line})")
+                break
+            stack.pop()
+            last = c
+        elif c.isalnum() or c in "_$":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            last = text[i:j]
+            i = j
+            continue
+        else:
+            last = "op" if c in "+-*%<>=!&|^~?:" else c
+        i += 1
+    if not errors and stack:
+        errors.append(f"'{stack[-1][0]}' abierto en la línea {stack[-1][1]} sin cerrar")
+    return errors
+
+
+def node_check(node, path, module, timeout, cpu_s):
+    if module:
+        with open(path, "rb") as fh:
+            data = fh.read()
+        r = run_bounded([node, "--input-type=module", "--check"], data, timeout, cpu_s)
+    else:
+        r = run_bounded([node, "--check", path], b"", timeout, cpu_s)
+    if r["timeout"]:
+        return [f"node --check superó el tiempo ({timeout} s)"]
+    if r["code"] != 0:
+        lines = [ln for ln in r["stderr"].splitlines()
+                 if ln.strip() and not ln.startswith("Node.js v") and not ln.lstrip().startswith("at ")]
+        import re
+
+        where = next((ln for ln in lines if re.search(r":\d+$", ln)), "")
+        err = next((ln for ln in lines if "Error" in ln), lines[-1] if lines else "")
+        msg = " | ".join(x for x in (where, err) if x)[:600] or f"código {r['code']}"
+        rel = os.path.relpath(path, WEB_ROOT)
+        return ["error de sintaxis: " + msg.replace("[stdin]", rel).replace(WEB_ROOT + "/", "")]
+    return []
+
+
+def match_simple_selector(selector, elements):
+    import re
+
+    for alt in selector.split(","):
+        alt = alt.strip()
+        m = re.fullmatch(r"([a-zA-Z][a-zA-Z0-9-]*|\*)?((?:[#.][A-Za-z0-9_-]+|\[[a-zA-Z-]+(?:=[\"']?[^\]\"']*[\"']?)?\])*)", alt)
+        if not alt or not m:
+            continue
+        tag = (m.group(1) or "*").lower()
+        parts = re.findall(r"[#.][A-Za-z0-9_-]+|\[[^\]]+\]", m.group(2))
+        for t, a in elements:
+            if tag != "*" and t != tag:
+                continue
+            ok = True
+            for part in parts:
+                if part[0] == "#":
+                    ok = a.get("id") == part[1:]
+                elif part[0] == ".":
+                    ok = part[1:] in a.get("class", "").split()
+                else:
+                    name, _, val = part[1:-1].partition("=")
+                    val = val.strip("\"'")
+                    ok = name.lower() in a and (not _ or a[name.lower()] == val)
+                if not ok:
+                    break
+            if ok:
+                return True
+    return False
+
+
+def run_web_checks(spec, node, timeout, cpu_s):
+    import re
+
+    files = load_project()
+    entry = spec.get("entry", "index.html")
+    results = []
+
+    def add(name, errors, visible=True, kind="web", ok_detail=""):
+        results.append({"n": len(results) + 1, "kind": kind, "name": name, "visible": visible,
+                        "ok": not errors, "status": "ok" if not errors else "fallo",
+                        "detail": "\n".join(errors[:8]) if errors else ok_detail})
+
+    html_files = sorted(f for f in files if f.endswith(".html"))
+    css_files = sorted(f for f in files if f.endswith(".css"))
+    js_files = sorted(f for f in files if f.endswith(".js"))
+    struct = []
+    if entry not in files:
+        struct.append(f"falta el archivo de entrada {entry}")
+    scans = {f: HtmlScan(files[f]) for f in html_files}
+    if entry in scans:
+        sc = scans[entry]
+        if not sc.doctype:
+            struct.append("falta <!DOCTYPE html>")
+        for tag in ("html", "head", "body"):
+            if not sc.tags(tag):
+                struct.append(f"falta <{tag}>")
+        if not sc.tags("title"):
+            struct.append("falta <title>")
+        if not any("charset" in a for a in sc.tags("meta")):
+            struct.append('falta <meta charset="utf-8">')
+        if not any(a.get("name", "").lower() == "viewport" for a in sc.tags("meta")):
+            struct.append('falta <meta name="viewport"> (diseño para celular)')
+    add("estructura", struct, ok_detail=f"{len(files)} archivos: {', '.join(sorted(files))[:300]}")
+
+    modules = set()
+    refs_errors, policy = [], []
+    for f, sc in scans.items():
+        add(f"html:{f}", sc.errors)
+        dup = {i for i in sc.ids if sc.ids.count(i) > 1}
+        if dup:
+            refs_errors.append(f"{f}: id duplicado: {', '.join(sorted(dup))}")
+        for tag, attr in (("script", "src"), ("link", "href"), ("img", "src"), ("source", "src"),
+                          ("a", "href"), ("iframe", "src"), ("form", "action"), ("audio", "src"), ("video", "src")):
+            for a in sc.tags(tag):
+                url = a.get(attr, "")
+                if not url:
+                    continue
+                if is_external(url):
+                    if tag == "a":
+                        continue  # un enlace externo no carga recursos
+                    policy.append(f"{f}: recurso externo no permitido <{tag} {attr}=\"{url[:80]}\"> (usar archivos locales)")
+                    continue
+                target = resolve_ref(f, url)
+                if target is None:
+                    continue
+                if url.strip().startswith("/"):
+                    refs_errors.append(f"{f}: <{tag} {attr}=\"{url}\"> usa una ruta absoluta; usar rutas relativas")
+                elif target.startswith(".."):
+                    refs_errors.append(f"{f}: referencia fuera del proyecto: {url}")
+                elif target not in files and not (tag == "a" and target + "/index.html" in files):
+                    refs_errors.append(f"{f}: <{tag} {attr}=\"{url}\"> apunta a un archivo inexistente")
+                elif tag == "script" and a.get("type", "").lower() == "module":
+                    modules.add(target)
+    all_ids = {i for sc in scans.values() for i in sc.ids}
+    for f in css_files:
+        errors, refs = check_css(files[f])
+        add(f"css:{f}", errors)
+        for url in refs:
+            if is_external(url):
+                policy.append(f"{f}: recurso externo no permitido en CSS: {url[:80]}")
+            else:
+                t = resolve_ref(f, url)
+                if t is not None and t not in files:
+                    refs_errors.append(f"{f}: url({url}) apunta a un archivo inexistente")
+    for f in js_files:
+        text = files[f]
+        for m in re.findall(r"""(?:^|[;\s])(?:import|export)\s[^;'"]*?from\s*['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]""", text):
+            url = m[0] or m[1]
+            if is_external(url):
+                policy.append(f"{f}: import externo no permitido: {url[:80]}")
+            else:
+                t = resolve_ref(f, url)
+                modules.add(f)
+                if t is not None and t not in files:
+                    refs_errors.append(f"{f}: import '{url}' apunta a un archivo inexistente")
+                elif t is not None:
+                    modules.add(t)
+        for url in re.findall(r"""(?:fetch|EventSource|WebSocket|importScripts)\(\s*['"`]([^'"`]+)""", text):
+            if is_external(url):
+                policy.append(f"{f}: conexión externa no permitida: {url[:80]}")
+        for el_id in re.findall(r"""getElementById\(\s*['"]([^'"]+)['"]\s*\)""", text) + \
+                re.findall(r"""querySelector(?:All)?\(\s*['"]#([A-Za-z0-9_-]+)['"]\s*\)""", text):
+            if el_id not in all_ids:
+                refs_errors.append(f"{f}: busca el id '{el_id}', que no existe en ningún HTML")
+    for f in js_files:
+        if node:
+            errors = node_check(node, os.path.join(WEB_ROOT, f), f in modules, timeout, cpu_s)
+            add(f"js:{f}", errors, ok_detail="sintaxis verificada con node --check")
+        else:
+            errors = js_heuristic(files[f])
+            add(f"js:{f}", errors, ok_detail="comprobación heurística (node no disponible en el sandbox)")
+    add("referencias", sorted(set(refs_errors)))
+    add("politica_recursos_locales", sorted(set(policy)))
+
+    entry_scan = scans.get(entry)
+    js_all = "\n".join(files[f] for f in js_files)
+    css_all = "\n".join(files[f] for f in css_files)
+    for i, chk in enumerate(spec.get("checks", []), 1):
+        kind, value = chk.get("tipo"), chk.get("valor", "")
+        vis = bool(chk.get("visible", True))
+        name = f"requisito {i}: {kind} {value}"[:120]
+        if kind == "selector":
+            ok = any(match_simple_selector(value, sc.elements) for sc in scans.values())
+            err = [] if ok else [f"ningún elemento coincide con «{value}»"]
+        elif kind == "texto":
+            ok = entry_scan is not None and value.lower() in entry_scan.text.lower()
+            err = [] if ok else [f"el texto «{value}» no aparece en {entry}"]
+        elif kind == "js_contiene":
+            err = [] if value in js_all else [f"el JavaScript no contiene «{value}»"]
+        elif kind == "css_contiene":
+            err = [] if value in css_all else [f"el CSS no contiene «{value}»"]
+        else:
+            err = [f"tipo de requisito desconocido: {kind}"]
+        add(name, err, visible=vis, kind="requisito")
+    return results
+
+
 # --- Sondas de aislamiento (autodiagnóstico) -------------------------------
 
 def probe(opts, timeout, cpu_s):
@@ -470,7 +936,10 @@ def main():
     else:
         spec = req["spec"]
         cases, load_error = [], None
-        if spec.get("mode") == "script":
+        if spec.get("mode") == "web":
+            node = req.get("node") or ""
+            cases = run_web_checks(spec, node if node and os.path.exists(node) else "", timeout, cpu_s)
+        elif spec.get("mode") == "script":
             cases = run_script_cases(spec, timeout, cpu_s)
         else:
             cases, load_error = run_function_cases(spec, timeout, cpu_s)
