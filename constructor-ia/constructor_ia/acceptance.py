@@ -56,10 +56,12 @@ def validate_mission(data: dict, max_attempts_limit: int, default_attempts: int)
     description = _text(data, "description", 6000)
     if data.get("authorize_execution") is not True:
         raise SpecError("Debe autorizar explícitamente la ejecución aislada de pruebas")
+    if data.get("mode") == "exploracion":
+        return _validate_exploration(data, title, description)
     if data.get("cases_reviewed") is not True:
         raise SpecError("Debe confirmar que revisó los casos de prueba")
     mode = data.get("mode", "funcion")
-    if mode not in ("funcion", "script", "web"):
+    if mode not in ("funcion", "script", "web", "exploracion"):
         raise SpecError("Modo inválido")
     attempts = data.get("max_attempts", default_attempts)
     if not isinstance(attempts, int) or isinstance(attempts, bool) or not 1 <= attempts <= max_attempts_limit:
@@ -158,3 +160,18 @@ def _validate_web(data: dict, title: str, description: str, attempts: int) -> di
         raise SpecError("Las pruebas avanzadas en Python no se aplican a misiones web")
     spec = {"mode": "web", "entry": "index.html", "checks": checks}
     return {"title": title, "description": description, "spec": spec, "tests_py": "", "max_attempts": attempts}
+
+
+def _validate_exploration(data: dict, title: str, description: str) -> dict:
+    """Misión de exploración: conexión + límites. Las consultas siempre son de solo lectura vía intermediario."""
+    conn = data.get("conn")
+    if not isinstance(conn, str) or not re.match(r"^[a-z0-9_]{1,40}$", conn):
+        raise SpecError("Conexión inválida")
+    limits = {}
+    for key, lo, hi, default in (("max_steps", 1, 200, 25), ("max_queries", 1, 500, 60), ("max_minutes", 1, 480, 45)):
+        v = data.get(key, default)
+        if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+            raise SpecError(f"{key} debe estar entre {lo} y {hi}")
+        limits[key] = v
+    spec = {"mode": "exploracion", "conn": conn, **limits, "continuar": bool(data.get("continuar", True))}
+    return {"title": title, "description": description, "spec": spec, "tests_py": "", "max_attempts": 1}

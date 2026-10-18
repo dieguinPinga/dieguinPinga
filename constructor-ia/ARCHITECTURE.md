@@ -85,6 +85,13 @@ web/server.py   POST /api/missions/<id>/preview · GET /api/missions/<id>/zip ·
 El ejecutor recibe un diccionario de archivos en lugar de `solucion.py`; el comando del sandbox y
 sus límites son los mismos. Las misiones web usan `[ollama.web]` (contexto mayor). Detalle en TALLER_WEB.md.
 
+## Explorador (v0.3.0)
+
+Misiones `exploracion` en la misma cola. `explorer/agent.py` (ciclo) → `explorer/broker.py` (intermediario
+de solo lectura) → `explorer/mysqlproto.py` (protocolo MariaDB, biblioteca estándar) → MariaDB local.
+El mapa vive en la SQLite propia (`explore_*`). El Explorador no ejecuta código generado ni usa el sandbox.
+Detalle en [EXPLORADOR.md](EXPLORADOR.md).
+
 ## Ollama directo vs. OpenClaw
 
 | Función | Implementación |

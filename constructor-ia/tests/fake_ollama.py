@@ -49,6 +49,8 @@ class FakeOllama:
                 with outer._lock:
                     outer.requests.append(body)
                     text = outer.responses.pop(0) if outer.responses else outer.default
+                    if callable(text):  # respuesta dinámica: recibe la petición completa
+                        text = text(body)
                     outer.active += 1
                     outer.max_active = max(outer.max_active, outer.active)
                 try:

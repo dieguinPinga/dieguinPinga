@@ -34,6 +34,7 @@ class Engine:
                  ollama: OllamaClient, gate: InferenceGate, executor: Executor):
         self.cfg, self.db, self.bus, self.missions, self.files = cfg, db, bus, missions, files
         self.ollama, self.gate, self.executor = ollama, gate, executor
+        self.explorer = None  # lo asigna App si el Explorador está habilitado
 
     def _event(self, mid, kind, msg, **data):
         self.bus.publish(kind, msg, mission_id=mid, data=data or None)
@@ -49,6 +50,12 @@ class Engine:
         tests_py = spec.pop("tests_py", "")
         description = row["description"]
         max_attempts = row["max_attempts"]
+        if spec.get("mode") == "exploracion":
+            # La exploración no ejecuta código generado: no depende del sandbox, sí del intermediario SQL.
+            if self.explorer is None:
+                self.missions.set_state(mid, "fallida", finished_at=time.time(), error="Explorador desactivado")
+                return "fallida"
+            return self.explorer.run(mid, spec, description, cancel)
         try:
             self._check_cancel(mid, cancel)
             if not self.executor.enabled:
@@ -181,7 +188,7 @@ class Engine:
             raise MissionAborted("fallida", "El Taller Web está desactivado en la configuración")
         model = self.cfg.web_model
         budget = prompts.budget_chars(model.num_ctx, model.num_predict)
-        files: dict[str, str] = {}
+        files: dict[str, str] = dict(spec.get("seed_files") or {})
         result, report = None, ""
         for n in range(1, max_attempts + 1):
             self._check_cancel(mid, cancel)
@@ -202,7 +209,8 @@ class Engine:
             cols = ", ".join(f"{k}=?" for k in f)
             self.db.execute(f"UPDATE attempts SET {cols} WHERE mission_id=? AND n=?", (*f.values(), mid, n))
 
-        if not prev_files:
+        seeds = spec.get("seed_files") or {}
+        if not set(prev_files) - set(seeds):
             messages = webproject.initial_prompt(description, spec, budget)
             if report:
                 messages[1]["content"] += "\n\nEl intento anterior falló:\n" + report
@@ -238,7 +246,11 @@ class Engine:
         changed, deleted, problems = webproject.extract_files(gen.text, cfg.web_max_files, cfg.web_max_file_kb * 1024)
         if not changed and not deleted and not problems:
             problems.append("No se encontraron archivos con el formato «### archivo: ruta» seguido de un bloque de código")
+        touched = sorted(set(seeds) & (set(changed) | set(deleted)))
+        if touched:
+            self._event(mid, "aviso", "Se ignoraron cambios a datos de solo lectura: " + ", ".join(touched))
         files = webproject.merge(prev_files, changed, deleted)
+        files.update(seeds)  # las instantáneas de datos son inmutables
         problems += webproject.check_limits(files, spec.get("entry", "index.html"), cfg.web_max_files,
                                             cfg.web_max_total_kb * 1024)
         if gen.truncated:

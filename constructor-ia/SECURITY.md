@@ -114,6 +114,17 @@ tokens), el laboratorio `~/agente-constructor/` y los datos de Constructor IA.
 - Aplicar un proyecto web a un sistema real sigue requiriendo la solicitud y aprobación humana, y la
   aplicación manual por SSH.
 
+### H. Explorador de bases de datos (v0.3.0)
+
+- Cuenta MariaDB exclusiva con solo `SELECT`/`SHOW VIEW` sobre una base; verificación de privilegios en cada
+  exploración (fallo cerrado), sonda de escritura, sesión `tx_read_only=1` con límites leídos de vuelta,
+  protocolo sin multi-sentencias ni `LOCAL INFILE`, topes de filas, bytes y tiempo con `KILL QUERY`, una
+  consulta a la vez. El filtro de sentencias es una capa secundaria.
+- Las credenciales viven en un archivo 0600 y nunca llegan al modelo, al código generado, a los registros
+  ni a la API. El sandbox no cambió: sin red ni sockets.
+- Los datos se entregan al modelo como contenido no confiable delimitado; sus únicas acciones posibles son
+  lecturas limitadas. Detalle y riesgos en [EXPLORADOR.md](EXPLORADOR.md#seguridad).
+
 ## Riesgos restantes (honestos)
 
 1. **El aislamiento no es una garantía frente a un atacante con un 0-day del

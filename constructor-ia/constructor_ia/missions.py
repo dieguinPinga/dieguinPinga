@@ -9,8 +9,8 @@ from .db import Database
 from .events import EventBus
 
 PENDING = "pendiente"
-ACTIVE_STATES = ("preparando", "generando", "probando", "corrigiendo")
-TERMINAL_STATES = ("aprobada", "fallida", "cancelada", "interrumpida")
+ACTIVE_STATES = ("preparando", "generando", "probando", "corrigiendo", "explorando")
+TERMINAL_STATES = ("aprobada", "completada", "fallida", "cancelada", "interrumpida")
 ALL_STATES = (PENDING, *ACTIVE_STATES, *TERMINAL_STATES)
 
 

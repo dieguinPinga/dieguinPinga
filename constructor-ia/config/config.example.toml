@@ -92,3 +92,33 @@ max_total_kb = 400
 # Node del sistema para "node --check" dentro del sandbox (debe estar bajo /usr).
 # Si no existe, se usa una comprobación heurística de JavaScript.
 node = "/usr/bin/node"
+
+[ollama.explorer]
+# Modelo del Explorador: respuestas JSON cortas por paso (salida estructurada de Ollama).
+name = "qwen3:4b-instruct"
+num_ctx = 6144
+num_predict = 900
+temperature = 0.2
+timeout_s = 300
+think = false
+
+[explorer]
+# Explorador autónomo de bases de datos (solo lectura a través del intermediario).
+enabled = true
+max_steps = 25          # pasos por misión (tope del formulario)
+max_queries = 60        # consultas del agente por misión
+max_minutes = 45        # tiempo total por misión
+query_timeout_s = 10    # max_statement_time de cada consulta (y KILL QUERY si se excede)
+max_rows = 200          # filas devueltas al agente por consulta (sql_select_limit + tope del cliente)
+max_result_kb = 256     # bytes por resultado
+max_join_size = 20000000  # MariaDB rechaza consultas que estimen examinar más filas
+sample_rows = 100000    # tamaño de muestra de las herramientas perfil/frecuentes/relacion
+
+# Una entrada por base autorizada. La contraseña va en un archivo 0600 aparte (nunca aquí):
+#   ~/constructor-ia/bin/constructor-ia explorer-setup prrr_market   (ver EXPLORADOR.md)
+# [[explorer.connections]]
+# name = "prrr_market"
+# database = "prrr_market"
+# user = "cia_explorer"
+# password_file = "/home/diego/constructor-ia/config/secretos/prrr_market.pass"
+# socket = "/run/mysqld/mysqld.sock"

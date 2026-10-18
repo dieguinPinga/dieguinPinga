@@ -64,7 +64,7 @@ function fmtDur(s) {
   return m ? `${m} min ${r} s` : `${r} s`;
 }
 const badge = (state) => h("span", { class: `badge st-${state}`, text: state });
-const ACTIVE = ["preparando", "generando", "probando", "corrigiendo"];
+const ACTIVE = ["preparando", "generando", "probando", "corrigiendo", "explorando"];
 
 function every(ms, fn) { S.timers.push(setInterval(fn, ms)); }
 function onEvent(fn) { S.handlers.push(fn); }
@@ -154,7 +154,7 @@ function route() {
     (name === "mision" && a.dataset.nav === "misiones")));
   const v = $("#view");
   v.replaceChildren(h("p", { class: "muted center", text: "Cargando…" }));
-  const views = { chat: viewChat, misiones: viewMissions, mision: viewMission, nueva: viewNew, aprobaciones: viewApprovals, estado: viewStatus };
+  const views = { chat: viewChat, misiones: viewMissions, mision: viewMission, nueva: viewNew, aprobaciones: viewApprovals, estado: viewStatus, explorador: viewExplorer };
   (views[name] || viewChat)(v, parts.slice(1)).catch((e) => {
     v.replaceChildren(h("div", { class: "panel bad", text: e.message }));
   });
@@ -246,7 +246,7 @@ async function viewChat(v, args) {
 // ---------------------------------------------------------------- misiones
 async function viewMissions(v) {
   const filter = h("select", {}, h("option", { value: "", text: "Todas" }),
-    ...["pendiente", ...ACTIVE, "aprobada", "fallida", "cancelada", "interrumpida"].map((s) => h("option", { value: s, text: s })));
+    ...["pendiente", ...ACTIVE, "aprobada", "completada", "fallida", "cancelada", "interrumpida"].map((s) => h("option", { value: s, text: s })));
   const list = h("div", { class: "list" });
   v.replaceChildren(h("div", { class: "row between", style: "margin-bottom:.8rem" }, h("h1", { text: "Misiones" }),
     h("div", { class: "row" }, filter, h("a", { class: "btn", href: "#/nueva", text: "+ Nueva" }))), list);
@@ -312,7 +312,8 @@ async function viewMission(v, args) {
   const viewer = h("div", { class: "panel", hidden: true });
   const webBox = h("div", { class: "panel", hidden: true });
   const apprBox = h("div", { class: "panel" });
-  v.replaceChildren(info, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, webBox, filesBox, viewer, apprBox);
+  const exploreBox = h("div", { hidden: true });
+  v.replaceChildren(info, exploreBox, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, webBox, filesBox, viewer, apprBox);
   let data = null, lastEv = 0, clock = null;
 
   function addEvent(ev) {
@@ -360,9 +361,9 @@ async function viewMission(v, args) {
         h("dt", { text: "Identificador" }), h("dd", { class: "mono", text: m.id }),
         h("dt", { text: "Creada" }), h("dd", { text: `${fmtDate(m.created_at)} por ${m.created_by}` }),
         h("dt", { text: "Modelo" }), h("dd", { class: "mono", text: m.model }),
-        h("dt", { text: "Intento" }), h("dd", { text: `${m.attempt} de ${m.max_attempts}` }),
+        h("dt", { text: spec.mode === "exploracion" ? "Paso" : "Intento" }), h("dd", { text: spec.mode === "exploracion" ? `${m.attempt} de ${spec.max_steps}` : `${m.attempt} de ${m.max_attempts}` }),
         h("dt", { text: "Tiempo" }), elapsed,
-        h("dt", { text: "Pruebas" }), h("dd", { text: spec.mode === "web" ? `Página web / Tablero · ${(spec.checks || []).length} requisitos + verificaciones automáticas`
+        h("dt", { text: spec.mode === "exploracion" ? "Tipo" : "Pruebas" }), h("dd", { text: spec.mode === "exploracion" ? `Exploración de «${spec.conn}» · solo lectura · hasta ${spec.max_steps} pasos, ${spec.max_queries} consultas, ${spec.max_minutes} min` : spec.mode === "web" ? `Página web / Tablero · ${(spec.checks || []).length} requisitos + verificaciones automáticas`
           : `${spec.mode === "script" ? "Programa (stdin/stdout)" : `Función ${spec.function}`} · ${(spec.cases || []).length} casos${spec.tests_py ? " + pruebas avanzadas" : ""}` }),
         m.error ? h("dt", { text: "Motivo" }) : "", m.error ? h("dd", { class: "bad", text: m.error }) : ""),
       h("details", {}, h("summary", { text: "Descripción" }), h("p", { style: "white-space:pre-wrap", text: m.description })),
@@ -371,6 +372,12 @@ async function viewMission(v, args) {
     renderFiles();
     renderApprovals();
     renderWeb();
+    if (spec.mode === "exploracion") {
+      exploreBox.hidden = false;
+      attemptsBox.hidden = true;
+      apprBox.hidden = true;
+      renderExploration(exploreBox, mid, m).catch((e) => toast(e.message, true));
+    }
   }
 
   function renderAttempts() {
@@ -641,6 +648,7 @@ async function viewNew(v) {
       cases_reviewed: reviewed.checked, authorize_execution: authorize.checked,
     };
     if (d.conversation_id) body.conversation_id = d.conversation_id;
+    if (d.seed && mode.value === "web") body.seed = d.seed;
     if (!confirm("Se encolará la misión: el modelo generará código y se ejecutará SOLO dentro del sandbox aislado para correr las pruebas. ¿Confirmás?")) return;
     submit.disabled = true;
     try {
@@ -653,6 +661,7 @@ async function viewNew(v) {
   v.replaceChildren(h("div", { class: "panel" },
     h("h1", { text: "Nueva misión" }),
     d.title ? h("div", { class: "banner warn", text: "Borrador generado por la IA: revisá con cuidado los casos de prueba; son los que deciden si el código se aprueba." }) : "",
+    d.seed ? h("div", { class: "banner", text: `Datos: al crear la misión se ejecutarán, por el intermediario de solo lectura, las consultas de la aplicación propuesta F${d.seed.fact_id} sobre «${d.seed.conn}», y se guardarán como instantáneas JSON inmutables dentro del proyecto. El JavaScript generado no recibe credenciales ni acceso a la base.` }) : "",
     h("label", { text: "Título" }), title,
     h("label", { text: "Descripción del trabajo" }), desc,
     h("label", { text: "Tipo de resultado" }), mode, fnWrap, h("div", { style: "margin-top:.5rem" }, example),
@@ -740,6 +749,196 @@ async function viewStatus(v) {
   }
   await load();
   every(30000, load);
+}
+
+// ---------------------------------------------------------------- explorador
+const DEMO_EXPLORACION = "Explorá la base de datos que tenés disponible. No te voy a explicar qué contiene. Descubrí su estructura, investigá su información y construí un mapa de lo que encontrás. Identificá relaciones, patrones y oportunidades para desarrollar herramientas útiles. Cuando termines, presentame tus descubrimientos y tres aplicaciones que podrías construir.";
+const CERT = { comprobado: "comprobado", inferencia: "inferencia", hipotesis: "hipótesis", descartado: "descartado" };
+const certBadge = (c) => h("span", { class: `badge cert-${c}`, text: CERT[c] || c });
+
+function factItem(f, extra) {
+  return h("div", { class: "item" },
+    h("div", { class: "row between" }, h("span", { class: "small mono", text: `F${f.id}` }), certBadge(f.certainty)),
+    h("div", { class: "small pre-wrap", text: f.text }),
+    f.evidence && f.evidence.length ? h("div", { class: "muted small", text: `Evidencia: ${f.evidence.join(", ")}` }) : "",
+    extra || "");
+}
+
+function resultTable(res) {
+  if (!res) return "";
+  if (res.status !== "ok") return h("p", { class: "bad small", text: `${res.status}: ${res.error || ""}` });
+  const tb = h("tbody");
+  for (const r of (res.rows || []).slice(0, 10)) tb.append(h("tr", {}, ...r.map((c) => h("td", { class: "mono small", text: c === null ? "NULL" : String(c) }))));
+  return h("div", { class: "scroll-x" }, h("table", {}, h("thead", {}, h("tr", {}, ...(res.columns || []).map((c) => h("th", { text: c })))), tb),
+    h("p", { class: "muted small", text: `${res.row_count} filas${res.truncated ? ` (recortado: ${res.truncated_reason})` : ""} · ${res.ms} ms` }));
+}
+
+async function renderExploration(box, mid, m) {
+  const d = await api("GET", `/api/missions/${encodeURIComponent(mid)}/exploration`);
+  const p = d.progress;
+  const elapsed = m.started_at ? ((m.finished_at || Date.now() / 1000) - m.started_at) / 60 : 0;
+  const last = d.steps[d.steps.length - 1];
+  const qById = Object.fromEntries(d.queries.map((q) => [q.id, q]));
+  const actions = h("div", { class: "row" });
+  if (ACTIVE.includes(m.state) || m.state === "pendiente") {
+    actions.append(h("button", { class: "btn danger small", type: "button", text: "Detener exploración", onclick: async () => {
+      if (!confirm("¿Detener la exploración ahora? Se interrumpe la consulta en curso y se guarda un informe parcial.")) return;
+      try { await api("POST", `/api/missions/${mid}/cancel`, {}); toast("Detención solicitada"); } catch (e) { toast(e.message, true); }
+    } }));
+  } else {
+    actions.append(h("button", { class: "btn small", type: "button", text: "Continuar exploración", onclick: async () => {
+      if (!confirm("Se creará una nueva exploración que continúa este mapa (solo lectura). ¿Continuar?")) return;
+      try { const r = await api("POST", `/api/explorer/continue/${mid}`, {}); location.hash = `#/mision/${r.id}`; } catch (e) { toast(e.message, true); }
+    } }));
+  }
+  actions.append(h("a", { class: "btn ghost small", href: `#/explorador/mapa/${encodeURIComponent(d.spec.conn)}`, text: "Ver mapa del sistema" }));
+  const steps = h("div", { class: "list" });
+  for (const st of d.steps.slice().reverse()) {
+    const q = qById[st.query_id];
+    const ev = st.evidence || {};
+    steps.append(h("details", { class: "item", open: st === last },
+      h("summary", {}, `Paso ${st.n} · `, h("span", { class: `badge ${st.status === "ok" ? "ok" : (st.status === "en_curso" ? "" : "bad")}`, text: st.status }), ` ${st.question || ""}`),
+      h("p", { class: "small" }, h("strong", { text: "Por qué: " }), st.rationale || "—"),
+      h("p", { class: "muted small", text: `Evidencia citada: ${(ev.citada || []).join(", ") || "ninguna"}${(ev.inexistente || []).length ? ` · sin respaldo: ${ev.inexistente.join(", ")}` : ""}` }),
+      h("p", { class: "small mono", text: `Herramienta: ${st.tool} ${JSON.stringify(st.args)}` }),
+      q ? h("pre", { class: "console", text: q.sql_text }) : "",
+      q ? resultTable(q.result) : "",
+      st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : ""));
+  }
+  const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", oportunidad: "Aplicaciones propuestas", cambio: "Cambios de esquema" };
+  const facts = h("div");
+  for (const [k, title] of Object.entries(kinds)) {
+    const fs = d.facts.filter((f) => f.kind === k);
+    if (!fs.length) continue;
+    facts.append(h("h3", { class: "mt", text: `${title} (${fs.length})` }), h("div", { class: "list" }, ...fs.map((f) => factItem(f, k === "oportunidad" ? buildButton(d.spec.conn, f) : ""))));
+  }
+  box.replaceChildren(
+    h("div", { class: "panel" },
+      h("h2", { text: "Exploración" }),
+      h("div", { class: "banner", text: "La IA solo usa consultas de lectura a través del intermediario controlado: nunca ve credenciales ni modifica la base. «Comprobado» = calculado por el sistema con una consulta registrada; «inferencia» = interpretación del modelo." }),
+      h("dl", { class: "kv" },
+        h("dt", { text: "Progreso" }), h("dd", { text: `${p.steps}/${p.max_steps} pasos · ${p.queries}/${p.max_queries} consultas · ${elapsed.toFixed(1)}/${p.max_minutes} min` }),
+        h("dt", { text: "Pregunta actual" }), h("dd", { text: last ? last.question : "observando la estructura…" }),
+        h("dt", { text: "Justificación" }), h("dd", { text: last ? last.rationale : "—" }),
+        h("dt", { text: "Consulta" }), h("dd", { class: "mono small", text: last && qById[last.query_id] ? qById[last.query_id].sql_text : "—" })),
+      actions),
+    h("div", { class: "panel" }, h("h2", { text: "Pasos (pregunta → consulta → resultado)" }), steps.children.length ? steps : h("p", { class: "muted small", text: "Sin pasos todavía." })),
+    h("div", { class: "panel" }, h("h2", { text: "Hallazgos de esta exploración" }), facts.children.length ? facts : h("p", { class: "muted small", text: "Todavía no hay hallazgos." }),
+      h("h3", { class: "mt", text: "Incertidumbres" }), h("div", { class: "list" }, ...d.uncertainties.map((f) => factItem(f)))));
+}
+
+function buildButton(conn, f) {
+  if (!f.data || !(f.data.consultas || []).some((c) => c.valida)) return h("p", { class: "muted small", text: "Sin consultas válidas para construir." });
+  return h("div", { class: "mt" },
+    ...(f.data.consultas || []).map((c) => h("pre", { class: "console", text: (c.valida ? "" : `⚠ ${c.motivo}\n`) + c.sql })),
+    h("button", { class: "btn small", type: "button", text: "Construir en el Taller Web", onclick: () => {
+      S.draft = { title: f.data.nombre, mode: "web", description: `${f.data.descripcion}\n\nAplicación propuesta por el Explorador (F${f.id}). Usar solo los datos incluidos.`,
+        cases: [{ tipo: "js_contiene", valor: "fetch" }, { tipo: "selector", valor: "h1" }], seed: { conn, fact_id: f.id } };
+      location.hash = "#/nueva";
+    } }));
+}
+
+async function viewExplorer(v, args) {
+  if (args[0] === "mapa") return viewMap(v, decodeURIComponent(args[1] || ""));
+  const [cs, ms] = await Promise.all([api("GET", "/api/explorer/connections"), api("GET", "/api/missions?limit=100")]);
+  const lim = cs.limits;
+  const cards = h("div", { class: "grid2" });
+  for (const c of cs.items) {
+    const st = c.status || {};
+    cards.append(h("div", { class: "panel" },
+      h("div", { class: "row between" }, h("h2", { class: "mono", text: c.name }), h("span", { class: `badge ${st.verified ? "ok" : "bad"}`, text: st.verified ? "verificada" : "bloqueada" })),
+      h("dl", { class: "kv" },
+        h("dt", { text: "Base" }), h("dd", { class: "mono", text: c.database }),
+        h("dt", { text: "Usuario SQL" }), h("dd", { class: "mono", text: c.user }),
+        h("dt", { text: "Servidor" }), h("dd", { class: "mono", text: `${c.endpoint}${st.server_version ? " · " + st.server_version : ""}` }),
+        h("dt", { text: "Sesión" }), h("dd", { class: "small", text: st.session ? `solo lectura=${st.session.tx_read_only} · tiempo ${st.session.max_statement_time}s · filas ${st.session.sql_select_limit - 1} · max_join_size ${st.session.max_join_size}` : "—" }),
+        h("dt", { text: "Sonda escritura" }), h("dd", { class: "small", text: st.write_probe || "—" }),
+        h("dt", { text: "Mapa" }), h("dd", { text: `${c.map} hechos registrados` }),
+        st.reason ? h("dt", { text: "Motivo" }) : "", st.reason ? h("dd", { class: "bad small", text: st.reason }) : ""),
+      st.grants ? h("details", {}, h("summary", { class: "small", text: "Privilegios verificados" }), h("pre", { class: "console", text: st.grants.join("\n") })) : "",
+      h("div", { class: "row mt" },
+        h("button", { class: "btn ghost small", type: "button", text: "Verificar ahora", onclick: async () => {
+          try { const r = await api("POST", `/api/explorer/connections/${c.name}/verify`, {}); toast(r.verified ? "Conexión verificada" : `Bloqueada: ${r.reason}`, !r.verified); route(); } catch (e) { toast(e.message, true); }
+        } }),
+        h("a", { class: "btn ghost small", href: `#/explorador/mapa/${encodeURIComponent(c.name)}`, text: "Ver mapa" }))));
+  }
+  const conn = h("select", {}, ...cs.items.map((c) => h("option", { value: c.name, text: c.name })));
+  const title = h("input", { type: "text", maxlength: 120, value: "Exploración inicial" });
+  const desc = h("textarea", { rows: 5, maxlength: 6000 });
+  desc.value = DEMO_EXPLORACION;
+  const num = (val, max) => h("input", { type: "number", min: 1, max, value: val });
+  const steps = num(Math.min(25, lim.max_steps), lim.max_steps), queries = num(Math.min(60, lim.max_queries), lim.max_queries), minutes = num(Math.min(45, lim.max_minutes), lim.max_minutes);
+  const auth = h("input", { type: "checkbox" });
+  const err = h("p", { class: "bad small" });
+  const go = h("button", { class: "btn", type: "button", text: "Iniciar exploración", onclick: async () => {
+    err.textContent = "";
+    if (!confirm("La IA ejecutará consultas de SOLO LECTURA, con límites, sobre la base elegida. ¿Iniciar?")) return;
+    try {
+      const r = await api("POST", "/api/missions", { mode: "exploracion", conn: conn.value, title: title.value, description: desc.value,
+        max_steps: parseInt(steps.value, 10), max_queries: parseInt(queries.value, 10), max_minutes: parseInt(minutes.value, 10),
+        authorize_execution: auth.checked });
+      location.hash = `#/mision/${r.id}`;
+    } catch (e) { err.textContent = e.message; }
+  } });
+  const list = h("div", { class: "list" });
+  for (const m of ms.items.filter((x) => x.mode === "exploracion")) {
+    list.append(h("a", { class: "item", href: `#/mision/${m.id}` }, h("div", { class: "row between" }, h("span", { class: "t", text: m.title }), badge(m.state)),
+      h("div", { class: "muted small mono", text: `${m.id} · ${fmtDate(m.created_at)}` })));
+  }
+  v.replaceChildren(h("h1", { text: "Explorador de bases de datos" }),
+    h("div", { class: "banner", text: `Linterna: consultas de solo lectura vía intermediario (máx. ${lim.max_rows} filas, ${lim.max_result_kb} KiB y ${lim.query_timeout_s} s por consulta; una a la vez). Las credenciales nunca llegan al modelo ni al código generado.` }),
+    cs.items.length ? cards : h("div", { class: "panel" }, h("p", { text: "No hay conexiones configuradas. Ver EXPLORADOR.md para crear el usuario SQL de solo lectura y la conexión." })),
+    cs.items.length ? h("div", { class: "panel" }, h("h2", { text: "Nueva exploración" }),
+      h("label", { text: "Conexión" }), conn, h("label", { text: "Título" }), title,
+      h("label", { text: "Misión para la IA" }), desc,
+      h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Pasos máximos" }), steps), h("div", {}, h("label", { text: "Consultas máximas" }), queries), h("div", {}, h("label", { text: "Minutos máximos" }), minutes)),
+      h("label", { class: "check" }, auth, "Autorizo a la IA a ejecutar consultas de solo lectura, con límites, sobre esta conexión."),
+      err, go) : "",
+    h("div", { class: "panel" }, h("h2", { text: "Exploraciones" }), list.children.length ? list : h("p", { class: "muted small", text: "Todavía no hay exploraciones." })));
+}
+
+async function viewMap(v, conn) {
+  const d = await api("GET", `/api/explorer/maps/${encodeURIComponent(conn)}`);
+  const snap = d.snapshot;
+  const byKind = (k) => d.facts.filter((f) => f.kind === k);
+  const tables = h("div", { class: "list" });
+  if (snap) {
+    for (const [name, t] of Object.entries(snap.schema.tablas)) {
+      const tb = h("tbody");
+      for (const c of t.columnas) tb.append(h("tr", {}, h("td", { class: "mono small", text: c.nombre }), h("td", { class: "mono small", text: c.tipo }),
+        h("td", { class: "small", text: [c.clave === "PRI" ? "PK" : c.clave, c.nulo ? "nulo" : "", c.extra].filter(Boolean).join(" ") })));
+      tables.append(h("details", { class: "item" },
+        h("summary", {}, h("span", { class: "mono", text: name }), ` · ${t.tipo} · ~${t.filas_estimadas ?? "?"} filas · ${t.columnas.length} columnas`),
+        h("div", { class: "scroll-x" }, h("table", {}, tb)),
+        Object.keys(t.indices).length ? h("p", { class: "muted small", text: "Índices: " + Object.entries(t.indices).map(([k, i]) => `${k}(${i.columnas.join(", ")})${i.unico ? " único" : ""}`).join(" · ") }) : ""));
+    }
+  }
+  const section = (title, items, extra) => h("div", { class: "panel" }, h("h2", { text: `${title} (${items.length})` }),
+    items.length ? h("div", { class: "list" }, ...items.map((f) => factItem(f, extra ? extra(f) : ""))) : h("p", { class: "muted small", text: "Nada registrado." }));
+  const rels = byKind("relacion").sort((a, b) => ["comprobado", "hipotesis", "descartado"].indexOf(a.certainty) - ["comprobado", "hipotesis", "descartado"].indexOf(b.certainty));
+  const qtb = h("tbody");
+  for (const q of d.queries) qtb.append(h("tr", {},
+    h("td", { class: "small mono", text: `C${q.id}` }), h("td", { class: "small", text: fmtDate(q.created_at) }),
+    h("td", { class: "small", text: `${q.origin}/${q.tool}` }), h("td", {}, h("span", { class: `badge ${q.status === "ok" ? "ok" : "bad"}`, text: q.status })),
+    h("td", { class: "small mono pre-wrap", text: q.sql_text.slice(0, 300) }), h("td", { class: "small", text: q.rationale || q.question || "" })));
+  v.replaceChildren(
+    h("div", { class: "row between mb" }, h("h1", { text: `Mapa: ${conn}` }), h("a", { class: "btn ghost small", href: "#/explorador", text: "← Explorador" })),
+    h("div", { class: "panel" }, h("dl", { class: "kv" },
+      h("dt", { text: "Base" }), h("dd", { class: "mono", text: d.database }),
+      h("dt", { text: "Última observación" }), h("dd", { text: snap ? fmtDate(snap.observed_at) : "nunca" }),
+      h("dt", { text: "Huella del esquema" }), h("dd", { class: "mono small", text: snap ? snap.fingerprint.slice(0, 16) : "—" }),
+      h("dt", { text: "Observaciones" }), h("dd", { text: `${d.snapshots.length}` })),
+      h("p", { class: "muted small", text: "comprobado = calculado por el sistema con una consulta registrada · inferencia = interpretación del modelo · hipótesis = sin verificar · descartado = refutado por una consulta" })),
+    h("div", { class: "panel" }, h("h2", { text: "Estructura" }), snap ? tables : h("p", { class: "muted", text: "Todavía no se exploró." })),
+    section("Relaciones", rels),
+    section("Estadísticas", byKind("estadistica")),
+    section("Advertencias", byKind("advertencia")),
+    section("Cambios de esquema", byKind("cambio")),
+    section("Descubrimientos (inferencias del modelo)", byKind("hallazgo")),
+    section("Aplicaciones propuestas", byKind("oportunidad"), (f) => buildButton(conn, f)),
+    section("Incertidumbres", byKind("incertidumbre")),
+    d.obsolete.length ? section("Obsoleto (ya no existe en el esquema)", d.obsolete) : "",
+    h("div", { class: "panel" }, h("h2", { text: "Historial de consultas" }), h("div", { class: "scroll-x" }, h("table", {}, qtb))));
 }
 
 boot();

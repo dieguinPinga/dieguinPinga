@@ -28,6 +28,8 @@ from ..app import App
 from ..auth import Session
 from ..events import event_dict
 from .. import webproject
+from ..explorer.broker import BrokerError
+from ..explorer.mapstore import MapStore
 from ..files import MISSION_ID_RE, FileStoreError
 
 log = logging.getLogger(__name__)
@@ -389,7 +391,7 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "Parámetros inválidos") from None
         state = q.get("state")
         sql = ("SELECT id, title, state, attempt, max_attempts, model, created_at, started_at, finished_at,"
-               " updated_at, error FROM missions")
+               " updated_at, error, json_extract(spec_json, '$.mode') AS mode FROM missions")
         args: list = []
         if state:
             if not re.match(r"^[a-z]{3,20}$", state):
@@ -414,7 +416,15 @@ class Handler(BaseHTTPRequestHandler):
         pending = self.app.db.one("SELECT COUNT(*) FROM missions WHERE state='pendiente'")[0]
         if pending >= 20:
             raise HttpError(429, "La cola está llena (20 misiones pendientes)")
-        mid = self.app.missions.create(m, self.app.cfg.builder.name, s.username, conv_id)
+        model = self.app.cfg.builder.name
+        if m["spec"]["mode"] == "exploracion":
+            self._prepare_exploration(m)
+            model = self.app.cfg.explorer_model.name
+        elif m["spec"]["mode"] == "web":
+            model = self.app.cfg.web_model.name
+            if data.get("seed"):
+                self._seed_web(m, data["seed"], s)
+        mid = self.app.missions.create(m, model, s.username, conv_id)
         self.app.db.audit("mision_creada", username=s.username, target=mid, ip=self._ip(),
                           detail="ejecución aislada autorizada")
         self.app.mission_worker.notify()
@@ -627,6 +637,165 @@ class Handler(BaseHTTPRequestHandler):
         self._json(201, {"path": f"/p/{token}/index.html", "port": cfg.web_preview_port,
                          "origin": cfg.web_preview_origin or None, "label": label,
                          "expires_in": cfg.web_preview_minutes * 60})
+
+    # Explorador --------------------------------------------------------
+    def _explorer(self):
+        if not self.app.cfg.explorer_enabled:
+            raise HttpError(409, "El Explorador está desactivado en la configuración")
+        return self.app.brokers
+
+    def _broker(self, name: str):
+        try:
+            return self._explorer().get(name)
+        except BrokerError as e:
+            raise HttpError(404, str(e)) from None
+
+    def _prepare_exploration(self, m: dict) -> None:
+        cfg = self.app.cfg
+        spec = m["spec"]
+        broker = self._broker(spec["conn"])
+        if not broker.status.get("verified"):
+            raise HttpError(409, "La conexión no está verificada (fallo cerrado): " + str(broker.status.get("reason")))
+        busy = self.app.db.one("SELECT COUNT(*) FROM missions WHERE state IN ('pendiente','explorando')"
+                               " AND spec_json LIKE '%\"mode\": \"exploracion\"%'")[0]
+        if busy >= 3:
+            raise HttpError(429, "Ya hay exploraciones en cola o en curso")
+        spec["max_steps"] = min(spec["max_steps"], cfg.explorer_max_steps)
+        spec["max_queries"] = min(spec["max_queries"], cfg.explorer_max_queries)
+        spec["max_minutes"] = min(spec["max_minutes"], cfg.explorer_max_minutes)
+
+    def _seed_web(self, m: dict, seed, s: Session) -> None:
+        """Instantáneas de solo lectura para un tablero: consultas ejecutadas AHORA por el intermediario."""
+        if not isinstance(seed, dict):
+            raise HttpError(400, "Datos de origen inválidos")
+        broker = self._broker(str(seed.get("conn", "")))
+        queries = []
+        if seed.get("fact_id") is not None:
+            if not isinstance(seed["fact_id"], int):
+                raise HttpError(400, "Aplicación inválida")
+            row = self.app.db.one("SELECT data_json FROM explore_facts WHERE id=? AND conn=? AND kind='oportunidad'",
+                                  (seed["fact_id"], broker.name))
+            if row is None or not row[0]:
+                raise HttpError(404, "Aplicación propuesta inexistente")
+            app_data = json.loads(row[0])
+            for i, q in enumerate(app_data.get("consultas", [])[:5], 1):
+                if q.get("valida"):
+                    queries.append((f"consulta_{i}", q["sql"]))
+        for q in (seed.get("queries") or [])[:5]:
+            if not isinstance(q, dict) or not re.match(r"^[a-z0-9_]{1,40}$", str(q.get("nombre", ""))):
+                raise HttpError(400, "Cada consulta necesita un nombre en minúsculas (a-z, 0-9, _)")
+            queries.append((q["nombre"], str(q.get("sql", ""))))
+        if not queries:
+            raise HttpError(400, "No hay consultas válidas para generar datos")
+        seeds, total = {}, 0
+        per_file = min(self.app.cfg.web_max_file_kb, 100) * 1024
+        for name, sql in queries:
+            o = broker.run(sql, origin="constructor", tool="instantanea", question=f"Datos para el tablero: {name}",
+                           rationale="Instantánea solicitada por el operador para el Taller Web")
+            if o.status != "ok":
+                raise HttpError(400, f"La consulta «{name}» no se pudo ejecutar: {o.error}")
+            rows = o.rows
+            while True:
+                content = json.dumps({"nombre": name, "consulta": o.sql, "obtenido": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                                      "columnas": o.columns, "filas": rows, "recortado": o.truncated or len(rows) < len(o.rows)},
+                                     ensure_ascii=False, default=str)
+                if len(content.encode()) <= per_file or not rows:
+                    break
+                rows = rows[: len(rows) // 2]
+            total += len(content.encode())
+            if total > 200 * 1024:
+                raise HttpError(400, "Las instantáneas superan 200 KiB; use consultas más acotadas")
+            seeds[f"datos/{name}.json"] = content
+        m["spec"]["seed_files"] = seeds
+        m["description"] += ("\n\nDatos: instantáneas de solo lectura de la conexión «" + broker.name + "» en "
+                             + ", ".join(sorted(seeds)) + ".")
+        self.app.db.audit("instantaneas_web", username=s.username, target=broker.name, ip=self._ip(),
+                          detail=", ".join(sorted(seeds)))
+
+    @route("GET", "/api/explorer/connections")
+    def api_explorer_connections(self, s):
+        cfg = self.app.cfg
+        items = []
+        for b in self._explorer().brokers.values():
+            st = dict(b.status)
+            items.append({"name": b.name, "database": b.conn.database, "user": b.conn.user,
+                          "endpoint": b.conn.socket or f"{b.conn.host}:{b.conn.port}", "status": st,
+                          "map": self.app.db.one("SELECT COUNT(*) FROM explore_facts WHERE conn=? AND status='vigente'",
+                                                 (b.name,))[0]})
+        self._json(200, {"items": items, "limits": {
+            "max_steps": cfg.explorer_max_steps, "max_queries": cfg.explorer_max_queries,
+            "max_minutes": cfg.explorer_max_minutes, "query_timeout_s": cfg.explorer_query_timeout_s,
+            "max_rows": cfg.explorer_max_rows, "max_result_kb": cfg.explorer_max_result_kb,
+            "max_join_size": cfg.explorer_max_join_size}})
+
+    @route("POST", r"/api/explorer/connections/([a-z0-9_]{1,40})/verify")
+    def api_explorer_verify(self, s: Session, name):
+        info = self._broker(name).verify()
+        self.app.db.audit("verificar_conexion", username=s.username, target=name, ip=self._ip(),
+                          detail="verificada" if info.get("verified") else "bloqueada")
+        self._json(200, info)
+
+    @route("GET", r"/api/explorer/maps/([a-z0-9_]{1,40})")
+    def api_explorer_map(self, s, name):
+        b = self._broker(name)
+        maps = MapStore(self.app.db)
+        snap = maps.last_snapshot(name)
+        snaps = [dict(r) for r in self.app.db.all(
+            "SELECT id, mission_id, fingerprint, changes_json, observed_at FROM explore_snapshots WHERE conn=?"
+            " ORDER BY id DESC LIMIT 20", (name,))]
+        queries = [dict(r) for r in self.app.db.all(
+            "SELECT id, mission_id, step, origin, tool, question, rationale, sql_text, status, row_count, ms, truncated,"
+            " error, created_at FROM explore_queries WHERE conn=? ORDER BY id DESC LIMIT 150", (name,))]
+        missions = [dict(r) for r in self.app.db.all(
+            "SELECT id, title, state, created_at, finished_at FROM missions WHERE spec_json LIKE ? ORDER BY created_at DESC"
+            " LIMIT 30", (f'%"conn": "{name}"%',))]
+        self._json(200, {"conn": name, "database": b.conn.database, "snapshot": snap, "snapshots": snaps,
+                         "facts": maps.facts(name, limit=1000), "obsolete": maps.facts(name, status="obsoleto", limit=200),
+                         "queries": queries, "missions": missions})
+
+    @route("GET", r"/api/missions/([A-Za-z0-9-]{1,30})/exploration")
+    def api_exploration(self, s, mid):
+        row = self._mission(mid)
+        spec = json.loads(row["spec_json"])
+        if spec.get("mode") != "exploracion":
+            raise HttpError(409, "La misión no es una exploración")
+        steps = []
+        for r in self.app.db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY n, id", (mid,)):
+            d = dict(r)
+            d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
+            d["args"] = json.loads(d.pop("args_json") or "{}")
+            steps.append(d)
+        queries = []
+        for r in self.app.db.all("SELECT * FROM explore_queries WHERE mission_id=? ORDER BY id", (mid,)):
+            d = dict(r)
+            d["result"] = json.loads(d.pop("result_json") or "null")
+            queries.append(d)
+        facts = MapStore(self.app.db).facts(spec["conn"], limit=1000)
+        agent_q = sum(1 for q in queries if q["origin"] == "agente" and q["status"] not in ("rechazada",))
+        self._json(200, {"spec": spec, "steps": steps, "queries": queries,
+                         "facts": [f for f in facts if f["mission_id"] == mid],
+                         "uncertainties": [f for f in facts if f["kind"] == "incertidumbre"][:30],
+                         "progress": {"steps": len([x for x in steps if x["status"] != "en_curso"]),
+                                      "max_steps": spec["max_steps"], "queries": agent_q,
+                                      "max_queries": spec["max_queries"], "max_minutes": spec["max_minutes"]}})
+
+    @route("POST", r"/api/explorer/continue/([A-Za-z0-9-]{1,30})")
+    def api_exploration_continue(self, s: Session, mid):
+        row = self._mission(mid)
+        spec = json.loads(row["spec_json"])
+        if spec.get("mode") != "exploracion":
+            raise HttpError(409, "La misión no es una exploración")
+        if row["state"] not in ("completada", "cancelada", "fallida", "interrumpida"):
+            raise HttpError(409, "La exploración todavía está en curso")
+        spec.pop("tests_py", None)
+        spec["continuar"] = True
+        m = {"title": row["title"][:100] + " (continuación)", "description": row["description"], "spec": spec,
+             "tests_py": "", "max_attempts": 1}
+        self._prepare_exploration(m)
+        new = self.app.missions.create(m, self.app.cfg.explorer_model.name, s.username, row["conversation_id"])
+        self.app.db.audit("exploracion_continuada", username=s.username, target=mid, ip=self._ip(), detail=new)
+        self.app.mission_worker.notify()
+        self._json(201, {"id": new})
 
     # Conversaciones ----------------------------------------------------
     def _conv(self, cid: str):

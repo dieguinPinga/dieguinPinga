@@ -171,6 +171,72 @@ def cmd_check_config(args) -> int:
     return 0
 
 
+def _explorer_conn(cfg, name):
+    for c in cfg.explorer_connections:
+        if c.name == name:
+            return c
+    print(f"No existe la conexión «{name}» en [[explorer.connections]] de config.toml", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def cmd_explorer_setup(args) -> int:
+    """Genera la contraseña (archivo 0600) e imprime el SQL para crear la cuenta de SOLO LECTURA.
+
+    No se conecta a MariaDB ni ejecuta nada: el operador revisa y ejecuta el SQL como administrador.
+    El SQL usa el hash mysql_native_password, así la contraseña no aparece en el historial.
+    """
+    import hashlib
+    import secrets
+
+    cfg = _cfg(args)
+    c = _explorer_conn(cfg, args.conn)
+    path = Path(c.password_file)
+    if path.exists():
+        from .explorer.broker import BrokerError, read_password
+
+        try:
+            pw = read_password(str(path))
+        except BrokerError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        print(f"-- Se usa la contraseña existente de {path}", file=sys.stderr)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        pw = secrets.token_urlsafe(24)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pw + "\n")
+        print(f"-- Contraseña generada en {path} (0600). No se muestra.", file=sys.stderr)
+    digest = "*" + hashlib.sha1(hashlib.sha1(pw.encode()).digest()).hexdigest().upper()
+    host = "localhost" if c.socket or c.host == "localhost" else c.host
+    db_escaped = c.database.replace("_", "\\_").replace("%", "\\%")
+    print(f"""-- Ejecutar como administrador de MariaDB (por ejemplo: sudo mariadb < este_archivo.sql)
+-- Crea una cuenta EXCLUSIVA de solo lectura para Constructor IA. No modifica otras cuentas ni la configuración global.
+CREATE USER '{c.user}'@'{host}' IDENTIFIED BY PASSWORD '{digest}'
+  WITH MAX_USER_CONNECTIONS 2 MAX_QUERIES_PER_HOUR 3000 MAX_STATEMENT_TIME 15;
+GRANT SELECT, SHOW VIEW ON `{db_escaped}`.* TO '{c.user}'@'{host}';
+SHOW GRANTS FOR '{c.user}'@'{host}';""")
+    return 0
+
+
+def cmd_explorer_verify(args) -> int:
+    cfg = _cfg(args)
+    c = _explorer_conn(cfg, args.conn)
+    from .db import Database
+    from .explorer.broker import Broker
+
+    db = Database(cfg.db_path)
+    db.migrate()
+    info = Broker(cfg, c, db).verify()
+    for k in ("verified", "current_user", "server_version", "session", "write_probe", "reason"):
+        if k in info:
+            print(f"{k}: {info[k]}")
+    for g in info.get("grants", []):
+        print("grant:", g)
+    print("RESULTADO:", "CONEXIÓN VERIFICADA (solo lectura)" if info["verified"] else "CONEXIÓN BLOQUEADA")
+    return 0 if info["verified"] else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="constructor-ia", description=f"Constructor IA {VERSION}")
     p.add_argument("--config", help="Ruta del config.toml")
@@ -189,5 +255,11 @@ def main(argv=None) -> int:
     a.add_argument("dest", nargs="?")
     a.set_defaults(fn=cmd_backup)
     sub.add_parser("check-config", help="Valida y muestra la configuración").set_defaults(fn=cmd_check_config)
+    a = sub.add_parser("explorer-setup", help="Genera la contraseña e imprime el SQL de la cuenta de solo lectura")
+    a.add_argument("conn")
+    a.set_defaults(fn=cmd_explorer_setup)
+    a = sub.add_parser("explorer-verify", help="Verifica privilegios y límites de una conexión del Explorador")
+    a.add_argument("conn")
+    a.set_defaults(fn=cmd_explorer_verify)
     args = p.parse_args(argv)
     return args.fn(args)

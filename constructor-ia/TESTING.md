@@ -18,11 +18,13 @@ python3 -m unittest discover -s tests -t . -v
 
 | `tests/test_taller_web.py` (26) | Taller Web: extracción de varios archivos, rechazo de rutas peligrosas (`..`, `/etc/passwd`, `./../`, tipos no permitidos), límites, fusión con el intento previo, ZIP; validación de misiones y configuración web; CSP de la vista previa; verificación en sandbox real (proyecto correcto con y sin node, `node --check` con módulos, errores heurísticos de JS, recursos externos, scripts y eventos en línea, referencias rotas, rutas absolutas, ids duplicados o inexistentes, requisitos del operador, el JS nunca se ejecuta); motor (reparación que reutiliza archivos, versiones por intento, rutas maliciosas nunca escritas); servidor de vista previa (token, cabeceras, sin cookies, 404 ante traversal y tokens vencidos, 405 en POST, Host); el panel enmarca solo la vista previa y rechaza `Sec-Fetch-Site: same-site`; ZIP autenticado; fallback a ZIP. |
 
+| `tests/test_explorer.py` (27) | Explorador con MariaDB 10.11 real y privado: filtro SQL, privilegios, intermediario (ataques con el filtro desactivado, límites, `KILL`, cancelación, aislamiento, registros), agente sobre bases de nombres aleatorios, continuación con cambios de esquema, detención, API y tableros con instantáneas. Detalle en EXPLORADOR.md. |
+
 ### Resultado de la última ejecución (entorno de desarrollo de Claude)
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 104 tests in 52.457s   (v0.2.0; incluye Taller Web)
+Ran 131 tests in 65.338s   (v0.3.0; incluye Taller Web y Explorador con MariaDB 10.11.14 real)
 OK
 ```
 

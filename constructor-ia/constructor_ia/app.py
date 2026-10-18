@@ -39,6 +39,13 @@ class App:
         self.executor = executor or Executor(cfg)
         self.engine = Engine(cfg, self.db, self.bus, self.missions, self.files, self.ollama, self.gate,
                              self.executor)
+        from .explorer.agent import Explorer
+        from .explorer.broker import BrokerRegistry
+
+        self.brokers = BrokerRegistry(cfg, self.db)
+        if cfg.explorer_enabled:
+            self.engine.explorer = Explorer(cfg, self.db, self.bus, self.missions, self.files, self.ollama, self.gate,
+                                            self.brokers)
         self.mission_worker = MissionWorker(self.engine, self.missions, self.db)
         self.chat_worker = ChatWorker(cfg, self.db, self.bus, self.files, self.ollama, self.gate)
         self._status_cache: tuple[float, dict] = (0.0, {})
@@ -67,6 +74,8 @@ class App:
                 log.info("Autodiagnóstico del aislamiento: correcto")
             else:
                 log.error("Ejecución BLOQUEADA: %s", self.executor.disabled_reason)
+        if self.cfg.explorer_enabled and self.brokers.brokers:
+            threading.Thread(target=self.brokers.verify_all, name="verify-db", daemon=True).start()
         self.mission_worker.start()
         self.chat_worker.start()
         threading.Thread(target=self._maintenance, name="maintenance", daemon=True).start()

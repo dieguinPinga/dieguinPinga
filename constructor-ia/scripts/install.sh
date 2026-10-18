@@ -59,7 +59,7 @@ STAGE="$PREFIX/app.new"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 for item in constructor_ia static config/config.example.toml systemd scripts tests \
-            README.md ARCHITECTURE.md SECURITY.md INSTALL.md TESTING.md TALLER_WEB.md requirements.txt; do
+            README.md ARCHITECTURE.md SECURITY.md INSTALL.md TESTING.md TALLER_WEB.md EXPLORADOR.md requirements.txt; do
   [ -e "$SRC/$item" ] || continue
   mkdir -p "$STAGE/$(dirname "$item")"
   cp -R "$SRC/$item" "$STAGE/$item"

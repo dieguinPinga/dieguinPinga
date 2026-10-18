@@ -90,16 +90,17 @@ class OllamaClient:
         return str(self._get_json("/api/version").get("version", "?"))
 
     def chat(self, model: ModelConfig, messages: list[dict], cancel: threading.Event | None = None,
-             on_progress=None) -> Generation:
+             on_progress=None, fmt=None) -> Generation:
+        """fmt: None, "json" o un esquema JSON (salida estructurada de Ollama)."""
         try:
-            return self._chat(model, messages, cancel, on_progress, use_think=True)
+            return self._chat(model, messages, cancel, on_progress, use_think=True, fmt=fmt)
         except OllamaError as e:
             # Modelos sin soporte de "think" rechazan el campo: reintentar sin él.
             if "think" in str(e).lower():
-                return self._chat(model, messages, cancel, on_progress, use_think=False)
+                return self._chat(model, messages, cancel, on_progress, use_think=False, fmt=fmt)
             raise
 
-    def _chat(self, model: ModelConfig, messages, cancel, on_progress, use_think: bool) -> Generation:
+    def _chat(self, model: ModelConfig, messages, cancel, on_progress, use_think: bool, fmt=None) -> Generation:
         payload = {
             "model": model.name,
             "messages": messages,
@@ -112,6 +113,8 @@ class OllamaClient:
         }
         if use_think:
             payload["think"] = model.think
+        if fmt is not None:
+            payload["format"] = fmt
         start = time.monotonic()
         conn = self._conn(timeout=model.timeout_s)
         stop = threading.Event()

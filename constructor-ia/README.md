@@ -18,6 +18,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
 - **Página web / Tablero** (Taller Web, v0.2.0): proyecto HTML/CSS/JS de varios archivos con
   verificación de estructura, sintaxis, referencias y requisitos; vista previa aislada en un
   origen separado (puerto 8767) y descarga ZIP. Ver [TALLER_WEB.md](TALLER_WEB.md).
+- **Exploración de base de datos** (Explorador, v0.3.0): la IA descubre por sí misma una base MariaDB
+  desconocida con herramientas de solo lectura, construye un mapa persistente (hechos comprobados vs.
+  inferencias), propone aplicaciones y construye tableros con instantáneas. Ver [EXPLORADOR.md](EXPLORADOR.md).
 
 ## Ciclo de una misión
 
@@ -55,6 +58,7 @@ detuvo durante la misión; nunca se re-ejecuta sola, se puede *reencolar*).
 - [ARCHITECTURE.md](ARCHITECTURE.md) — componentes, datos, cola, qué usa Ollama directo y qué OpenClaw.
 - [SECURITY.md](SECURITY.md) — modelo de amenazas, controles, riesgos restantes.
 - [TALLER_WEB.md](TALLER_WEB.md) — misiones web, vista previa aislada, seguridad, demostración y actualización.
+- [EXPLORADOR.md](EXPLORADOR.md) — explorador de bases de datos: arquitectura, seguridad, cuenta SQL restringida, actualización y rollback.
 - [TESTING.md](TESTING.md) — pruebas automáticas (con resultados) y verificaciones obligatorias en la VivoBook.
 
 ## Inicio rápido (en la VivoBook, por SSH)

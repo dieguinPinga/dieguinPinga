@@ -33,6 +33,17 @@ class ModelConfig:
 
 
 @dataclass
+class ExplorerConnection:
+    name: str
+    database: str
+    user: str
+    password_file: str
+    host: str = "127.0.0.1"
+    port: int = 3306
+    socket: str = ""
+
+
+@dataclass
 class Config:
     base_dir: Path
     data_dir: Path
@@ -61,6 +72,19 @@ class Config:
     web_max_file_kb: int = 100
     web_max_total_kb: int = 400
     web_node: str = "/usr/bin/node"
+
+    explorer_enabled: bool = True
+    explorer_connections: list[ExplorerConnection] = field(default_factory=list)
+    explorer_model: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:4b-instruct", num_ctx=6144,
+                                                                            num_predict=900, timeout_s=300))
+    explorer_max_steps: int = 25
+    explorer_max_queries: int = 60
+    explorer_max_minutes: int = 45
+    explorer_query_timeout_s: int = 10
+    explorer_max_rows: int = 200
+    explorer_max_result_kb: int = 256
+    explorer_max_join_size: int = 20_000_000
+    explorer_sample_rows: int = 100_000
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -162,6 +186,7 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     sandbox = raw.get("sandbox", {})
     retention = raw.get("retention", {})
     web = raw.get("web", {})
+    explorer = raw.get("explorer", {})
 
     data_dir = Path(server.get("data_dir", base_dir / "data")).expanduser()
     if not data_dir.is_absolute():
@@ -219,6 +244,7 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     cfg.web_max_file_kb = _int(web, "max_file_kb", cfg.web_max_file_kb, 4, 512)
     cfg.web_max_total_kb = _int(web, "max_total_kb", cfg.web_max_total_kb, 16, 2048)
     cfg.web_node = _str(web, "node", cfg.web_node)
+    _load_explorer(cfg, explorer, ollama.get("explorer", {}))
     if not cfg.web_node.startswith("/usr/"):
         raise ConfigError("web.node debe estar bajo /usr (es lo único visible dentro del sandbox)")
 
@@ -240,3 +266,51 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     cfg.log_max_bytes = _int(retention, "log_max_bytes", cfg.log_max_bytes, 100_000, 50_000_000)
     cfg.log_backups = _int(retention, "log_backups", cfg.log_backups, 1, 20)
     return cfg
+
+
+CONN_NAME_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+DB_NAME_RE = re.compile(r"^[A-Za-z0-9_$]{1,64}$")
+SQL_USER_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+
+
+def _load_explorer(cfg: Config, ex: dict, model: dict) -> None:
+    cfg.explorer_enabled = _bool(ex, "enabled", cfg.explorer_enabled)
+    cfg.explorer_model = _model(model, cfg.explorer_model)
+    cfg.explorer_max_steps = _int(ex, "max_steps", cfg.explorer_max_steps, 1, 200)
+    cfg.explorer_max_queries = _int(ex, "max_queries", cfg.explorer_max_queries, 1, 500)
+    cfg.explorer_max_minutes = _int(ex, "max_minutes", cfg.explorer_max_minutes, 1, 480)
+    cfg.explorer_query_timeout_s = _int(ex, "query_timeout_s", cfg.explorer_query_timeout_s, 1, 60)
+    cfg.explorer_max_rows = _int(ex, "max_rows", cfg.explorer_max_rows, 1, 2000)
+    cfg.explorer_max_result_kb = _int(ex, "max_result_kb", cfg.explorer_max_result_kb, 4, 4096)
+    cfg.explorer_max_join_size = _int(ex, "max_join_size", cfg.explorer_max_join_size, 1000, 2_000_000_000)
+    cfg.explorer_sample_rows = _int(ex, "sample_rows", cfg.explorer_sample_rows, 100, 10_000_000)
+    conns = ex.get("connections", [])
+    if not isinstance(conns, list) or len(conns) > 10:
+        raise ConfigError("explorer.connections debe ser una lista (máximo 10)")
+    seen = set()
+    for c in conns:
+        if not isinstance(c, dict):
+            raise ConfigError("Conexión del explorador inválida")
+        name = _str(c, "name", "")
+        if not CONN_NAME_RE.match(name) or name in seen:
+            raise ConfigError(f"Nombre de conexión inválido o repetido: {name!r}")
+        seen.add(name)
+        database = _str(c, "database", "")
+        if not DB_NAME_RE.match(database) or database.lower() in ("mysql", "information_schema",
+                                                                   "performance_schema", "sys"):
+            raise ConfigError(f"{name}: base de datos inválida o del sistema: {database!r}")
+        user = _str(c, "user", "")
+        if not SQL_USER_RE.match(user) or user.lower() == "root":
+            raise ConfigError(f"{name}: usuario SQL inválido (nunca root): {user!r}")
+        pw = _str(c, "password_file", "")
+        if not os.path.isabs(pw):
+            raise ConfigError(f"{name}: password_file debe ser una ruta absoluta")
+        host = c.get("host", "127.0.0.1")
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            raise ConfigError(f"{name}: solo se admiten servidores MariaDB locales (127.0.0.1 o socket)")
+        sock = c.get("socket", "")
+        if sock and (not isinstance(sock, str) or not os.path.isabs(sock)):
+            raise ConfigError(f"{name}: socket debe ser una ruta absoluta")
+        cfg.explorer_connections.append(ExplorerConnection(
+            name=name, database=database, user=user, password_file=pw, host=host,
+            port=_int(c, "port", 3306, 1, 65535), socket=sock or ""))
