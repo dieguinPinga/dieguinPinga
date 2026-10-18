@@ -1,0 +1,64 @@
+# Configuración de Constructor IA.
+# Copiar a config/config.toml (el instalador lo hace si no existe) y ajustar.
+# NO guardar contraseñas ni tokens en este archivo: los usuarios se crean con
+#   ~/constructor-ia/bin/constructor-ia adduser diego
+
+[server]
+# Solo loopback por defecto. Para acceso directo por Tailscale sin tocar su
+# configuración, agregar la IP 100.x de la VivoBook (ver INSTALL.md §6).
+listen = ["127.0.0.1"]
+port = 8766
+# Nombres admitidos en la cabecera Host (protección contra DNS rebinding).
+# Un valor que empieza con "." admite cualquier subdominio (p. ej. ".ts.net").
+allowed_hosts = ["127.0.0.1", "localhost", ".ts.net"]
+# true si se accede por HTTPS (Tailscale Serve) o por http://127.0.0.1 / túnel SSH.
+# Poner false solo si se accede por http://100.x.y.z (IP Tailscale directa).
+cookie_secure = true
+session_idle_hours = 12
+session_max_days = 7
+max_connections = 32
+max_sse_clients = 6
+
+[ollama]
+# Instancia CPU dedicada. La instancia principal (11434) está prohibida.
+url = "http://127.0.0.1:11435"
+
+[ollama.builder]
+name = "qwen3:4b-instruct"
+num_ctx = 4096
+num_predict = 1536
+temperature = 0.2
+timeout_s = 300
+think = false
+
+[ollama.chat]
+# Mismo motor CPU (OLLAMA_MAX_LOADED_MODELS=1): alternar entre modelos implica recargarlos.
+# Para evitar recargas puede usarse también "qwen3:4b-instruct".
+name = "qwen3:1.7b"
+num_ctx = 4096
+num_predict = 768
+temperature = 0.5
+timeout_s = 240
+think = false
+
+[engine]
+max_attempts = 3
+max_attempts_limit = 6
+
+[sandbox]
+# Si el autodiagnóstico falla, la ejecución queda bloqueada automáticamente.
+enabled = true
+python = "/usr/bin/python3"
+memory_mb = 256
+tasks_max = 32
+cpu_percent = 50
+timeout_s = 20
+case_timeout_s = 5
+tmpfs_mb = 32
+seccomp = true
+
+[retention]
+event_days = 60
+max_events_per_mission = 2000
+log_max_bytes = 2000000
+log_backups = 3

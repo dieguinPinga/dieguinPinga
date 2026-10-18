@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1318">
+<meta name="referrer" content="no-referrer">
+<title>Constructor IA</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top" id="top" hidden>
+  <div class="brand"><span class="logo">⬢</span> Constructor IA</div>
+  <nav id="nav">
+    <a href="#/chat" data-nav="chat">Conversación</a>
+    <a href="#/misiones" data-nav="misiones">Misiones</a>
+    <a href="#/nueva" data-nav="nueva">Nueva misión</a>
+    <a href="#/aprobaciones" data-nav="aprobaciones">Aprobaciones</a>
+    <a href="#/estado" data-nav="estado">Estado</a>
+  </nav>
+  <div class="who"><span id="live" class="dot" title="Conexión en vivo"></span><span id="running" class="running"></span><button id="logout" class="btn small ghost" type="button">Salir</button></div>
+</header>
+<main id="view" class="view"><p class="muted center">Cargando…</p></main>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

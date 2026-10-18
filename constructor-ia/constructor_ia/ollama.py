@@ -1,0 +1,206 @@
+"""Cliente mínimo para la API local de Ollama (instancia CPU, puerto 11435).
+
+Usa streaming para poder cancelar una generación cerrando la conexión (Ollama
+aborta la inferencia cuando el cliente se desconecta) y para detectar
+respuestas incompletas (`done_reason == "length"` o flujo cortado).
+"""
+from __future__ import annotations
+
+import http.client
+import json
+import re
+import threading
+import time
+from dataclasses import dataclass
+from urllib.parse import urlsplit
+
+from .config import ModelConfig
+
+THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
+MAX_RESPONSE_CHARS = 200_000
+
+
+class OllamaError(Exception):
+    pass
+
+
+class Cancelled(Exception):
+    pass
+
+
+@dataclass
+class Generation:
+    text: str
+    done: bool
+    done_reason: str | None
+    prompt_tokens: int | None
+    eval_tokens: int | None
+    duration_ms: int
+    truncated: bool
+
+
+class InferenceGate:
+    """Garantiza una sola inferencia pesada a la vez en todo el proceso."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.holder: str | None = None
+
+    def acquire(self, who: str, cancel: threading.Event | None = None) -> None:
+        while not self._lock.acquire(timeout=0.5):
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+        self.holder = who
+
+    def release(self) -> None:
+        self.holder = None
+        self._lock.release()
+
+
+class OllamaClient:
+    def __init__(self, base_url: str):
+        parts = urlsplit(base_url)
+        self.host = parts.hostname or "127.0.0.1"
+        self.port = parts.port or 11435
+
+    def _conn(self, timeout: float) -> http.client.HTTPConnection:
+        return http.client.HTTPConnection(self.host, self.port, timeout=timeout)
+
+    def _get_json(self, path: str, timeout: float = 3.0) -> dict:
+        conn = self._conn(timeout)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            body = resp.read(2_000_000)
+            if resp.status != 200:
+                raise OllamaError(f"HTTP {resp.status} en {path}")
+            return json.loads(body)
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            raise OllamaError(f"Ollama no disponible: {e}") from None
+        finally:
+            conn.close()
+
+    def tags(self) -> list[str]:
+        return [m.get("name", "") for m in self._get_json("/api/tags").get("models", [])]
+
+    def loaded(self) -> list[str]:
+        return [m.get("name", "") for m in self._get_json("/api/ps").get("models", [])]
+
+    def version(self) -> str:
+        return str(self._get_json("/api/version").get("version", "?"))
+
+    def chat(self, model: ModelConfig, messages: list[dict], cancel: threading.Event | None = None,
+             on_progress=None) -> Generation:
+        try:
+            return self._chat(model, messages, cancel, on_progress, use_think=True)
+        except OllamaError as e:
+            # Modelos sin soporte de "think" rechazan el campo: reintentar sin él.
+            if "think" in str(e).lower():
+                return self._chat(model, messages, cancel, on_progress, use_think=False)
+            raise
+
+    def _chat(self, model: ModelConfig, messages, cancel, on_progress, use_think: bool) -> Generation:
+        payload = {
+            "model": model.name,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "num_ctx": model.num_ctx,
+                "num_predict": model.num_predict,
+                "temperature": model.temperature,
+            },
+        }
+        if use_think:
+            payload["think"] = model.think
+        start = time.monotonic()
+        conn = self._conn(timeout=model.timeout_s)
+        stop = threading.Event()
+        why: list[str] = []
+
+        def watchdog():
+            # Cierra el socket si se cancela o se agota el plazo total: Ollama
+            # detecta la desconexión y aborta la inferencia.
+            while not stop.wait(0.5):
+                if cancel is not None and cancel.is_set():
+                    why.append("cancel")
+                elif time.monotonic() - start > model.timeout_s:
+                    why.append("timeout")
+                else:
+                    continue
+                try:
+                    if conn.sock is not None:
+                        conn.sock.shutdown(2)
+                except OSError:
+                    pass
+                return
+
+        wd = threading.Thread(target=watchdog, daemon=True)
+        wd.start()
+        parts: list[str] = []
+        size = 0
+        final: dict = {}
+
+        def check_abort():
+            if why and why[0] == "cancel":
+                raise Cancelled()
+            if why:
+                raise OllamaError(f"Tiempo de generación agotado ({model.timeout_s} s)")
+
+        try:
+            try:
+                conn.request("POST", "/api/chat", body=json.dumps(payload),
+                             headers={"Content-Type": "application/json"})
+                resp = conn.getresponse()
+            except (OSError, http.client.HTTPException) as e:
+                check_abort()
+                raise OllamaError(f"No se pudo contactar a Ollama: {e}") from None
+            if resp.status != 200:
+                body = resp.read(4000).decode("utf-8", "replace")
+                try:
+                    msg = json.loads(body).get("error", body)
+                except ValueError:
+                    msg = body
+                raise OllamaError(f"Ollama respondió HTTP {resp.status}: {str(msg)[:300]}")
+            last_progress = 0.0
+            while True:
+                try:
+                    line = resp.readline(1_000_000)
+                except (OSError, http.client.HTTPException) as e:
+                    check_abort()
+                    raise OllamaError(f"Conexión con Ollama interrumpida: {e}") from None
+                check_abort()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except ValueError:
+                    raise OllamaError("Respuesta de Ollama mal formada") from None
+                if "error" in chunk:
+                    raise OllamaError(f"Ollama: {str(chunk['error'])[:300]}")
+                piece = (chunk.get("message") or {}).get("content") or ""
+                if piece:
+                    parts.append(piece)
+                    size += len(piece)
+                    if size > MAX_RESPONSE_CHARS:
+                        raise OllamaError("Respuesta del modelo demasiado larga")
+                    if on_progress and time.monotonic() - last_progress > 5:
+                        last_progress = time.monotonic()
+                        on_progress(size)
+                if chunk.get("done"):
+                    final = chunk
+                    break
+        finally:
+            stop.set()
+            conn.close()
+        text = THINK_RE.sub("", "".join(parts)).strip()
+        done = bool(final.get("done"))
+        reason = final.get("done_reason")
+        return Generation(
+            text=text, done=done, done_reason=reason,
+            prompt_tokens=final.get("prompt_eval_count"), eval_tokens=final.get("eval_count"),
+            duration_ms=int((time.monotonic() - start) * 1000),
+            truncated=(not done) or reason == "length",
+        )

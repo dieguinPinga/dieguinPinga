@@ -1,0 +1,4 @@
+# Constructor IA no tiene dependencias externas en tiempo de ejecución.
+# Usa solo la biblioteca estándar de Python >= 3.11 (tomllib, sqlite3, hashlib.scrypt).
+# El entorno virtual propio se crea igualmente para aislar el intérprete y
+# permitir añadir dependencias en el futuro sin tocar el Python del sistema.

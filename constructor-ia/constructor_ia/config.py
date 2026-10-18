@@ -1,0 +1,204 @@
+"""Carga y validación de configuración (TOML).
+
+Todos los valores tienen límites seguros; un valor fuera de rango es un error
+de configuración y el servidor no arranca (fallo cerrado).
+"""
+from __future__ import annotations
+
+import ipaddress
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+class ConfigError(Exception):
+    pass
+
+
+# Puertos que pertenecen a servicios existentes en la VivoBook y que nunca
+# deben usarse para escuchar.
+RESERVED_PORTS = {1880, 3306, 11434, 11435, 18789}
+
+
+@dataclass
+class ModelConfig:
+    name: str
+    num_ctx: int = 4096
+    num_predict: int = 1536
+    temperature: float = 0.2
+    timeout_s: int = 300
+    think: bool = False
+
+
+@dataclass
+class Config:
+    base_dir: Path
+    data_dir: Path
+    listen: list[str] = field(default_factory=lambda: ["127.0.0.1"])
+    port: int = 8766
+    allowed_hosts: list[str] = field(default_factory=lambda: ["127.0.0.1", "localhost", ".ts.net"])
+    cookie_secure: bool = True
+    session_idle_hours: int = 12
+    session_max_days: int = 7
+    max_connections: int = 32
+    max_sse_clients: int = 6
+
+    ollama_url: str = "http://127.0.0.1:11435"
+    builder: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:4b-instruct"))
+    chat: ModelConfig = field(default_factory=lambda: ModelConfig("qwen3:1.7b", num_predict=768, temperature=0.5, timeout_s=240))
+
+    max_attempts: int = 3
+    max_attempts_limit: int = 6
+
+    sandbox_enabled: bool = True
+    sandbox_python: str = "/usr/bin/python3"
+    sandbox_memory_mb: int = 256
+    sandbox_tasks: int = 32
+    sandbox_cpu_percent: int = 50
+    sandbox_timeout_s: int = 20
+    sandbox_case_timeout_s: int = 5
+    sandbox_tmpfs_mb: int = 32
+    sandbox_seccomp: bool = True
+
+    event_retention_days: int = 60
+    max_events_per_mission: int = 2000
+    log_max_bytes: int = 2_000_000
+    log_backups: int = 3
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "constructor.db"
+
+    @property
+    def missions_dir(self) -> Path:
+        return self.data_dir / "missions"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.data_dir / "runs"
+
+    @property
+    def log_dir(self) -> Path:
+        return self.data_dir / "logs"
+
+
+def _int(d: dict, key: str, default: int, lo: int, hi: int) -> int:
+    v = d.get(key, default)
+    if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+        raise ConfigError(f"{key} debe ser un entero entre {lo} y {hi}")
+    return v
+
+
+def _float(d: dict, key: str, default: float, lo: float, hi: float) -> float:
+    v = d.get(key, default)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        raise ConfigError(f"{key} debe ser un número entre {lo} y {hi}")
+    return float(v)
+
+
+def _bool(d: dict, key: str, default: bool) -> bool:
+    v = d.get(key, default)
+    if not isinstance(v, bool):
+        raise ConfigError(f"{key} debe ser true o false")
+    return v
+
+
+def _str(d: dict, key: str, default: str) -> str:
+    v = d.get(key, default)
+    if not isinstance(v, str) or not v or len(v) > 200:
+        raise ConfigError(f"{key} debe ser un texto no vacío")
+    return v
+
+
+def _model(d: dict, default: ModelConfig) -> ModelConfig:
+    return ModelConfig(
+        name=_str(d, "name", default.name),
+        num_ctx=_int(d, "num_ctx", default.num_ctx, 1024, 16384),
+        num_predict=_int(d, "num_predict", default.num_predict, 64, 4096),
+        temperature=_float(d, "temperature", default.temperature, 0.0, 1.5),
+        timeout_s=_int(d, "timeout_s", default.timeout_s, 10, 900),
+        think=_bool(d, "think", default.think),
+    )
+
+
+def _validate_ollama_url(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme != "http" or parts.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ConfigError("ollama_url debe ser http://127.0.0.1:<puerto> (solo loopback)")
+    if parts.port == 11434:
+        raise ConfigError("ollama_url no puede apuntar a la instancia principal 11434; usar la instancia CPU 11435")
+    return url.rstrip("/")
+
+
+def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
+    base_dir = Path(base_dir or os.environ.get("CIA_BASE_DIR") or Path(__file__).resolve().parent.parent)
+    if path is None:
+        env = os.environ.get("CIA_CONFIG")
+        path = Path(env) if env else base_dir / "config" / "config.toml"
+    raw: dict = {}
+    if path.exists():
+        with open(path, "rb") as fh:
+            raw = tomllib.load(fh)
+    server = raw.get("server", {})
+    ollama = raw.get("ollama", {})
+    engine = raw.get("engine", {})
+    sandbox = raw.get("sandbox", {})
+    retention = raw.get("retention", {})
+
+    data_dir = Path(server.get("data_dir", base_dir / "data")).expanduser()
+    if not data_dir.is_absolute():
+        data_dir = base_dir / data_dir
+    cfg = Config(base_dir=base_dir, data_dir=data_dir.resolve())
+
+    listen = server.get("listen", cfg.listen)
+    if not isinstance(listen, list) or not listen or len(listen) > 4:
+        raise ConfigError("server.listen debe ser una lista de 1 a 4 direcciones IP")
+    for addr in listen:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except (ValueError, TypeError):
+            raise ConfigError(f"Dirección de escucha inválida: {addr!r}") from None
+        if ip.is_unspecified:
+            raise ConfigError("No se permite escuchar en 0.0.0.0/:: (exposición a toda la red)")
+        if not (ip.is_loopback or ip in ipaddress.ip_network("100.64.0.0/10") or
+                ip in ipaddress.ip_network("fd7a:115c:a1e0::/48")):
+            raise ConfigError(f"{addr}: solo se admite loopback o una IP Tailscale (100.64.0.0/10)")
+    cfg.listen = list(listen)
+    cfg.port = _int(server, "port", cfg.port, 1024, 65535)
+    if cfg.port in RESERVED_PORTS:
+        raise ConfigError(f"El puerto {cfg.port} pertenece a un servicio existente")
+    hosts = server.get("allowed_hosts", cfg.allowed_hosts)
+    if not isinstance(hosts, list) or not all(isinstance(h, str) and h for h in hosts):
+        raise ConfigError("server.allowed_hosts debe ser una lista de textos")
+    cfg.allowed_hosts = [h.lower() for h in hosts]
+    cfg.cookie_secure = _bool(server, "cookie_secure", cfg.cookie_secure)
+    cfg.session_idle_hours = _int(server, "session_idle_hours", cfg.session_idle_hours, 1, 168)
+    cfg.session_max_days = _int(server, "session_max_days", cfg.session_max_days, 1, 90)
+    cfg.max_connections = _int(server, "max_connections", cfg.max_connections, 4, 128)
+    cfg.max_sse_clients = _int(server, "max_sse_clients", cfg.max_sse_clients, 1, 32)
+
+    cfg.ollama_url = _validate_ollama_url(_str(ollama, "url", cfg.ollama_url))
+    cfg.builder = _model(ollama.get("builder", {}), cfg.builder)
+    cfg.chat = _model(ollama.get("chat", {}), cfg.chat)
+
+    cfg.max_attempts_limit = _int(engine, "max_attempts_limit", cfg.max_attempts_limit, 1, 10)
+    cfg.max_attempts = _int(engine, "max_attempts", cfg.max_attempts, 1, cfg.max_attempts_limit)
+
+    cfg.sandbox_enabled = _bool(sandbox, "enabled", cfg.sandbox_enabled)
+    cfg.sandbox_python = _str(sandbox, "python", cfg.sandbox_python)
+    cfg.sandbox_memory_mb = _int(sandbox, "memory_mb", cfg.sandbox_memory_mb, 64, 1024)
+    cfg.sandbox_tasks = _int(sandbox, "tasks_max", cfg.sandbox_tasks, 4, 128)
+    cfg.sandbox_cpu_percent = _int(sandbox, "cpu_percent", cfg.sandbox_cpu_percent, 10, 100)
+    cfg.sandbox_timeout_s = _int(sandbox, "timeout_s", cfg.sandbox_timeout_s, 5, 120)
+    cfg.sandbox_case_timeout_s = _int(sandbox, "case_timeout_s", cfg.sandbox_case_timeout_s, 1, 30)
+    cfg.sandbox_tmpfs_mb = _int(sandbox, "tmpfs_mb", cfg.sandbox_tmpfs_mb, 4, 256)
+    cfg.sandbox_seccomp = _bool(sandbox, "seccomp", cfg.sandbox_seccomp)
+
+    cfg.event_retention_days = _int(retention, "event_days", cfg.event_retention_days, 1, 3650)
+    cfg.max_events_per_mission = _int(retention, "max_events_per_mission", cfg.max_events_per_mission, 100, 20000)
+    cfg.log_max_bytes = _int(retention, "log_max_bytes", cfg.log_max_bytes, 100_000, 50_000_000)
+    cfg.log_backups = _int(retention, "log_backups", cfg.log_backups, 1, 20)
+    return cfg

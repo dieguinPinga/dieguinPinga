@@ -1,0 +1,33 @@
+# Servicio systemd de USUARIO para Constructor IA.
+# Lo instala scripts/install.sh en ~/.config/systemd/user/ pero NO lo habilita:
+# la habilitación (arranque automático) la decide el operador tras las pruebas.
+[Unit]
+Description=Constructor IA - servidor local de misiones de programacion
+Documentation=file://%h/constructor-ia/app/README.md
+
+[Service]
+Type=simple
+Environment=CIA_BASE_DIR=%h/constructor-ia
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/constructor-ia/bin/constructor-ia serve
+# Detiene cualquier unidad de sandbox propia (cia-job-*) que hubiera quedado.
+ExecStopPost=-/usr/bin/systemctl --user stop cia-job-*.scope
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=45
+KillMode=mixed
+UMask=0077
+# Recursos del servidor (las ejecuciones aisladas tienen su propio scope y límites).
+MemoryHigh=300M
+MemoryMax=600M
+TasksMax=128
+# Prioridad baja frente a Vigilanti, Node-RED y demás servicios.
+CPUWeight=50
+IOWeight=50
+Nice=5
+# NoNewPrivileges NO se activa aquí: en Ubuntu 24.04 impediría que bwrap
+# reciba su perfil AppArmor de espacios de nombres. bwrap aplica
+# no_new_privs por sí mismo dentro del sandbox (verificado en el autodiagnóstico).
+
+[Install]
+WantedBy=default.target
