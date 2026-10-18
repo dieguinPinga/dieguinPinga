@@ -6,6 +6,8 @@ Certezas:
 * inferencia  — interpretación del modelo; cita consultas/hechos, pero no está verificada.
 * hipotesis   — candidato aún no probado (p. ej. relación sugerida por nombres de columnas).
 * descartado  — hipótesis refutada por una consulta.
+* sin_verificar — afirmación del modelo que NO se pudo contrastar con su evidencia (sin evidencia, evidencia
+                vacía o con error, o cifras que no aparecen en el resultado). No es un descubrimiento.
 Nada de esto escribe en la base explorada.
 """
 from __future__ import annotations
@@ -17,7 +19,7 @@ import time
 
 from ..db import Database
 
-CERTAINTIES = ("comprobado", "inferencia", "hipotesis", "descartado")
+CERTAINTIES = ("comprobado", "inferencia", "hipotesis", "descartado", "sin_verificar")
 KINDS = ("estructura", "relacion", "estadistica", "advertencia", "hallazgo", "incertidumbre", "oportunidad", "cambio")
 NUMERIC_RE = re.compile(r"^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|bit)", re.I)
 TEMPORAL_RE = re.compile(r"^(date|datetime|timestamp|time|year)", re.I)
@@ -245,7 +247,8 @@ class MapStore:
             self.upsert(conn, "estructura", "comprobado", subj,
                         f"{t['tipo']} {name}: {len(t['columnas'])} columnas"
                         + (f", clave primaria ({', '.join(pk)})" if pk else ", SIN clave primaria")
-                        + f", {len(t['indices'])} índices",
+                        + f", {len(t['indices'])} índices"
+                        + (f"; comentario: «{t['comentario'][:150]}»" if t.get("comentario") else ""),
                         data={"columnas": t["columnas"], "indices": t["indices"]}, evidence=ev_t + ev_c,
                         mission_id=mission_id)
             if t["filas_estimadas"] is not None:

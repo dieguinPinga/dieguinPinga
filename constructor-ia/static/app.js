@@ -862,13 +862,15 @@ async function viewStatus(v) {
 
 // ---------------------------------------------------------------- explorador
 const DEMO_EXPLORACION = "Explorá la base de datos que tenés disponible. No te voy a explicar qué contiene. Descubrí su estructura, investigá su información y construí un mapa de lo que encontrás. Identificá relaciones, patrones y oportunidades para desarrollar herramientas útiles. Cuando termines, presentame tus descubrimientos y tres aplicaciones que podrías construir.";
-const CERT = { comprobado: "comprobado", inferencia: "inferencia", hipotesis: "hipótesis", descartado: "descartado" };
+const CERT = { comprobado: "comprobado", inferencia: "inferencia", hipotesis: "hipótesis", descartado: "descartado", sin_verificar: "sin verificar" };
+const QUALITY = { cumplido: "ok", parcial: "", insuficiente: "bad" };
 const certBadge = (c) => h("span", { class: `badge cert-${c}`, text: CERT[c] || c });
 
 function factItem(f, extra) {
   return h("div", { class: "item" },
     h("div", { class: "row between" }, h("span", { class: "small mono", text: `F${f.id}` }), certBadge(f.certainty)),
     h("div", { class: "small pre-wrap", text: f.text }),
+    f.data && f.data.verificacion && f.data.verificacion !== "respaldada" ? h("div", { class: "bad small", text: `No respaldada: ${f.data.detalle || f.data.verificacion}` }) : "",
     f.evidence && f.evidence.length ? h("div", { class: "muted small", text: `Evidencia: ${f.evidence.join(", ")}` }) : "",
     extra || "");
 }
@@ -901,27 +903,49 @@ async function renderExploration(box, mid, m) {
     } }));
   }
   actions.append(h("a", { class: "btn ghost small", href: `#/explorador/mapa/${encodeURIComponent(d.spec.conn)}`, text: "Ver mapa del sistema" }));
+  const ev = d.evaluation;
+  const evalBox = ev ? h("div", { class: "panel" },
+    h("div", { class: "row between" }, h("h2", { text: "Evaluación del resultado" }), h("span", { class: `badge ${QUALITY[ev.quality] || ""}`, text: `resultado: ${ev.quality}` })),
+    h("dl", { class: "kv" },
+      h("dt", { text: "Proceso" }), h("dd", { text: `finalizó por ${ev.ended_reason} · ${(ev.elapsed_s / 60).toFixed(1)} de ${(ev.budget_s / 60).toFixed(1)} min` }),
+      h("dt", { text: "Objetivo" }), h("dd", { class: ev.objective_met ? "ok" : "bad", text: ev.objective_met ? "cumplido: leyó registros, hallazgos respaldados e informe completo" : "NO cumplido" }),
+      h("dt", { text: "Informe" }), h("dd", { text: `${ev.report_status} · ${ev.metrics.aplicaciones_validas} aplicaciones válidas` }),
+      h("dt", { text: "Lectura real" }), h("dd", { text: `${ev.metrics.tablas_leidas.length}/${ev.metrics.tablas_totales} tablas leídas (${ev.metrics.tablas_leidas.join(", ") || "ninguna"}) · ${ev.metrics.consultas_con_datos} consultas con datos, ${ev.metrics.consultas_vacias} vacías, ${ev.metrics.consultas_con_error} con error, ${ev.metrics.consultas_rechazadas} rechazadas` }),
+      h("dt", { text: "Evidencia" }), h("dd", { text: `${ev.metrics.hallazgos_respaldados} hallazgos respaldados · ${ev.metrics.afirmaciones_sin_verificar} sin verificar · ${ev.metrics.hechos_comprobados_calculados} hechos calculados` }),
+      h("dt", { text: "Modelo" }), h("dd", { text: `${ev.metrics.respuestas_invalidas} respuestas inválidas · ${ev.metrics.reparaciones} reparaciones de argumentos` })),
+    ev.reasons.length ? h("ul", { class: "small" }, ...ev.reasons.map((r) => h("li", { text: r }))) : "") : "";
   const steps = h("div", { class: "list" });
   for (const st of d.steps.slice().reverse()) {
+    if (st.status === "invalida") {
+      steps.append(h("details", { class: "item" },
+        h("summary", {}, `Paso ${st.n} · `, h("span", { class: "badge bad", text: "respuesta inválida" }), ` ${st.analysis || ""}`.slice(0, 160)),
+        h("p", { class: "muted small", text: `Reparaciones intentadas: ${st.repairs || 0}. No se ejecutó ninguna consulta.` }),
+        st.raw ? h("pre", { class: "console", text: st.raw }) : ""));
+      continue;
+    }
     const q = qById[st.query_id];
     const ev = st.evidence || {};
     steps.append(h("details", { class: "item", open: st === last },
       h("summary", {}, `Paso ${st.n} · `, h("span", { class: `badge ${st.status === "ok" ? "ok" : (st.status === "en_curso" ? "" : "bad")}`, text: st.status }), ` ${st.question || ""}`),
       h("p", { class: "small" }, h("strong", { text: "Por qué: " }), st.rationale || "—"),
       h("p", { class: "muted small", text: `Evidencia citada: ${(ev.citada || []).join(", ") || "ninguna"}${(ev.inexistente || []).length ? ` · sin respaldo: ${ev.inexistente.join(", ")}` : ""}` }),
-      h("p", { class: "small mono", text: `Herramienta: ${st.tool} ${JSON.stringify(st.args)}` }),
+      h("p", { class: "small mono", text: `Herramienta: ${st.tool} ${JSON.stringify(st.args)}${st.repairs ? ` · ${st.repairs} reparación(es) de argumentos` : ""}` }),
+      (ev.correcciones || []).length ? h("p", { class: "small muted", text: `Correcciones automáticas: ${ev.correcciones.join("; ")}` }) : "",
       q ? h("pre", { class: "console", text: q.sql_text }) : "",
       q ? resultTable(q.result) : "",
       st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : ""));
   }
+  const unverified = d.facts.filter((f) => f.certainty === "sin_verificar");
   const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", oportunidad: "Aplicaciones propuestas", cambio: "Cambios de esquema" };
   const facts = h("div");
   for (const [k, title] of Object.entries(kinds)) {
-    const fs = d.facts.filter((f) => f.kind === k);
+    const fs = d.facts.filter((f) => f.kind === k && f.certainty !== "sin_verificar");
     if (!fs.length) continue;
     facts.append(h("h3", { class: "mt", text: `${title} (${fs.length})` }), h("div", { class: "list" }, ...fs.map((f) => factItem(f, k === "oportunidad" ? buildButton(d.spec.conn, f) : ""))));
   }
+  if (unverified.length) facts.append(h("h3", { class: "mt bad", text: `Afirmaciones sin verificar (${unverified.length}) — no son descubrimientos` }), h("div", { class: "list" }, ...unverified.map((f) => factItem(f))));
   box.replaceChildren(
+    evalBox,
     h("div", { class: "panel" },
       h("h2", { text: "Exploración" }),
       h("div", { class: "banner", text: "La IA solo usa consultas de lectura a través del intermediario controlado: nunca ve credenciales ni modifica la base. «Comprobado» = calculado por el sistema con una consulta registrada; «inferencia» = interpretación del modelo." }),
@@ -1009,7 +1033,7 @@ async function viewExplorer(v, args) {
 async function viewMap(v, conn) {
   const d = await api("GET", `/api/explorer/maps/${encodeURIComponent(conn)}`);
   const snap = d.snapshot;
-  const byKind = (k) => d.facts.filter((f) => f.kind === k);
+  const byKind = (k) => d.facts.filter((f) => f.kind === k && f.certainty !== "sin_verificar");
   const tables = h("div", { class: "list" });
   if (snap) {
     for (const [name, t] of Object.entries(snap.schema.tablas)) {
@@ -1046,6 +1070,7 @@ async function viewMap(v, conn) {
     section("Descubrimientos (inferencias del modelo)", byKind("hallazgo")),
     section("Aplicaciones propuestas", byKind("oportunidad"), (f) => buildButton(conn, f)),
     section("Incertidumbres", byKind("incertidumbre")),
+    section("Afirmaciones sin verificar (no son descubrimientos)", d.facts.filter((f) => f.certainty === "sin_verificar")),
     d.obsolete.length ? section("Obsoleto (ya no existe en el esquema)", d.obsolete) : "",
     h("div", { class: "panel" }, h("h2", { text: "Historial de consultas" }), h("div", { class: "scroll-x" }, h("table", {}, qtb))));
 }

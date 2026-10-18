@@ -51,6 +51,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent2); o
 .cert-inferencia { color: var(--accent2); border-color: rgba(106,168,255,.4); }
 .cert-hipotesis { color: var(--warn); border-color: rgba(240,181,69,.4); }
 .cert-descartado { color: var(--muted); text-decoration: line-through; }
+.cert-sin_verificar { color: var(--bad); border-color: rgba(242,109,109,.4); }
 .st-generando, .st-probando, .st-corrigiendo, .st-preparando, .st-explorando { color: var(--warn); border-color: rgba(240,181,69,.4); }
 .st-pendiente { color: var(--accent2); }
 .list { display: flex; flex-direction: column; gap: .5rem; }

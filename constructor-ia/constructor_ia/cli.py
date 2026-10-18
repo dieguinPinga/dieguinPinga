@@ -237,6 +237,104 @@ def cmd_explorer_verify(args) -> int:
     return 0 if info["verified"] else 1
 
 
+def _print_evaluation(db, mid) -> int:
+    run = db.one("SELECT * FROM explore_runs WHERE mission_id=?", (mid,))
+    m = db.one("SELECT state, error, started_at, finished_at FROM missions WHERE id=?", (mid,))
+    if m is None:
+        print(f"No existe la misión {mid}", file=sys.stderr)
+        return 2
+    print(f"Misión {mid}: proceso «{m['state']}»")
+    if run is None:
+        print("Sin evaluación registrada (exploración anterior a 0.4.1 o abortada antes de observar la estructura).")
+        return 1
+    metrics = json.loads(run["metrics_json"])
+    print(f"Finalización: {run['ended_reason']} · tiempo {run['elapsed_s'] / 60:.1f} de {run['budget_s'] / 60:.1f} min")
+    print(f"Resultado: {run['quality'].upper()} · objetivo {'CUMPLIDO' if run['objective_met'] else 'NO cumplido'}"
+          f" · informe {run['report_status']}")
+    for k, v in metrics.items():
+        print(f"  {k}: {v}")
+    for r in json.loads(run["reasons_json"]):
+        print(f"  motivo: {r}")
+    print("Hallazgos respaldados:")
+    for f in db.all("SELECT id, text FROM explore_facts WHERE mission_id=? AND kind IN ('hallazgo','advertencia')"
+                    " AND certainty='inferencia' ORDER BY id", (mid,)):
+        print(f"  F{f[0]} {f[1][:200]}")
+    print("Aplicaciones propuestas:")
+    for f in db.all("SELECT id, text FROM explore_facts WHERE mission_id=? AND kind='oportunidad' ORDER BY id", (mid,)):
+        print(f"  F{f[0]} {f[1][:200]}")
+    return 0 if run["objective_met"] else 1
+
+
+def cmd_explorer_report(args) -> int:
+    cfg = _cfg(args)
+    from .db import Database
+
+    db = Database(cfg.db_path)
+    db.migrate()
+    return _print_evaluation(db, args.mission)
+
+
+def cmd_explorer_trial(args) -> int:
+    """Expedición de ensayo sin interfaz, con el modelo real configurado (para la VivoBook)."""
+    import subprocess
+
+    cfg = _cfg(args)
+    if not args.yes:
+        print("Agregue --yes para confirmar: ejecuta consultas de SOLO LECTURA y usa Ollama durante varios minutos.",
+              file=sys.stderr)
+        return 2
+    try:
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
+                                timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        active = False
+    if active:
+        print("El servicio constructor-ia está activo: deténgalo (systemctl --user stop constructor-ia) o lance la "
+              "exploración desde la interfaz, para no competir por Ollama CPU.", file=sys.stderr)
+        return 2
+    _explorer_conn(cfg, args.conn)
+    logsetup.setup(cfg.log_dir, cfg.log_max_bytes, cfg.log_backups)
+    from .app import App
+
+    app = App(cfg)
+    spec = {"mode": "exploracion", "conn": args.conn, "max_steps": args.steps, "max_queries": args.queries,
+            "max_minutes": args.minutes, "continuar": True}
+    text = args.mission_text or ("Explorá la base de datos que tenés disponible. No te voy a explicar qué contiene. "
+                                 "Descubrí su estructura, investigá su información y construí un mapa de lo que "
+                                 "encontrás. Identificá relaciones, patrones y oportunidades para desarrollar "
+                                 "herramientas útiles. Cuando termines, presentame tus descubrimientos y tres "
+                                 "aplicaciones que podrías construir.")
+    mid = app.missions.create({"title": "Ensayo de exploración (CLI)", "description": text, "spec": spec,
+                               "tests_py": "", "max_attempts": 1}, cfg.explorer_model.name, "cli")
+    app.db.execute("UPDATE missions SET state='preparando', claimed_by='cli', started_at=? WHERE id=?", (time.time(), mid))
+    print(f"Misión de ensayo {mid}: hasta {args.steps} pasos, {args.queries} consultas, {args.minutes} min")
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    last = app.bus.latest_id()
+
+    def tail():
+        nonlocal last
+        while True:
+            for ev in app.bus.since(last):
+                last = ev["id"]
+                if ev["mission_id"] == mid:
+                    print(time.strftime("%H:%M:%S"), ev["kind"], "|", ev["message"][:220], flush=True)
+            if done.wait(1):
+                for ev in app.bus.since(last):
+                    if ev["mission_id"] == mid:
+                        print(time.strftime("%H:%M:%S"), ev["kind"], "|", ev["message"][:220], flush=True)
+                return
+
+    done = threading.Event()
+    t = threading.Thread(target=tail, daemon=True)
+    t.start()
+    app.engine.explorer.run(mid, spec, text, stop)
+    done.set()
+    t.join(5)
+    print()
+    return _print_evaluation(app.db, mid)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="constructor-ia", description=f"Constructor IA {VERSION}")
     p.add_argument("--config", help="Ruta del config.toml")
@@ -258,6 +356,17 @@ def main(argv=None) -> int:
     a = sub.add_parser("explorer-setup", help="Genera la contraseña e imprime el SQL de la cuenta de solo lectura")
     a.add_argument("conn")
     a.set_defaults(fn=cmd_explorer_setup)
+    a = sub.add_parser("explorer-report", help="Muestra la evaluación de una exploración (solo lectura)")
+    a.add_argument("mission")
+    a.set_defaults(fn=cmd_explorer_report)
+    a = sub.add_parser("explorer-trial", help="Expedición de ensayo sin interfaz con el modelo real")
+    a.add_argument("conn")
+    a.add_argument("--minutes", type=int, default=20)
+    a.add_argument("--steps", type=int, default=15)
+    a.add_argument("--queries", type=int, default=30)
+    a.add_argument("--mission-text", dest="mission_text")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_explorer_trial)
     a = sub.add_parser("explorer-verify", help="Verifica privilegios y límites de una conexión del Explorador")
     a.add_argument("conn")
     a.set_defaults(fn=cmd_explorer_verify)

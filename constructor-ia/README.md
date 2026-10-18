@@ -21,6 +21,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
 - **Exploración de base de datos** (Explorador, v0.3.0): la IA descubre por sí misma una base MariaDB
   desconocida con herramientas de solo lectura, construye un mapa persistente (hechos comprobados vs.
   inferencias), propone aplicaciones y construye tableros con instantáneas. Ver [EXPLORADOR.md](EXPLORADOR.md).
+  En 0.4.1: validación y reparación de argumentos, contraste de afirmaciones con su evidencia, comentarios de
+  metadatos en el contexto, presupuesto de tiempo total y evaluación separada de proceso, calidad y objetivo.
 
 ## Proyectos que evolucionan (v0.4.0)
 

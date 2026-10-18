@@ -22,11 +22,13 @@ python3 -m unittest discover -s tests -t . -v
 
 | `tests/test_revisions.py` (8) | Revisiones: reutilización de código y archivos, pruebas heredadas y nuevas, versión vigente y fallo que la preserva, historial, inmutabilidad (SHA-256), diferencias, API protegida, reencolado con linaje. Detalle en REVISIONES.md. |
 
+| `tests/test_explorer_regresion.py` (13) | Regresiones de la primera expedición real (0.4.1): base equivocada en `information_schema` reparada sin ejecutarse y conteos afirmados desde 0 filas marcados sin verificar; herramientas sin argumentos o anidados reparadas sin consumir pasos; contraste de afirmaciones con estado, filas y cifras; comentarios de tablas y columnas en el contexto como pistas no confiables; presupuesto de tiempo total que incluye inválidas e informe; proceso ≠ calidad ≠ objetivo, y reintento del informe. Detalle en EXPLORADOR.md §0.4.1. |
+
 ### Resultado de la última ejecución (entorno de desarrollo de Claude)
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 139 tests in 74.067s   (v0.4.0; incluye Taller Web, Explorador con MariaDB 10.11.14 real y revisiones)
+Ran 152 tests in 109.426s   (v0.4.1; incluye regresiones de la primera expedición real)
 OK
 ```
 

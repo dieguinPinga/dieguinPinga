@@ -500,12 +500,20 @@ class ExplorerAgentTests(unittest.TestCase):
         self.assertTrue(any(f["kind"] == "estadistica" and f["subject"].startswith("perfil:") for f in facts))
         self.assertTrue(any(f["kind"] == "advertencia" and cave.other in f["subject"] for f in facts), "tabla sin PK")
         hall = [f for f in facts if f["kind"] == "hallazgo"]
-        self.assertTrue(hall and all(f["certainty"] == "inferencia" for f in hall))
+        # 0.4.1: las observaciones que citan consultas con datos quedan respaldadas; las que citan la consulta
+        # rechazada (DROP) o la que falló quedan «sin_verificar» y no cuentan como descubrimientos.
+        self.assertTrue(any(f["certainty"] == "inferencia" for f in hall))
+        unverified = [f for f in hall if f["certainty"] == "sin_verificar"]
+        self.assertTrue(unverified)
+        self.assertTrue(all(f["data"]["verificacion"] in ("evidencia_vacia", "sin_evidencia") for f in unverified))
         apps = [f for f in facts if f["kind"] == "oportunidad"]
-        self.assertEqual(len(apps), 3)
-        bad_app = next(a for a in apps if a["data"]["nombre"] == "Informe de calidad")
-        self.assertFalse(bad_app["data"]["consultas"][0]["valida"])
-        steps = app.db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY n", (mid,))
+        self.assertEqual({a["data"]["nombre"] for a in apps}, {"Tablero de actividad", "Buscador"},
+                         "una aplicación cuya única consulta es DELETE no se acepta")
+        all_steps = app.db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY id", (mid,))
+        invalid = [s for s in all_steps if s["status"] == "invalida"]
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(invalid[0]["raw"], "esto no es JSON", "se conserva la respuesta cruda para diagnóstico")
+        steps = [s for s in all_steps if s["status"] != "invalida"]
         tools = [s["tool"] for s in steps]
         self.assertEqual(tools, ["muestra", "perfil", "frecuentes", "relacion", "sql", "sql", "sql", "terminar"])
         statuses = [s["status"] for s in steps]
