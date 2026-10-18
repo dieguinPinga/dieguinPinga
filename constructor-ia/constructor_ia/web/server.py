@@ -772,6 +772,8 @@ class Handler(BaseHTTPRequestHandler):
             d = dict(r)
             d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
             d["args"] = json.loads(d.pop("args_json") or "{}")
+            d["interpretation"] = json.loads(d["interpretation"]) if d.get("interpretation") else None
+            d["context"] = json.loads(d.pop("context_json")) if d.get("context_json") else None
             steps.append(d)
         queries = []
         for r in self.app.db.all("SELECT * FROM explore_queries WHERE mission_id=? ORDER BY id", (mid,)):

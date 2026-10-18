@@ -884,6 +884,35 @@ function resultTable(res) {
     h("p", { class: "muted small", text: `${res.row_count} filas${res.truncated ? ` (recortado: ${res.truncated_reason})` : ""} · ${res.ms} ms` }));
 }
 
+function interpretationBox(st) {
+  const it = st.interpretation;
+  if (!it) return "";
+  if (it.estado !== "valida") {
+    return h("div", { class: "panel small" }, h("strong", { text: "Etapa B — interpretación: " }), h("span", { class: "bad", text: `no válida (${it.motivo || ""})` }),
+      it.raw ? h("pre", { class: "console", text: it.raw }) : "");
+  }
+  const claim = (c) => h("li", {}, certBadge(c.certeza), ` ${c.texto}`, c.id ? h("span", { class: "muted mono", text: ` F${c.id}` }) : "");
+  return h("div", { class: "panel small" },
+    h("p", {}, h("strong", { text: "Etapa B — interpretación: " }), it.resumen,
+      it.resumen_verificacion !== "respaldada" ? h("span", { class: "bad", text: ` (resumen no respaldado: ${it.resumen_verificacion}; no volvió al modelo)` }) : ""),
+    it.hallazgos.length ? h("ul", {}, ...it.hallazgos.map(claim)) : h("p", { class: "muted", text: "Sin hallazgos." }),
+    (it.hipotesis || []).length ? h("ul", {}, ...it.hipotesis.map(claim)) : "");
+}
+
+function contextNote(st) {
+  const ctx = st.context;
+  if (!ctx) return "";
+  const parts = [];
+  for (const [stage, d] of Object.entries(ctx)) {
+    if (!d) continue;
+    const label = stage === "decision" ? "A" : "B";
+    const over = (d.intentos || []).filter((a) => a.desborde).length;
+    parts.push(d.agotado ? `etapa ${label}: no entró en el contexto` :
+      `etapa ${label}: nivel ${d.nivel} de reducción, ~${d.tokens_estimados} tokens estimados de ${d.num_ctx}${over ? `, ${over} desborde(s) informados por Ollama` : ""}`);
+  }
+  return parts.length ? h("p", { class: "muted small", text: `Contexto: ${parts.join(" · ")}` }) : "";
+}
+
 async function renderExploration(box, mid, m) {
   const d = await api("GET", `/api/missions/${encodeURIComponent(mid)}/exploration`);
   const p = d.progress;
@@ -912,7 +941,11 @@ async function renderExploration(box, mid, m) {
       h("dt", { text: "Informe" }), h("dd", { text: `${ev.report_status} · ${ev.metrics.aplicaciones_validas} aplicaciones válidas` }),
       h("dt", { text: "Lectura real" }), h("dd", { text: `${ev.metrics.tablas_leidas.length}/${ev.metrics.tablas_totales} tablas leídas (${ev.metrics.tablas_leidas.join(", ") || "ninguna"}) · ${ev.metrics.consultas_con_datos} consultas con datos, ${ev.metrics.consultas_vacias} vacías, ${ev.metrics.consultas_con_error} con error, ${ev.metrics.consultas_rechazadas} rechazadas` }),
       h("dt", { text: "Evidencia" }), h("dd", { text: `${ev.metrics.hallazgos_respaldados} hallazgos respaldados · ${ev.metrics.afirmaciones_sin_verificar} sin verificar · ${ev.metrics.hechos_comprobados_calculados} hechos calculados` }),
-      h("dt", { text: "Modelo" }), h("dd", { text: `${ev.metrics.respuestas_invalidas} respuestas inválidas · ${ev.metrics.reparaciones} reparaciones de argumentos` })),
+      h("dt", { text: "Modelo" }), h("dd", { text: `${ev.metrics.respuestas_invalidas} respuestas inválidas · ${ev.metrics.reparaciones} reparaciones de argumentos` }),
+      ev.metrics.ciclos_completos !== undefined ? h("dt", { text: "Ciclos" }) : "",
+      ev.metrics.ciclos_completos !== undefined ? h("dd", { class: ev.metrics.ciclos_completos ? "ok" : "bad", text: `${ev.metrics.ciclos_completos} ciclos completos (pregunta → consulta → registros → interpretación respaldada → nueva pregunta) · ${ev.metrics.interpretaciones_validas} interpretaciones válidas, ${ev.metrics.interpretaciones_fallidas} fallidas · ${ev.metrics.respuestas_con_afirmaciones_anticipadas} respuestas con afirmaciones anticipadas (descartadas)` }) : "",
+      ev.metrics.desbordes_de_contexto !== undefined ? h("dt", { text: "Contexto" }) : "",
+      ev.metrics.desbordes_de_contexto !== undefined ? h("dd", { text: `${ev.metrics.desbordes_de_contexto} desbordes informados por Ollama · ${ev.metrics.mensajes_reducidos} mensajes reducidos · factor de tokens ${ev.metrics.factor_tokens}` }) : ""),
     ev.reasons.length ? h("ul", { class: "small" }, ...ev.reasons.map((r) => h("li", { text: r }))) : "") : "";
   const steps = h("div", { class: "list" });
   for (const st of d.steps.slice().reverse()) {
@@ -933,7 +966,10 @@ async function renderExploration(box, mid, m) {
       (ev.correcciones || []).length ? h("p", { class: "small muted", text: `Correcciones automáticas: ${ev.correcciones.join("; ")}` }) : "",
       q ? h("pre", { class: "console", text: q.sql_text }) : "",
       q ? resultTable(q.result) : "",
-      st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : ""));
+      st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : "",
+      (ev.anticipadas_descartadas || []).length ? h("p", { class: "small bad", text: `Etapa A: la respuesta traía ${ev.anticipadas_descartadas.join(", ")} antes de ver resultados; se descartaron sin registrarse.` }) : "",
+      interpretationBox(st),
+      contextNote(st)));
   }
   const unverified = d.facts.filter((f) => f.certainty === "sin_verificar");
   const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", oportunidad: "Aplicaciones propuestas", cambio: "Cambios de esquema" };

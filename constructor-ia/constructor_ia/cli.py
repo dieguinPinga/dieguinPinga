@@ -255,6 +255,30 @@ def _print_evaluation(db, mid) -> int:
         print(f"  {k}: {v}")
     for r in json.loads(run["reasons_json"]):
         print(f"  motivo: {r}")
+    print("Traza del ciclo (pregunta → consulta → registros → interpretación → siguiente pregunta):")
+    for st in db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY n, id", (mid,)):
+        st = dict(st)
+        if st["status"] == "invalida":
+            print(f"  Paso {st['n']}: respuesta inválida — {(st.get('analysis') or '')[:160]}")
+            continue
+        q = db.one("SELECT status, row_count FROM explore_queries WHERE id=?", (st["query_id"],)) if st.get("query_id") else None
+        res = f"C{st['query_id']} {q['status']}, {q['row_count']} filas" if q else "sin consulta"
+        print(f"  Paso {st['n']}: {st['question'][:120]} → {st['tool']} → {res}")
+        ev = json.loads(st.get("evidence_json") or "{}")
+        if ev.get("anticipadas_descartadas"):
+            print(f"      etapa A: se descartaron {', '.join(ev['anticipadas_descartadas'])} anticipados (sin resultado)")
+        it = json.loads(st["interpretation"]) if st.get("interpretation") else None
+        if it and it.get("estado") == "valida":
+            print(f"      etapa B: {it['resumen'][:160]} [{it['resumen_verificacion']}] · "
+                  f"{it['respaldados']} hallazgos respaldados de {len(it['hallazgos'])}")
+        elif it:
+            print(f"      etapa B: sin interpretación válida — {it.get('motivo', '')[:160]}")
+        ctx = json.loads(st["context_json"]) if st.get("context_json") else {}
+        notes = [f"{k}: nivel {v.get('nivel', '—')}, ~{v.get('tokens_estimados', '?')} tokens"
+                 + (" (con desborde)" if any(a.get("desborde") for a in v.get("intentos", [])) else "")
+                 for k, v in ctx.items() if v]
+        if notes:
+            print(f"      contexto: {'; '.join(notes)}")
     print("Hallazgos respaldados:")
     for f in db.all("SELECT id, text FROM explore_facts WHERE mission_id=? AND kind IN ('hallazgo','advertencia')"
                     " AND certainty='inferencia' ORDER BY id", (mid,)):

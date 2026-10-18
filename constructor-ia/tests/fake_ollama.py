@@ -14,6 +14,10 @@ class FakeOllama:
         self.delay = delay
         self.models = list(models)
         self.requests: list[dict] = []
+        # Simulación del límite de contexto: ctx_counter(body) -> tokens. Si supera options.num_ctx se responde
+        # HTTP 400 con exceed_context_size_error (como Ollama), sin consumir respuestas.
+        self.ctx_counter = None
+        self.overflows: list[dict] = []
         self.disconnects = 0
         self.active = 0
         self.max_active = 0
@@ -46,6 +50,21 @@ class FakeOllama:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if outer.ctx_counter is not None:
+                    tokens, limit = outer.ctx_counter(body), (body.get("options") or {}).get("num_ctx")
+                    if limit and tokens > limit:
+                        with outer._lock:
+                            outer.overflows.append({"body": body, "tokens": tokens, "n_ctx": limit})
+                        msg = json.dumps({"error": {"code": 400, "message": "the request exceeds the available context "
+                                                    "size, try increasing it", "type": "exceed_context_size_error",
+                                                    "n_prompt_tokens": tokens, "n_ctx": limit}}).encode()
+                        self.send_response(400)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(msg)))
+                        self.end_headers()
+                        self.wfile.write(msg)
+                        self.close_connection = True
+                        return
                 with outer._lock:
                     outer.requests.append(body)
                     text = outer.responses.pop(0) if outer.responses else outer.default

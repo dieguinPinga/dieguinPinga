@@ -319,6 +319,23 @@ class BrokerSecurityTests(unittest.TestCase):
         procs = self.srv.sql("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT SLEEP(25)%'").stdout
         self.assertEqual(procs.strip(), "0")
 
+    def test_cancel_is_immediate_even_if_kill_query_fails(self):
+        # Bajo carga, la conexión auxiliar del KILL QUERY puede no llegar a tiempo: la cancelación no debe
+        # depender de ella (antes la consulta seguía hasta su tope: 32 s).
+        b, _, _ = self.broker(timeout=30)
+        b.verify()
+        cancel = threading.Event()
+        threading.Timer(0.5, cancel.set).start()
+        t0 = time.monotonic()
+        with mock.patch.object(sqlguard, "check", side_effect=lambda s: s.strip()), \
+                mock.patch.object(type(b), "_kill_tid", lambda self, tid: None):
+            o = b.run("SELECT SLEEP(6)", cancel=cancel)
+        self.assertEqual(o.status, "cancelada")
+        self.assertLess(time.monotonic() - t0, 3)
+        # sin KILL, la consulta sigue en el servidor hasta terminar: esperar para no afectar otras pruebas
+        wait_for(lambda: self.srv.sql("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE "
+                                      "'SELECT SLEEP(6)%'").stdout.strip() == "0", timeout=15)
+
     def test_one_query_at_a_time(self):
         b, _, _ = self.broker(timeout=10)
         b.verify()
@@ -376,6 +393,13 @@ def scripted_agent(log: list):
     def respond(body):
         prompt = body["messages"][-1]["content"]
         log.append(prompt)
+        if "ETAPA B:" in prompt:
+            # Etapa B: interpreta SOLO el resultado recibido, citando su evidencia auténtica.
+            q = re.search(r"EVIDENCIA DE ESTE RESULTADO: C(\d+)", prompt).group(1)
+            return json.dumps({"resumen": f"Se leyeron registros reales en C{q}.", "hallazgos": [
+                {"texto": f"Observación respaldada de C{q}", "tipo": "hallazgo", "evidencia": [f"C{q}"]},
+                {"texto": "Hay 777777 registros", "tipo": "hallazgo", "evidencia": [f"C{q}"]}],
+                "hipotesis": [], "incertidumbres": []})
         if "MAPA CONSTRUIDO" in prompt:
             facts = re.findall(r"^F(\d+) \[comprobado\]", prompt, re.M)
             tables = re.findall(r"tabla (\w+):", prompt)
@@ -401,8 +425,9 @@ def scripted_agent(log: list):
         state["n"] += 1
         n = state["n"]
         ev = [f"C{last_q[-1]}"] if last_q else []
-        hall = [{"texto": f"Observación del paso {n - 1}", "tipo": "hallazgo", "evidencia": ev}] if n > 1 else []
-        base = {"hallazgos": hall, "incertidumbres": [], "evidencia": ev}
+        base = {"evidencia": ev}
+        if n == 1:  # etapa A: «conclusiones» anticipadas antes de ver resultados (se descartan)
+            base["hallazgos"] = [{"texto": "Los precios son 1.23456789", "tipo": "hallazgo", "evidencia": ["C1", "C2"]}]
         t = tables[0]
         numeric = next((tb for tb in tables if any(c in ("cantidad", "numero", "valor") for c in cols.get(tb, []))), t)
         col = next(c for c in cols.get(numeric, ["id"]) if c in ("cantidad", "numero", "valor", "id"))
@@ -500,12 +525,13 @@ class ExplorerAgentTests(unittest.TestCase):
         self.assertTrue(any(f["kind"] == "estadistica" and f["subject"].startswith("perfil:") for f in facts))
         self.assertTrue(any(f["kind"] == "advertencia" and cave.other in f["subject"] for f in facts), "tabla sin PK")
         hall = [f for f in facts if f["kind"] == "hallazgo"]
-        # 0.4.1: las observaciones que citan consultas con datos quedan respaldadas; las que citan la consulta
-        # rechazada (DROP) o la que falló quedan «sin_verificar» y no cuentan como descubrimientos.
+        # 0.4.2: los hallazgos solo nacen en la etapa B (interpretación de un resultado real). Los respaldados por su
+        # evidencia quedan como inferencia; los que traen cifras ausentes del resultado quedan «sin_verificar».
         self.assertTrue(any(f["certainty"] == "inferencia" for f in hall))
         unverified = [f for f in hall if f["certainty"] == "sin_verificar"]
         self.assertTrue(unverified)
-        self.assertTrue(all(f["data"]["verificacion"] in ("evidencia_vacia", "sin_evidencia") for f in unverified))
+        self.assertTrue(all(f["data"]["verificacion"] == "cifras_no_encontradas" for f in unverified))
+        self.assertFalse([f for f in facts if "1.23456789" in f["text"]], "lo anticipado en la etapa A no se registra")
         apps = [f for f in facts if f["kind"] == "oportunidad"]
         self.assertEqual({a["data"]["nombre"] for a in apps}, {"Tablero de actividad", "Buscador"},
                          "una aplicación cuya única consulta es DELETE no se acepta")

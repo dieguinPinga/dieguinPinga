@@ -23,6 +23,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   inferencias), propone aplicaciones y construye tableros con instantáneas. Ver [EXPLORADOR.md](EXPLORADOR.md).
   En 0.4.1: validación y reparación de argumentos, contraste de afirmaciones con su evidencia, comentarios de
   metadatos en el contexto, presupuesto de tiempo total y evaluación separada de proceso, calidad y objetivo.
+  En 0.4.2: ciclo en dos etapas (investigación → interpretación de registros reales), contexto del modelo
+  medido y reducido sin perder evidencia, sin reintentos idénticos ante un contexto excedido, y distinción
+  entre registros históricos y estado actual.
 
 ## Proyectos que evolucionan (v0.4.0)
 

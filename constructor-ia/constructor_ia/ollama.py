@@ -24,8 +24,51 @@ class OllamaError(Exception):
     pass
 
 
+class ContextOverflow(OllamaError):
+    """El mensaje no entra en el contexto configurado (p. ej. exceed_context_size_error).
+
+    Repetir el mismo mensaje fallaría igual: quien llama debe reducirlo.
+    """
+
+    def __init__(self, msg: str, prompt_tokens: int | None = None, n_ctx: int | None = None):
+        super().__init__(msg)
+        self.prompt_tokens, self.n_ctx = prompt_tokens, n_ctx
+
+
 class Cancelled(Exception):
     pass
+
+
+CONTEXT_ERROR_RE = re.compile(r"exceed[s_ ]*(?:the )?(?:available )?context|context[_ ](?:size|length|window)|"
+                              r"too (?:long|many tokens)|n_ctx", re.I)
+
+
+def _first_int(d: dict, keys) -> int | None:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+def parse_context_error(error) -> ContextOverflow | None:
+    """Reconoce un error de contexto excedido (texto u objeto) y extrae las cifras si las trae."""
+    detail = error if isinstance(error, dict) else {}
+    text = json.dumps(error, ensure_ascii=False) if isinstance(error, dict) else str(error)
+    if not CONTEXT_ERROR_RE.search(text):
+        return None
+    prompt = _first_int(detail, ("n_prompt_tokens", "prompt_tokens", "n_tokens", "tokens"))
+    ctx = _first_int(detail, ("n_ctx", "num_ctx", "context_size", "context_length", "n_ctx_slot"))
+    if prompt is None:
+        m = (re.search(r"n_prompt_tokens\D{0,4}(\d+)", text) or re.search(r"(\d+)\s*tokens", text)
+             or re.search(r"(?:requires|requiere|prompt)\D{0,20}(\d{3,})", text))
+        prompt = int(m.group(1)) if m else None
+    if ctx is None:
+        found = [int(x) for x in re.findall(r"(?:n_ctx|num_ctx|context(?:[_ ](?:size|length|window))?)\D{0,25}?(\d{3,})",
+                                             text, re.I)]
+        ctx = next((x for x in found if x != prompt), None)
+    msg = (detail.get("message") if isinstance(detail.get("message"), str) else None) or text
+    return ContextOverflow(f"Contexto excedido: {msg[:200]}", prompt, ctx)
 
 
 @dataclass
@@ -161,8 +204,11 @@ class OllamaClient:
                 body = resp.read(4000).decode("utf-8", "replace")
                 try:
                     msg = json.loads(body).get("error", body)
-                except ValueError:
+                except (ValueError, AttributeError):
                     msg = body
+                overflow = parse_context_error(msg)
+                if overflow is not None:
+                    raise overflow
                 raise OllamaError(f"Ollama respondió HTTP {resp.status}: {str(msg)[:300]}")
             last_progress = 0.0
             while True:
@@ -182,6 +228,9 @@ class OllamaClient:
                 except ValueError:
                     raise OllamaError("Respuesta de Ollama mal formada") from None
                 if "error" in chunk:
+                    overflow = parse_context_error(chunk["error"])
+                    if overflow is not None:
+                        raise overflow
                     raise OllamaError(f"Ollama: {str(chunk['error'])[:300]}")
                 piece = (chunk.get("message") or {}).get("content") or ""
                 if piece:

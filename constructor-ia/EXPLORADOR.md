@@ -381,3 +381,127 @@ la copia que hizo `update.sh` (INSTALL.md §10).
   también se descuenta: con presupuestos muy cortos puede no quedar tiempo para ningún paso.
 - La calidad final depende de Qwen3 4B. La infraestructura evita que sus errores se registren como
   descubrimientos y le da información para corregirse, pero no lo hace más inteligente.
+
+---
+
+# Cambios 0.4.2: contexto administrado y ciclo en dos etapas
+
+Expedición M20261018-bdcbec (`caverna_01`): por primera vez Qwen3 formuló una pregunta propia y ejecutó una
+consulta válida (`SELECT * FROM … LIMIT 10`, C26, diez registros reales). Después fallaron dos cosas:
+
+1. **Contexto excedido.** El mensaje siguiente necesitó 5377 tokens con `num_ctx = 4096`; Ollama respondió
+   HTTP 400 (`exceed_context_size_error`) y los reintentos crecieron hasta 5439.
+   **Causa medida:** 0.4.1 calculaba el tamaño suponiendo 3,2 caracteres por token. Con el vocabulario real de
+   Qwen, el texto en español rinde ~3,6, pero las filas de datos rinden **~1,2**: el tokenizador separa los
+   números dígito a dígito, así que precios, fechas, identificadores y hashes pesan casi el triple de lo
+   supuesto. Además, cada reintento agregaba la respuesta anterior y el motivo del error, así que crecía.
+2. **Interpretación anticipada.** Antes de ejecutar C26, respuestas truncadas ya «describían» resultados que
+   no existían (precios como 1.23456789, duraciones de 60/120 s, salidas por TP, referencias a C1/C2,
+   cantidades absurdas): el formato de un solo paso pedía hallazgos y la siguiente consulta en la misma
+   respuesta.
+
+## Qué cambió
+
+| Requisito | Implementación | Prueba |
+|---|---|---|
+| Medir el mensaje completo | `explorer/context.py`: estimación por exceso que cuenta cada dígito como token, más siglas, códigos y letras sin forma de palabra. Suma instrucciones, datos, historial, la plantilla de chat (por mensaje) y el **esquema JSON** de salida. Se contrastó con el vocabulario BPE de Qwen: ningún tipo de dato queda por debajo del conteo real (peor caso 1,00; texto en español 1,3–1,8 por exceso). | `ContextUnitTests.test_estimate_is_conservative_against_measured_qwen_counts` (muestras medidas) |
+| Reservar la respuesta | Presupuesto de entrada = `(num_ctx − reserva) × 0,95 − 96`. Reservas: etapa A `decide_num_predict` (384), etapa B `num_predict` del modelo, informe `report_num_predict`. En los niveles mínimos se pide una respuesta breve y la reserva baja (B: 600/400; informe: 1200/900). | `test_budget_reserves_answer_and_margin`, `test_wide_sample_fits_the_context…` (todo pedido: mensaje + reserva ≤ num_ctx) |
+| Reducir sin perder evidencia | Cinco niveles (0 = completo … 4 = mínimo): menos filas y columnas, celdas más cortas, menos hechos del mapa, incertidumbres e historial, comentarios más cortos. Los resultados anchos pasan a una **vista por columnas**: valores distintos, «igual en las N filas», o mínimo y máximo. Así ninguna columna queda oculta y los números y fechas nunca se recortan. El historial viejo se resume en una línea por paso. La evidencia completa sigue en `explore_queries`, y contra ella se contrastan las afirmaciones. | `test_rows_view_reduces_but_says_what_is_hidden`, `C26WideSampleTests` (29 columnas, todos los decimales en la evidencia) |
+| No repetir ante `exceed_context_size_error` | `ollama.py` reconoce el error (objeto o texto) y extrae `n_prompt_tokens`/`n_ctx`. El agente calibra el factor de tokens con la cifra real: solo sube, y queda guardado por modelo en `kv.explorer_token_factor`. Pasa a un nivel más chico, nunca reenvía un mensaje idéntico (por huella SHA-256) y deja de enviar lo que, ya calibrado, sabe que no entra. Si ni el mínimo entra, termina con `contexto_insuficiente` y escribe el informe automático. | `test_reported_overflow_is_learned_and_never_resent` (tokenizador 1,8× más pesado), `test_context_that_never_fits_ends_without_identical_retries`, `test_parse_context_errors` |
+| Dos etapas estrictas | **A — investigación:** JSON pequeño (pregunta, por qué, evidencia, herramienta, argumentos). Si trae hallazgos, incertidumbres o «resultados», se **descartan sin registrarse**; la respuesta cruda queda en el paso para diagnóstico. **B — interpretación:** tras ejecutar, recibe los registros reales, el identificador auténtico `C#`, la estructura de las tablas consultadas y una nota de fechas. Recién ahí formula hallazgos, hipótesis e incertidumbres. Solo se interpretan resultados con datos o metadatos. | `TwoStageTests.test_stage_a_cannot_anticipate_and_stage_b_is_contrasted` |
+| Contrastar afirmaciones | Las C# citables son **solo las consultas de esta exploración**; citar una inexistente o ajena invalida la afirmación (`evidencia_inexistente`). Las cifras deben figurar en la evidencia (corregido: las fechas `2025-10-01` ahora se reconocen). Nuevo: los **valores literales** (códigos en MAYÚSCULAS y textos entre comillas) también deben figurar (`valores_no_encontrados`, p. ej. «TP» cuando los datos dicen TIMEOUT). El **resumen** de la interpretación también se contrasta: si no está respaldado, no vuelve al modelo (ni siquiera la cifra inventada). | mismas pruebas + `test_summary_with_invented_figures_does_not_return_to_the_model`, `test_claims_numbers_literals_and_currentness` |
+| Histórico ≠ actual | La etapa B recibe el rango de fechas del resultado, la fecha y hora actual, y la advertencia de que son registros históricos. Una afirmación que diga «actual», «vigente», «ahora», «hoy», etc. queda `sin_verificar` (`vigencia_no_demostrada`) salvo que la evidencia tenga registros de la última hora. Es genérico: se basa en los valores de fecha, no en nombres de tablas. | `test_claims_numbers_literals_and_currentness`, `test_temporal_note_marks_history` |
+| Objetivo mínimo medible | Nueva métrica **`ciclos_completos`**: pregunta → consulta válida → registros reales → interpretación con al menos un hallazgo respaldado de ese C# → nueva pregunta (otra herramienta, no `terminar`). «Cumplido» ahora exige al menos un ciclo. | `D6OutcomeTests.test_report_retry_and_successful_objective`, `test_invalid_interpretation_keeps_evidence_and_is_reported` |
+
+No hay conocimiento de ninguna base concreta: las pruebas usan nombres aleatorios y una tabla ancha genérica.
+
+**Corrección adicional del intermediario (detener al instante).** Las corridas bajo carga revelaron una carrera
+presente desde 0.3: al detener una exploración, el vigilante cerraba el socket de la consulta en curso, pero en
+Linux cerrar un socket desde otro hilo no despierta un `recv` bloqueado. Si además la conexión auxiliar del
+`KILL QUERY` no llegaba a tiempo, el error se ignoraba y la consulta seguía hasta su tope (se midieron 32 s en vez
+de menos de 3). Ahora el vigilante hace `shutdown` del socket, lo que libera al cliente de inmediato, y reintenta
+`KILL QUERY` hasta tres veces para limpiar el servidor (`max_statement_time` sigue cubriendo el resto). Prueba
+determinista: `BrokerSecurityTests.test_cancel_is_immediate_even_if_kill_query_fails`; sin la corrección tarda 6 s.
+Los controles de solo lectura (cuenta mínima verificada, sesión de solo lectura, filtro, KILL QUERY), la
+memoria persistente y el sandbox no cambiaron.
+
+**Visible para el operador:**
+- En la UI, cada paso muestra su interpretación (etapa B) con la certeza de cada afirmación, lo anticipado que se descartó y el diagnóstico de contexto (nivel, tokens estimados, desbordes). El panel *Evaluación del resultado* suma ciclos y contexto.
+- `explorer-report` imprime la **traza del ciclo** paso a paso.
+- Se corrigió además un desplazamiento horizontal en el móvil (líneas con JSON largo, presente desde 0.4.1).
+
+## Cómo verificar en la próxima prueba real (VivoBook)
+
+Objetivo mínimo: **pregunta autónoma → consulta válida → registros reales → interpretación respaldada →
+nueva pregunta**.
+
+```bash
+systemctl --user stop constructor-ia     # no competir por Ollama CPU
+~/constructor-ia/bin/constructor-ia explorer-trial caverna_01 --minutes 20 --steps 15 --queries 30 --yes
+systemctl --user start constructor-ia
+~/constructor-ia/bin/constructor-ia explorer-report <misión>
+```
+
+En la salida de `explorer-report`:
+
+1. `ciclos_completos ≥ 1`. En la traza, una línea `Paso n: … → C# ok, N filas`, seguida de
+   `etapa B: … [respaldada] · k hallazgos respaldados` con k ≥ 1, y luego un `Paso n+1` con otra herramienta.
+2. `desbordes_de_contexto`: idealmente 0. Si hubo alguno, debe haber **uno solo por tipo de mensaje** y luego
+   `contexto: … nivel X` sin desborde. Nunca dos pedidos iguales: cada desborde va seguido de un mensaje más
+   chico.
+3. `respuestas_con_afirmaciones_anticipadas`: puede ser > 0 (es lo que hacía el modelo), pero esas afirmaciones
+   **no aparecen** entre los hallazgos.
+4. Contraste humano: abrir en la UI el paso con la interpretación respaldada, comparar sus cifras y valores
+   con la tabla del resultado (C#), y repetir esa consulta a mano.
+5. Si el modelo dice «actual» o «vigente» sobre registros con fecha vieja, esa afirmación debe figurar como
+   *sin verificar (vigencia_no_demostrada)*.
+
+Si `num_ctx` sigue en 4096, conviene no subirlo sin medir antes la memoria de Ollama CPU. La 0.4.2 está hecha
+para funcionar con 4096; un contexto mayor solo permite niveles de reducción menores.
+
+## Actualización por SSH (0.4.1 → 0.4.2)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.2-contexto
+git checkout claude/constructor-ia-0.4.2-contexto
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+- Migración automática `0005`: agrega dos columnas a `explore_steps` (`interpretation`, `context_json`).
+- `config.toml` no necesita cambios. Opcional: `[explorer] decide_num_predict = 384` (valor por defecto).
+- La calibración de tokens empieza en 1,0 y solo sube con lo que informe Ollama.
+- Desde 0.4.0 el mismo procedimiento aplica también la migración 0004.
+
+## Rollback (0.4.2 → 0.4.1)
+
+```bash
+# 1) Cancelar exploraciones pendientes o en curso:
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.1' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+# 2) Volver al código anterior:
+~/constructor-ia/bin/rollback.sh
+```
+
+- La 0.4.1 ignora las columnas nuevas y la clave `explorer_token_factor`.
+- Las hipótesis de la etapa B quedan como hechos `hallazgo` con certeza `hipotesis`, que la 0.4.1 ya conoce.
+- Para recuperar exactamente los datos previos, restaurar la copia que hizo `update.sh` (INSTALL.md §10).
+
+## Limitaciones
+
+- El tamaño se **estima**: Ollama no expone un contador de tokens. La estimación se validó con el vocabulario de
+  Qwen (familia Qwen2/3), no con el modelo cargado en la VivoBook. Por eso existe la calibración con las cifras
+  que devuelve Ollama.
+- La vista por columnas y los niveles reducidos le muestran al modelo menos filas. Puede interpretar menos,
+  pero lo que afirme se contrasta contra el resultado completo registrado.
+- La detección de vigencia reconoce fechas ISO (`AAAA-MM-DD [hh:mm[:ss]]`) en los valores. No reconoce
+  marcas de tiempo numéricas (epoch) ni zonas horarias: con esas, una afirmación de «actual» queda sin
+  verificar.
+- Los valores literales se contrastan por presencia textual: «VENCIDO» en la evidencia respalda «motivo
+  VENCIDO» aunque estuviera en otra columna.
+- Cada paso con datos hace dos llamadas al modelo (A y B). En CPU eso reduce los pasos posibles dentro de los
+  20 minutos, a cambio de que cada hallazgo se base en un resultado real.

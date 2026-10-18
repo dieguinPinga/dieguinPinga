@@ -277,24 +277,29 @@ class Broker:
     def _watch_cancel(self, cancel, done, conn, tid):
         while not done.wait(0.2):
             if cancel.is_set():
-                conn.close()
-                self._kill_tid(tid)
+                conn.abort()  # el cliente se libera ya, aunque el KILL QUERY no llegue
+                for _ in range(3):  # limpieza en el servidor (max_statement_time cubre el resto)
+                    if self._kill_tid(tid):
+                        break
                 return
 
     def _kill(self, conn: Connection | None) -> None:
         if conn is not None:
             self._kill_tid(conn.thread_id)
 
-    def _kill_tid(self, tid: int) -> None:
-        """KILL QUERY sobre el propio hilo (no requiere privilegios adicionales)."""
+    def _kill_tid(self, tid: int) -> bool:
+        """KILL QUERY sobre el propio hilo (no requiere privilegios adicionales). Devuelve True si se envió."""
         try:
             k = self._connect(timeout=3)
             try:
                 k.query(f"KILL QUERY {int(tid)}", timeout=3)
+                return True
             finally:
                 k.close()
+        except MySQLError as e:
+            return e.code == 1094  # el hilo ya no existe: nada que interrumpir
         except Exception:  # noqa: BLE001 - mejor esfuerzo; max_statement_time cubre el resto
-            pass
+            return False
 
     def _record(self, out: QueryOutcome, mission_id, step, origin, tool, question, rationale) -> QueryOutcome:
         summary = out.summary(max_rows=50, max_cell=200)

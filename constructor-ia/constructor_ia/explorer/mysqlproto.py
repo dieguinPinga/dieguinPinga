@@ -264,6 +264,14 @@ class Connection:
         except OSError:
             pass
 
+    def abort(self) -> None:
+        """Corta la conexión desde otro hilo: shutdown despierta un recv bloqueado (close solo no lo hace)."""
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.close()
+
 
 def _convert(v: bytes | None, col: Column):
     if v is None:

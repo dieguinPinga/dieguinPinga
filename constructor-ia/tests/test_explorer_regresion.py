@@ -31,13 +31,19 @@ def parse_prompt(prompt: str) -> dict:
 class Script:
     """Devuelve respuestas de una lista; las funciones reciben (prompt, info) y devuelven el JSON (dict o str)."""
 
-    def __init__(self, steps, report=None):
-        self.steps, self.report, self.prompts, self.i = list(steps), report, [], 0
+    def __init__(self, steps, report=None, interpret=None):
+        self.steps, self.report, self.interpret, self.prompts, self.i = list(steps), report, interpret, [], 0
+        self.info = {}
 
     def __call__(self, body):
         prompt = body["messages"][-1]["content"]
         self.prompts.append(prompt)
-        info = parse_prompt(prompt) if "ESTRUCTURA OBSERVADA" in prompt else getattr(self, "info", {})
+        if "ETAPA B:" in prompt:  # etapa B: interpretación del resultado recibido
+            q = re.search(r"EVIDENCIA DE ESTE RESULTADO: C(\d+)", prompt).group(1)
+            r = (self.interpret(prompt, {**self.info, "q": q}) if self.interpret
+                 else {"resumen": "Se observaron registros reales.", "hallazgos": []})
+            return r if isinstance(r, str) else json.dumps(r)
+        info = parse_prompt(prompt) if "ESTRUCTURA OBSERVADA" in prompt else self.info
         if "ESTRUCTURA OBSERVADA" in prompt:
             self.info = info
         if "MAPA CONSTRUIDO" in prompt:
@@ -108,10 +114,13 @@ class D1WrongSchemaAndEmptyResultTests(Base):
             lambda p, i: {"pregunta": "¿Cuántos registros hay en cada tabla?", "por_que": "contar", "evidencia": [],
                           "herramienta": "sql", "sql": "SELECT table_name, table_rows FROM information_schema.tables "
                                                        "WHERE table_schema = DATABASE() AND 1 = 0"},
-            lambda p, i: {"pregunta": "siguiente", "por_que": "interpreto el resultado", "evidencia": [],
-                          "hallazgos": [{"texto": "Obtuve los conteos exactos: 300 y 40 registros", "tipo": "hallazgo",
-                                         "evidencia": [f"C{i['last_q']}"]}], "herramienta": "terminar"},
-        ], report=good_report)
+            lambda p, i: {"pregunta": "Ver registros", "por_que": "leer datos reales", "evidencia": [],
+                          "herramienta": "muestra", "tabla": i["tables"][0]},
+            lambda p, i: {"pregunta": "fin", "por_que": "listo", "evidencia": [], "herramienta": "terminar"},
+        ], report=good_report, interpret=lambda p, i: {
+            # etapa B: el modelo atribuye cifras a la consulta VACÍA anterior (C{last_q})
+            "resumen": "Se leyeron filas.", "hallazgos": [{"texto": "Obtuve los conteos exactos: 300 y 40 registros",
+                                                          "tipo": "hallazgo", "evidencia": [f"C{i['last_q']}"]}]})
         m, run = self.run_script(script)
         first = self.fake.requests[1]["messages"][-1]["content"]
         self.assertIn("Tu respuesta anterior NO se ejecutó (no se gastó un paso)", first)
@@ -169,20 +178,19 @@ class D2ToolArgumentsTests(Base):
 class D3EvidenceTests(Base):
     def test_claims_are_contrasted_with_real_results(self):
         def interpret(p, i):
-            return {"pregunta": "fin", "por_que": "listo", "evidencia": [], "herramienta": "terminar", "hallazgos": [
-                {"texto": f"La tabla tiene 300 filas", "tipo": "hallazgo", "evidencia": [f"C{i['last_q']}"]},
-                {"texto": "La tabla tiene 12345 filas", "tipo": "hallazgo", "evidencia": [f"C{i['last_q']}"]},
+            return {"resumen": "La tabla tiene filas.", "hallazgos": [
+                {"texto": "La tabla tiene 300 filas", "tipo": "hallazgo", "evidencia": [f"C{i['q']}"]},
+                {"texto": "La tabla tiene 12345 filas", "tipo": "hallazgo", "evidencia": [f"C{i['q']}"]},
                 {"texto": "Hay datos de mercado", "tipo": "hallazgo", "evidencia": []},
                 {"texto": "Inventado con evidencia falsa", "tipo": "hallazgo", "evidencia": ["C999999"]}]}
         script = Script([
             lambda p, i: {"pregunta": "Contar", "por_que": "tamaño real", "evidencia": [], "herramienta": "perfil",
-                          "tabla": self.cave.child},
-            interpret], report=good_report)
+                          "tabla": self.cave.child}], report=good_report, interpret=interpret)
         self.run_script(script)
         by = {f["text"]: f for f in self.facts() if f["kind"] == "hallazgo"}
         self.assertEqual(by["La tabla tiene 300 filas"]["certainty"], "inferencia")
         self.assertEqual(by["La tabla tiene 12345 filas"]["data"]["verificacion"], "cifras_no_encontradas")
-        # sin evidencia citada se toma la consulta anterior como evidencia implícita, y se contrasta igual
+        # sin evidencia citada se toma la consulta interpretada como evidencia implícita, y se contrasta igual
         self.assertEqual(by["Hay datos de mercado"]["certainty"], "inferencia")
         self.assertEqual(by["Inventado con evidencia falsa"]["data"]["verificacion"], "evidencia_inexistente",
                          "citar evidencia inexistente nunca se acepta")
@@ -237,6 +245,9 @@ class D6OutcomeTests(Base):
                         report=lambda p, i: "{\"resumen\": \"\"")
         m, run = self.run_script(script)
         self.assertEqual(m["state"], "completada", "el PROCESO terminó")
+        self.assertFalse([f for f in self.facts() if "99999" in f["text"]],
+                         "0.4.2: un hallazgo anticipado en la etapa A (sin resultado) ni siquiera se registra")
+        self.assertEqual(json.loads(run["metrics_json"])["respuestas_con_afirmaciones_anticipadas"], 1)
         self.assertEqual(run["quality"], "insuficiente")
         self.assertEqual(run["objective_met"], 0)
         self.assertEqual(run["report_status"], "ausente")
@@ -259,10 +270,15 @@ class D6OutcomeTests(Base):
         script = Script([
             lambda p, i: {"pregunta": "muestra", "por_que": "leer", "evidencia": [], "herramienta": "muestra",
                           "tabla": self.cave.parent},
-            lambda p, i: {"pregunta": "fin", "por_que": "listo", "evidencia": [], "herramienta": "terminar",
-                          "hallazgos": [{"texto": "Hay etiquetas del tipo «nombre 1»", "tipo": "hallazgo",
-                                         "evidencia": [f"C{i['last_q']}"]}]}], report=flaky_report)
+            lambda p, i: {"pregunta": "¿Cuántas filas hay?", "por_que": "dimensionar lo leído", "evidencia": [],
+                          "herramienta": "perfil", "tabla": self.cave.parent},
+            lambda p, i: {"pregunta": "fin", "por_que": "listo", "evidencia": [], "herramienta": "terminar"}],
+            report=flaky_report,
+            interpret=lambda p, i: {"resumen": "Etiquetas legibles.", "hallazgos": [
+                {"texto": "Hay etiquetas del tipo «nombre 1»", "tipo": "hallazgo", "evidencia": [f"C{i['q']}"]}]})
         m, run = self.run_script(script)
+        self.assertEqual(json.loads(run["metrics_json"])["ciclos_completos"], 1,
+                         "pregunta → consulta → registros → interpretación respaldada → nueva pregunta")
         self.assertEqual(attempts["n"], 2)
         self.assertEqual(run["quality"], "cumplido", run["reasons_json"])
         self.assertEqual(run["report_status"], "completo")

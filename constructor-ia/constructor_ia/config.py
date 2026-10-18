@@ -86,6 +86,7 @@ class Config:
     explorer_max_join_size: int = 20_000_000
     explorer_sample_rows: int = 100_000
     explorer_report_num_predict: int = 1800
+    explorer_decide_num_predict: int = 384
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -286,6 +287,7 @@ def _load_explorer(cfg: Config, ex: dict, model: dict) -> None:
     cfg.explorer_max_join_size = _int(ex, "max_join_size", cfg.explorer_max_join_size, 1000, 2_000_000_000)
     cfg.explorer_sample_rows = _int(ex, "sample_rows", cfg.explorer_sample_rows, 100, 10_000_000)
     cfg.explorer_report_num_predict = _int(ex, "report_num_predict", cfg.explorer_report_num_predict, 300, 4096)
+    cfg.explorer_decide_num_predict = _int(ex, "decide_num_predict", cfg.explorer_decide_num_predict, 128, 2048)
     conns = ex.get("connections", [])
     if not isinstance(conns, list) or len(conns) > 10:
         raise ConfigError("explorer.connections debe ser una lista (máximo 10)")

@@ -114,6 +114,8 @@ max_result_kb = 256     # bytes por resultado
 max_join_size = 20000000  # MariaDB rechaza consultas que estimen examinar más filas
 sample_rows = 100000    # tamaño de muestra de las herramientas perfil/frecuentes/relacion
 report_num_predict = 1800 # tokens para el informe final (3 aplicaciones con consultas no entran en 900)
+decide_num_predict = 384  # etapa A (investigación): JSON pequeño con pregunta, herramienta y argumentos
+# La etapa B (interpretación) usa num_predict de [ollama.explorer]. El mensaje se ajusta solo a num_ctx.
 
 # Una entrada por base autorizada. La contraseña va en un archivo 0600 aparte (nunca aquí):
 #   ~/constructor-ia/bin/constructor-ia explorer-setup prrr_market   (ver EXPLORADOR.md)

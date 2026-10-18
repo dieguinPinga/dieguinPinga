@@ -7,13 +7,16 @@ Funciones puras (sin E/S) que rodean al modelo con infraestructura, sin decidir 
 * precheck_sql: problemas detectables ANTES de ejecutar (base equivocada en information_schema,
   tablas inexistentes, otras bases). Se devuelven al modelo para que reformule sin gastar un paso.
 * usefulness: distingue ejecución exitosa de resultado útil.
-* verify_claim: contrasta una afirmación con su evidencia real (estado, filas, cifras).
+* verify_claim: contrasta una afirmación con su evidencia real (estado, filas, cifras y, si afirma algo
+  ACTUAL o vigente, la antigüedad de los registros).
+* temporal_note: distingue registros históricos de actuales en un resultado.
 """
 from __future__ import annotations
 
 import difflib
 import json
 import re
+import time
 
 TOOLS = ("muestra", "perfil", "frecuentes", "relacion", "sql", "terminar")
 REQUIRED = {
@@ -185,9 +188,11 @@ def usefulness(status: str, row_count: int, rows: list, sql: str) -> str:
 
 
 def _norm_num(s: str) -> set[str]:
-    """Variantes comparables de una cifra (1.234,5 / 1234.5 / 1234,50…)."""
+    """Variantes comparables de una cifra (1.234,5 / 1234.5 / 1234,50…), con y sin signo."""
     s = s.strip().lstrip("+")
     out = {s}
+    if s.startswith("-"):
+        out |= _norm_num(s[1:])  # «-05» de «2024-05-01» también es «05»
     digits = s.replace(",", "").replace(".", "")
     out.add(digits)
     for cand in (s.replace(",", ""), s.replace(".", "").replace(",", "."), s.replace(",", ".")):
@@ -200,7 +205,57 @@ def _norm_num(s: str) -> set[str]:
     return {x for x in out if x}
 
 
-def verify_claim(text: str, evidence: list[dict]) -> tuple[str, str, str]:
+CODE_RE = re.compile(r"(?<![\w.])([A-Z][A-Z0-9_]{1,15})(?![\w])")
+QUOTED_RE = re.compile(r"[«\"'`“‘]([^«»\"'`“”‘’]{1,40})[»\"'`”’]")
+GENERIC_CODES = {"SQL", "NULL", "ID", "PK", "FK", "JSON", "CSV", "API", "UTC", "OK", "SELECT", "FROM", "WHERE",
+                 "COUNT", "AVG", "MIN", "MAX", "SUM", "LIMIT", "AND", "OR", "NOT", "DISTINCT", "GROUP", "ORDER",
+                 "BY", "JOIN", "ON", "AS", "IS", "IN", "DESC", "ASC", "TRUE", "FALSE", "HTML", "URL", "UUID"}
+
+
+def literal_values(text: str) -> list[str]:
+    """Valores que la afirmación presenta como datos: códigos EN MAYÚSCULAS y textos entre comillas."""
+    vals = [m.group(1) for m in QUOTED_RE.finditer(text or "")]
+    vals += [c for c in CODE_RE.findall(text or "") if c not in GENERIC_CODES and not re.fullmatch(r"[CF]\d+", c)]
+    return list(dict.fromkeys(v.strip() for v in vals if v.strip()))
+
+
+TS_RE = re.compile(r"(?<!\d)((?:19|20)\d\d)-([01]\d)-([0-3]\d)(?:[ T]([0-2]\d):([0-5]\d)(?::([0-5]\d))?)?(?!\d)")
+CURRENT_RE = re.compile(r"\b(actual(?:es|mente)?|vigentes?|ahora|hoy|en este momento|en tiempo real|hoy en d[ií]a|"
+                        r"current(?:ly)?|now)\b", re.I)
+FRESH_S = 3600.0  # un registro más viejo que esto no demuestra el estado actual
+
+
+def timestamps(text: str) -> list[float]:
+    """Fechas y horas (ISO, sin zona: se toma la hora local del servidor) presentes en un texto."""
+    out = []
+    for m in TS_RE.finditer(text or ""):
+        y, mo, d, h, mi, se = (int(x) if x else 0 for x in m.groups())
+        try:
+            out.append(time.mktime((y, mo, d, h, mi, se, 0, 0, -1)))
+        except (OverflowError, ValueError):
+            continue
+    return out
+
+
+def temporal_note(rows: list, now: float | None = None) -> str:
+    """Rango de fechas de un resultado y advertencia histórico/actual (genérica, sin conocer la base)."""
+    now = time.time() if now is None else now
+    ts = timestamps(" ".join(str(v) for r in rows or [] for v in r if v is not None))
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(now))
+    if not ts:
+        return (f"FECHAS: el resultado no contiene fechas. Fecha y hora actual: {stamp}. Sin fechas no se puede afirmar "
+                "que un valor sea el ACTUAL o vigente.")
+    lo, hi = min(ts), max(ts)
+    fmt = lambda t: time.strftime("%Y-%m-%d %H:%M", time.localtime(t))  # noqa: E731
+    age = now - hi
+    rel = ("de la última hora" if age <= FRESH_S else
+           f"de hace {age / 86400:.0f} días" if age >= 86400 else f"de hace {age / 3600:.0f} horas")
+    return (f"FECHAS: los valores de fecha del resultado van de {fmt(lo)} a {fmt(hi)} (el más reciente es {rel}). "
+            f"Fecha y hora actual: {stamp}. Son registros HISTÓRICOS: describen lo que se registró en esas fechas; "
+            "no demuestran el estado ACTUAL salvo que sean de la última hora.")
+
+
+def verify_claim(text: str, evidence: list[dict], now: float | None = None) -> tuple[str, str, str]:
     """Contrasta una afirmación con su evidencia.
 
     evidence: [{"id": "C7", "tipo": "consulta", "status": ..., "row_count": n, "utilidad": ..., "texto": resultado}]
@@ -225,6 +280,21 @@ def verify_claim(text: str, evidence: list[dict]) -> tuple[str, str, str]:
         if missing:
             return ("sin_verificar", "cifras_no_encontradas",
                     f"cifras que no aparecen en la evidencia citada: {', '.join(missing[:5])}")
+    haystack_all = " ".join(e.get("texto", "") for e in usable).lower()
+    absent = [v for v in literal_values(text) if v.lower() not in haystack_all]
+    if absent:
+        return ("sin_verificar", "valores_no_encontrados",
+                f"valores que no aparecen en la evidencia citada: {', '.join(absent[:5])}")
+    if CURRENT_RE.search(text or ""):
+        ts = timestamps(" ".join(e.get("texto", "") for e in usable if e["tipo"] == "consulta"))
+        now = time.time() if now is None else now
+        if not ts:
+            return ("sin_verificar", "vigencia_no_demostrada",
+                    "afirma algo ACTUAL o vigente, pero la evidencia no tiene fechas que lo demuestren")
+        if now - max(ts) > FRESH_S:
+            return ("sin_verificar", "vigencia_no_demostrada",
+                    "afirma algo ACTUAL o vigente, pero el registro más reciente de la evidencia es del "
+                    + time.strftime("%Y-%m-%d %H:%M", time.localtime(max(ts))) + " (histórico)")
     return "inferencia", "respaldada", "contrastada con " + ", ".join(e["id"] for e in usable[:5])
 
 
