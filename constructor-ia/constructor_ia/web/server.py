@@ -31,6 +31,7 @@ from .. import webproject
 from ..explorer.broker import BrokerError
 from ..explorer.mapstore import MapStore
 from ..files import MISSION_ID_RE, FileStoreError
+from ..revisions import RevisionError
 
 log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
@@ -391,7 +392,7 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "Parámetros inválidos") from None
         state = q.get("state")
         sql = ("SELECT id, title, state, attempt, max_attempts, model, created_at, started_at, finished_at,"
-               " updated_at, error, json_extract(spec_json, '$.mode') AS mode FROM missions")
+               " updated_at, error, json_extract(spec_json, '$.mode') AS mode, revision, project_id FROM missions")
         args: list = []
         if state:
             if not re.match(r"^[a-z]{3,20}$", state):
@@ -472,6 +473,9 @@ class Handler(BaseHTTPRequestHandler):
             new = self.app.missions.requeue(mid, s.username)
         except ValueError as e:
             raise HttpError(409, str(e)) from None
+        spec = json.loads(self.app.missions.get(mid)["spec_json"])
+        if spec.get("revision"):
+            self.app.revisions.store_base(new, spec.get("mode", "funcion"), self.app.revisions.base_files(mid))
         self.app.db.audit("mision_reencolada", username=s.username, target=mid, ip=self._ip(), detail=new)
         self.app.mission_worker.notify()
         self._json(201, {"id": new})
@@ -707,6 +711,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise HttpError(400, "Las instantáneas superan 200 KiB; use consultas más acotadas")
             seeds[f"datos/{name}.json"] = content
         m["spec"]["seed_files"] = seeds
+        # Referencia trazable al mapa y a las consultas autorizadas (sin credenciales ni acceso SQL).
+        m["spec"]["data_source"] = {"conn": broker.name, "fact_id": seed.get("fact_id"),
+                                    "queries": [{"nombre": n, "sql": q} for n, q in queries],
+                                    "obtenido": time.strftime("%Y-%m-%dT%H:%M:%S")}
         m["description"] += ("\n\nDatos: instantáneas de solo lectura de la conexión «" + broker.name + "» en "
                              + ", ".join(sorted(seeds)) + ".")
         self.app.db.audit("instantaneas_web", username=s.username, target=broker.name, ip=self._ip(),
@@ -796,6 +804,73 @@ class Handler(BaseHTTPRequestHandler):
         self.app.db.audit("exploracion_continuada", username=s.username, target=mid, ip=self._ip(), detail=new)
         self.app.mission_worker.notify()
         self._json(201, {"id": new})
+
+    # Revisiones de proyecto ------------------------------------------
+    @route("POST", r"/api/missions/([A-Za-z0-9-]{1,30})/revisions")
+    def api_create_revision(self, s: Session, mid):
+        row = self._mission(mid)
+        data = self._body()
+        rev = self.app.revisions
+        base_mid = mid
+        if data.get("base") == "vigente":
+            pid = rev.project_of(row)
+            rev.ensure_project(pid)
+            cur = self.app.db.one("SELECT current_mission FROM projects WHERE id=?", (pid,))[0]
+            if not cur:
+                raise HttpError(409, "El proyecto todavía no tiene una versión aprobada")
+            base_mid, data = cur, dict(data, base_ref="final")
+        try:
+            prep = rev.prepare(base_mid, data, self.app.cfg.max_attempts_limit, self.app.cfg.max_attempts)
+        except RevisionError as e:
+            raise HttpError(400, str(e)) from None
+        m, lineage = prep["mission"], prep["lineage"]
+        mode = m["spec"]["mode"]
+        if data.get("refresh_data"):
+            src = m["spec"].get("data_source")
+            if not src:
+                raise HttpError(400, "Esta misión no tiene fuentes de datos del Explorador")
+            self._seed_web(m, {"conn": src["conn"], "queries": src["queries"]}, s)
+            m["spec"]["data_source"]["fact_id"] = src.get("fact_id")
+        pending = self.app.db.one("SELECT COUNT(*) FROM missions WHERE state='pendiente'")[0]
+        if pending >= 20:
+            raise HttpError(429, "La cola está llena (20 misiones pendientes)")
+        model = self.app.cfg.web_model.name if mode == "web" else self.app.cfg.builder.name
+        new = self.app.missions.create(m, model, s.username, self.app.missions.get(base_mid)["conversation_id"],
+                                       lineage=lineage)
+        rev.store_base(new, mode, prep["files"])
+        rev.ensure_project(lineage["project_id"])
+        rev.log(lineage["project_id"], "revision", f"r{lineage['revision']} desde {base_mid}:{lineage['base_ref']}: "
+                f"{lineage['instruction'][:300]}", new, s.username)
+        self.app.db.audit("revision_creada", username=s.username, target=new, ip=self._ip(),
+                          detail=f"proyecto {lineage['project_id']} r{lineage['revision']}")
+        self.app.mission_worker.notify()
+        self._json(201, {"id": new, "revision": lineage["revision"], "project_id": lineage["project_id"]})
+
+    @route("GET", r"/api/projects/([A-Za-z0-9-]{1,30})")
+    def api_project(self, s, pid):
+        try:
+            self._json(200, self.app.revisions.project(pid))
+        except RevisionError as e:
+            raise HttpError(404, str(e)) from None
+
+    @route("POST", r"/api/projects/([A-Za-z0-9-]{1,30})/current")
+    def api_project_current(self, s: Session, pid):
+        data = self._body()
+        try:
+            self.app.revisions.set_current(pid, str(data.get("mission_id", "")), s.username)
+        except RevisionError as e:
+            raise HttpError(409, str(e)) from None
+        self.app.db.audit("version_vigente", username=s.username, target=pid, ip=self._ip(),
+                          detail=str(data.get("mission_id"))[:30])
+        self._json(200, {"ok": True})
+
+    @route("GET", "/api/versions/diff")
+    def api_versions_diff(self, s):
+        q = self._query()
+        try:
+            self._json(200, self.app.revisions.diff(q.get("a", ""), q.get("b", "")))
+        except RevisionError as e:
+            raise HttpError(400, str(e)) from None
 
     # Conversaciones ----------------------------------------------------
     def _conv(self, cid: str):

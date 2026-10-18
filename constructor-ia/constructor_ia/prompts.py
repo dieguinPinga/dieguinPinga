@@ -111,3 +111,25 @@ def repair(description: str, spec: dict, code: str, report: str, budget: int) ->
             f"Resultados reales de las pruebas (errores a corregir):\n{report}\n\n"
             "Corrige el programa y devuelve el archivo completo en un único bloque ```python.")
     return [{"role": "system", "content": BUILDER_SYSTEM}, {"role": "user", "content": user}]
+
+
+def _history_text(spec: dict) -> str:
+    hist = (spec.get("revision") or {}).get("history") or []
+    if not hist:
+        return ""
+    return "Cambios ya incorporados en revisiones anteriores:\n" + "\n".join(
+        f"- r{h['revision']}: {h['instruccion']}" for h in hist) + "\n\n"
+
+
+def revision(description: str, spec: dict, code: str, budget: int) -> list[dict]:
+    """Primer intento de una REVISIÓN: modificar el programa existente según la instrucción humana."""
+    rev = spec["revision"]
+    user = (f"Propósito original del programa:\n{clip(description, budget // 5)}\n\n" + _history_text(spec)
+            + f"NUEVA MODIFICACIÓN PEDIDA POR EL OPERADOR:\n{clip(rev['instruction'], 1500)}\n\n"
+            "Esto es una MODIFICACIÓN del programa existente, NO un programa nuevo. Conservá todo el "
+            "comportamiento que no se pide cambiar: todas las pruebas anteriores deben seguir pasando.\n"
+            f"{_sig(spec)}\n\nEjemplos que debe cumplir (incluye las pruebas nuevas):\n"
+            f"{_examples(spec, budget // 6) or '(sin ejemplos visibles)'}\n\n"
+            f"Programa actual (solucion.py):\n```python\n{clip(code, budget // 2)}```\n\n"
+            "Devolvé el archivo solucion.py completo y modificado en un único bloque ```python.")
+    return [{"role": "system", "content": BUILDER_SYSTEM}, {"role": "user", "content": user}]

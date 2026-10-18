@@ -46,6 +46,11 @@ class App:
         if cfg.explorer_enabled:
             self.engine.explorer = Explorer(cfg, self.db, self.bus, self.missions, self.files, self.ollama, self.gate,
                                             self.brokers)
+        from .revisions import Revisions
+
+        self.revisions = Revisions(self.db, self.files, self.bus)
+        self.missions.on_approved = self.revisions.on_approved
+        self.engine.revisions = self.revisions
         self.mission_worker = MissionWorker(self.engine, self.missions, self.db)
         self.chat_worker = ChatWorker(cfg, self.db, self.bus, self.files, self.ollama, self.gate)
         self._status_cache: tuple[float, dict] = (0.0, {})

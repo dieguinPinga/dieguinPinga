@@ -22,8 +22,10 @@ class Missions:
     def __init__(self, db: Database, bus: EventBus):
         self.db = db
         self.bus = bus
+        self.on_approved = None  # Revisions.on_approved: actualiza la versión vigente del proyecto
 
-    def create(self, m: dict, model: str, user: str, conversation_id: int | None = None) -> str:
+    def create(self, m: dict, model: str, user: str, conversation_id: int | None = None,
+               lineage: dict | None = None) -> str:
         now = time.time()
         spec = dict(m["spec"])
         spec["tests_py"] = m.get("tests_py", "")
@@ -36,6 +38,11 @@ class Missions:
                     " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (mid, m["title"], m["description"], json.dumps(spec, ensure_ascii=False), model,
                      m["max_attempts"], PENDING, 1, user, conversation_id, now, now))
+                if lineage:
+                    self.db.execute("UPDATE missions SET project_id=?, revision=?, parent_id=?, base_ref=?, instruction=?"
+                                    " WHERE id=?", (lineage["project_id"], int(lineage["revision"]),
+                                                    lineage["parent_id"], lineage["base_ref"],
+                                                    lineage["instruction"], mid))
                 break
             except Exception as e:  # colisión de id improbable
                 if "UNIQUE" not in str(e):
@@ -58,6 +65,13 @@ class Missions:
             vals.append(v)
         vals.append(mid)
         self.db.execute(f"UPDATE missions SET {', '.join(cols)} WHERE id=?", vals)
+        if state == "aprobada" and self.on_approved is not None:
+            try:
+                self.on_approved(mid)
+            except Exception:  # noqa: BLE001 - la aprobación ya quedó registrada; no se revierte por esto
+                import logging
+
+                logging.getLogger(__name__).exception("No se pudo actualizar la versión vigente de %s", mid)
         self.bus.publish("estado", state, mission_id=mid, data={"state": state, **{
             k: v for k, v in fields.items() if k in ("attempt", "error")}})
 
@@ -121,9 +135,12 @@ class Missions:
             raise ValueError("Solo se pueden reencolar misiones fallidas, canceladas o interrumpidas")
         spec = json.loads(row["spec_json"])
         tests_py = spec.pop("tests_py", "")
+        lineage = None
+        if row["project_id"]:  # un reintento de una revisión sigue siendo la misma revisión del proyecto
+            lineage = {k: row[k] for k in ("project_id", "revision", "parent_id", "base_ref", "instruction")}
         new = self.create({"title": row["title"][:110] + " (reintento)", "description": row["description"],
                            "spec": spec, "tests_py": tests_py, "max_attempts": row["max_attempts"]},
-                          row["model"], user, row["conversation_id"])
+                          row["model"], user, row["conversation_id"], lineage=lineage)
         self.bus.publish("reencolada", f"Reencolada como {new}", mission_id=mid, data={"nueva": new})
         return new
 

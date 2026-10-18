@@ -22,6 +22,19 @@ from .sandbox.executor import Executor
 log = logging.getLogger(__name__)
 
 
+def _change_summary(base: dict, final: dict) -> str:
+    added = sorted(set(final) - set(base))
+    removed = sorted(set(base) - set(final))
+    modified = sorted(p for p in set(base) & set(final) if base[p] != final[p])
+    parts = [f"modificados: {', '.join(modified) or 'ninguno'}"]
+    if added:
+        parts.append(f"agregados: {', '.join(added)}")
+    if removed:
+        parts.append(f"eliminados: {', '.join(removed)}")
+    parts.append(f"sin cambios: {len(set(base) & set(final)) - len(modified)}")
+    return "; ".join(parts)
+
+
 class MissionAborted(Exception):
     def __init__(self, state: str, reason: str):
         super().__init__(reason)
@@ -35,6 +48,10 @@ class Engine:
         self.cfg, self.db, self.bus, self.missions, self.files = cfg, db, bus, missions, files
         self.ollama, self.gate, self.executor = ollama, gate, executor
         self.explorer = None  # lo asigna App si el Explorador está habilitado
+        self.revisions = None  # lo asigna App
+
+    def _base_files(self, mid: str) -> dict[str, str]:
+        return self.revisions.base_files(mid) if self.revisions is not None else {}
 
     def _event(self, mid, kind, msg, **data):
         self.bus.publish(kind, msg, mission_id=mid, data=data or None)
@@ -70,12 +87,24 @@ class Engine:
                 return self._run_web(mid, description, spec, max_attempts, cancel)
             budget = prompts.budget_chars(self.cfg.builder.num_ctx, self.cfg.builder.num_predict)
             last_code: str | None = None
+            base_code = None
+            if spec.get("revision"):
+                base_code = self._base_files(mid).get("solucion.py")
+                if base_code is None:
+                    raise MissionAborted("fallida", "La revisión no tiene la copia de su versión base")
+                last_code = base_code
+                self._event(mid, "revision", f"Revisión r{self.missions.get(mid)['revision']}: se parte de "
+                            f"{spec['revision']['base_mission']}:{spec['revision']['base_ref']} "
+                            f"con la instrucción «{spec['revision']['instruction'][:200]}»")
             report = ""
             for n in range(1, max_attempts + 1):
                 self._check_cancel(mid, cancel)
                 outcome = self._attempt(mid, n, max_attempts, description, spec, tests_py, last_code, report,
                                         budget, cancel)
                 if outcome["approved"]:
+                    if base_code is not None:
+                        changed = "modificado" if outcome["code"] != base_code else "sin cambios"
+                        self._event(mid, "revision", f"Cambios respecto de la base: solucion.py {changed}")
                     self.missions.set_state(mid, "aprobada", finished_at=time.time(), final_attempt=n, error=None)
                     self._event(mid, "terminada", f"Misión aprobada en el intento {n}: todas las pruebas pasaron")
                     return "aprobada"
@@ -95,7 +124,9 @@ class Engine:
             cols = ", ".join(f"{k}=?" for k in f)
             self.db.execute(f"UPDATE attempts SET {cols} WHERE mission_id=? AND n=?", (*f.values(), mid, n))
 
-        if n == 1 or last_code is None:
+        if n == 1 and spec.get("revision") and last_code is not None:
+            messages = prompts.revision(description, spec, last_code, budget)
+        elif n == 1 or last_code is None:
             messages = prompts.initial(description, spec, budget)
             if report:
                 messages[1]["content"] += "\n\nEl intento anterior falló:\n" + report
@@ -188,12 +219,23 @@ class Engine:
             raise MissionAborted("fallida", "El Taller Web está desactivado en la configuración")
         model = self.cfg.web_model
         budget = prompts.budget_chars(model.num_ctx, model.num_predict)
-        files: dict[str, str] = dict(spec.get("seed_files") or {})
+        files: dict[str, str] = {}
+        if spec.get("revision"):
+            files = self._base_files(mid)
+            if not files:
+                raise MissionAborted("fallida", "La revisión no tiene la copia de su versión base")
+            self._event(mid, "revision", f"Revisión r{self.missions.get(mid)['revision']}: se parte de "
+                        f"{spec['revision']['base_mission']}:{spec['revision']['base_ref']} ({len(files)} archivos) "
+                        f"con la instrucción «{spec['revision']['instruction'][:200]}»")
+        base_files = dict(files)
+        files.update(spec.get("seed_files") or {})
         result, report = None, ""
         for n in range(1, max_attempts + 1):
             self._check_cancel(mid, cancel)
             out = self._attempt_web(mid, n, max_attempts, description, spec, files, result, report, budget, cancel)
             if out["approved"]:
+                if spec.get("revision"):
+                    self._event(mid, "revision", "Cambios respecto de la base: " + _change_summary(base_files, out["files"]))
                 self.missions.set_state(mid, "aprobada", finished_at=time.time(), final_attempt=n, error=None)
                 self._event(mid, "terminada", f"Proyecto web aprobado en el intento {n}: todas las verificaciones pasaron")
                 return "aprobada"
@@ -210,7 +252,9 @@ class Engine:
             self.db.execute(f"UPDATE attempts SET {cols} WHERE mission_id=? AND n=?", (*f.values(), mid, n))
 
         seeds = spec.get("seed_files") or {}
-        if not set(prev_files) - set(seeds):
+        if n == 1 and spec.get("revision"):
+            messages = webproject.revision_prompt(description, spec, prev_files, budget)
+        elif not set(prev_files) - set(seeds):
             messages = webproject.initial_prompt(description, spec, budget)
             if report:
                 messages[1]["content"] += "\n\nEl intento anterior falló:\n" + report
@@ -255,10 +299,12 @@ class Engine:
                                             cfg.web_max_total_kb * 1024)
         if gen.truncated:
             problems.insert(0, "La respuesta se cortó por el límite de tokens: devuelve menos archivos o más cortos.")
+        unchanged = sorted(p for p in changed if prev_files.get(p) == changed[p])
         reused = sorted(set(files) - set(changed))
         self._event(mid, "codigo_recibido",
                     f"Respuesta en {gen.duration_ms / 1000:.1f} s: {len(changed)} archivo(s) nuevos o modificados"
-                    + (f", {len(reused)} reutilizados del intento anterior" if reused else "")
+                    + (f" ({len(unchanged)} reenviados sin cambios)" if unchanged else "")
+                    + (f", {len(reused)} reutilizados sin regenerar" if reused else "")
                     + (f", {len(deleted)} eliminados" if deleted else ""))
         for path, content in files.items():
             self.files.save(mid, f"intento-{n}/web/{path}", content, "web", n)

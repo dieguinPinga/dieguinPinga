@@ -214,3 +214,45 @@ def repair_prompt(description: str, spec: dict, files: dict[str, str], report: s
             "### archivo: ruta. Los archivos que no devuelvas se conservan tal como están. "
             "Para borrar un archivo escribe una línea: ### eliminar: ruta")
     return [{"role": "system", "content": WEB_SYSTEM}, {"role": "user", "content": user}]
+
+
+def relevant_files(instruction: str, files: dict[str, str], seeds: dict) -> set[str]:
+    """Archivos que la instrucción probablemente toca (palabras de la instrucción en ruta o contenido)."""
+    words = {w for w in re.findall(r"[a-záéíóúñü0-9_]{4,}", instruction.lower())}
+    scores = {}
+    for path, content in files.items():
+        if path in seeds:
+            continue
+        low = content.lower()
+        scores[path] = sum(low.count(w) for w in words) + sum(5 for w in words if w in path.lower())
+    ranked = [p for p, sc in sorted(scores.items(), key=lambda kv: -kv[1]) if sc > 0][:4]
+    return set(ranked) or {p for p in files if p.endswith(".js") and p not in seeds}
+
+
+def revision_prompt(description: str, spec: dict, files: dict[str, str], budget: int) -> list[dict]:
+    """Primer intento de una REVISIÓN web: archivos actuales + instrucción; devolver solo lo que cambia."""
+    rev = spec["revision"]
+    seeds = spec.get("seed_files") or {}
+    focus = relevant_files(rev["instruction"], files, seeds)
+    hist = rev.get("history") or []
+    history = ("Cambios ya incorporados en revisiones anteriores:\n"
+               + "\n".join(f"- r{h['revision']}: {h['instruccion']}" for h in hist) + "\n\n") if hist else ""
+    room = budget - min(len(description), budget // 5) - 2500
+    shown, listed = [], []
+    for f in sorted((f for f in files if f not in seeds), key=lambda f: (f not in focus, f != "index.html", f)):
+        block = f"### archivo: {f}\n```\n{files[f]}```\n"
+        if len(block) <= room:
+            shown.append(block)
+            room -= len(block)
+        else:
+            listed.append(f)
+    user = (f"Proyecto web existente (versión aprobada). Propósito original:\n{prompts.clip(description, budget // 5)}\n\n"
+            + history + _data_text(spec)
+            + f"NUEVA MODIFICACIÓN PEDIDA POR EL OPERADOR:\n{prompts.clip(rev['instruction'], 1500)}\n\n"
+            f"Requisitos verificables (anteriores y nuevos; todos deben seguir cumpliéndose):\n{_checks_text(spec)}\n\n"
+            "Archivos actuales del proyecto:\n" + "".join(shown)
+            + (f"(Otros archivos existentes, no mostrados por espacio: {', '.join(listed)})\n" if listed else "")
+            + "\nEsto es una MODIFICACIÓN del proyecto existente, NO un proyecto nuevo. Conservá todo lo que no se "
+            "pide cambiar. Devolvé SOLO los archivos que necesites modificar o crear, cada uno COMPLETO y con el "
+            "formato ### archivo: ruta. Los archivos que no devuelvas se conservan tal como están.")
+    return [{"role": "system", "content": WEB_SYSTEM}, {"role": "user", "content": user}]

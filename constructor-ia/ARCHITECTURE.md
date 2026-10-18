@@ -92,6 +92,13 @@ de solo lectura) → `explorer/mysqlproto.py` (protocolo MariaDB, biblioteca est
 El mapa vive en la SQLite propia (`explore_*`). El Explorador no ejecuta código generado ni usa el sandbox.
 Detalle en [EXPLORADOR.md](EXPLORADOR.md).
 
+## Revisiones de proyecto (v0.4.0)
+
+`revisions.py`: un proyecto es su misión original; cada revisión es una misión nueva con `project_id`,
+`revision`, `parent_id`, `base_ref` e `instruction`, y una copia inmutable `base/…` de la versión de partida.
+El motor usa un prompt de modificación en el primer intento y la reparación normal en los siguientes; la
+aprobación actualiza `projects.current_mission` (versión vigente). Detalle en [REVISIONES.md](REVISIONES.md).
+
 ## Ollama directo vs. OpenClaw
 
 | Función | Implementación |

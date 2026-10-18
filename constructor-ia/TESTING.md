@@ -20,11 +20,13 @@ python3 -m unittest discover -s tests -t . -v
 
 | `tests/test_explorer.py` (27) | Explorador con MariaDB 10.11 real y privado: filtro SQL, privilegios, intermediario (ataques con el filtro desactivado, límites, `KILL`, cancelación, aislamiento, registros), agente sobre bases de nombres aleatorios, continuación con cambios de esquema, detención, API y tableros con instantáneas. Detalle en EXPLORADOR.md. |
 
+| `tests/test_revisions.py` (8) | Revisiones: reutilización de código y archivos, pruebas heredadas y nuevas, versión vigente y fallo que la preserva, historial, inmutabilidad (SHA-256), diferencias, API protegida, reencolado con linaje. Detalle en REVISIONES.md. |
+
 ### Resultado de la última ejecución (entorno de desarrollo de Claude)
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 131 tests in 65.338s   (v0.3.0; incluye Taller Web y Explorador con MariaDB 10.11.14 real)
+Ran 139 tests in 74.067s   (v0.4.0; incluye Taller Web, Explorador con MariaDB 10.11.14 real y revisiones)
 OK
 ```
 

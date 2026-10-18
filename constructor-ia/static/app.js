@@ -257,7 +257,7 @@ async function viewMissions(v) {
     for (const m of r.items) {
       const end = m.finished_at || (ACTIVE.includes(m.state) ? r.now : null);
       list.append(h("a", { class: "item", href: `#/mision/${m.id}` },
-        h("div", { class: "row between" }, h("span", { class: "t", text: m.title }), badge(m.state)),
+        h("div", { class: "row between" }, h("span", { class: "t", text: m.title + (m.revision > 1 ? ` · r${m.revision}` : "") }), badge(m.state)),
         h("div", { class: "muted small mono" }, `${m.id} · intento ${m.attempt}/${m.max_attempts} · ${fmtDate(m.created_at)}`,
           m.started_at && end ? ` · ${fmtDur(end - m.started_at)}` : ""),
         m.error ? h("div", { class: "small bad", text: m.error }) : ""));
@@ -313,7 +313,9 @@ async function viewMission(v, args) {
   const webBox = h("div", { class: "panel", hidden: true });
   const apprBox = h("div", { class: "panel" });
   const exploreBox = h("div", { hidden: true });
-  v.replaceChildren(info, exploreBox, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, webBox, filesBox, viewer, apprBox);
+  const projList = h("div"), projForm = h("div"), projDiff = h("div");
+  const projectBox = h("div", { class: "panel", hidden: true }, projList, projForm, projDiff);
+  v.replaceChildren(info, projectBox, exploreBox, h("div", { class: "panel" }, h("h2", { text: "Consola de progreso" }), consoleBox), attemptsBox, webBox, filesBox, viewer, apprBox);
   let data = null, lastEv = 0, clock = null;
 
   function addEvent(ev) {
@@ -372,6 +374,10 @@ async function viewMission(v, args) {
     renderFiles();
     renderApprovals();
     renderWeb();
+    if (["funcion", "script", "web"].includes(spec.mode || "funcion")) {
+      projectBox.hidden = false;
+      renderProject(m).catch((e) => toast(e.message, true));
+    }
     if (spec.mode === "exploracion") {
       exploreBox.hidden = false;
       attemptsBox.hidden = true;
@@ -410,6 +416,106 @@ async function viewMission(v, args) {
       }
       attemptsBox.append(det);
     }
+  }
+
+  async function renderProject(m) {
+    const pid = m.project_id || m.id;
+    const p = await api("GET", `/api/projects/${encodeURIComponent(pid)}`);
+    const spec = m.spec || {};
+    const terminal = ["aprobada", "fallida", "cancelada", "interrumpida"].includes(m.state);
+    const tb = h("tbody");
+    for (const r of p.revisions) {
+      const isWeb = r.mode === "web";
+      tb.append(h("tr", {},
+        h("td", { class: "mono small" }, h("a", { href: `#/mision/${r.id}`, text: `r${r.revision}` }), r.id === m.id ? " ◀" : ""),
+        h("td", { class: "small pre-wrap", text: r.instruction || "Versión original" }),
+        h("td", {}, badge(r.state), r.vigente ? h("span", { class: "badge ok", text: "vigente" }) : ""),
+        h("td", { class: "small muted", text: `${fmtDate(r.created_at)}${r.parent_id ? ` · base ${r.parent_id}:${r.base_ref}` : ""}` }),
+        h("td", {}, h("div", { class: "row" },
+          r.state === "aprobada" && !r.vigente ? h("button", { class: "btn ghost small", type: "button", text: "Hacer vigente", onclick: async () => {
+            if (!confirm(`¿Usar r${r.revision} como versión vigente del proyecto? No borra nada: solo cambia la base por defecto de las próximas mejoras.`)) return;
+            try { await api("POST", `/api/projects/${pid}/current`, { mission_id: r.id }); toast("Versión vigente actualizada"); renderProject(m); } catch (e) { toast(e.message, true); }
+          } }) : "",
+          isWeb && r.state === "aprobada" ? h("a", { class: "btn ghost small", href: `/api/missions/${r.id}/zip?attempt=final`, text: "ZIP" }) : "",
+          r.id !== m.id ? h("a", { class: "btn ghost small", href: `#/mision/${r.id}`, text: isWeb ? "Abrir / vista previa" : "Abrir" }) : ""))));
+    }
+    const versions = [];
+    for (const r of p.revisions) {
+      if (r.final_attempt) versions.push([`${r.id}:final`, `r${r.revision} final${r.vigente ? " (vigente)" : ""}`]);
+      if (r.parent_id) versions.push([`${r.id}:base`, `r${r.revision} base (${r.parent_id}:${r.base_ref})`]);
+    }
+    for (const a of data.attempts) versions.push([`${m.id}:intento-${a.n}`, `r${m.revision} intento ${a.n}`]);
+    const sa = h("select", {}, ...versions.map(([v, t]) => h("option", { value: v, text: t })));
+    const sb = h("select", {}, ...versions.map(([v, t]) => h("option", { value: v, text: t })));
+    if (versions.length > 1) { sa.value = versions[0][0]; sb.value = versions[versions.length - 1][0]; }
+    const cur = p.revisions.find((r) => r.vigente);
+    projList.replaceChildren(
+      h("div", { class: "row between" }, h("h2", { text: `Proyecto ${pid} · revisión r${m.revision || 1}` }),
+        terminal ? h("button", { class: "btn small", type: "button", text: "Mejorar esta misión", onclick: () => openImprove(m, p) }) : ""),
+      m.instruction ? h("div", { class: "banner", text: `Instrucción de esta revisión: ${m.instruction}` }) : "",
+      h("p", { class: "muted small", text: `Versión vigente: ${cur ? `r${cur.revision} (${cur.id})` : "ninguna aprobada todavía"}. Cada mejora crea una revisión nueva; las versiones anteriores no se modifican y una revisión fallida no reemplaza a la vigente.` }),
+      h("div", { class: "scroll-x" }, h("table", {}, tb)),
+      versions.length > 1 ? h("div", { class: "row mt" }, h("span", { class: "small muted", text: "Comparar versiones:" }), sa, sb,
+        h("button", { class: "btn ghost small", type: "button", text: "Ver diferencias", onclick: async () => {
+          try {
+            const d = await api("GET", `/api/versions/diff?a=${encodeURIComponent(sa.value)}&b=${encodeURIComponent(sb.value)}`);
+            projDiff.replaceChildren(h("h3", { class: "mt", text: `${d.a} → ${d.b}` }),
+              ...d.files.map((f) => h("details", { class: "item", open: f.status === "modificado" },
+                h("summary", {}, h("span", { class: "mono", text: f.path }), " ", h("span", { class: `badge ${f.status === "igual" ? "" : "ok"}`, text: f.status })),
+                f.diff.length ? h("pre", { class: "console diff" }, ...f.diff.map((line) => h("div", {
+                  class: line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@") ? "hdr" : line.startsWith("+") ? "add" : line.startsWith("-") ? "del" : "", text: line }))) : "")));
+          } catch (e) { toast(e.message, true); }
+        } })) : "");
+  }
+
+  function openImprove(m, p) {
+    const spec = m.spec || {};
+    const mode = spec.mode || "funcion";
+    const instr = h("textarea", { rows: 4, maxlength: 4000, placeholder: "Ej.: «La pelota rebota demasiado pronto contra dos paredes. Corregí las colisiones para que toque exactamente los cuatro bordes»." });
+    const base = h("select", {});
+    const cur = p.revisions.find((r) => r.vigente);
+    if (cur) base.append(h("option", { value: "vigente", text: `Versión vigente del proyecto (r${cur.revision})` }));
+    if (m.final_attempt) base.append(h("option", { value: "final", text: `Esta misión (r${m.revision || 1}): versión final aprobada` }));
+    for (const a of data.attempts.slice().reverse()) if (a.syntax_ok) base.append(h("option", { value: `intento-${a.n}`, text: `Esta misión: intento ${a.n} (${a.test_status || "sin probar"})` }));
+    if (!base.options.length) { toast("Esta misión no tiene ninguna versión con archivos para mejorar", true); return; }
+    const cases = h("div", { class: "cases" });
+    const tests = h("textarea", { class: "code", rows: 4, placeholder: "def test_nuevo(sol):\n    assert ..." });
+    const refresh = h("input", { type: "checkbox" });
+    const attempts = h("input", { type: "number", min: 1, max: 6, value: 3 });
+    const reviewed = h("input", { type: "checkbox" });
+    const auth = h("input", { type: "checkbox" });
+    const err = h("p", { class: "bad small" });
+    const inherited = mode === "web" ? (spec.checks || []).length : (spec.cases || []).length;
+    const send = h("button", { class: "btn", type: "button", text: "Crear revisión", onclick: async () => {
+      err.textContent = "";
+      let rows;
+      try { rows = [...cases.children].map((r) => r.read()); } catch (e) { err.textContent = e.message; return; }
+      const body = { instruction: instr.value, max_attempts: parseInt(attempts.value, 10) || 3,
+        cases_reviewed: reviewed.checked, authorize_execution: auth.checked, refresh_data: refresh.checked };
+      if (base.value === "vigente") body.base = "vigente"; else body.base_ref = base.value;
+      if (mode === "web") body.checks = rows; else body.cases = rows;
+      if (mode === "funcion" && tests.value.trim()) body.tests_py = tests.value;
+      if (!confirm("Se creará una revisión nueva del proyecto: la IA modificará la versión base elegida y las pruebas se ejecutarán solo en el sandbox. ¿Continuar?")) return;
+      send.disabled = true;
+      try { const r = await api("POST", `/api/missions/${m.id}/revisions`, body); location.hash = `#/mision/${r.id}`; }
+      catch (e) { err.textContent = e.message; }
+      finally { send.disabled = false; }
+    } });
+    projForm.replaceChildren(h("div", { class: "panel mt" },
+      h("h2", { text: "Mejorar esta misión" }),
+      h("p", { class: "muted small", text: "Una revisión continúa el proyecto con una instrucción nueva. No es un intento más: tiene sus propios intentos de reparación, conserva las pruebas anteriores y guarda una versión nueva sin tocar las anteriores." }),
+      h("label", { text: "¿Qué querés cambiar?" }), instr,
+      h("label", { text: "Partir de" }), base,
+      h("h3", { class: "mt", text: `Pruebas: se conservan las ${inherited} anteriores; podés agregar nuevas` }),
+      cases,
+      h("button", { class: "btn ghost small", type: "button", text: "+ Agregar prueba nueva", onclick: () => cases.append(makeCaseRow(mode, mode === "web" ? { tipo: "selector" } : {})) }),
+      mode === "funcion" ? h("details", { class: "mt" }, h("summary", { text: "Pruebas avanzadas adicionales (Python)" }), tests) : "",
+      spec.data_source ? h("label", { class: "check" }, refresh, `Actualizar las instantáneas de datos de «${spec.data_source.conn}» (consultas de solo lectura por el intermediario)`) : "",
+      h("label", { text: "Máximo de intentos de reparación de esta revisión" }), attempts,
+      h("label", { class: "check" }, reviewed, "Revisé las pruebas nuevas (si agregué alguna)."),
+      h("label", { class: "check" }, auth, "Autorizo ejecutar el código resultante únicamente dentro del ejecutor aislado."),
+      err, h("div", { class: "row" }, send, h("button", { class: "btn ghost", type: "button", text: "Cancelar", onclick: () => projForm.replaceChildren() }))));
+    instr.focus();
   }
 
   let webSelected = null, webChosen = false;
@@ -538,6 +644,57 @@ async function viewMission(v, args) {
   onEvent((ev) => { if (ev.mission_id === mid) { addEvent(ev); reload(); } });
 }
 
+// Editor de un caso/requisito de prueba (usado por «Nueva misión» y «Mejorar esta misión»).
+function makeCaseRow(modeValue, c = {}) {
+  const row = h("div", { class: "case" });
+  const vis = h("input", { type: "checkbox" });
+  vis.checked = c.visible !== false;
+  if (modeValue === "web") {
+    const tipo = h("select", {}, ...[["selector", "Debe existir el elemento (selector)"], ["texto", "Debe mostrar el texto"],
+      ["js_contiene", "El JavaScript debe usar"], ["css_contiene", "El CSS debe incluir"]].map(([v, t]) => h("option", { value: v, text: t })));
+    tipo.value = c.tipo || "selector";
+    const valor = h("input", { type: "text", class: "code", maxlength: 200, value: c.valor || "",
+      placeholder: "Ej.: button   ·   textarea, input[type=text]   ·   #lista   ·   localStorage" });
+    row.append(h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Tipo de requisito" }), tipo),
+      h("div", {}, h("label", { text: "Valor" }), valor)));
+    row.read = () => {
+      if (!valor.value.trim()) throw new Error("Hay un requisito sin valor");
+      return { tipo: tipo.value, valor: valor.value.trim(), visible: vis.checked };
+    };
+  } else if (modeValue === "funcion") {
+    const args = h("input", { type: "text", class: "code", placeholder: 'Ej.: 2, 3   o   "hola", [1, 2]' });
+    args.value = c.args ? c.args.map((a) => JSON.stringify(a)).join(", ") : "";
+    const exp = h("input", { type: "text", class: "code", placeholder: "Ej.: 5   o   \"texto\"   o   [1, 2]" });
+    exp.value = c.expect !== undefined ? JSON.stringify(c.expect) : "";
+    const raises = h("input", { type: "text", class: "code", placeholder: "ValueError", value: c.raises || "" });
+    row.append(h("div", { class: "grid2" },
+      h("div", {}, h("label", { text: "Argumentos (JSON separados por coma)" }), args),
+      h("div", {}, h("label", { text: "Resultado esperado (JSON)" }), exp)),
+      h("details", {}, h("summary", { class: "small", text: "Esperar una excepción en lugar de un resultado" }), raises));
+    row.read = () => {
+      let parsedArgs, out;
+      try { parsedArgs = JSON.parse(`[${args.value}]`); } catch (_) { throw new Error(`Argumentos inválidos: ${args.value}`); }
+      out = { args: parsedArgs, visible: vis.checked };
+      if (raises.value.trim()) out.raises = raises.value.trim();
+      else {
+        try { out.expect = JSON.parse(exp.value); } catch (_) { throw new Error(`Resultado esperado inválido: ${exp.value || "(vacío)"}. Los textos van entre comillas.`); }
+      }
+      return out;
+    };
+  } else {
+    const sin = h("textarea", { class: "code", rows: 2, placeholder: "Entrada" });
+    sin.value = c.stdin || "";
+    const sout = h("textarea", { class: "code", rows: 2, placeholder: "Salida esperada" });
+    sout.value = c.stdout || "";
+    row.append(h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Entrada (stdin)" }), sin), h("div", {}, h("label", { text: "Salida esperada" }), sout)));
+    row.read = () => ({ stdin: sin.value, stdout: sout.value, visible: vis.checked });
+  }
+  row.append(h("div", { class: "row between" },
+    h("label", { class: "check" }, vis, "Mostrar este ejemplo al modelo (si no, es un caso oculto)"),
+    h("button", { class: "btn ghost small", type: "button", text: "Quitar", onclick: () => row.remove() })));
+  return row;
+}
+
 // ---------------------------------------------------------------- nueva misión
 async function viewNew(v) {
   const d = S.draft || {};
@@ -559,55 +716,7 @@ async function viewNew(v) {
   const err = h("p", { class: "bad small" });
   const submit = h("button", { class: "btn", type: "button", text: "Crear misión" });
 
-  function caseRow(c = {}) {
-    const row = h("div", { class: "case" });
-    const vis = h("input", { type: "checkbox" });
-    vis.checked = c.visible !== false;
-    if (mode.value === "web") {
-      const tipo = h("select", {}, ...[["selector", "Debe existir el elemento (selector)"], ["texto", "Debe mostrar el texto"],
-        ["js_contiene", "El JavaScript debe usar"], ["css_contiene", "El CSS debe incluir"]].map(([v, t]) => h("option", { value: v, text: t })));
-      tipo.value = c.tipo || "selector";
-      const valor = h("input", { type: "text", class: "code", maxlength: 200, value: c.valor || "",
-        placeholder: "Ej.: button   ·   textarea, input[type=text]   ·   #lista   ·   localStorage" });
-      row.append(h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Tipo de requisito" }), tipo),
-        h("div", {}, h("label", { text: "Valor" }), valor)));
-      row.read = () => {
-        if (!valor.value.trim()) throw new Error("Hay un requisito sin valor");
-        return { tipo: tipo.value, valor: valor.value.trim(), visible: vis.checked };
-      };
-    } else if (mode.value === "funcion") {
-      const args = h("input", { type: "text", class: "code", placeholder: 'Ej.: 2, 3   o   "hola", [1, 2]' });
-      args.value = c.args ? c.args.map((a) => JSON.stringify(a)).join(", ") : "";
-      const exp = h("input", { type: "text", class: "code", placeholder: "Ej.: 5   o   \"texto\"   o   [1, 2]" });
-      exp.value = c.expect !== undefined ? JSON.stringify(c.expect) : "";
-      const raises = h("input", { type: "text", class: "code", placeholder: "ValueError", value: c.raises || "" });
-      row.append(h("div", { class: "grid2" },
-        h("div", {}, h("label", { text: "Argumentos (JSON separados por coma)" }), args),
-        h("div", {}, h("label", { text: "Resultado esperado (JSON)" }), exp)),
-        h("details", {}, h("summary", { class: "small", text: "Esperar una excepción en lugar de un resultado" }), raises));
-      row.read = () => {
-        let parsedArgs, out;
-        try { parsedArgs = JSON.parse(`[${args.value}]`); } catch (_) { throw new Error(`Argumentos inválidos: ${args.value}`); }
-        out = { args: parsedArgs, visible: vis.checked };
-        if (raises.value.trim()) out.raises = raises.value.trim();
-        else {
-          try { out.expect = JSON.parse(exp.value); } catch (_) { throw new Error(`Resultado esperado inválido: ${exp.value || "(vacío)"}. Los textos van entre comillas.`); }
-        }
-        return out;
-      };
-    } else {
-      const sin = h("textarea", { class: "code", rows: 2, placeholder: "Entrada" });
-      sin.value = c.stdin || "";
-      const sout = h("textarea", { class: "code", rows: 2, placeholder: "Salida esperada" });
-      sout.value = c.stdout || "";
-      row.append(h("div", { class: "grid2" }, h("div", {}, h("label", { text: "Entrada (stdin)" }), sin), h("div", {}, h("label", { text: "Salida esperada" }), sout)));
-      row.read = () => ({ stdin: sin.value, stdout: sout.value, visible: vis.checked });
-    }
-    row.append(h("div", { class: "row between" },
-      h("label", { class: "check" }, vis, "Mostrar este ejemplo al modelo (si no, es un caso oculto)"),
-      h("button", { class: "btn ghost small", type: "button", text: "Quitar", onclick: () => row.remove() })));
-    return row;
-  }
+  const caseRow = (c = {}) => makeCaseRow(mode.value, c);
   const casesTitle = h("h2", { style: "margin-top:1rem" });
   const casesHelp = h("p", { class: "muted small" });
   const advanced = h("details", { style: "margin-top:.8rem" }, h("summary", { text: "Pruebas avanzadas en Python (opcional, solo modo función)" }),

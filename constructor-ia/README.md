@@ -22,6 +22,13 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   desconocida con herramientas de solo lectura, construye un mapa persistente (hechos comprobados vs.
   inferencias), propone aplicaciones y construye tableros con instantáneas. Ver [EXPLORADOR.md](EXPLORADOR.md).
 
+## Proyectos que evolucionan (v0.4.0)
+
+Cada misión terminada es un proyecto: **Mejorar esta misión** crea una revisión nueva (r2, r3…) a partir de
+una instrucción humana, reutiliza los archivos existentes, conserva las pruebas anteriores, permite agregar
+nuevas y guarda una versión nueva sin tocar las anteriores. Las revisiones (instrucciones humanas) son
+distintas de los intentos (reparación automática). Ver [REVISIONES.md](REVISIONES.md).
+
 ## Ciclo de una misión
 
 ```
@@ -59,6 +66,7 @@ detuvo durante la misión; nunca se re-ejecuta sola, se puede *reencolar*).
 - [SECURITY.md](SECURITY.md) — modelo de amenazas, controles, riesgos restantes.
 - [TALLER_WEB.md](TALLER_WEB.md) — misiones web, vista previa aislada, seguridad, demostración y actualización.
 - [EXPLORADOR.md](EXPLORADOR.md) — explorador de bases de datos: arquitectura, seguridad, cuenta SQL restringida, actualización y rollback.
+- [REVISIONES.md](REVISIONES.md) — evolución continua de proyectos: revisiones, versión vigente, comparación, actualización y rollback.
 - [TESTING.md](TESTING.md) — pruebas automáticas (con resultados) y verificaciones obligatorias en la VivoBook.
 
 ## Inicio rápido (en la VivoBook, por SSH)

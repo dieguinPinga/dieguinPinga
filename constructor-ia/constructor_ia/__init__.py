@@ -1,3 +1,3 @@
 """Constructor IA: servidor local de misiones de programación con IA local."""
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
