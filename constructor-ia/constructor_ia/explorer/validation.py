@@ -302,6 +302,17 @@ VALUE_CTX_RE = re.compile(r"\b(?:el|un|los|unos|del|al)\s+valor(?:es)?\s*$|\bval
 TERMINAL_RE = re.compile(r"[.!?…»\"'”’)\]]\s*$")
 
 
+PARAM_CTX_RE = re.compile(r"\b(l[ií]mites?|limit|topes?|m[aá]ximo|hasta|configurad[oa]s?|par[aá]metros?|percentil|"
+                          r"umbral|offset)\b[^.;:]*$")
+
+
+def is_parameter_mention(text: str, pos: int) -> bool:
+    """¿La cifra en «pos» se presenta como PARÁMETRO de la consulta («límite de 100000», «como máximo 100000 filas»,
+    «percentil 95»)? Se mira la misma oración, hasta 60 caracteres antes. Sin esa palabra, la cifra se lee como un
+    dato observado («analizó 100000 registros»)."""
+    return bool(PARAM_CTX_RE.search(_fold((text or "")[max(0, pos - 60):pos])))
+
+
 def is_truncated(text: str, limit: int | None) -> bool:
     """¿El texto llegó cortado por un límite de longitud? (ocupa el límite y no termina una frase)."""
     t = " ".join(str(text or "").split())
@@ -402,20 +413,34 @@ def verify_claim(text: str, evidence: list[dict], now: float | None = None, name
     if not usable:
         states = ", ".join(f"{e['id']}: {e.get('utilidad') or e.get('certainty')}" for e in evidence)
         return "sin_verificar", "evidencia_vacia", f"la evidencia citada no aporta datos ({states})"
-    numbers = [n for n in NUM_RE.findall(text or "") if len(re.sub(r"\D", "", n)) >= 2]
-    if numbers:
+    found = [(m.group(0), m.start()) for m in NUM_RE.finditer(text or "") if len(re.sub(r"\D", "", m.group(0))) >= 2]
+    if found:
         # Las cifras se buscan en los DATOS (celdas), no en los encabezados ni alias del resultado.
         haystack = " ".join(e.get("celdas", e.get("texto", "")) for e in usable)
         tokens, params = set(), set()
         for tok in re.findall(r"-?\d[\d.,]*", haystack):
             tokens |= _norm_num(tok.rstrip(".,"))
-        # Una cifra del SQL citado (un LIMIT, un alias como p95) es un PARÁMETRO de la consulta, no un dato.
         for tok in re.findall(r"-?\d[\d.,]*", " ".join(e.get("sql") or "" for e in usable if e["tipo"] == "consulta")):
             params |= _norm_num(tok.rstrip(".,"))
-        missing = [n for n in numbers if not (_norm_num(n) & tokens)]
-        if out is not None and missing:
-            out["parametros"] = [n for n in missing if _norm_num(n) & params]
-        missing = [n for n in missing if not (_norm_num(n) & params)]
+        missing, accepted, as_data = [], [], []
+        for n, pos in found:
+            if _norm_num(n) & tokens:
+                continue
+            if _norm_num(n) & params and is_parameter_mention(text, pos):
+                # Una cifra del SQL citado presentada COMO parámetro («límite de 100000», «percentil 95»): describe la
+                # consulta, no un dato. Presentada como filas o valores observados, tiene que estar en el resultado.
+                accepted.append(n)
+            elif _norm_num(n) & params:
+                as_data.append(n)
+            else:
+                missing.append(n)
+        if out is not None and accepted:
+            out["parametros"] = accepted
+        if as_data:
+            return ("sin_verificar", "cifras_no_encontradas",
+                    f"{', '.join(as_data[:5])} figura solo como parámetro del SQL citado (p. ej. un LIMIT): un límite "
+                    "configurado no demuestra filas ni valores efectivamente observados; eso tiene que estar en el "
+                    "resultado" + (f"; además no aparecen: {', '.join(missing[:5])}" if missing else ""))
         if missing:
             return ("sin_verificar", "cifras_no_encontradas",
                     f"cifras que no aparecen en la evidencia citada: {', '.join(missing[:5])}")

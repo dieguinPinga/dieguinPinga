@@ -1111,8 +1111,9 @@ Auditoría de la memoria real de 0.4.6: 19 misiones, 64 consultas, 116 hechos, 1
 ## Causas
 
 1. **C61 / F106: cobertura completa certificada sin estar demostrada.**
-   - C61 era `frecuentes` sobre una tabla de unas 900 mil filas (estimación del motor), con `LIMIT 100000` en una
-     subconsulta.
+   - C59 era `perfil` de una columna, C60 `perfil` de otra columna y C61 `frecuentes` de la misma columna que C59, las
+     tres de la misma tabla (unas 900 mil filas según la estimación del motor), con `LIMIT 100000` en una subconsulta.
+     C59 y C60 quedaron bien registradas como muestra, porque `perfil` informa las filas analizadas; C61 no.
    - Las herramientas del sistema usaban la forma `tool_shape` (sin límites), y las filas analizadas solo se
      conocían para `perfil`. Con `analyzed=None`, `scope` daba `capped=false`.
    - Resultado: se guardó `agregado_total`, `completo=true` y `forma.limit=null`, y F106 («C61 analizó toda la
@@ -1150,7 +1151,11 @@ Auditoría de la memoria real de 0.4.6: 19 misiones, 64 consultas, 116 hechos, 1
   valor «x»») no se acepta.
 - **Identificador:** un nombre del esquema que figura en el SQL citado. Si la evidencia no lo usa, queda
   `identificadores_ajenos`.
-- **Parámetro:** una cifra del SQL citado (un `LIMIT 100000`, un alias `p95`). Se acepta como parámetro, no como dato.
+- **Parámetro:** una cifra del SQL citado (un `LIMIT 100000`, un alias `p95`) se acepta solo si el texto la presenta
+  como parámetro: «límite configurado de 100000», «como máximo 100000 filas», «tope», «percentil 95». Un límite
+  configurado no demuestra filas leídas. «C61 analizó 100000 registros» habla de filas efectivamente observadas, así
+  que esa cifra tiene que estar en el resultado: un perfil la informa; un `frecuentes` que muestra solo los primeros
+  grupos, no.
 
 La clasificación queda en `data.literales` del hecho.
 
@@ -1203,12 +1208,15 @@ los hechos, como evento `reevaluado` del historial. Una reevaluación aplicada n
 
 ## Pruebas
 
-`tests/test_explorer_memoria.py` (20), con datos sintéticos (ningún nombre ni valor de la base auditada):
-- C59, C60 y C61: perfil(tabla), perfil(tabla, columna) y frecuentes con `LIMIT 100000` interior; cobertura
-  demostrada solo cuando corresponde; LIMIT interiores en el SQL propio del modelo.
+`tests/test_explorer_memoria.py` (22), con datos sintéticos (ningún nombre ni valor de la base auditada):
+- C59, C60 y C61 con sus formas exactas: perfil(tabla, columna A), perfil(tabla, columna B) y frecuentes(tabla,
+  columna A), con el SQL que genera el propio agente (`LIMIT 100000` interior). La cobertura se demuestra solo cuando
+  corresponde, también con los LIMIT interiores del SQL propio del modelo.
 - F106 y las frases explícitas sobre la tabla completa; un alcance desconocido no se certifica.
-- F104: identificadores en un resultado agregado, nombres ajenos a la evidencia, alias que no son datos y cifras del
-  SQL como parámetros.
+- F104: identificadores en un resultado agregado, nombres ajenos a la evidencia y alias que no son datos.
+- Límite configurado frente a filas analizadas: «límite configurado de 100000» se acepta como parámetro; «analizó
+  100000 registros» se rechaza contra un `frecuentes` (el resultado no lo informa) y se acepta contra un perfil que
+  informa 100000 filas. Si el perfil informa 4321, decir 100000 es falso aunque el LIMIT sea 100000.
 - F97: un texto cortado en 179 caracteres frente a una frase completa de ~250.
 - Reformulación, confirmación, columnas compartidas que no bastan y redondeo compatible.
 - Memoria sintética en estado 0.4.6 con 116 hechos:

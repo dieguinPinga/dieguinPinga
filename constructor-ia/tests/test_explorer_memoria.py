@@ -1,8 +1,8 @@
 """Auditoría de la memoria real de 0.4.6 (19 misiones, 64 consultas, 116 hechos) — regresiones de 0.4.7.
 
 Casos reales, reproducidos con datos SINTÉTICOS (ningún nombre ni valor de la base auditada):
-* C59, C60, C61: perfil(tabla), perfil(tabla, columna) y frecuentes(tabla, columna), cuyo SQL tiene
-  «LIMIT 100000» en una subconsulta. Para frecuentes, 0.4.6 no conocía las filas analizadas y guardó
+* C59, C60, C61 — formas exactas: perfil(tabla, columna A), perfil(tabla, columna B) y frecuentes(tabla, columna A),
+  con el SQL que genera el sistema («LIMIT 100000» en una subconsulta). Aquí: A = ticker, B = origen. Para frecuentes, 0.4.6 no conocía las filas analizadas y guardó
   completo=true, tipo=agregado_total y forma.limit=null sobre una tabla de cientos de miles de filas (estimación del motor; aquí, 875 000 sintéticas).
 * F106: «inferencia respaldada» que afirmaba que C61 analizó toda la tabla (alcance agregado_total, sin declarar).
 * F104: rechazada por «valores_no_encontrados» con NOMBRES de tabla y columna buscados entre los datos agregados.
@@ -28,14 +28,28 @@ from constructor_ia.explorer.mapstore import MapStore
 from constructor_ia.explorer.reevaluate import Reevaluator
 
 CAP = 100000
-T, TICK, PRICE, VOL, WHEN = "cotizaciones", "ticker", "precio", "volumen", "momento"
-SQL_C59 = f"SELECT COUNT(*) AS filas_contadas FROM (SELECT 1 FROM `{T}` LIMIT {CAP}) s"
-SQL_C60 = (f"SELECT COUNT(*) AS filas, COUNT(v) AS no_nulos, COUNT(DISTINCT v) AS distintos, MIN(v) AS minimo, "
-           f"MAX(v) AS maximo, AVG(v) AS promedio FROM (SELECT `{PRICE}` AS v FROM `{T}` LIMIT {CAP}) s")
-SQL_C61 = (f"SELECT v AS valor, COUNT(*) AS veces FROM (SELECT `{TICK}` AS v FROM `{T}` LIMIT {CAP}) s "
-           "GROUP BY v ORDER BY veces DESC LIMIT 15")
+T, TICK, SRC, PRICE, VOL, WHEN = "cotizaciones", "ticker", "origen", "precio", "volumen", "momento"
 TABLES = {T: {"tipo": "tabla", "filas_estimadas": 875000, "columnas": [
-    {"nombre": c, "tipo": "varchar(20)"} for c in (TICK, PRICE, VOL, WHEN)]}}
+    {"nombre": c, "tipo": "varchar(20)"} for c in (TICK, SRC, PRICE, VOL, WHEN)]}}
+
+
+def system_sql(tool, col):
+    """El SQL EXACTO que genera el agente para una herramienta del sistema (con el tope de muestra en 100000)."""
+    from types import SimpleNamespace
+
+    from constructor_ia.explorer.agent import Explorer
+
+    ex = Explorer.__new__(Explorer)
+    ex.schema, ex.cfg = {"tablas": TABLES}, SimpleNamespace(explorer_sample_rows=CAP)
+    sql, err = ex._tool_sql(tool, {"tabla": T, "columna": col})
+    assert sql and not err, err
+    return sql
+
+
+SQL_C59 = system_sql("perfil", TICK)       # perfil(tabla, ticker)
+SQL_C60 = system_sql("perfil", SRC)        # perfil(tabla, origen)
+SQL_C61 = system_sql("frecuentes", TICK)   # frecuentes(tabla, ticker)
+PROFILE_COLS = ["filas", "no_nulos", "distintos", "minimo", "maximo"]
 C61_ROWS = [[f"T{i:02d}", 9100 - i * 300] for i in range(15)]  # 15 grupos: el LIMIT exterior los recorta
 
 
@@ -48,13 +62,28 @@ class ScopeOfExecutedSqlTests(unittest.TestCase):
 
     rows = {T: (875000, False)}  # estimación del motor, no exacta
 
-    def test_c59_count_over_capped_subquery_is_a_sample(self):
-        sc = K.scope(shape("perfil"), 1, False, self.rows, analyzed=CAP, sql=SQL_C59)
+    def test_exact_forms_of_c59_c60_c61(self):
+        self.assertEqual(SQL_C59, f"SELECT COUNT(*) AS filas, COUNT(v) AS no_nulos, COUNT(DISTINCT v) AS distintos, "
+                                  f"MIN(v) AS minimo, MAX(v) AS maximo FROM (SELECT `{TICK}` AS v FROM `{T}` LIMIT {CAP}) s")
+        self.assertIn(f"SELECT `{SRC}` AS v FROM `{T}` LIMIT {CAP}", SQL_C60)
+        self.assertEqual(SQL_C61, f"SELECT v AS valor, COUNT(*) AS veces FROM (SELECT `{TICK}` AS v FROM `{T}` LIMIT {CAP})"
+                                  " s GROUP BY v ORDER BY veces DESC LIMIT 15")
+        for sql in (SQL_C59, SQL_C60):
+            self.assertEqual(K.sql_limits(sql), {"exterior": None, "interiores": [CAP]})
+
+    def test_c59_profile_of_the_column_over_capped_subquery_is_a_sample(self):
+        analyzed = K.analyzed_rows("perfil", True, PROFILE_COLS, [[CAP, CAP, 812, "T00", "T99"]], SQL_C59)
+        self.assertEqual(analyzed, CAP, "100000 filas analizadas = el tope: pudo haber más")
+        sc = K.scope(shape("perfil", TICK), 1, False, self.rows, analyzed, sql=SQL_C59)
         self.assertEqual((sc["tipo"], sc["completo"], sc["limite_interior"]), ("agregado_muestra", False, CAP))
 
-    def test_c60_profile_over_capped_subquery_is_a_sample(self):
-        sc = K.scope(shape("perfil", PRICE), 1, False, self.rows, analyzed=CAP, sql=SQL_C60)
+    def test_c60_profile_of_another_column_over_capped_subquery_is_a_sample(self):
+        analyzed = K.analyzed_rows("perfil", True, PROFILE_COLS, [[CAP, 99950, 4, "api", "ws"]], SQL_C60)
+        sc = K.scope(shape("perfil", SRC), 1, False, self.rows, analyzed, sql=SQL_C60)
         self.assertEqual((sc["tipo"], sc["completo"]), ("agregado_muestra", False))
+        # con menos filas analizadas que el tope, la cobertura sí está demostrada
+        sc = K.scope(shape("perfil", SRC), 1, False, self.rows, 4321, sql=SQL_C60)
+        self.assertEqual((sc["tipo"], sc["completo"]), ("agregado_total", True))
 
     def test_c61_frequencies_without_known_rows_are_not_certified_complete(self):
         # 0.4.6: analyzed=None → capped=False → agregado_total, completo=True, forma.limit=None.
@@ -124,7 +153,7 @@ class ClaimScopeTests(unittest.TestCase):
 class IdentifiersAndValuesTests(unittest.TestCase):
     """F104: nombres de tabla y columna no son valores de datos; los alias tampoco."""
 
-    names = {K.fold(x) for x in (T, TICK, PRICE, VOL, WHEN)}
+    names = {K.fold(x) for x in (T, TICK, SRC, PRICE, VOL, WHEN)}
 
     def ev(self, sql=SQL_C61, cols=("valor", "veces"), rows=None):
         res = json.dumps({"columns": list(cols), "rows": rows or C61_ROWS})
@@ -165,6 +194,34 @@ class IdentifiersAndValuesTests(unittest.TestCase):
         self.assertEqual(V.verify_claim(f"C61 analizó como máximo {CAP} filas de la muestra.", self.ev(), out=out)[0],
                          "inferencia")
         self.assertEqual(out["parametros"], [str(CAP)])
+
+    def test_configured_limit_is_not_rows_actually_analyzed(self):
+        """«LIMIT 100000» demuestra un límite configurado, no que se hayan leído 100000 filas."""
+        c61 = self.ev()  # frecuentes: el resultado no informa cuántas filas se analizaron
+        for text in (f"C61 tiene un límite configurado de {CAP} filas.", f"C61 analizó como máximo {CAP} filas.",
+                     f"La subconsulta de C61 usa un tope de {CAP} registros."):
+            out = {}
+            self.assertEqual(V.verify_claim(text, c61, names=self.names, out=out)[0], "inferencia", text)
+            self.assertEqual(out["parametros"], [str(CAP)], text)
+        for text in (f"C61 analizó {CAP} registros.", f"Se leyeron {CAP} filas de {T}.",
+                     f"C61 recorrió {CAP} filas; el límite no se alcanzó."):
+            cert, verdict, detail = V.verify_claim(text, c61, names=self.names)
+            self.assertEqual((cert, verdict), ("sin_verificar", "cifras_no_encontradas"), text)
+            self.assertIn("límite configurado no demuestra", detail)
+        # con un resultado que SÍ informa las filas analizadas (perfil), la misma frase está respaldada por los datos
+        res = json.dumps({"columns": PROFILE_COLS, "rows": [[CAP, CAP, 812, "T00", "T99"]]})
+        cells, cols = V.evidence_cells(res)
+        c59 = [{"id": "C59", "tipo": "consulta", "status": "ok", "row_count": 1, "utilidad": "datos",
+                "texto": V.evidence_text(res), "celdas": cells, "columnas": cols, "sql": SQL_C59}]
+        out = {}
+        self.assertEqual(V.verify_claim(f"C59 analizó {CAP} registros de «{TICK}».", c59, names=self.names, out=out)[0],
+                         "inferencia")
+        self.assertNotIn("parametros", out, "100000 es un dato del resultado, no un parámetro")
+        res = json.dumps({"columns": PROFILE_COLS, "rows": [[4321, 4321, 4, "api", "ws"]]})
+        cells, cols = V.evidence_cells(res)
+        small = [{**c59[0], "texto": V.evidence_text(res), "celdas": cells}]
+        self.assertEqual(V.verify_claim(f"C59 analizó {CAP} registros.", small)[1], "cifras_no_encontradas",
+                         "si se analizaron 4321, decir 100000 es falso aunque el LIMIT sea 100000")
 
 
 class TruncationTests(unittest.TestCase):
@@ -243,11 +300,10 @@ def scope_046(tool, col, sql, rows, tipo, completo, extra=None):
 
 
 QUERIES = [  # (id, tool, sql, columns, rows, alcance_json guardado por 0.4.6)
-    (59, "perfil", SQL_C59, ["filas_contadas"], [[CAP]], scope_046("perfil", None, SQL_C59, 1, "agregado_muestra", False,
-                                                                    {"filas_analizadas": CAP})),
-    (60, "perfil", SQL_C60, ["filas", "no_nulos", "distintos", "minimo", "maximo", "promedio"],
-     [[CAP, CAP, 812, "0.11", "93.40", "12.3456"]],
-     scope_046("perfil", PRICE, SQL_C60, 1, "agregado_muestra", False, {"filas_analizadas": CAP})),
+    (59, "perfil", SQL_C59, PROFILE_COLS, [[CAP, CAP, 812, "T00", "T99"]],
+     scope_046("perfil", TICK, SQL_C59, 1, "agregado_muestra", False, {"filas_analizadas": CAP})),
+    (60, "perfil", SQL_C60, PROFILE_COLS, [[CAP, 99950, 4, "api", "ws"]],
+     scope_046("perfil", SRC, SQL_C60, 1, "agregado_muestra", False, {"filas_analizadas": CAP})),
     # C61 tal como lo guardó 0.4.6: completo=true, agregado_total, forma.limit=null
     (61, "frecuentes", SQL_C61, ["valor", "veces"], C61_ROWS, scope_046("frecuentes", TICK, SQL_C61, 15, "agregado_total", True)),
     (62, "sql", f"SELECT AVG({VOL}) AS medio FROM (SELECT {VOL} FROM {T} LIMIT 1000) s", ["medio"], [["3.21"]], None),
@@ -268,9 +324,9 @@ def claim(text, cert, ev, q, key=None, verdict="respaldada", aporte="nuevo", **e
 F97 = ("Las operaciones registradas en la muestra presentan un precio con dos decimales y un volumen asociado que "
        "crece de forma sostenida a lo largo de las fechas observadas, lo que sugiere que el registro se")[:179]
 SPECIAL = {
-    97: claim(F97, "inferencia", ["C60"], 60, f"{T}|{PRICE}", alcance="cálculo sobre una muestra"),
-    104: claim(f"En «{T}», la columna «{PRICE}» tiene 100000 filas analizadas sin nulos.", "sin_verificar", ["C60"], 60,
-               f"{T}|{PRICE}", verdict="valores_no_encontrados"),
+    97: claim(F97, "inferencia", ["C60"], 60, f"{T}|{SRC}", alcance="cálculo sobre una muestra"),
+    104: claim(f"En «{T}», la columna «{SRC}» tiene 100000 filas analizadas y 99950 con valor.", "sin_verificar", ["C60"],
+               60, f"{T}|{SRC}", verdict="valores_no_encontrados"),
     106: claim(f"C61 analizó toda la tabla «{T}»: «T00» es el {TICK} más frecuente con 9100 registros.", "inferencia",
                ["C61"], 61, f"{T}|{TICK}", alcance="cálculo sobre la tabla completa"),
     107: claim(f"«T00» encabeza los valores de «{TICK}» con 9100 registros.", "inferencia", ["C61"], 61, f"{T}|{TICK}"),
@@ -372,7 +428,7 @@ class ReevaluationTests(unittest.TestCase):
         self.assertEqual((after["tipo"], after["completo"], after["forma"]["limit"], after["forma"]["limites_interiores"]),
                          ("agregado_muestra", False, 15, [CAP]))
         self.assertIn("muestra", by_id[("hecho", 106)]["detalle"])
-        self.assertEqual(by_id[("hecho", 104)]["despues"]["literales"]["identificadores"], [T, PRICE])
+        self.assertEqual(by_id[("hecho", 104)]["despues"]["literales"]["identificadores"], [T, SRC])
         self.assertEqual(by_id[("hecho", 104)]["despues"]["aporte"], "nuevo")
         self.assertEqual((by_id[("hecho", 108)]["veredicto"], by_id[("hecho", 108)]["despues"]["relacion_con"]),
                          ("reformula", 107))
@@ -495,10 +551,10 @@ class EndToEndMemoryTests(Base):
             seen.append(q)
             ev = [f"C{q}"]
             n = len(seen)
-            if n == 1:  # «C59»: perfil(tabla) — frase cortada en el límite
+            if n == 1:  # «C59»: perfil(tabla, A) — frase cortada en el límite
                 return {"resumen": "Conteo sobre la muestra.", "hallazgos": [
                     {"texto": CUT, "tipo": "hallazgo", "evidencia": ev, "alcance": "muestra"}]}
-            if n == 2:  # «C60»: perfil(tabla, cantidad) — reformula la estadística que el sistema acaba de calcular
+            if n == 2:  # «C60»: perfil(tabla, B) — reformula la estadística que el sistema acaba de calcular
                 return {"resumen": "Rango de cantidad en la muestra.", "hallazgos": [
                     {"texto": "En la muestra, cantidad va de 3 a 300 con promedio 151.5.", "tipo": "hallazgo",
                      "evidencia": ev, "alcance": "muestra"}]}
@@ -517,9 +573,9 @@ class EndToEndMemoryTests(Base):
         app, fake, spec = self.make(self.cave, [])
         app.cfg.explorer_sample_rows = 100  # la tabla hija tiene 300 filas: el tope interior recorta
         fake.default = Script([
-            step("perfil", "filas", tabla=c),
-            step("perfil", "rango_nulos", tabla=c, columna="cantidad", columna_objetivo="cantidad"),
-            step("frecuentes", "frecuencias", tabla=c, columna=rid, columna_objetivo=rid),
+            step("perfil", "valores_distintos", tabla=c, columna=rid, columna_objetivo=rid),  # C59: perfil(tabla, A)
+            step("perfil", "rango_nulos", tabla=c, columna="cantidad", columna_objetivo="cantidad"),  # C60: perfil(tabla, B)
+            step("frecuentes", "frecuencias", tabla=c, columna=rid, columna_objetivo=rid),  # C61: frecuentes(tabla, A)
             step("frecuentes", "frecuencias", tabla=r, columna="descripcion", columna_objetivo="descripcion"),
             lambda p, i: {"pregunta": "fin", "por_que": "listo", "evidencia": [], "herramienta": "terminar",
                           "busca": "otro"}], report=None, interpret=interpret)
