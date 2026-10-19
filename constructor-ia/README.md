@@ -40,6 +40,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   En 0.4.8: recuperación autónoma — el mismo atasco se reconoce aunque cambie la herramienta, la reparación
   muestra la contradicción y cómo resolverla, el modelo puede abandonar una pregunta (queda registrada) y seguir,
   las reparaciones tienen límites propios y, sin resultados, el cierre es un diagnóstico breve sin llamar a Ollama.
+- 0.5.0-exp1: **investigador experimental** (`constructor-ia investigar`, ver INVESTIGADOR.md), separado del
+  Explorador: Qwen3 interpreta la evidencia real y formula su siguiente pregunta en la misma respuesta; un motor
+  determinista mide sin inventar; una memoria de investigaciones registra ciclos, dudas, dependencias y costo.
 
 ## Proyectos que evolucionan (v0.4.0)
 

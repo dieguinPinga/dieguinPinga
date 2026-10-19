@@ -92,6 +92,12 @@ class Config:
     explorer_repair_timeout_s: int = 90       # máximo por pedido de reparación
     explorer_repair_budget_s: int = 300       # tiempo total de reparaciones por expedición
     explorer_repair_num_predict: int = 192    # tokens de una respuesta de reparación
+    # Investigador experimental (0.5): ciclo memoria → pregunta → evidencia → lectura y siguiente pregunta
+    investigador_max_ciclos: int = 4
+    investigador_max_minutos: int = 15
+    investigador_contexto_tokens: int = 1400   # tope del contexto seleccionado de la memoria
+    investigador_pedido_num_predict: int = 320
+    investigador_lectura_num_predict: int = 720
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -272,6 +278,13 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     cfg.max_events_per_mission = _int(retention, "max_events_per_mission", cfg.max_events_per_mission, 100, 20000)
     cfg.log_max_bytes = _int(retention, "log_max_bytes", cfg.log_max_bytes, 100_000, 50_000_000)
     cfg.log_backups = _int(retention, "log_backups", cfg.log_backups, 1, 20)
+    inv = raw.get("investigador", {})
+    cfg.investigador_max_ciclos = _int(inv, "max_ciclos", cfg.investigador_max_ciclos, 1, 50)
+    cfg.investigador_max_minutos = _int(inv, "max_minutos", cfg.investigador_max_minutos, 1, 240)
+    cfg.investigador_contexto_tokens = _int(inv, "contexto_tokens", cfg.investigador_contexto_tokens, 300, 6000)
+    cfg.investigador_pedido_num_predict = _int(inv, "pedido_num_predict", cfg.investigador_pedido_num_predict, 96, 2048)
+    cfg.investigador_lectura_num_predict = _int(inv, "lectura_num_predict", cfg.investigador_lectura_num_predict, 128,
+                                                4096)
     return cfg
 
 

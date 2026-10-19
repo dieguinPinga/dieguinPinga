@@ -46,6 +46,10 @@ class App:
         if cfg.explorer_enabled:
             self.engine.explorer = Explorer(cfg, self.db, self.bus, self.missions, self.files, self.ollama, self.gate,
                                             self.brokers)
+            from .investigador.loop import Investigator
+
+            self.engine.investigator = Investigator(cfg, self.db, self.bus, self.missions, self.files, self.ollama,
+                                                    self.gate, self.brokers)
         from .revisions import Revisions
 
         self.revisions = Revisions(self.db, self.files, self.bus)

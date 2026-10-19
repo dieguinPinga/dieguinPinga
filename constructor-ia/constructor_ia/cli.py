@@ -431,6 +431,92 @@ def cmd_explorer_reevaluate(args) -> int:
     return 0
 
 
+def cmd_investigate(args) -> int:
+    """Investigación experimental sin interfaz, con el modelo real (para la VivoBook). No genera aplicaciones."""
+    import subprocess
+
+    cfg = _cfg(args)
+    if not args.yes:
+        print("Agregue --yes para confirmar: ejecuta consultas de SOLO LECTURA y usa Ollama durante varios minutos.",
+              file=sys.stderr)
+        return 2
+    try:
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
+                                timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        active = False
+    if active:
+        print("El servicio constructor-ia está activo: deténgalo (systemctl --user stop constructor-ia) para no "
+              "competir por Ollama CPU.", file=sys.stderr)
+        return 2
+    _explorer_conn(cfg, args.conn)
+    logsetup.setup(cfg.log_dir, cfg.log_max_bytes, cfg.log_backups)
+    from .app import App
+
+    app = App(cfg)
+    spec = {"mode": "investigacion", "conn": args.conn, "max_ciclos": args.ciclos, "max_minutos": args.minutos}
+    if args.reanudar:
+        spec["reanudar"] = args.reanudar
+    text = args.objetivo or ("Investigá esta base de datos por iniciativa propia: elegí qué averiguar, aprendé de la "
+                             "evidencia y usá lo aprendido para decidir qué investigar después.")
+    mid = app.missions.create({"title": "Investigación experimental (CLI)", "description": text, "spec": spec,
+                               "tests_py": "", "max_attempts": 1}, cfg.explorer_model.name, "cli")
+    app.db.execute("UPDATE missions SET state='preparando', claimed_by='cli', started_at=? WHERE id=?", (time.time(), mid))
+    print(f"Investigación {mid}: hasta {args.ciclos} ciclos y {args.minutos} min"
+          + (f", reanudando {args.reanudar}" if args.reanudar else "") + ". Ctrl-C la interrumpe (reanudable).")
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    last = app.bus.latest_id()
+    done = threading.Event()
+
+    def tail():
+        nonlocal last
+        while True:
+            for ev in app.bus.since(last):
+                last = ev["id"]
+                if ev["mission_id"] == mid:
+                    print(time.strftime("%H:%M:%S"), ev["kind"], "|", ev["message"][:300], flush=True)
+            if done.wait(1):
+                return
+
+    t = threading.Thread(target=tail, daemon=True)
+    t.start()
+    app.engine.investigator.run(mid, spec, text, stop)
+    done.set()
+    t.join(5)
+    print()
+    return _print_investigation(app.db, app.files, mid)
+
+
+def _print_investigation(db, files, mid) -> int:
+    from .investigador.memory import InvMemory
+    from .explorer.mapstore import MapStore
+
+    row = db.one("SELECT conn FROM inv_sessions WHERE mission_id=?", (mid,))
+    if row is None:
+        print(f"No hay una investigación {mid}", file=sys.stderr)
+        return 2
+    s = InvMemory(db, MapStore(db), row[0]).session(mid)
+    m = s.get("metrics") or {}
+    print(f"Investigación {mid} [{s['status']}]" + (f" (reanuda {s['resumed_from']})" if s.get("resumed_from") else "")
+          + (f" (reanudada por {s['resumed_by']})" if s.get("resumed_by") else ""))
+    try:
+        print(files.read_rel(mid, "investigacion/resumen.md"))
+    except Exception:  # noqa: BLE001
+        print(json.dumps(m, ensure_ascii=False, indent=1))
+    return 0 if (m.get("criterios") or {}).get("cumplidos") else 1
+
+
+def cmd_investigation_report(args) -> int:
+    cfg = _cfg(args)
+    from .db import Database
+    from .files import FileStore
+
+    db = Database(cfg.db_path)
+    db.migrate()
+    return _print_investigation(db, FileStore(db, cfg.missions_dir), args.mission)
+
+
 def cmd_ollama_diag(args) -> int:
     """Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, cgroup, CPU) cruzado con las llamadas."""
     from . import diag_ollama as D
@@ -559,6 +645,17 @@ def main(argv=None) -> int:
     a.add_argument("--aplicar", action="store_true", help="registrar el plan (exige --plan de una simulación)")
     a.add_argument("--plan", help="código del plan simulado que se autoriza")
     a.set_defaults(fn=cmd_explorer_reevaluate)
+    a = sub.add_parser("investigar", help="Investigación EXPERIMENTAL con el modelo real (ciclos cortos, sin aplicaciones)")
+    a.add_argument("conn")
+    a.add_argument("--ciclos", type=int, default=4)
+    a.add_argument("--minutos", type=int, default=15)
+    a.add_argument("--reanudar", help="misión cuya investigación se continúa")
+    a.add_argument("--objetivo", help="texto del objetivo (por defecto, investigar por iniciativa propia)")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_investigate)
+    a = sub.add_parser("investigacion-report", help="Ciclos, dependencias y costo de una investigación (solo lectura)")
+    a.add_argument("mission")
+    a.set_defaults(fn=cmd_investigation_report)
     a = sub.add_parser("ollama-diag", help="Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, CPU)")
     a.add_argument("--segundos", type=float, default=1200, help="duración del muestreo (default 1200)")
     a.add_argument("--intervalo", type=float, default=1.0)

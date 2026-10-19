@@ -48,6 +48,7 @@ class Engine:
         self.cfg, self.db, self.bus, self.missions, self.files = cfg, db, bus, missions, files
         self.ollama, self.gate, self.executor = ollama, gate, executor
         self.explorer = None  # lo asigna App si el Explorador está habilitado
+        self.investigator = None  # investigador experimental (0.5), también asignado por App
         self.revisions = None  # lo asigna App
 
     def _base_files(self, mid: str) -> dict[str, str]:
@@ -73,6 +74,12 @@ class Engine:
                 self.missions.set_state(mid, "fallida", finished_at=time.time(), error="Explorador desactivado")
                 return "fallida"
             return self.explorer.run(mid, spec, description, cancel)
+        if spec.get("mode") == "investigacion":
+            # Investigador experimental: mismo intermediario de solo lectura, otra arquitectura de decisión.
+            if self.investigator is None:
+                self.missions.set_state(mid, "fallida", finished_at=time.time(), error="Investigador desactivado")
+                return "fallida"
+            return self.investigator.run(mid, spec, description, cancel)
         try:
             self._check_cancel(mid, cancel)
             if not self.executor.enabled:

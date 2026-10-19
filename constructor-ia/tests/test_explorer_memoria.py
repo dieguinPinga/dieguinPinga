@@ -438,7 +438,7 @@ class ReevaluationTests(unittest.TestCase):
         sim = Reevaluator(Database(self.path, readonly=True), "cueva")
         code = sim.code(sim.plan())
         db = Database(self.path)
-        self.assertEqual(db.migrate(), 7)
+        self.assertEqual(db.migrate(), 8)  # 0008 (investigador) solo agrega tablas
         rv = Reevaluator(db, "cueva")
         with self.assertRaises(ValueError):
             rv.apply(rv.plan(), "000000000000", "prueba")
