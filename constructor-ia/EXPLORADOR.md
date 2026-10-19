@@ -748,3 +748,222 @@ pregunta.
   empezar el pedido, puede aparecer como espera de primer byte o como timeout en fase `espera`.
 - Los indicios de `ollama-diag` usan umbrales simples y conservadores: orientan la investigación, no
   reemplazan mirar las cifras y los registros del servidor.
+
+---
+
+# Cambios 0.4.5: conocimiento acumulativo
+
+Dos expediciones reales con 0.4.4 mostraron cuatro problemas de calidad en la curiosidad del agente. La mejora no
+programa qué tablas investigar ni qué preguntar: el modelo sigue eligiendo libremente tablas, preguntas y
+herramientas. El sistema lo ayuda a reconocer cuándo una consulta responde a su pregunta, cuándo repite
+información y cuándo una conclusión excede la evidencia.
+
+## Problemas y causas
+
+| # | Problema observado | Causa en el código 0.4.4 |
+|---|---|---|
+| 1 | Pregunta por valores distintos o frecuentes y ejecuta una herramienta que solo cuenta filas | La pregunta (texto libre) y la herramienta no se comparaban. Además, desde 0.4.3, `perfil` con `"columna": "null"` pasaba en silencio a «contar filas». |
+| 2 | Repite exactamente la misma consulta, incluso entre expediciones | Las consultas se guardaban pero nadie las consultaba antes de ejecutar; el modelo solo veía los últimos pasos de su expedición. |
+| 3 | Ciclos «completos» sin conocimiento nuevo | Bastaba cualquier hallazgo respaldado. Repetir un hecho conocido devolvía su id y contaba como respaldado. **`upsert` además reasignaba ese hecho a la expedición nueva y podía bajarle la certeza.** |
+| 4 | Generaliza a toda una tabla desde diez registros | El contraste de afirmaciones verificaba cifras y valores, no el alcance de la evidencia. |
+
+**Defecto de procedencia (corregido, prioritario).** En una prueba con memoria creada por 0.4.4 y una segunda
+expedición también 0.4.4, 16 de 17 hechos quedaron reasignados a la segunda expedición, y un hallazgo respaldado
+bajó de `inferencia` a `sin_verificar` por una sola reafirmación sin evidencia. En el mismo escenario con 0.4.5
+(misma memoria, migrada), los 17 hechos conservan certeza, texto y expedición creadora.
+
+## Cambios
+
+**Procedencia, certeza e historial (`mapstore`).**
+- `mission_id` es la expedición que **creó** el hecho y ya no se sobrescribe. `last_mission_id` es la última que
+  lo observó.
+- Cada cambio queda en `explore_fact_history`, con el estado anterior y el nuevo.
+- Hechos medidos por el sistema (`upsert`): la medición nueva reemplaza a la anterior (una relación puede
+  descartarse con datos nuevos), pero el estado anterior queda en el historial y la expedición creadora no se
+  pierde.
+- Afirmaciones del modelo (`record_note`): **nunca** se cambia el texto original ni se baja la certeza. El
+  resultado de repetir una afirmación es uno de:
+  - `confirmado`: igual respaldo; se suma la evidencia.
+  - `certeza_subio`: mejor respaldo.
+  - `reafirmado_sin_respaldo`: menos respaldo; queda anotado y el hecho no cambia.
+  Un hecho `descartado` por el sistema no lo revive el modelo.
+
+**1. ¿La consulta responde la pregunta?**
+- La etapa A declara en `busca` qué quiere averiguar: filas, ejemplos, valores distintos, frecuencias, rango o
+  nulos, relación, agregado por grupo, evolución temporal u «otro». Opcionalmente, también `columna_objetivo`.
+- Las herramientas del sistema tienen capacidades exactas. Si no pueden responder, se pide una reparación sin
+  gastar el paso, informando qué herramientas sí podrían (p. ej. «perfil(tabla) sin columna solo cuenta filas;
+  pueden responderlo perfil(tabla, columna), frecuentes(tabla, columna) o sql con COUNT(DISTINCT …)»). La elección
+  sigue siendo del modelo.
+- **El SQL propio nunca se bloquea por la heurística.** Se analiza su forma (agregados, GROUP BY, WHERE,
+  ORDER BY, LIMIT, JOIN) solo para calificar después si respondió: `respondida`, `parcial`, `no_respondida` o
+  `indeterminada` (si no se entiende).
+- La etapa B recibe: «TU PREGUNTA BUSCABA: … → la consulta la responde solo en parte».
+
+**2. ¿Repite lo que ya se sabe?**
+- Cada consulta tiene una **firma** (SQL normalizado) y una **firma de forma** (operación, tablas, columnas).
+- Antes de ejecutar, se busca la firma en todas las expediciones de la conexión. Las consultas anteriores a 0.4.5
+  se completan al empezar cada exploración, sin cambiar nada más.
+- Si ya se ejecutó, se pide una reparación que cita la consulta (C#, expedición, antigüedad, filas) y los hechos
+  que salieron de ella.
+- El modelo **puede insistir** explicando en `repetir_porque` por qué la repite. Entonces se ejecuta y se compara
+  la huella del resultado:
+  - igual: «sin cambios desde C#»;
+  - distinta: se registra el hecho `cambio` «el resultado cambió» (conocimiento nuevo).
+- Las consultas casi iguales (misma forma) solo generan un aviso en la etapa B.
+
+**3. ¿Aporta conocimiento nuevo?**
+- **Clave de cada afirmación: tablas | columnas.** Las columnas salen de los nombres que menciona (sin importar
+  acentos) y de las columnas del resultado donde aparecen sus valores. Los alias del resultado no cuentan, y un
+  valor que aparece en más de dos columnas se considera ambiguo.
+- **Clasificación conservadora** frente a los hechos con la misma clave:
+
+  | Aporte | Cuándo | ¿Conocimiento nuevo? |
+  |---|---|---|
+  | `nuevo` | no había hechos con esa clave | sí |
+  | `amplia` | agrega valores sobre algo ya estudiado (p. ej. otra faceta de la misma evidencia) | sí |
+  | `difiere_alcance` | valores distintos a un hecho observado con **otro alcance** | sí (no es contradicción) |
+  | `difiere_tiempo` | valores distintos a un hecho de **otra expedición o momento** (los datos pueden cambiar) | sí (no es contradicción) |
+  | `confirma` | sus valores ya estaban registrados | no |
+  | `contradice` | mismo alcance, **misma expedición**, poco tiempo, evidencia distinta y cifras distintas | no (queda marcado para investigar) |
+  | `indeterminado` | no se puede saber de qué tabla y columna habla, o no trae valores para comparar | no |
+  | `trivial` | solo repite el tamaño del resultado | no |
+  | `hipotesis` / `sin_respaldo` | no está respaldada | no |
+
+- **Ciclo con conocimiento nuevo:** pregunta → consulta que no quedó `no_respondida` → al menos un hallazgo
+  respaldado con aporte nuevo (o un cambio de datos detectado) → nueva pregunta.
+- El ciclo de 0.4.4 se conserva como `ciclos_formales` (y `ciclos_completos`, por compatibilidad).
+- **El objetivo de una expedición exige `ciclos_con_conocimiento_nuevo ≥ 1`.**
+
+**4. ¿La conclusión excede la evidencia?**
+- **Alcance de cada resultado**, calculado por el sistema:
+  - `muestra_arbitraria`: LIMIT sin ORDER ni WHERE; son las primeras filas físicas, **no** una muestra aleatoria.
+  - `extremos`: con ORDER BY.
+  - `subconjunto`: con WHERE.
+  - `tabla_completa`: también cuando devolvió menos filas que su LIMIT.
+  - `agregado_total`.
+  - `agregado_muestra`: se alcanzó el tope de muestra.
+  - `metadatos` o `desconocido`.
+  La etapa B lo recibe: «ALCANCE DE ESTA EVIDENCIA: 10 filas de 60 (17 %): las primeras en el orden físico; NO es
+  una muestra aleatoria».
+- **Cómo se detecta una generalización:** cada hallazgo puede declarar su `alcance` (muestra, subconjunto o
+  tabla), y un detector de cuantificadores («todas», «siempre», «ninguna», «cada», «solo», «la tabla tiene…») sirve
+  de respaldo.
+- **Si generaliza:** cuando habla de la tabla entera con evidencia parcial, **no se reescribe**. El texto original
+  se conserva, la certeza pasa a `hipotesis` (veredicto `generaliza_mas_alla_de_la_evidencia`) y se registran
+  aparte el alcance real y cómo verificarla.
+- Esas hipótesis aparecen en la etapa A como «PENDIENTE DE VERIFICAR O ACLARAR», junto con las diferencias entre
+  observaciones. Es información, no una orden.
+
+**Mapa de conocimiento en la etapa A.** «LO QUE YA SE SABE», sección que abarca todas las expediciones, muestra
+por tabla:
+- filas (contadas o estimadas);
+- si ya se vieron ejemplos;
+- columnas estudiadas y sin estudiar;
+- hipótesis abiertas y diferencias.
+
+Se reduce por niveles como el resto del mensaje.
+
+**Otras correcciones.**
+- En la vista por columnas de un resultado ancho, las columnas informativas (constantes y de texto) van primero.
+- Se corrigió un aviso inalcanzable del informe en 0.4.4 («no trae tres aplicaciones válidas»).
+- Se corrigió «null tokens/s» cuando Ollama no informa la velocidad.
+
+## Visible para el operador
+
+- **UI:**
+  - cada hecho muestra su aporte, alcance y procedencia (creado en, última observación, confirmaciones y
+    reafirmaciones), y un botón **Historial**;
+  - cada paso muestra qué buscaba, si se respondió, su alcance y si repitió o se pareció a otra consulta;
+  - la evaluación suma una línea «Conocimiento».
+- **`explorer-report <misión>`:** la traza incluye `busca → respuesta`, alcance y el aporte de cada afirmación.
+- **`explorer-hecho <conexión> <id>`:** texto original, certeza, alcance, aporte e historial completo de un hecho.
+- **Métricas nuevas:**
+  - ciclos: `ciclos_formales`, `ciclos_con_conocimiento_nuevo`;
+  - aportes: `hechos_nuevos`, `confirmaciones`, `contradicciones`, `diferencias_tiempo_o_alcance`,
+    `aportes_indeterminados`, `afirmaciones_triviales`, `generalizaciones_acotadas`;
+  - repeticiones y desajustes: `consultas_repetidas_sin_justificar` / `_justificadas`,
+    `cambios_de_datos_detectados`, `desajustes_pregunta_herramienta`, `preguntas_no_respondidas`;
+  - control: `pasos_con_busca_otro` (para detectar si el modelo esquiva el control) y `cobertura` (columnas
+    estudiadas al inicio y al final).
+
+## Migración 0006 (solo agrega)
+
+- **`explore_facts`:** `last_mission_id` (inicializado con `mission_id`) y `clave`.
+- **Tabla nueva `explore_fact_history`:** se siembra con el estado de cada hecho al migrar
+  (`estado_al_migrar_0.4.5`).
+- **`explore_queries`:** `firma`, `firma_forma`, `busca`, `respuesta`, `alcance_json` y `resultado_hash`.
+- **`explore_steps`:** `aporte_json`.
+
+No modifica ni borra datos. Limitación honesta: si antes de 0.4.5 un `upsert` ya había sobrescrito la expedición
+o la certeza de un hecho, ese estado anterior no es recuperable. El historial empieza en el estado al migrar, y
+no se inventa.
+
+## Pruebas
+
+- **Nuevas:** `tests/test_explorer_conocimiento.py` (17).
+  - procedencia: reafirmar con menos respaldo nunca degrada; mejor respaldo sube la certeza sin tocar el texto;
+    confirmación con evidencia sumada; el modelo no revive un hecho descartado; la reobservación del sistema
+    conserva la expedición creadora;
+  - migración 0006 sobre una base 0.4.4 con hechos, sin cambios;
+  - reglas del módulo `knowledge`;
+  - los cuatro problemas de punta a punta sobre bases ficticias, con varias expediciones sobre la misma memoria.
+- **Entre versiones:** expedición con el código 0.4.4, migración y expedición con 0.4.5 sobre la misma memoria.
+  Sin pérdidas de certeza ni procedencia, y la repetición de una consulta de 0.4.4 se detecta. El mismo escenario
+  íntegro en 0.4.4 reasigna 16 de 17 hechos y degrada un hallazgo respaldado.
+
+## Actualización por SSH (0.4.4 → 0.4.5)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.5-conocimiento
+git checkout claude/constructor-ia-0.4.5-conocimiento
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+- `update.sh` hace la copia de la base antes de migrar (INSTALL.md §10). La migración 0006 se aplica sola al
+  arrancar.
+- `config.toml` no cambia.
+- No se tocan Ollama, MariaDB, Node-RED ni otros servicios.
+
+## Rollback (0.4.5 → 0.4.4)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.4' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+- La 0.4.4 ignora las columnas y la tabla nuevas.
+- **Con 0.4.4 vuelve el defecto de `upsert`:** las expediciones que se hagan después del rollback pueden
+  reasignar o degradar hechos. El historial queda como registro, pero deja de actualizarse.
+- Para recuperar exactamente el estado previo a la actualización, restaurar la copia de `update.sh`.
+
+## Qué mirar en la próxima prueba real (dos expediciones sobre la misma base)
+
+1. En la segunda expedición:
+   - `consultas_repetidas_sin_justificar` debería bajar a 0 después de las reparaciones;
+   - si hay repeticiones justificadas, se verá «sin cambios» o «cambió»;
+   - `ciclos_con_conocimiento_nuevo ≥ 1`;
+   - más `hechos_nuevos` que `confirmaciones`;
+   - la cobertura debería crecer (`cobertura.al_inicio` → `columnas_estudiadas`).
+2. `pasos_con_busca_otro`: si es alto, el modelo está esquivando el control de pregunta/herramienta.
+3. Afirmaciones del tipo «todas…» sobre `muestra`: deberían aparecer como hipótesis con su alcance, y quizá ser
+   verificadas en un paso posterior (sin que nadie se lo ordene).
+4. `explorer-hecho` sobre un hallazgo de la primera expedición: debe conservar expedición creadora, texto y
+   certeza, con las confirmaciones o reafirmaciones de la segunda en su historial.
+
+## Limitaciones
+
+- La forma del SQL y la clasificación de aportes son **léxicas**: claves de tablas y columnas, cifras y valores
+  literales. Una paráfrasis sin valores sobre algo ya estudiado queda `indeterminado`, nunca «nuevo».
+- La contradicción solo se marca dentro de una misma expedición. Entre expediciones, una diferencia es
+  `difiere_tiempo`, aunque se deba a un error de interpretación. Se prefirió no presumir contradicciones.
+- El detector de cuantificadores puede marcar como generalización frases que no lo son (p. ej. «solo» con otro
+  sentido). En ese caso la afirmación queda como hipótesis con su alcance, no se descarta.
+- `busca` lo declara el propio modelo; si elige «otro», no hay control de coherencia. La métrica
+  `pasos_con_busca_otro` permite detectarlo.

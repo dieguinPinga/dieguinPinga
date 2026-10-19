@@ -287,7 +287,9 @@ class StageBAndServerTests(WideBase):
     def test_unrecoverable_truncation_falls_back_to_one_minimal_interpretation(self):
         def interpret(p, i):
             if "Respondé lo MÍNIMO" in p:
-                return {"resumen": "Diez filas.", "hallazgos": [{"texto": "Duración 1080 en todas", "tipo": "hallazgo",
+                # 0.4.5: afirmación acotada a lo observado («en todas» sobre 10 de 60 filas sería una hipótesis)
+                return {"resumen": "Diez filas.", "hallazgos": [{"texto": "Duración 1080 en las diez filas leídas",
+                                                               "tipo": "hallazgo", "alcance": "muestra",
                                                                "evidencia": [f"C{i['q']}"]}]}
             if "SELECT * FROM" in p:
                 return raw('{"resumen": "Diez fil', done_reason="length", eval_count=512)
@@ -315,7 +317,10 @@ class StageBAndServerTests(WideBase):
             return {"resumen": "Duración 1080 en las filas leídas.", "hallazgos": [
                 {"texto": "Las filas tienen duración 1080", "tipo": "hallazgo", "evidencia": [f"C{i['q']}"]}]}
 
-        steps = [self.steps_after()[0], self.steps_after()[0]] + self.steps_after()[1:]
+        # 0.4.5: la segunda lectura es una consulta distinta (repetir la misma sin justificar pide reparación)
+        again = lambda p, i: {"pregunta": "¿Y las primeras cinco?", "por_que": "releer tras el bloqueo",  # noqa: E731
+                              "evidencia": [], "herramienta": "sql", "sql": f"SELECT * FROM {self.ops} LIMIT 5"}
+        steps = [self.steps_after()[0], again] + self.steps_after()[1:]
         # Plazo fraccionario, como en la exploración real (min(300, tiempo restante)): ahí el timeout del socket se
         # adelantaba al vigilante y el error decía «No se pudo contactar», que el agente trataba como caída.
         m, run = self.run_ollama(Script(steps, report=good_report, interpret=interpret), timeout_s=2.3, serial=True)

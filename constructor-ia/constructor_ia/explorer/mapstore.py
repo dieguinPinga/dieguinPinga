@@ -9,6 +9,10 @@ Certezas:
 * sin_verificar — afirmación del modelo que NO se pudo contrastar con su evidencia (sin evidencia, evidencia
                 vacía o con error, o cifras que no aparecen en el resultado). No es un descubrimiento.
 Nada de esto escribe en la base explorada.
+
+Procedencia (0.4.5): mission_id es la expedición que CREÓ el hecho y no se sobrescribe; last_mission_id es la última
+que lo observó. Cada cambio queda en explore_fact_history con el estado anterior. Una afirmación del modelo repetida
+nunca cambia su texto original ni le baja la certeza: se registra como confirmación o reafirmación.
 """
 from __future__ import annotations
 
@@ -20,6 +24,8 @@ import time
 from ..db import Database
 
 CERTAINTIES = ("comprobado", "inferencia", "hipotesis", "descartado", "sin_verificar")
+# Orden de respaldo para afirmaciones del modelo («descartado» lo decide solo el sistema con una medición).
+RANK = {"sin_verificar": 0, "hipotesis": 1, "inferencia": 2, "comprobado": 3}
 KINDS = ("estructura", "relacion", "estadistica", "advertencia", "hallazgo", "incertidumbre", "oportunidad", "cambio")
 NUMERIC_RE = re.compile(r"^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|bit)", re.I)
 TEMPORAL_RE = re.compile(r"^(date|datetime|timestamp|time|year)", re.I)
@@ -182,33 +188,101 @@ class MapStore:
         return schema, changes, prev is None
 
     # Hechos ------------------------------------------------------------
+    def _history(self, fact_id: int, conn: str, mission_id, event: str, before: str | None, after: str | None,
+                 text: str | None, evidence, data) -> None:
+        self.db.execute("INSERT INTO explore_fact_history(fact_id, conn, mission_id, event, certainty_before,"
+                        " certainty_after, text, evidence_json, data_json, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (fact_id, conn, mission_id, event, before, after, text,
+                         json.dumps(evidence if evidence is not None else []),
+                         json.dumps(data, default=str) if data is not None else None, time.time()))
+
     def upsert(self, conn: str, kind: str, certainty: str, subject: str, text: str, *, data=None, evidence=None,
-               mission_id: str | None = None) -> int:
-        """Un hecho por (conexión, tipo, sujeto): se actualiza al re-observarse."""
+               mission_id: str | None = None, clave: str | None = None) -> int:
+        """Hechos medidos por el SISTEMA: uno por (conexión, tipo, sujeto), que se actualiza al reobservarse.
+
+        La medición nueva reemplaza a la anterior (puede cambiar la certeza: una relación comprobada puede
+        descartarse con datos nuevos), pero la expedición creadora se conserva y el estado anterior queda en el
+        historial cada vez que algo cambia.
+        """
         assert kind in KINDS and certainty in CERTAINTIES
         now = time.time()
-        row = self.db.one("SELECT id FROM explore_facts WHERE conn=? AND kind=? AND subject=?", (conn, kind, subject))
-        payload = (certainty, text[:1000], json.dumps(data, default=str) if data is not None else None,
-                   json.dumps(evidence or []), mission_id, now)
+        row = self.db.one("SELECT * FROM explore_facts WHERE conn=? AND kind=? AND subject=?", (conn, kind, subject))
+        data_json = json.dumps(data, default=str) if data is not None else None
+        ev_json = json.dumps(evidence or [])
         if row:
-            self.db.execute("UPDATE explore_facts SET certainty=?, text=?, data_json=?, evidence_json=?, mission_id=?,"
-                            " updated_at=?, status='vigente' WHERE id=?", (*payload, row[0]))
-            return row[0]
+            changed = (row["certainty"] != certainty or row["text"] != text[:1000] or row["data_json"] != data_json
+                       or row["status"] != "vigente")
+            if changed:
+                self._history(row["id"], conn, mission_id, "reobservado", row["certainty"], certainty, row["text"],
+                              json.loads(row["evidence_json"] or "[]"),
+                              json.loads(row["data_json"]) if row["data_json"] else None)
+            self.db.execute("UPDATE explore_facts SET certainty=?, text=?, data_json=?, evidence_json=?, last_mission_id=?,"
+                            " clave=COALESCE(?, clave), updated_at=?, status='vigente' WHERE id=?",
+                            (certainty, text[:1000], data_json, ev_json, mission_id, clave, now, row["id"]))
+            return row["id"]
         cur = self.db.execute(
-            "INSERT INTO explore_facts(conn, mission_id, kind, certainty, subject, text, data_json, evidence_json,"
-            " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (conn, mission_id, kind, certainty, subject[:200], text[:1000],
-             payload[2], payload[3], now, now))
+            "INSERT INTO explore_facts(conn, mission_id, last_mission_id, kind, certainty, subject, text, data_json,"
+            " evidence_json, clave, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (conn, mission_id, mission_id, kind, certainty, subject[:200], text[:1000], data_json, ev_json, clave, now, now))
+        self._history(cur.lastrowid, conn, mission_id, "creado", None, certainty, text[:1000], evidence or [], data)
         return cur.lastrowid
+
+    def record_note(self, conn: str, kind: str, text: str, *, evidence=None, mission_id=None, data=None,
+                    certainty: str = "inferencia", clave: str | None = None) -> tuple[int | None, str]:
+        """Afirmaciones del MODELO (hallazgos, advertencias, incertidumbres, oportunidades), sin duplicar textos.
+
+        Devuelve (id, resultado): «creado»; «confirmado» (misma afirmación con igual respaldo: se suma la evidencia);
+        «certeza_subio» (ahora está mejor respaldada); «reafirmado_sin_respaldo» (repetida con MENOS respaldo: el
+        hecho conserva su certeza y la reafirmación queda anotada). Nunca cambia el texto original, la expedición
+        que lo creó ni baja la certeza.
+        """
+        assert kind in KINDS and certainty in CERTAINTIES
+        text = " ".join(str(text).split())[:600]
+        if len(text) < 4:
+            return None, "descartado"
+        subject = kind + ":" + hashlib.sha1(text.lower().encode()).hexdigest()[:16]
+        row = self.db.one("SELECT * FROM explore_facts WHERE conn=? AND kind=? AND subject=?", (conn, kind, subject))
+        if row is None:
+            return self.upsert(conn, kind, certainty, subject, text, data=data, evidence=evidence,
+                               mission_id=mission_id, clave=clave), "creado"
+        old_data = json.loads(row["data_json"]) if row["data_json"] else {}
+        old_ev = json.loads(row["evidence_json"] or "[]")
+        new_ev = [e for e in (evidence or []) if e not in old_ev]
+        entry = {"mision": mission_id, "evidencia": evidence or [], "certeza": certainty, "ts": round(time.time(), 1),
+                 **({"verificacion": data.get("verificacion"), "detalle": data.get("detalle")} if data else {})}
+        old_rank, new_rank = RANK.get(row["certainty"], -1), RANK.get(certainty, -1)
+        merged = dict(old_data)
+        if row["certainty"] != "descartado" and new_rank > old_rank:
+            outcome, final = "certeza_subio", certainty
+            # El respaldo nuevo es mejor: se adoptan su verificación y su alcance; lo anterior queda en el historial.
+            merged.update({k: v for k, v in (data or {}).items() if k not in ("confirmaciones", "reafirmaciones")})
+        elif new_rank == old_rank:
+            outcome, final = "confirmado", row["certainty"]
+            merged["confirmaciones"] = (old_data.get("confirmaciones") or []) + [entry]
+        else:
+            outcome, final = "reafirmado_sin_respaldo", row["certainty"]
+            merged["reafirmaciones"] = (old_data.get("reafirmaciones") or []) + [entry]
+        self._history(row["id"], conn, mission_id, outcome, row["certainty"], final, text, evidence or [], data)
+        self.db.execute("UPDATE explore_facts SET certainty=?, data_json=?, evidence_json=?, last_mission_id=?,"
+                        " clave=COALESCE(clave, ?), updated_at=? WHERE id=?",
+                        (final, json.dumps(merged, default=str), json.dumps((old_ev + new_ev)[:20]), mission_id, clave,
+                         time.time(), row["id"]))
+        return row["id"], outcome
 
     def add_note(self, conn: str, kind: str, text: str, *, evidence=None, mission_id=None, data=None,
                  certainty: str = "inferencia") -> int | None:
-        """Hallazgos, advertencias, incertidumbres y oportunidades del modelo (sin duplicar textos)."""
-        text = " ".join(str(text).split())[:600]
-        if len(text) < 4:
-            return None
-        subject = kind + ":" + hashlib.sha1(text.lower().encode()).hexdigest()[:16]
-        return self.upsert(conn, kind, certainty, subject, text, data=data, evidence=evidence, mission_id=mission_id)
+        """Compatibilidad: como record_note, devolviendo solo el id."""
+        return self.record_note(conn, kind, text, evidence=evidence, mission_id=mission_id, data=data,
+                                certainty=certainty)[0]
+
+    def history(self, conn: str, fact_id: int) -> list[dict]:
+        out = []
+        for r in self.db.all("SELECT * FROM explore_fact_history WHERE conn=? AND fact_id=? ORDER BY id", (conn, fact_id)):
+            d = dict(r)
+            d["evidence"] = json.loads(d.pop("evidence_json") or "[]")
+            d["data"] = json.loads(d.pop("data_json")) if d.get("data_json") else None
+            out.append(d)
+        return out
 
     def mark_obsolete(self, conn: str, subjects_prefix: str) -> None:
         self.db.execute("UPDATE explore_facts SET status='obsoleto', updated_at=? WHERE conn=? AND subject LIKE ?",

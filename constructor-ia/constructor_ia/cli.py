@@ -265,6 +265,14 @@ def _print_evaluation(db, mid) -> int:
         q = db.one("SELECT status, row_count FROM explore_queries WHERE id=?", (st["query_id"],)) if st.get("query_id") else None
         res = f"C{st['query_id']} {q['status']}, {q['row_count']} filas" if q else "sin consulta"
         print(f"  Paso {st['n']}: {st['question'][:120]} → {st['tool']} → {res}")
+        ap = json.loads(st["aporte_json"]) if st.get("aporte_json") else None
+        if ap:
+            print(f"      busca {ap.get('busca')} → {ap.get('respuesta')}"
+                  + (f" · alcance: {ap['alcance']}" if ap.get("alcance") else "")
+                  + (f" · repetición: {ap['repeticion']}" if ap.get("repeticion") else "")
+                  + (f" · parecida a {ap['parecida_a']}" if ap.get("parecida_a") else ""))
+            for c in ap.get("afirmaciones", []):
+                print(f"      F{c['id']}: aporte {c['aporte']}" + (f" ({c['motivo']})" if c.get("motivo") else ""))
         ev = json.loads(st.get("evidence_json") or "{}")
         if ev.get("anticipadas_descartadas"):
             print(f"      etapa A: se descartaron {', '.join(ev['anticipadas_descartadas'])} anticipados (sin resultado)")
@@ -286,7 +294,8 @@ def _print_evaluation(db, mid) -> int:
                 note += " (con desborde)"
             if t:
                 note += (f", {t['reloj_ms'] / 1000:.0f} s (prompt {t.get('tokens_prompt')} tok, generó "
-                         f"{t.get('tokens_generados')} tok a {t.get('generacion_tokens_s')} tok/s"
+                         f"{t.get('tokens_generados')} tok"
+                         + (f" a {t['generacion_tokens_s']} tok/s" if t.get("generacion_tokens_s") else "")
                          + (f", sin explicar {t['sin_explicar_ms'] / 1000:.0f} s" if t.get("sin_explicar_ms") else "")
                          + f", fin {t.get('fin')})")
             if last.get("timeout"):
@@ -331,6 +340,33 @@ def cmd_explorer_report(args) -> int:
     if args.respuestas:
         _print_raw_answers(db, args.mission)
     return rc
+
+
+def cmd_explorer_fact(args) -> int:
+    """Procedencia de un hecho del mapa: texto original, certeza, alcance, aporte e historial completo."""
+    cfg = _cfg(args)
+    from .db import Database
+    from .explorer.mapstore import MapStore
+
+    db = Database(cfg.db_path)
+    db.migrate()
+    row = db.one("SELECT * FROM explore_facts WHERE conn=? AND id=?", (args.conn, args.id))
+    if row is None:
+        print(f"No existe el hecho F{args.id} en {args.conn}", file=sys.stderr)
+        return 2
+    d = json.loads(row["data_json"] or "{}") or {}
+    print(f"F{row['id']} [{row['kind']} · {row['certainty']} · {row['status']}] {row['text']}")
+    print(f"  creado en {row['mission_id']} · última observación en {row['last_mission_id']} · evidencia "
+          f"{', '.join(json.loads(row['evidence_json'] or '[]')) or '—'}")
+    for k in ("verificacion", "detalle", "alcance", "alcance_declarado", "aporte", "aporte_motivo", "relacion_con",
+              "verificar_con"):
+        if d.get(k):
+            print(f"  {k}: {d[k]}")
+    print("Historial:")
+    for e in MapStore(db).history(args.conn, args.id):
+        print(f"  {time.strftime('%Y-%m-%d %H:%M', time.localtime(e['created_at']))} {e['event']} ({e['mission_id']}): "
+              f"{e['certainty_before']} → {e['certainty_after']}" + (f" · evidencia {', '.join(e['evidence'])}" if e['evidence'] else ""))
+    return 0
 
 
 def cmd_ollama_diag(args) -> int:
@@ -450,6 +486,10 @@ def main(argv=None) -> int:
     a.add_argument("mission")
     a.add_argument("--respuestas", action="store_true", help="incluir las respuestas crudas del modelo en la etapa A")
     a.set_defaults(fn=cmd_explorer_report)
+    a = sub.add_parser("explorer-hecho", help="Procedencia e historial de un hecho del mapa (solo lectura)")
+    a.add_argument("conn")
+    a.add_argument("id", type=int)
+    a.set_defaults(fn=cmd_explorer_fact)
     a = sub.add_parser("ollama-diag", help="Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, CPU)")
     a.add_argument("--segundos", type=float, default=1200, help="duración del muestreo (default 1200)")
     a.add_argument("--intervalo", type=float, default=1.0)

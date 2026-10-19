@@ -866,13 +866,31 @@ const CERT = { comprobado: "comprobado", inferencia: "inferencia", hipotesis: "h
 const QUALITY = { cumplido: "ok", parcial: "", insuficiente: "bad" };
 const certBadge = (c) => h("span", { class: `badge cert-${c}`, text: CERT[c] || c });
 
+const APORTE = { nuevo: "conocimiento nuevo", amplia: "amplía lo conocido", difiere_alcance: "difiere (otro alcance)", difiere_tiempo: "difiere (otro momento)",
+  confirma: "confirma lo conocido", contradice: "posible contradicción", indeterminado: "aporte indeterminado", trivial: "trivial", hipotesis: "hipótesis", sin_respaldo: "sin respaldo" };
+
 function factItem(f, extra) {
+  const d = f.data || {};
+  const general = d.verificacion === "generaliza_mas_alla_de_la_evidencia";
+  const hist = h("div");
+  const histBtn = f.conn ? h("button", { class: "btn ghost small", type: "button", text: "Historial", onclick: async () => {
+    try {
+      const r = await api("GET", `/api/explorer/maps/${encodeURIComponent(f.conn)}/facts/${f.id}/history`);
+      hist.replaceChildren(h("ul", { class: "small" }, ...r.history.map((e) => h("li", { text:
+        `${new Date(e.created_at * 1000).toLocaleString()} · ${e.event.replace(/_/g, " ")} · ${e.mission_id || "—"} · ${e.certainty_before || "—"} → ${e.certainty_after || "—"}${(e.evidence || []).length ? ` · evidencia ${e.evidence.join(", ")}` : ""}` }))));
+    } catch (e) { toast(e.message, true); }
+  } }) : "";
   return h("div", { class: "item" },
-    h("div", { class: "row between" }, h("span", { class: "small mono", text: `F${f.id}` }), certBadge(f.certainty)),
+    h("div", { class: "row between" }, h("span", { class: "small mono", text: `F${f.id}` }),
+      h("span", {}, d.aporte && APORTE[d.aporte] ? h("span", { class: `badge ${["nuevo", "amplia", "difiere_alcance", "difiere_tiempo"].includes(d.aporte) ? "ok" : (d.aporte === "contradice" ? "bad" : "")}`, text: APORTE[d.aporte] }) : "", " ", certBadge(f.certainty))),
     h("div", { class: "small pre-wrap", text: f.text }),
-    f.data && f.data.verificacion && f.data.verificacion !== "respaldada" ? h("div", { class: "bad small", text: `No respaldada: ${f.data.detalle || f.data.verificacion}` }) : "",
+    general ? h("div", { class: "bad small", text: `Generaliza más allá de la evidencia: ${d.detalle || ""}${d.verificar_con ? ` · para verificar: ${d.verificar_con}` : ""}` }) :
+      (d.verificacion && d.verificacion !== "respaldada" ? h("div", { class: "bad small", text: `No respaldada: ${d.detalle || d.verificacion}` }) : ""),
+    d.alcance ? h("div", { class: "muted small", text: `Alcance de la evidencia: ${d.alcance}${d.alcance_declarado ? ` · declarado por el modelo: ${d.alcance_declarado}` : ""}` }) : "",
+    d.aporte_motivo && d.aporte && d.aporte !== "nuevo" ? h("div", { class: "muted small", text: `Aporte: ${d.aporte_motivo}` }) : "",
     f.evidence && f.evidence.length ? h("div", { class: "muted small", text: `Evidencia: ${f.evidence.join(", ")}` }) : "",
-    extra || "");
+    f.mission_id ? h("div", { class: "muted small", text: `Creado en ${f.mission_id}${f.last_mission_id && f.last_mission_id !== f.mission_id ? ` · última observación en ${f.last_mission_id}` : ""}${(d.confirmaciones || []).length ? ` · ${d.confirmaciones.length} confirmación(es)` : ""}${(d.reafirmaciones || []).length ? ` · ${d.reafirmaciones.length} reafirmación(es) sin respaldo` : ""}` }) : "",
+    histBtn, hist, extra || "");
 }
 
 function resultTable(res) {
@@ -891,7 +909,7 @@ function interpretationBox(st) {
     return h("div", { class: "panel small" }, h("strong", { text: "Etapa B — interpretación: " }), h("span", { class: "bad", text: `no válida (${it.motivo || ""})` }),
       it.raw ? h("pre", { class: "console", text: it.raw }) : "");
   }
-  const claim = (c) => h("li", {}, certBadge(c.certeza), ` ${c.texto}`, c.id ? h("span", { class: "muted mono", text: ` F${c.id}` }) : "");
+  const claim = (c) => h("li", {}, certBadge(c.certeza), c.aporte && APORTE[c.aporte] ? h("span", { class: "muted", text: ` [${APORTE[c.aporte]}]` }) : "", ` ${c.texto}`, c.id ? h("span", { class: "muted mono", text: ` F${c.id}` }) : "");
   const forma = { recuperada: " (recuperada de una respuesta truncada)", minima: " (mínima)", minima_recuperada: " (mínima, recuperada)" }[it.forma] || "";
   return h("div", { class: "panel small" },
     h("p", {}, h("strong", { text: `Etapa B — interpretación${forma}: ` }), it.resumen,
@@ -920,7 +938,7 @@ function contextNote(st) {
     const over = (d.intentos || []).filter((a) => a.desborde).length;
     const last = (d.intentos || [])[d.intentos ? d.intentos.length - 1 : 0] || {};
     const t = last.tiempos;
-    const time = t ? `, ${Math.round(t.reloj_ms / 1000)} s (generó ${t.tokens_generados} tokens a ${t.generacion_tokens_s} tokens/s${t.sin_explicar_ms ? `, ${Math.round(t.sin_explicar_ms / 1000)} s sin explicar por Ollama` : ""})` : "";
+    const time = t ? `, ${Math.round(t.reloj_ms / 1000)} s (generó ${t.tokens_generados ?? "?"} tokens${t.generacion_tokens_s ? ` a ${t.generacion_tokens_s} tokens/s` : ""}${t.sin_explicar_ms ? `, ${Math.round(t.sin_explicar_ms / 1000)} s sin explicar por Ollama` : ""})` : "";
     const stalled = last.timeout ? `, SIN RESPUESTA de Ollama tras ${last.timeout.espera_s} s` : "";
     parts.push(d.agotado ? `etapa ${label}: no entró en el contexto` :
       `etapa ${label}: nivel ${d.nivel ?? "—"} de reducción, ~${d.tokens_estimados ?? "?"} tokens estimados de ${d.num_ctx}${over ? `, ${over} desborde(s) informados por Ollama` : ""}${time}${stalled}`);
@@ -952,7 +970,7 @@ async function renderExploration(box, mid, m) {
     h("div", { class: "row between" }, h("h2", { text: "Evaluación del resultado" }), h("span", { class: `badge ${QUALITY[ev.quality] || ""}`, text: `resultado: ${ev.quality}` })),
     h("dl", { class: "kv" },
       h("dt", { text: "Proceso" }), h("dd", { text: `finalizó por ${ev.ended_reason} · ${(ev.elapsed_s / 60).toFixed(1)} de ${(ev.budget_s / 60).toFixed(1)} min` }),
-      h("dt", { text: "Objetivo" }), h("dd", { class: ev.objective_met ? "ok" : "bad", text: ev.objective_met ? "cumplido: leyó registros, hallazgos respaldados e informe completo" : "NO cumplido" }),
+      h("dt", { text: "Objetivo" }), h("dd", { class: ev.objective_met ? "ok" : "bad", text: ev.objective_met ? "cumplido: leyó registros, aportó conocimiento nuevo respaldado e informe completo" : "NO cumplido" }),
       h("dt", { text: "Informe" }), h("dd", { text: `${ev.report_status} · ${ev.metrics.aplicaciones_validas} aplicaciones válidas` }),
       h("dt", { text: "Lectura real" }), h("dd", { text: `${ev.metrics.tablas_leidas.length}/${ev.metrics.tablas_totales} tablas leídas (${ev.metrics.tablas_leidas.join(", ") || "ninguna"}) · ${ev.metrics.consultas_con_datos} consultas con datos, ${ev.metrics.consultas_vacias} vacías, ${ev.metrics.consultas_con_error} con error, ${ev.metrics.consultas_rechazadas} rechazadas` }),
       h("dt", { text: "Evidencia" }), h("dd", { text: `${ev.metrics.hallazgos_respaldados} hallazgos respaldados · ${ev.metrics.afirmaciones_sin_verificar} sin verificar · ${ev.metrics.hechos_comprobados_calculados} hechos calculados` }),
@@ -961,6 +979,8 @@ async function renderExploration(box, mid, m) {
       ev.metrics.ciclos_completos !== undefined ? h("dd", { class: ev.metrics.ciclos_completos ? "ok" : "bad", text: `${ev.metrics.ciclos_completos} ciclos completos (pregunta → consulta → registros → interpretación respaldada → nueva pregunta) · ${ev.metrics.interpretaciones_validas} interpretaciones válidas, ${ev.metrics.interpretaciones_fallidas} fallidas · ${ev.metrics.respuestas_con_afirmaciones_anticipadas} respuestas con afirmaciones anticipadas (descartadas)` }) : "",
       ev.metrics.desbordes_de_contexto !== undefined ? h("dt", { text: "Contexto" }) : "",
       ev.metrics.desbordes_de_contexto !== undefined ? h("dd", { text: `${ev.metrics.desbordes_de_contexto} desbordes informados por Ollama · ${ev.metrics.mensajes_reducidos} mensajes reducidos · factor de tokens ${ev.metrics.factor_tokens}` }) : "",
+      ev.metrics.ciclos_con_conocimiento_nuevo !== undefined ? h("dt", { text: "Conocimiento" }) : "",
+      ev.metrics.ciclos_con_conocimiento_nuevo !== undefined ? h("dd", { class: ev.metrics.ciclos_con_conocimiento_nuevo ? "ok" : "bad", text: `${ev.metrics.ciclos_con_conocimiento_nuevo} ciclos con conocimiento nuevo (de ${ev.metrics.ciclos_formales} formales) · ${ev.metrics.hechos_nuevos} hechos nuevos, ${ev.metrics.confirmaciones} confirmaciones, ${ev.metrics.contradicciones} posibles contradicciones, ${ev.metrics.diferencias_tiempo_o_alcance} diferencias de momento o alcance, ${ev.metrics.aportes_indeterminados} indeterminados · ${ev.metrics.generalizaciones_acotadas} generalizaciones acotadas · repeticiones: ${ev.metrics.consultas_repetidas_sin_justificar} sin justificar, ${ev.metrics.consultas_repetidas_justificadas} justificadas (${ev.metrics.cambios_de_datos_detectados} con cambios) · ${ev.metrics.desajustes_pregunta_herramienta} desajustes pregunta-herramienta · cobertura ${ev.metrics.cobertura.al_inicio} → ${ev.metrics.cobertura.columnas_estudiadas} de ${ev.metrics.cobertura.columnas_totales} columnas` }) : "",
       ev.metrics.ollama ? h("dt", { text: "Ollama" }) : "",
       ev.metrics.ollama ? h("dd", { text: `${ev.metrics.ollama.llamadas} llamadas (${ev.metrics.ollama.completas} completas, ${ev.metrics.ollama.truncadas} truncadas, ${ev.metrics.ollama.timeouts} sin respuesta) · ${ev.metrics.ollama.reloj_total_s} s en total · generación ${ev.metrics.ollama.generacion_tokens_s ?? "—"} tokens/s · prompt ${ev.metrics.ollama.prompt_tokens_s ?? "—"} tokens/s · hasta ${ev.metrics.ollama.sin_explicar_max_s} s sin explicar por Ollama en una llamada` }) : ""),
     ev.reasons.length ? h("ul", { class: "small" }, ...ev.reasons.map((r) => h("li", { text: r }))) : "") : "";
@@ -992,6 +1012,7 @@ async function renderExploration(box, mid, m) {
       st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : "",
       (ev.anticipadas_descartadas || []).length ? h("p", { class: "small bad", text: `Etapa A: la respuesta traía ${ev.anticipadas_descartadas.join(", ")} antes de ver resultados; se descartaron sin registrarse.` }) : "",
       interpretationBox(st),
+      st.aporte ? h("p", { class: "small muted", text: `Buscaba: ${st.aporte.busca || "—"} → ${(st.aporte.respuesta || "").replace("_", " ")}${st.aporte.alcance ? ` · alcance: ${st.aporte.alcance}` : ""}${st.aporte.repeticion ? ` · repetición: ${st.aporte.repeticion}` : ""}${st.aporte.parecida_a ? ` · parecida a ${st.aporte.parecida_a}` : ""} · conocimiento nuevo: ${st.aporte.conocimiento_nuevo}` }) : "",
       st.repairs ? rawAttempts(st) : "",
       contextNote(st)));
   }

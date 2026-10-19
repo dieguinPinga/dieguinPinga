@@ -149,7 +149,14 @@ def columns_view(columns: list, rows: list, level: int) -> str:
     k, width = COLUMN_VIEW[min(level, LEVELS - 1)]
     cap = len(columns) if level < LEVELS - 1 else 16
     lines = [f"(vista por columnas de {len(rows)} filas)"]
-    for i, c in enumerate(columns[:cap]):
+    # Primero las columnas más informativas (constantes y de texto); al final las numéricas que varían en cada fila.
+    def rank(i):
+        d = {"NULL" if r[i] is None else str(r[i]) for r in rows if i < len(r)}
+        numeric = all(_NUM_RE.fullmatch(v) for v in d)
+        return (0 if len(d) <= 1 else (1 if not numeric else 2), i)
+    order = sorted(range(len(columns)), key=rank)
+    for i in order[:cap]:
+        c = columns[i]
         vals = [r[i] if i < len(r) else None for r in rows]
         distinct = list(dict.fromkeys("NULL" if v is None else str(v) for v in vals))
         name = clip_cell(c, 30)

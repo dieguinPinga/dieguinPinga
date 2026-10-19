@@ -743,6 +743,19 @@ class Handler(BaseHTTPRequestHandler):
                           detail="verificada" if info.get("verified") else "bloqueada")
         self._json(200, info)
 
+    @route("GET", r"/api/explorer/maps/([a-z0-9_]{1,40})/facts/([0-9]{1,12})/history")
+    def api_explorer_fact_history(self, s, name, fact_id):
+        """Procedencia de un hecho: quién lo creó, confirmó, reobservó o reafirmó, con el estado anterior."""
+        self._broker(name)
+        maps = MapStore(self.app.db)
+        row = self.app.db.one("SELECT * FROM explore_facts WHERE conn=? AND id=?", (name, int(fact_id)))
+        if row is None:
+            raise HttpError(404, "Hecho inexistente")
+        fact = dict(row)
+        fact["data"] = json.loads(fact.pop("data_json")) if fact.get("data_json") else None
+        fact["evidence"] = json.loads(fact.pop("evidence_json") or "[]")
+        self._json(200, {"fact": fact, "history": maps.history(name, int(fact_id))})
+
     @route("GET", r"/api/explorer/maps/([a-z0-9_]{1,40})")
     def api_explorer_map(self, s, name):
         b = self._broker(name)
@@ -773,6 +786,7 @@ class Handler(BaseHTTPRequestHandler):
             d["evidence"] = json.loads(d.pop("evidence_json") or "{}")
             d["args"] = json.loads(d.pop("args_json") or "{}")
             d["interpretation"] = json.loads(d["interpretation"]) if d.get("interpretation") else None
+            d["aporte"] = json.loads(d.pop("aporte_json")) if d.get("aporte_json") else None
             d["context"] = json.loads(d.pop("context_json")) if d.get("context_json") else None
             steps.append(d)
         queries = []
@@ -789,7 +803,7 @@ class Handler(BaseHTTPRequestHandler):
             evaluation["metrics"] = json.loads(evaluation.pop("metrics_json"))
             evaluation["reasons"] = json.loads(evaluation.pop("reasons_json"))
         self._json(200, {"spec": spec, "steps": steps, "queries": queries, "evaluation": evaluation,
-                         "facts": [f for f in facts if f["mission_id"] == mid],
+                         "facts": [f for f in facts if mid in (f["mission_id"], f.get("last_mission_id"))],
                          "uncertainties": [f for f in facts if f["kind"] == "incertidumbre"][:30],
                          "progress": {"steps": len([x for x in steps if x["status"] != "en_curso"]),
                                       "max_steps": spec["max_steps"], "queries": agent_q,
