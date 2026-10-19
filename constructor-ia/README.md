@@ -37,6 +37,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   En 0.4.7: el alcance sale del SQL realmente ejecutado (un LIMIT interior impide certificar la tabla completa),
   nombres SQL distintos de valores, frases sin cortar, reformulaciones que no cuentan como nuevas y
   `explorer-reevaluar` (simulación primero) para reevaluar la memoria sin cambiar los hechos existentes.
+  En 0.4.8: recuperación autónoma — el mismo atasco se reconoce aunque cambie la herramienta, la reparación
+  muestra la contradicción y cómo resolverla, el modelo puede abandonar una pregunta (queda registrada) y seguir,
+  las reparaciones tienen límites propios y, sin resultados, el cierre es un diagnóstico breve sin llamar a Ollama.
 
 ## Proyectos que evolucionan (v0.4.0)
 

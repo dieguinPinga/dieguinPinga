@@ -976,7 +976,7 @@ async function renderExploration(box, mid, m) {
       h("dt", { text: "Informe" }), h("dd", { text: `${ev.report_status} · ${ev.metrics.aplicaciones_validas} aplicaciones válidas` }),
       h("dt", { text: "Lectura real" }), h("dd", { text: `${ev.metrics.tablas_leidas.length}/${ev.metrics.tablas_totales} tablas leídas (${ev.metrics.tablas_leidas.join(", ") || "ninguna"}) · ${ev.metrics.consultas_con_datos} consultas con datos, ${ev.metrics.consultas_vacias} vacías, ${ev.metrics.consultas_con_error} con error, ${ev.metrics.consultas_rechazadas} rechazadas` }),
       h("dt", { text: "Evidencia" }), h("dd", { text: `${ev.metrics.hallazgos_respaldados} hallazgos respaldados · ${ev.metrics.afirmaciones_sin_verificar} sin verificar · ${ev.metrics.hechos_comprobados_calculados} hechos calculados` }),
-      h("dt", { text: "Modelo" }), h("dd", { text: `${ev.metrics.respuestas_invalidas} respuestas inválidas · ${ev.metrics.reparaciones} reparaciones de argumentos` }),
+      h("dt", { text: "Modelo" }), h("dd", { text: `${ev.metrics.respuestas_invalidas} respuestas inválidas · ${ev.metrics.reparaciones} reparaciones de argumentos${ev.metrics.preguntas_abandonadas ? ` · ${ev.metrics.preguntas_abandonadas.por_el_modelo} preguntas abandonadas por el modelo, ${ev.metrics.preguntas_abandonadas.sin_reparacion} sin reparación posible · ${ev.metrics.atascos_repetidos} atascos repetidos · reparaciones: ${ev.metrics.reparaciones_llamadas} pedidos, ${ev.metrics.reparaciones_s} s` : ""}` }),
       ev.metrics.ciclos_completos !== undefined ? h("dt", { text: "Ciclos" }) : "",
       ev.metrics.ciclos_completos !== undefined ? h("dd", { class: ev.metrics.ciclos_completos ? "ok" : "bad", text: `${ev.metrics.ciclos_completos} ciclos completos (pregunta → consulta → registros → interpretación respaldada → nueva pregunta) · ${ev.metrics.interpretaciones_validas} interpretaciones válidas, ${ev.metrics.interpretaciones_fallidas} fallidas · ${ev.metrics.respuestas_con_afirmaciones_anticipadas} respuestas con afirmaciones anticipadas (descartadas)` }) : "",
       ev.metrics.desbordes_de_contexto !== undefined ? h("dt", { text: "Contexto" }) : "",
@@ -994,10 +994,12 @@ async function renderExploration(box, mid, m) {
         h("p", { class: "muted small", text: st.analysis || "" }), contextNote(st)));
       continue;
     }
-    if (st.status === "invalida") {
+    if (st.status === "invalida" || st.status === "abandonada") {
+      // 0.4.8: un intento fallido queda registrado y el agente sigue investigando otra pregunta.
+      const byModel = st.status === "abandonada";
       steps.append(h("details", { class: "item" },
-        h("summary", {}, `Paso ${st.n} · `, h("span", { class: "badge bad", text: "respuesta inválida" }), ` ${st.analysis || ""}`.slice(0, 160)),
-        h("p", { class: "muted small", text: `Reparaciones intentadas: ${st.repairs || 0}. No se ejecutó ninguna consulta.` }),
+        h("summary", {}, `Paso ${st.n} · `, h("span", { class: `badge ${byModel ? "" : "bad"}`, text: byModel ? "abandonada por el modelo" : "no se pudo reparar" }), ` ${st.question || st.analysis || ""}`.slice(0, 160)),
+        h("p", { class: "muted small", text: `${st.analysis || ""} · Reparaciones intentadas: ${st.repairs || 0}. No se ejecutó ninguna consulta; queda registrada como intento fallido.` }),
         rawAttempts(st)));
       continue;
     }

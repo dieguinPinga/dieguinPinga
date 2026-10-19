@@ -115,7 +115,10 @@ max_join_size = 20000000  # MariaDB rechaza consultas que estimen examinar más 
 sample_rows = 100000    # tamaño de muestra de las herramientas perfil/frecuentes/relacion
 report_num_predict = 1800 # tokens para el informe final (3 aplicaciones con consultas no entran en 900)
 decide_num_predict = 384  # etapa A (investigación): JSON pequeño con pregunta, herramienta y argumentos
-interpret_num_predict = 512  # etapa B (interpretación): respuesta acotada por el esquema (≤3 hallazgos cortos)
+interpret_num_predict = 512  # etapa B (interpretación): respuesta acotada por el esquema (≤2 hallazgos completos)
+repair_timeout_s = 90     # máximo por pedido de reparación (una reparación improductiva no se come la exploración)
+repair_budget_s = 300     # tiempo total de reparaciones por expedición; agotado, la pregunta se abandona sin insistir
+repair_num_predict = 192  # tokens de una respuesta de reparación
 # Las reservas bajan solas si la velocidad medida de Ollama no alcanza el plazo. El mensaje se ajusta a num_ctx.
 
 # Una entrada por base autorizada. La contraseña va en un archivo 0600 aparte (nunca aquí):

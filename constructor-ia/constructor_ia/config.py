@@ -88,6 +88,10 @@ class Config:
     explorer_report_num_predict: int = 1800
     explorer_decide_num_predict: int = 384
     explorer_interpret_num_predict: int = 512
+    # 0.4.8: límites de las reparaciones (una reparación improductiva no puede comerse la exploración)
+    explorer_repair_timeout_s: int = 90       # máximo por pedido de reparación
+    explorer_repair_budget_s: int = 300       # tiempo total de reparaciones por expedición
+    explorer_repair_num_predict: int = 192    # tokens de una respuesta de reparación
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -290,6 +294,9 @@ def _load_explorer(cfg: Config, ex: dict, model: dict) -> None:
     cfg.explorer_report_num_predict = _int(ex, "report_num_predict", cfg.explorer_report_num_predict, 300, 4096)
     cfg.explorer_decide_num_predict = _int(ex, "decide_num_predict", cfg.explorer_decide_num_predict, 128, 2048)
     cfg.explorer_interpret_num_predict = _int(ex, "interpret_num_predict", cfg.explorer_interpret_num_predict, 128, 4096)
+    cfg.explorer_repair_timeout_s = _int(ex, "repair_timeout_s", cfg.explorer_repair_timeout_s, 10, 600)
+    cfg.explorer_repair_budget_s = _int(ex, "repair_budget_s", cfg.explorer_repair_budget_s, 0, 3600)
+    cfg.explorer_repair_num_predict = _int(ex, "repair_num_predict", cfg.explorer_repair_num_predict, 64, 2048)
     conns = ex.get("connections", [])
     if not isinstance(conns, list) or len(conns) > 10:
         raise ConfigError("explorer.connections debe ser una lista (máximo 10)")

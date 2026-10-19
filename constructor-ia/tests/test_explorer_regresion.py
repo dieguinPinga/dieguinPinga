@@ -169,8 +169,8 @@ class D2ToolArgumentsTests(Base):
                         report=good_report)
         m, run = self.run_script(script, limits={"max_steps": 5})
         inv = [s for s in self.steps() if s["status"] == "invalida"]
-        # 0.4.3: el MISMO error en dos pasos seguidos (cada uno con sus reparaciones) detiene la exploración
-        self.assertEqual(len(inv), 2, "un error idéntico repetido no se insiste hasta agotar el presupuesto")
+        # 0.4.8: el MISMO atasco en tres pasos seguidos (cada uno registrado como intento fallido) detiene la exploración
+        self.assertEqual(len(inv), 3, "un error idéntico repetido no se insiste hasta agotar el presupuesto")
         self.assertTrue(all(s["repairs"] == 2 and "faltó «tabla»" in s["analysis"] for s in inv))
         self.assertEqual(run["ended_reason"], "respuestas_repetidas")
 
@@ -251,11 +251,13 @@ class D6OutcomeTests(Base):
         self.assertEqual(json.loads(run["metrics_json"])["respuestas_con_afirmaciones_anticipadas"], 1)
         self.assertEqual(run["quality"], "insuficiente")
         self.assertEqual(run["objective_met"], 0)
-        self.assertEqual(run["report_status"], "ausente")
+        self.assertEqual(run["report_status"], "diagnostico", "0.4.8: sin consultas con resultados, cierre diagnóstico")
         self.assertIn("no se leyeron registros reales", m["error"])
         informe = self.app.files.read_rel(self.mid, "exploracion/informe.md")
         self.assertIn("Tablas cuyos registros se leyeron: NINGUNA", informe)
-        self.assertIn("No hay resumen interpretativo", informe)
+        self.assertIn("## Cierre diagnóstico", informe)
+        self.assertFalse([r for r in self.fake.requests if "MAPA CONSTRUIDO" in r["messages"][-1]["content"]],
+                         "sin resultados no se pide un informe al modelo")
         ev = json.loads(self.app.files.read_rel(self.mid, "exploracion/evaluacion.json"))
         self.assertFalse(ev["objective_met"])
 

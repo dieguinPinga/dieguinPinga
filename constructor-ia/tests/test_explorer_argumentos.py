@@ -150,9 +150,9 @@ class Caverna01NullTests(Base):
         self.assertNotIn("MISMO objeto", repair1, "no se pide copiar la respuesta que tenía el error")
         self.assertNotIn("no existe", repair1)
         repair2 = dec[2]
-        self.assertIn("repetiste el mismo error", repair2["messages"][-1]["content"])
+        self.assertIn("es el MISMO atasco", repair2["messages"][-1]["content"])
         self.assertIn("tabla", repair2["format"]["required"], "la reparación repetida usa el esquema estricto")
-        self.assertEqual(repair2["format"]["properties"]["herramienta"]["enum"], ["muestra", "terminar"])
+        self.assertEqual(repair2["format"]["properties"]["herramienta"]["enum"], ["muestra", "terminar", "abandonar"])
         q = self.agent_queries()
         self.assertEqual(len(q), 1)
         self.assertIn(chosen["t"], q[0]["sql_text"], "se lee la tabla que eligió el modelo")
@@ -169,12 +169,13 @@ class Caverna01NullTests(Base):
         m, run = self.run_script(script, limits={"max_steps": 10})
         self.assertEqual(run["ended_reason"], "respuestas_repetidas")
         inv = [s for s in self.steps() if s["status"] == "invalida"]
-        self.assertEqual(len(inv), 2, "dos pasos seguidos con el mismo error bastan")
-        self.assertLessEqual(len(self.decisions()), 6, "como máximo 3 pedidos por paso, sin bucle")
+        # 0.4.8: cada paso fallido se registra y el agente puede seguir; tres seguidos con el mismo atasco bastan
+        self.assertEqual(len(inv), 3, "tres pasos seguidos con el mismo atasco bastan")
+        self.assertLessEqual(len(self.decisions()), 9, "como máximo 3 pedidos por paso, sin bucle")
         self.assertEqual(self.agent_queries(), [], "el sistema no ejecuta nada en nombre del modelo")
         tries = json.loads(inv[0]["context_json"])["respuestas_modelo"]
         self.assertEqual(len(tries), 3)
-        self.assertTrue(any("mismo error" in r for r in json.loads(run["reasons_json"])))
+        self.assertTrue(any("mismo atasco" in r for r in json.loads(run["reasons_json"])))
         self.assertNotEqual(run["quality"], "cumplido")
 
 

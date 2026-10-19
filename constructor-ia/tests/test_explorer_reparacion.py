@@ -90,7 +90,8 @@ class RepairTests(Base):
         self.assertIn("columna", sc["required"])
         self.assertEqual(sc["properties"]["columna"]["enum"], ["id", "etiqueta", "valor"])
         self.assertEqual(sc["properties"]["tabla"]["enum"], [p], "la tabla sigue siendo la que eligió el modelo")
-        self.assertEqual(sc["properties"]["herramienta"]["enum"], ["perfil", "frecuentes", "sql"])
+        self.assertEqual(sc["properties"]["herramienta"]["enum"], ["perfil", "frecuentes", "sql", "abandonar"],
+                         "0.4.8: en una reparación el modelo también puede abandonar la pregunta")
         self.assertEqual([q["tool"] for q in self.agent_queries()], ["frecuentes"])
         self.assertEqual(mt["desajustes_pregunta_herramienta"], 1)
 
@@ -99,16 +100,17 @@ class RepairTests(Base):
         q = "¿Qué valores distintos hay en esta tabla?"
         alt = [lambda pr, i: D("perfil", pregunta=q, tabla=p), lambda pr, i: D("frecuentes", pregunta=q, tabla=p)] * 10
         m, run, mt = self.mission(Script(alt), limits={"max_steps": 6})
-        self.assertEqual(run["ended_reason"], "respuestas_repetidas", "dos pasos con el mismo error cortan el bucle")
+        # 0.4.8: cada paso fallido queda registrado y el agente sigue; tres seguidos con el mismo atasco cortan el bucle
+        self.assertEqual(run["ended_reason"], "respuestas_repetidas")
         inv = self.app.db.all("SELECT repairs, context_json FROM explore_steps WHERE mission_id=? AND status='invalida'",
                               (self.mid,))
-        self.assertEqual(len(inv), 2)
+        self.assertEqual(len(inv), 3)
         for s in inv:
             tries = json.loads(s["context_json"])["respuestas_modelo"]
             self.assertEqual([t["firma"] for t in tries], ["falta_columna", "falta_columna"],
                              "perfil sin columna y frecuentes sin columna son el MISMO error")
             self.assertEqual(tries[1]["esquema"], "reparacion_columna", "la primera reparación ya exige la columna")
-        self.assertLessEqual(len(self.stage_a()), 4)
+        self.assertLessEqual(len(self.stage_a()), 6)
         self.assertEqual(self.agent_queries(), [])
 
     def test_a_question_naming_several_columns_is_not_decided_for_the_model(self):
@@ -122,7 +124,10 @@ class RepairTests(Base):
         self.assertEqual([q_["sql_text"].count("`valor`") > 0 for q_ in self.agent_queries()], [True],
                          "se ejecuta la columna que el modelo eligió al reparar")
 
-    def test_expedition_without_queries_keeps_history_and_proposals_apart(self):
+    def test_history_only_report_claims_and_proposals_stay_apart(self):
+        # 0.4.8: una expedición SIN resultados ya no pide informe (cierre diagnóstico, ver test_explorer_recuperacion).
+        # Lo que esta prueba protege sigue igual con una consulta propia que no aporta hallazgos: el informe que solo
+        # cita hechos de otra expedición no los registra como nuevos, y las propuestas se contrastan con EXPLAIN.
         p = self.cave.parent
         old_claim = "Hay etiquetas del tipo «nombre 1»"
         self.mission(Script([lambda pr, i: D("muestra", pregunta="¿Qué contiene?", busca="ejemplos", tabla=p),
@@ -148,12 +153,12 @@ class RepairTests(Base):
                      "consultas": [f"SELECT COUNT(*) FROM `{p}`", f"SELECT columna_falsa FROM `{p}`"]}],
                 "incertidumbres": []}
 
-        q = "¿Qué valores distintos hay en esta tabla?"
-        alt = [lambda pr, i: D("perfil", pregunta=q, tabla=p), lambda pr, i: D("frecuentes", pregunta=q, tabla=p)] * 10
-        m, run, mt = self.mission(Script(alt, report=report), limits={"max_steps": 6})
+        c = self.cave.child
+        m, run, mt = self.mission(Script([lambda pr, i: D("muestra", pregunta="¿Qué hay en la otra tabla?",
+                                                          busca="ejemplos", tabla=c), lambda pr, i: END],
+                                         report=report), limits={"max_steps": 6})
         second = self.mid
-        self.assertEqual(mt["consultas_propias_con_resultado"], 0)
-        self.assertIn("terminó sin consultas con resultado", self.report_prompt)
+        self.assertEqual(mt["consultas_propias_con_resultado"], 1)
         self.assertIn(f"F{old['id']} [histórico", self.report_prompt)
         own = [f for f in MapStore(self.app.db).facts("cueva", limit=500)
                if f["mission_id"] == second and f["kind"] == "hallazgo"]
@@ -163,7 +168,6 @@ class RepairTests(Base):
         self.assertEqual((again["certainty"], again["mission_id"], again["text"]), ("inferencia", first, old_claim))
         informe = self.app.files.read_rel(second, "exploracion/informe.md")
         sec_new = informe.split("## 1. Conocimiento nuevo de esta expedición")[1].split("## 2.")[0]
-        self.assertIn("no ejecutó ninguna consulta", sec_new)
         self.assertNotIn(old_claim, sec_new)
         sec_hist = informe.split("## 2. Conocimiento histórico")[1].split("## 3.")[0]
         self.assertIn("Síntesis del agente sobre conocimiento histórico", sec_hist)
@@ -178,7 +182,6 @@ class RepairTests(Base):
         self.assertEqual(mt["consultas_propuestas"], {"validas": 2, "invalidas": 2, "sin_verificar": 0})
         explains = self.app.db.all("SELECT sql_text FROM explore_queries WHERE mission_id=? AND tool='validacion'", (second,))
         self.assertTrue(explains and all(r[0].startswith("EXPLAIN ") for r in explains), "validación sin ejecutar")
-        self.assertTrue(any("no ejecutó ninguna consulta" in r for r in json.loads(run["reasons_json"])))
         self.assertEqual(run["objective_met"], 0)
 
 

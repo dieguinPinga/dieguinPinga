@@ -63,6 +63,8 @@ log = logging.getLogger(__name__)
 TOOLS = V.TOOLS
 EVIDENCE_RE = re.compile(r"^[FC]\d{1,9}$")
 MAX_REPAIRS = 2
+MAX_STALLED = 3          # 0.4.8: pasos seguidos sin ejecutar nada (preguntas abandonadas o fallidas) antes de cortar
+ABANDON = "abandonar"    # 0.4.8: opción de las reparaciones: dejar la pregunta (queda registrada) y formular otra
 MAX_ENUM_TABLES = 80     # hasta aquí, los nombres de tablas van como opciones en el esquema de la etapa A
 MIN_LLM_S = 8.0
 ANTICIPATED_KEYS = ("hallazgos", "descubrimientos", "incertidumbres", "hipotesis", "resultado", "interpretacion")
@@ -116,7 +118,7 @@ INTERPRET_MIN_SCHEMA = {
     "required": ["resumen", "hallazgos"],
 }
 INTERPRET_MIN_PREDICT = 256
-MIN_PREDICT = {"A": 160, "B": 192, "B-min": 160, "informe": 400}  # piso de la reserva ajustada por velocidad
+MIN_PREDICT = {"A": 160, "A-rep": 96, "B": 192, "B-min": 160, "informe": 400}  # piso de la reserva ajustada por velocidad
 MAX_OLLAMA_TIMEOUTS = 2  # timeouts seguidos del servidor antes de pasar al informe
 RECOVERY_WAIT_S = 5.0    # espera entre comprobaciones cuando Ollama rechaza la conexión
 
@@ -159,7 +161,9 @@ SYSTEM = RULES + (
     "sql(sql): un SELECT/WITH/SHOW propio con LIMIT. terminar: finalizar.\n"
     "En «busca» indicá qué querés averiguar (filas, ejemplos, valores_distintos, frecuencias, rango_nulos, relacion, "
     "agregado_por_grupo, evolucion_temporal u otro) y, si es sobre una columna, «columna_objetivo». No repitas "
-    "consultas ya hechas: si necesitás repetir una, explicá en «repetir_porque» por qué.\n"
+    "consultas ya hechas: si necesitás repetir una, explicá en «repetir_porque» por qué. Si una respuesta tuya no "
+    "se puede ejecutar, se te pide una reparación: corregila o, si no podés, elegí «abandonar»; el intento queda "
+    "registrado y seguís investigando otra pregunta.\n"
     "ETAPA B — INTERPRETACIÓN. Recibís el resultado REAL de tu consulta. Sé BREVE: «resumen» de una o dos frases; "
     "hasta 2 «hallazgos», cada uno UNA frase completa y breve (menos de 250 caracteres) citando su evidencia (C#), con cifras y valores que figuren tal cual en el "
     "resultado (los textos entre comillas «así»); en «alcance» decí si vale para la muestra vista, un subconjunto o "
@@ -323,7 +327,9 @@ class Explorer:
                  "repairs_kind": {}, "repeats_justified": 0, "data_changes": 0, "generalized": 0,
                  "respuestas": {}, "busca_otro": 0,
                  # 0.4.6: lo que el informe afirma sin evidencia propia de esta expedición (síntesis histórica)
-                 "report_historical": []}
+                 "report_historical": [],
+                 # 0.4.8: recuperación — intentos fallidos registrados, atascos y tiempo de reparaciones
+                 "abandoned": [], "stalled": [], "stuck_repeats": 0, "repair_s": 0.0, "repair_calls": 0}
         self._conn = conn
         self._mid = mid
         self._database = ""
@@ -331,6 +337,7 @@ class Explorer:
         self._overflows = self._reductions = 0
         self._generalized = self._truncated = 0
         self._system_new: set[int] = set()  # hechos del sistema creados (nuevos) en esta exploración
+        self._abandoned_now = state["abandoned"]
         self._current_scope = None
         self._broker = None
         self._sql_checks: dict[str, dict] = {}   # validación de las consultas propuestas (EXPLAIN), por SQL
@@ -504,6 +511,7 @@ class Explorer:
             unc = self.maps.facts(conn, kinds=("incertidumbre",), limit=UNCERTAINTIES_SHOWN[level])
             utext = "\n".join(f"F{f['id']} {_clean_cell(f['text'], 140)}" for f in unc)
         rtext = self._history_text(state, level) or "(todavía ninguno)"
+        ftxt = self._failed_text(state, level)
         unread = [t for t, v in self.schema["tablas"].items() if t not in self._read_tables and v["tipo"] == "tabla"]
         hint = ""
         if not self._read_tables:
@@ -522,6 +530,8 @@ class Explorer:
                 + (f"MAPA (hechos respaldados y relaciones):\n{ftext or '(vacío)'}\n\n" if FACTS_SHOWN[level] else "")
                 + (f"INCERTIDUMBRES ABIERTAS:\n{utext or '(ninguna)'}\n\n" if UNCERTAINTIES_SHOWN[level] else "")
                 + f"PASOS ANTERIORES (resumen; la evidencia completa está registrada):\n{rtext}\n\n"
+                + (f"INTENTOS FALLIDOS (registrados; no los repitas igual — podés investigar otra cosa):\n{ftxt}\n\n"
+                   if ftxt else "")
                 + hint
                 + f"Presupuesto restante: {limits['pasos'] - state['steps']} pasos, "
                 f"{limits['consultas'] - state['queries']} consultas, {max(0, b.loop_remaining) / 60:.1f} min de exploración.\n"
@@ -669,7 +679,7 @@ class Explorer:
         cap = int(gen * max(0.0, timeout_s - prompt_s - 5) * 0.9)
         if cap >= reserve:
             return reserve, ""
-        fitted = max(MIN_PREDICT.get(stage, 160), cap)
+        fitted = min(reserve, max(MIN_PREDICT.get(stage, 160), cap))
         return fitted, (f"reserva reducida de {reserve} a {fitted} tokens: a {gen:.1f} tokens/s medidos no "
                         f"terminaría dentro de {timeout_s:.0f} s")
 
@@ -979,6 +989,10 @@ class Explorer:
     def _accept(self, d) -> tuple[dict | None, list[str], V.StepProblem | None]:
         """Normaliza la respuesta; devuelve (paso, correcciones, problema_reparable | None)."""
         applied = None
+        if isinstance(d, dict) and str(d.get("herramienta", "")).strip().lower() == ABANDON:
+            # 0.4.8: el modelo reconoce que no puede resolver su pregunta y la deja; nada se ejecuta.
+            return {"herramienta": ABANDON, "pregunta": str(d.get("pregunta") or "")[:500],
+                    "por_que": str(d.get("por_que") or "")[:600], "busca": str(d.get("busca") or "")[:30]}, [], None
         if isinstance(d, dict):
             tool = str(d.get("herramienta", "")).strip().lower()
             busca = str(d.get("busca") or "").strip().lower()
@@ -1045,11 +1059,14 @@ class Explorer:
         age = time.time() - prev["created_at"]
         when = f"hace {age / 86400:.0f} días" if age >= 86400 else (f"hace {age / 3600:.0f} h" if age >= 3600 else
                                                                      f"hace {age / 60:.0f} min")
-        derived = [f"F{r[0]}" for r in self.db.all("SELECT id FROM explore_facts WHERE conn=? AND status='vigente' AND"
-                                                  " evidence_json LIKE ?", (self._conn, f'%"C{prev["id"]}"%'))][:6]
+        rows = self.db.all("SELECT id, text FROM explore_facts WHERE conn=? AND status='vigente' AND evidence_json LIKE ?"
+                           " ORDER BY id", (self._conn, f'%"C{prev["id"]}"%'))
+        derived = [f"F{r[0]}" for r in rows][:6]
+        known = "; ".join(f"F{r[0]}: {_clean_cell(r[1], 90)}" for r in rows[:2])
         where = "en esta expedición" if prev["mission_id"] == self._mid else f"en la expedición {prev['mission_id']}"
         return (f"esa consulta ya se ejecutó: C{prev['id']} ({where}, {when}, {prev['row_count']} filas)"
                 + (f"; de ella salieron {', '.join(derived)}" if derived else "")
+                + (f" (ya se sabe, p. ej. {known})" if known else "")
                 + ". Elegí otra pregunta o, si necesitás repetirla (p. ej. para ver si los datos cambiaron), explicá "
                   "por qué en «repetir_porque»")
 
@@ -1094,10 +1111,51 @@ class Explorer:
         if problem is None:
             return ""
         busca = str((d or {}).get("busca") or "").strip().lower() if isinstance(d, dict) else ""
-        if ((problem.kind == "coherencia" and busca in K.NEEDS_COLUMN)
-                or (problem.kind == "falta_argumento" and problem.field == "columna")):
+        tool = str((d or {}).get("herramienta") or "").strip().lower() if isinstance(d, dict) else ""
+        # 0.4.8: solo perfil/frecuentes (a relacion sin «columna» le falta otra cosa: su relación).
+        if tool in ("perfil", "frecuentes") and ((problem.kind == "coherencia" and busca in K.NEEDS_COLUMN)
+                                                 or (problem.kind == "falta_argumento" and problem.field == "columna")):
             return "falta_columna"
         return problem.signature
+
+    def _stuck_key(self, problem: V.StepProblem | None, d) -> str:
+        """Identidad del ATASCO (0.4.8): el mismo problema aunque el modelo cambie de herramienta.
+
+        * repetir consultas ya hechas (C59 con perfil, C61 con frecuentes…) es un solo atasco;
+        * pedir algo («busca») con una herramienta que no lo responde o sin sus argumentos obligatorios (frecuentes
+          para una relación, relacion sin tabla_destino…) es un solo atasco por intención.
+        """
+        if problem is None:
+            return ""
+        fam = self._family(problem, d)
+        if fam == "falta_columna":
+            return fam
+        if problem.kind == "repetida":
+            return "repetida"
+        busca = str((d or {}).get("busca") or "").strip().lower() if isinstance(d, dict) else ""
+        if problem.kind in ("coherencia", "falta_argumento", "columna_inexistente", "tabla_inexistente") and \
+                busca in K.BUSCA and busca != "otro":
+            return f"intencion:{busca}"
+        return fam
+
+    @staticmethod
+    def _stuck_label(key: str) -> str:
+        if key == "repetida":
+            return "repetir consultas ya hechas"
+        if key == "falta_columna":
+            return "una pregunta que necesita columna, sin columna"
+        if key.startswith("intencion:"):
+            return f"buscar {K.BUSCA_LABEL.get(key[10:], key[10:])} con una herramienta o argumentos que no lo permiten"
+        return key.split("|")[0].replace("_", " ") or "respuesta no ejecutable"
+
+    @staticmethod
+    def _with_abandon(schema: dict) -> dict:
+        """En una reparación, el modelo también puede abandonar la pregunta."""
+        schema = json.loads(json.dumps(schema))
+        tool = schema["properties"].get("herramienta") or {}
+        if "enum" in tool and ABANDON not in tool["enum"]:
+            tool["enum"] = list(tool["enum"]) + [ABANDON]
+        return schema
 
     def _repair_schema(self, problem: V.StepProblem, d) -> dict | None:
         """Esquema de reparación para «falta la columna»: columna OBLIGATORIA y solo columnas reales de la tabla que el
@@ -1161,12 +1219,49 @@ class Explorer:
         if needs is not None and self._family(problem, d) != "falta_columna":
             lines.append(f"«{tool}» usa: {', '.join(V.TOOL_ARGS[tool]) or 'ningún argumento'}"
                          + (f" (obligatorios: {', '.join(needs)})" if needs else "") + ".")
-        lines.append("Podés corregir los argumentos o elegir otra herramienta si te sirve más para tu pregunta.")
+        lines += self._resolution_options(problem, d)
         if repeated:
-            lines.append("ATENCIÓN: repetiste el mismo error. No copies tu respuesta anterior: escribí una nueva.")
+            key = self._stuck_key(problem, d)
+            lines.append(f"ATENCIÓN: es el MISMO atasco que en tu respuesta anterior ({self._stuck_label(key)}), aunque "
+                         "hayas cambiado de herramienta. No copies tu respuesta: resolvé la contradicción o elegí "
+                         f"«{ABANDON}».")
         # La respuesta anterior no se reenvía completa: copiarla es justamente lo que repite el error.
         prev = (raw or "")[:(300, 200, 150, 100, 60)[level]]
         return base + [{"role": "assistant", "content": prev}, {"role": "user", "content": "\n".join(lines)}]
+
+    def _resolution_options(self, problem: V.StepProblem, d) -> list[str]:
+        """0.4.8: qué está en contradicción y cómo puede resolverlo el MODELO (no se elige por él)."""
+        d = d if isinstance(d, dict) else {}
+        tool = str(d.get("herramienta", "")).strip().lower()
+        busca = str(d.get("busca") or "").strip().lower()
+        question = _clean_cell(d.get("pregunta") or "", 120)
+        abandon = (f"Abandonar esta pregunta: «herramienta»: \"{ABANDON}\" y en «por_que» qué te faltó. El intento queda "
+                   "registrado y en el próximo paso formulás otra pregunta (equivocarse está permitido).")
+        lines = []
+        for a in getattr(self, "_abandoned_now", []):
+            if question and K.fold(a["pregunta"])[:80] == K.fold(question)[:80]:
+                lines.append(f"Esa misma pregunta ya se abandonó en el paso {a['paso']}: {_clean_cell(a['motivo'], 140)}.")
+                break
+        if problem.kind == "coherencia" and self._family(problem, d) != "falta_columna":
+            caps = K.capabilities(self._shape(tool, {k: d.get(k) for k in V.ARG_KEYS if d.get(k)})) or set()
+            answers = ", ".join(K.BUSCA_LABEL[c] for c in sorted(caps) if c in K.BUSCA_LABEL) or "otra cosa"
+            needs = {"relacion": " (los cuatro argumentos son obligatorios: tabla, columna, tabla_destino y "
+                                 "columna_destino, con nombres exactos)"}.get("relacion" if busca == "relacion" else "", "")
+            lines += [f"CONTRADICCIÓN: tu pregunta «{question}» dice buscar {K.BUSCA_LABEL.get(busca, busca)} («busca»), "
+                      f"pero «{tool}» responde {answers}. Las tres partes tienen que coincidir.",
+                      "Elegí UNA forma de resolverlo:",
+                      f"1) Mantener lo que buscás y cambiar la herramienta: {K.HOW.get(busca, 'sql')}{needs}.",
+                      f"2) Mantener «{tool}» y corregir «busca» (y la pregunta) a lo que esa herramienta responde.",
+                      f"3) {abandon}"]
+        elif problem.kind == "repetida":
+            lines += ["Elegí UNA forma de resolverlo:",
+                      f"1) {abandon} Conviene investigar algo que todavía no se sabe.",
+                      "2) Si de verdad necesitás repetirla (p. ej. para ver si los datos cambiaron), explicá por qué en "
+                      "«repetir_porque»."]
+        else:
+            lines += ["Elegí UNA forma de resolverlo:", "1) Corregir los argumentos con nombres exactos.",
+                      "2) Elegir otra herramienta (o sql) que responda tu pregunta.", f"3) {abandon}"]
+        return lines
 
     def _decide(self, mid, description, state, limits, cancel):
         """Etapa A con reparaciones. Devuelve (paso, correcciones, problema, reparaciones, info, d, anticipadas, intentos).
@@ -1178,6 +1273,9 @@ class Explorer:
         b: Budget = state["budget"]
         np_ = self.cfg.explorer_decide_num_predict
         timeout = lambda: min(self.cfg.explorer_model.timeout_s, b.loop_remaining)  # noqa: E731
+        # 0.4.8: una reparación es una respuesta corta y acotada en tiempo; su tiempo total por expedición también.
+        rep_np = min(np_, int(self.cfg.explorer_repair_num_predict))
+        rep_timeout = lambda: min(float(self.cfg.explorer_repair_timeout_s), timeout())  # noqa: E731
         schema = self._decide_schema()
         d, info = self._call(mid, "A", lambda lv: self._decide_prompt(description, state, limits, lv), schema,
                              cancel, timeout(), np_)
@@ -1189,17 +1287,28 @@ class Explorer:
                 problem = V.StepProblem(self._invalid_reason(info), "formato")
             else:
                 step, notes, problem = self._accept(d)
+            key = self._stuck_key(problem, d) if d is not None else (problem.signature if problem else "")
             attempts.append({"raw": (info.get("raw") or "")[:1500], "problema": str(problem) if problem else "",
                              "firma": self._family(problem, d) if d is not None else (problem.signature if problem else ""),
-                             "esquema": strict or "normal"})
+                             "atasco": key, "esquema": strict or "normal",
+                             "pregunta": str((d or {}).get("pregunta") or "")[:300] if isinstance(d, dict) else "",
+                             "busca": str((d or {}).get("busca") or "")[:30] if isinstance(d, dict) else "",
+                             "herramienta": str((d or {}).get("herramienta") or "")[:30] if isinstance(d, dict) else ""})
             if (problem is None or d is None or repairs >= MAX_REPAIRS or b.loop_remaining < MIN_LLM_S
                     or info.get("context_exhausted") or info.get("timeout")):
                 break
-            fam = self._family(problem, d)
+            if state["repair_s"] >= float(self.cfg.explorer_repair_budget_s):
+                # Reparaciones improductivas: no se insiste; la pregunta se abandona y el modelo formula otra.
+                state["repair_budget_exhausted"] = True
+                self._event(mid, "aviso", f"Paso {state['steps'] + 1}: presupuesto de reparaciones agotado "
+                            f"({state['repair_s']:.0f} s de {self.cfg.explorer_repair_budget_s} s); no se pide otra "
+                            "reparación")
+                break
+            fam = key
             repeated = fam in sigs
             if repeated and strict:
-                self._event(mid, "aviso", f"Paso {state['steps'] + 1}: el modelo repitió el mismo error aun con el "
-                            "esquema de reparación; no se insiste en este paso")
+                self._event(mid, "aviso", f"Paso {state['steps'] + 1}: el modelo repitió el mismo atasco "
+                            f"({self._stuck_label(fam)}) aun con el esquema de reparación; no se insiste en este paso")
                 break
             sigs.append(fam)
             repairs += 1
@@ -1210,16 +1319,22 @@ class Explorer:
             if fix is not None:
                 # «Falta la columna»: desde la primera reparación, esquema con la columna obligatoria y sus nombres reales.
                 schema, strict = fix, "reparacion_columna"
+            elif repeated and fam == "repetida":
+                schema, strict = self._decide_schema(), "abandono_ofrecido"  # un esquema estricto no ayuda a no repetir
             elif repeated and tool in V.TOOLS:
                 schema, strict = self._strict_schema(tool, str(d.get("busca") or "").strip().lower()), "estricto"
+            schema = self._with_abandon(schema)
             self._event(mid, "aviso", f"Paso {state['steps'] + 1}: solicitud no ejecutable ({str(problem)[:220]}); se "
                         f"pide una reparación {repairs}/{MAX_REPAIRS} sin consumir el paso"
                         + {"reparacion_columna": " (columna obligatoria, con sus nombres válidos)",
                            "estricto": " (error repetido: esquema estricto)"}.get(strict or "", ""))
             prev_raw, prev_d, prev_problem = info["raw"], d, problem
-            d, info = self._call(mid, "A", lambda lv: self._repair_messages(
+            t0 = time.monotonic()
+            d, info = self._call(mid, "A-rep", lambda lv: self._repair_messages(
                 self._decide_prompt(description, state, limits, lv), prev_raw, prev_problem, prev_d, lv, repeated),
-                schema, cancel, timeout(), np_)
+                schema, cancel, rep_timeout(), rep_np)
+            state["repair_s"] += time.monotonic() - t0
+            state["repair_calls"] += 1
         return step, notes, problem, repairs, info, d, anticipated, attempts
 
     def _step(self, mid, broker, description, state, limits, cancel) -> bool:
@@ -1237,6 +1352,22 @@ class Explorer:
                             (mid, self._conn, n, "", "", "{}", "", "{}", "sin_respuesta", str(problem)[:1000], repairs,
                              json.dumps({"decision": ctx_a}, ensure_ascii=False), time.time()))
             return True
+        if step is not None and step.get("herramienta") == ABANDON:
+            # 0.4.8: el modelo reconoció que no podía resolver su pregunta y la dejó. Se registra y sigue investigando.
+            first = next((a for a in reversed(attempts) if a.get("pregunta") and a.get("problema")), {})
+            failed = next((a for a in reversed(attempts) if a.get("problema")), {})
+            question = first.get("pregunta") or step.get("pregunta", "")
+            reason = (step.get("por_que") or "sin motivo") + (f" (problema: {failed['problema'][:200]})"
+                                                               if failed.get("problema") else "")
+            self.db.execute("INSERT INTO explore_steps(mission_id, conn, n, question, rationale, evidence_json, tool,"
+                            " args_json, status, analysis, repairs, raw, context_json, created_at)"
+                            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (mid, self._conn, n, question[:500], step.get("por_que", "")[:600], "{}",
+                             first.get("herramienta", "")[:30], "{}", "abandonada", f"abandonada por el modelo: {reason}"[:1000],
+                             repairs, info["raw"][:2000], json.dumps({"decision": ctx_a, "respuestas_modelo": attempts},
+                                                                    ensure_ascii=False), time.time()))
+            return self._failed_question(mid, state, n, "modelo", question, first, failed.get("atasco") or "abandono",
+                                         reason)
         if problem:
             state["invalid"] += 1
             state["invalid_total"] += 1
@@ -1254,16 +1385,11 @@ class Explorer:
                 self._event(mid, "explorador", "No se puede armar un mensaje de investigación que entre en el "
                             "contexto del modelo; se pasa al informe")
                 return False
-            family = self._family(problem, d)
-            if family and family == state.get("last_invalid_sig"):
-                # Mismo error en dos pasos seguidos (con sus reparaciones): insistir solo gasta tiempo.
-                state["ended"] = "respuestas_repetidas"
-                self._event(mid, "explorador", f"El modelo repitió el mismo error en dos pasos seguidos ({str(problem)[:160]}); "
-                            "se detiene la exploración para no gastar el presupuesto en el mismo error")
-                return False
-            state["last_invalid_sig"] = family
-            return True
-        state["invalid"], state["last_invalid"], state["last_invalid_sig"] = 0, None, None
+            first = next((a for a in reversed(attempts) if a.get("pregunta")), {})
+            key = attempts[-1].get("atasco") if attempts else ""
+            return self._failed_question(mid, state, n, "sistema", first.get("pregunta", ""), first, key or "formato",
+                                         str(problem))
+        state["invalid"], state["last_invalid"], state["stalled"] = 0, None, []
         state["steps"] = n
         conn = self._conn
         if anticipated:
@@ -1341,6 +1467,45 @@ class Explorer:
         if util in ("datos", "metadatos"):
             self._interpret(mid, description, state, step_id, entry, tool, args, o, analysis, cancel, ctx)
         return True
+
+    def _failed_question(self, mid, state, n, by: str, question: str, first: dict, key: str, reason: str) -> bool:
+        """0.4.8: una pregunta que no se pudo ejecutar queda registrada como intento fallido y el agente sigue.
+
+        Solo se corta si pasan MAX_STALLED pasos seguidos sin ejecutar nada: «respuestas_repetidas» si fue siempre el
+        mismo atasco, «sin_progreso» si fueron atascos distintos.
+        """
+        state["abandoned"].append({"paso": n, "intento": len(state["abandoned"]) + 1, "por": by, "pregunta": question[:300], "busca": first.get("busca", ""),
+                                   "herramienta": first.get("herramienta", ""), "atasco": key, "motivo": reason[:400]})
+        stalled = state["stalled"]
+        stalled.append(key)
+        same = len(stalled) >= 2 and stalled[-1] == stalled[-2]
+        if same:
+            state["stuck_repeats"] += 1
+        who = "el modelo la abandonó" if by == "modelo" else "no se pudo reparar"
+        self._event(mid, "explorador", f"Pregunta abandonada ({who}): «{_clean_cell(question, 120)}» — "
+                    f"{_clean_cell(reason, 200)}. Queda registrada; el agente puede formular otra pregunta"
+                    + (f" (atasco repetido: {self._stuck_label(key)})" if same else ""))
+        if len(stalled) >= MAX_STALLED:
+            last = stalled[-MAX_STALLED:]
+            state["ended"] = "respuestas_repetidas" if len(set(last)) == 1 else "sin_progreso"
+            self._event(mid, "explorador", f"{MAX_STALLED} preguntas seguidas sin poder ejecutar nada ("
+                        + ("siempre el mismo atasco: " + self._stuck_label(last[0]) if len(set(last)) == 1
+                           else "atascos distintos") + "); se cierra la exploración")
+            return False
+        return True
+
+    def _failed_text(self, state, level: int) -> str:
+        """Intentos fallidos recientes, para que el modelo no los repita igual (no le dice qué investigar)."""
+        k = (4, 3, 2, 1, 0)[level]
+        items = state["abandoned"][-k:] if k else []
+        lines = [f"Intento {a['intento']} (paso {a['paso']}): «{_clean_cell(a['pregunta'], 100)}» (busca {a['busca'] or '?'}, "
+                 f"{a['herramienta'] or '?'}) — {'la abandonaste' if a['por'] == 'modelo' else 'no se pudo reparar'}: "
+                 f"{_clean_cell(a['motivo'], 120)}" for a in items]
+        st = state["stalled"]
+        if len(st) >= 2 and st[-1] == st[-2]:
+            lines.append(f"El mismo atasco se repitió en {len(st)} pasos ({self._stuck_label(st[-1])}): tu próxima "
+                         "pregunta debería ser distinta, no la misma con otra herramienta.")
+        return "\n".join(lines)
 
     # Etapa B: interpretación ------------------------------------------------
     def _interpret(self, mid, description, state, step_id, entry, tool, args, o: QueryOutcome, analysis, cancel, ctx):
@@ -1730,10 +1895,39 @@ class Explorer:
                     "estos datos (tablero, informe o herramienta), cada una con 1 a 3 consultas SELECT sobre tablas "
                     "existentes. Indicá las incertidumbres que quedan. " + size + "\nINFORME: respondé con el JSON.")}]
 
+    def _own_results(self) -> int:
+        """Consultas de ESTA expedición que devolvieron filas."""
+        return self.db.one("SELECT COUNT(*) FROM explore_queries WHERE mission_id=? AND origin='agente' AND status='ok'"
+                           " AND row_count > 0", (self._mid,))[0]
+
+    def _diagnostic_close(self, mid, state) -> None:
+        """0.4.8: sin consultas con resultados no hay nada que interpretar ni proponer: cierre diagnóstico breve,
+        escrito por el sistema SIN otra llamada larga a Ollama."""
+        ab = state["abandoned"]
+        by_model = sum(1 for a in ab if a["por"] == "modelo")
+        stuck: dict = {}
+        for a in ab:
+            stuck[a["atasco"]] = stuck.get(a["atasco"], 0) + 1
+        main = sorted(stuck.items(), key=lambda kv: -kv[1])[:3]
+        text = (f"Cierre diagnóstico (escrito por el sistema, sin pedirle otro informe al modelo): {state['steps']} pasos "
+                f"ejecutados y {state['queries']} consultas, ninguna con resultados, así que no hay descubrimientos ni "
+                f"propuestas. {len(ab)} preguntas no se pudieron ejecutar ({by_model} abandonadas por el modelo, "
+                f"{len(ab) - by_model} sin reparación posible)"
+                + (": " + "; ".join(f"{self._stuck_label(k)} ×{n}" for k, n in main) if main else "")
+                + f". Reparaciones: {state['repair_calls']} pedidos, {state['repair_s']:.0f} s. "
+                f"Finalización: {state['ended']}.")
+        state["diagnostic"] = text
+        state["report"] = {"status": "diagnostico", "resumen": text, "apps": 0}
+        self._event(mid, "explorador", text)
+        self._write_report_files(mid, self._conn, None, state, False)
+
     def _report(self, mid, broker, description, state, cancel, partial: bool) -> None:
         conn = self._conn
         b: Budget = state["budget"]
         report, status = None, "ausente"
+        if not partial and self._own_results() == 0:
+            self._diagnostic_close(mid, state)
+            return
         if not partial and broker is not None and self._timeouts_seguidos >= MAX_OLLAMA_TIMEOUTS:
             self._event(mid, "aviso", "Ollama no respondió en los últimos pedidos: se escribe el informe automático sin "
                                       "pedirle otro informe al modelo")
@@ -1890,6 +2084,13 @@ class Explorer:
             "preguntas_no_respondidas": state.get("respuestas", {}).get("no_respondida", 0),
             "pasos_con_busca_otro": state.get("busca_otro", 0),
             "consultas_propias_con_resultado": self._own_queries(),
+            # 0.4.8: recuperación y eficiencia
+            "consultas_con_filas": self._own_results(),
+            "preguntas_abandonadas": {"por_el_modelo": sum(1 for a in state["abandoned"] if a["por"] == "modelo"),
+                                      "sin_reparacion": sum(1 for a in state["abandoned"] if a["por"] == "sistema")},
+            "atascos_repetidos": state["stuck_repeats"],
+            "reparaciones_llamadas": state["repair_calls"], "reparaciones_s": round(state["repair_s"], 1),
+            "presupuesto_de_reparaciones_agotado": bool(state.get("repair_budget_exhausted")),
             "afirmaciones_historicas_del_informe": len(state.get("report_historical", [])),
             "consultas_propuestas": {
                 "validas": sum(1 for c in self._sql_checks.values() if c["valida"] and c["verificada"]),
@@ -1903,7 +2104,10 @@ class Explorer:
             reasons.append("no se leyeron registros reales de ninguna tabla")
         if supported == 0:
             reasons.append("ningún hallazgo del modelo quedó respaldado por evidencia")
-        if report["status"] != "completo":
+        if report["status"] == "diagnostico":
+            reasons.append("sin consultas con resultados: cierre diagnóstico del sistema, sin informe ni propuestas del "
+                           "modelo (no se gastó otra llamada larga a Ollama)")
+        elif report["status"] != "completo":
             reasons.append("el informe no tiene resumen y tres aplicaciones válidas" if report["status"] == "parcial"
                            else "no hay informe interpretativo del modelo")
         if self._read_tables and not state.get("cycles"):
@@ -1919,7 +2123,12 @@ class Explorer:
             reasons.append("Ollama aceptó pedidos pero no respondió a tiempo en pedidos seguidos (servidor ocupado o "
                            "trabado; ver exploracion/llamadas_ollama.json y el diagnóstico de Ollama)")
         if state["ended"] == "respuestas_repetidas":
-            reasons.append("el modelo repitió el mismo error de argumentos en pasos seguidos (ver respuestas crudas)")
+            reasons.append(f"{MAX_STALLED} preguntas seguidas con el mismo atasco, aun después de abandonarlas (ver "
+                           "intentos fallidos y respuestas crudas)")
+        if state["ended"] == "sin_progreso":
+            reasons.append(f"{MAX_STALLED} preguntas seguidas que no se pudieron ejecutar (atascos distintos)")
+        if state["abandoned"]:
+            reasons.append(f"{len(state['abandoned'])} preguntas abandonadas y registradas como intentos fallidos")
         if state["ended"] == "contexto_insuficiente":
             reasons.append("el mensaje mínimo no entra en el contexto configurado del modelo")
         if unverified:
@@ -1961,8 +2170,17 @@ class Explorer:
               ""]
         if report and report.get("resumen"):
             md += ["## Resumen del agente (interpretación)", "", str(report["resumen"])[:3000], ""]
+        elif state.get("diagnostic"):
+            md += ["## Cierre diagnóstico", "", state["diagnostic"], ""]
         else:
             md += ["## Resumen del agente", "", "_No hay resumen interpretativo del modelo en esta exploración._", ""]
+        if state.get("abandoned"):
+            md += ["## Intentos fallidos (preguntas abandonadas)", ""]
+            for a in state["abandoned"]:
+                md.append(f"- Intento {a['intento']} (paso {a['paso']}) · {'abandonada por el modelo' if a['por'] == 'modelo' else 'sin reparación posible'}"
+                          f" · atasco: {self._stuck_label(a['atasco'])} — «{a['pregunta']}» (busca {a['busca'] or '?'}, "
+                          f"{a['herramienta'] or '?'}): {a['motivo']}")
+            md.append("")
 
         def item(f, with_origin=False):
             ev = ", ".join(f["evidence"]) if f["evidence"] else "sin evidencia citada"
@@ -2045,5 +2263,6 @@ class Explorer:
             {"conexion": conn, "estructura": snap["schema"] if snap else None,
              "hechos": [{k: f[k] for k in ("id", "kind", "certainty", "subject", "text", "evidence", "data", "mission_id")}
                         | {"origen": "esta_expedicion" if f["mission_id"] == mid else "historico"} for f in facts],
-             "sintesis_historica_del_informe": state.get("report_historical", [])},
+             "sintesis_historica_del_informe": state.get("report_historical", []),
+             "intentos_fallidos": state.get("abandoned", []), "cierre_diagnostico": state.get("diagnostic")},
             ensure_ascii=False, indent=1, default=str), "informe")

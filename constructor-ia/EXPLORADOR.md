@@ -1277,3 +1277,147 @@ c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollbac
   último esquema). No se vuelve a consultar MariaDB.
 - `redondeo_compatible` se reconoce cuando el valor conocido tiene más decimales. Otras equivalencias (porcentajes,
   unidades) quedan como diferencias o como `indeterminado`.
+
+---
+
+# Cambios 0.4.8: recuperación autónoma y eficiencia
+
+Prueba real de 0.4.7 con Qwen3 4B (M20261019-4c8c37): 14 minutos, 0 consultas exploratorias, 0 ciclos y ningún
+conocimiento nuevo.
+- El modelo intentó repetir C59 (perfil) y C61 (frecuentes), consultas de una expedición anterior.
+- Después alternó entre `relacion` sin sus argumentos obligatorios y `frecuentes`, mientras declaraba buscar una
+  relación entre tablas. Repitió el error y la misión terminó por `respuestas_repetidas`.
+- Luego pasó varios minutos generando un informe y tres propuestas de aplicaciones sin haber ejecutado ninguna
+  consulta.
+
+Objetivo: que el agente pueda equivocarse, reconocer el error y seguir investigando, sin necesidad de acertar a la
+primera.
+
+## Causas
+
+1. **Atascos que no se reconocían.** Repetir C59 con perfil y C61 con frecuentes tenía dos firmas distintas (una por
+   SQL). Lo mismo pasaba con «frecuentes para buscar una relación» (coherencia) y «relacion sin tabla_destino» (falta
+   un argumento). El mismo atasco con otra herramienta parecía un error nuevo.
+2. **La reparación no explicaba la contradicción.** Decía qué faltaba, pero no que pregunta, intención («busca») y
+   herramienta se contradecían, ni de qué formas se podía resolver.
+3. **No había salida.** Si las reparaciones fallaban, el paso contaba como inválido y el segundo error igual cortaba
+   la exploración. El modelo no tenía forma de dejar la pregunta y formular otra.
+4. **Reparaciones sin límites propios.** Cada reparación tenía el plazo y la reserva de una decisión completa, y no
+   había un tope de tiempo total por expedición.
+5. **Informe sin datos.** Sin consultas con resultados igual se pedía el informe largo, con tres propuestas.
+
+## Corrección
+
+**Atasco = mismo problema, cualquier herramienta** (`_stuck_key`):
+- Repetir consultas ya hechas es un solo atasco (`repetida`).
+- Pedir algo con una herramienta que no lo responde, o sin sus argumentos obligatorios, es un solo atasco por
+  intención (`intencion:relacion`, `intencion:frecuencias`…).
+- «Falta la columna» en perfil/frecuentes sigue siendo `falta_columna`.
+- Se detecta dentro de un paso (entre reparaciones) y entre pasos.
+
+**Ayuda a resolver la contradicción, sin decidir por el modelo:**
+- `CONTRADICCIÓN: tu pregunta «…» dice buscar una relación entre tablas («busca»), pero «frecuentes» responde
+  frecuencias de valores…`, seguido de tres opciones:
+  1. mantener lo que busca y cambiar la herramienta (con sus argumentos obligatorios: `relacion` necesita los cuatro);
+  2. mantener la herramienta y corregir «busca» y la pregunta;
+  3. **abandonar** la pregunta.
+- Para una consulta repetida se muestra lo que ya se sabe de ella (los hechos que salieron de C#).
+- Si el mismo atasco vuelve, aunque cambie la herramienta, el mensaje lo dice.
+- No se eligen tablas, columnas, preguntas ni objetivos: solo se listan los nombres reales de lo que el modelo ya
+  eligió.
+
+**Abandonar y seguir:**
+- En toda reparación, la herramienta puede ser `abandonar`, con el motivo en «por_que». El paso queda como
+  `abandonada` (por el modelo) y no se ejecuta nada.
+- Si las reparaciones fallan, el paso queda `invalida` (sin reparación posible).
+- En ambos casos el intento se registra con pregunta, intención, herramienta, atasco y motivo. El siguiente mensaje
+  de la etapa A lo muestra en «INTENTOS FALLIDOS (registrados; no los repitas igual — podés investigar otra cosa)», y
+  avisa si el mismo atasco se repitió.
+- La exploración solo se corta tras **3 preguntas seguidas** sin ejecutar nada: `respuestas_repetidas` si fue siempre
+  el mismo atasco, `sin_progreso` si fueron distintos. Antes alcanzaban 2.
+
+**Límites de las reparaciones** (`config.toml`, sección `[explorer]`):
+- `repair_timeout_s = 90`: plazo de cada pedido de reparación.
+- `repair_num_predict = 192`: tokens de una respuesta de reparación (antes, la reserva completa de 384).
+- `repair_budget_s = 300`: tiempo total de reparaciones por expedición. Agotado, no se piden más reparaciones: la
+  pregunta que falla se registra como intento fallido enseguida.
+- Las reparaciones son una etapa propia (`A-rep`) en `llamadas_ollama.json`, con su plazo y su reserva.
+
+**Cierre diagnóstico:**
+- Sin consultas con resultados (filas) no hay nada que interpretar ni proponer. Ya no se pide el informe largo a
+  Ollama: el sistema escribe un cierre diagnóstico breve con pasos, consultas, intentos fallidos agrupados por atasco,
+  tiempo de reparaciones y motivo de finalización.
+- El informe queda `diagnostico`, sin propuestas de aplicaciones.
+
+**Métricas nuevas:** `consultas_con_filas`, `preguntas_abandonadas` (por el modelo / sin reparación),
+`atascos_repetidos`, `reparaciones_llamadas`, `reparaciones_s` y `presupuesto_de_reparaciones_agotado`. La interfaz
+muestra los intentos fallidos y estas métricas.
+
+**Sin cambios:** la verificación de la evidencia, el alcance, la procedencia y la certeza efectiva de 0.4.7, el
+filtro de solo lectura y los límites de seguridad. No hay migraciones: los 116 hechos y las reevaluaciones pendientes
+no se tocan.
+
+## Pruebas
+
+`tests/test_explorer_recuperacion.py` (4), con bases ficticias:
+- **La secuencia exacta de M20261019-4c8c37** (repetir C59 y C61, `relacion` sin argumentos, `frecuentes` para una
+  relación, el mismo error otra vez), después de una expedición que dejó esas consultas en la memoria.
+  - Con 0.4.7, el mismo guion da `respuestas_repetidas`, 0 consultas, 0 ciclos y un informe con 3 propuestas.
+  - Con 0.4.8 se consume en el mismo orden, quedan 2 intentos fallidos registrados con sus atascos
+    (`repetida, repetida, intencion:relacion` e `intencion:relacion ×3`), las reparaciones muestran la contradicción y
+    las opciones, y el agente sigue: ejecuta las consultas siguientes, completa un ciclo y aporta conocimiento nuevo.
+- El modelo abandona su pregunta y formula otra: queda `abandonada` con su motivo y se ejecuta la tabla que el modelo
+  eligió después.
+- Sin recuperación: 3 preguntas, `respuestas_repetidas`, ningún pedido de informe, cierre diagnóstico y ninguna
+  propuesta; 9 pedidos en total.
+- Reparaciones acotadas: con el presupuesto agotado no se piden más reparaciones; las reparaciones van con su reserva
+  menor y su plazo propio.
+
+Pruebas anteriores ajustadas al comportamiento nuevo: el corte después de 3 pasos (antes 2), la opción `abandonar` en
+los esquemas de reparación, el aviso «MISMO atasco» y el cierre diagnóstico en lugar del informe vacío. La prueba de
+0.4.6 sobre historia y propuestas sigue verificando lo mismo, ahora con una consulta propia: sin consultas con
+resultados ya no hay informe.
+
+## Actualización por SSH (0.4.7 → 0.4.8)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.8-recuperacion
+git checkout claude/constructor-ia-0.4.8-recuperacion
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+- No hay migraciones (el esquema sigue en 0007).
+- `config.toml` no necesita cambios: los tres límites nuevos tienen valores por defecto. Para ajustarlos, agregarlos
+  en `[explorer]`.
+- No se tocan Ollama, MariaDB, Node-RED ni otros servicios.
+- No se aplica ninguna reevaluación: `explorer-reevaluar` sigue solo simulando si no se le da `--aplicar --plan`.
+
+## Rollback (0.4.8 → 0.4.7)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.7' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+Sin cambios de esquema que deshacer. Los pasos `abandonada` creados por 0.4.8 se ven en 0.4.7 como un paso con ese
+estado. Las claves nuevas de `[explorer]`, si se agregaron, 0.4.7 las ignora.
+
+## Qué mirar en la próxima prueba
+
+- En `explorer-report`: «Pregunta abandonada (…)» seguida de un paso con consulta ejecutada; o reparaciones con
+  «CONTRADICCIÓN» y una respuesta corregida.
+- `preguntas_abandonadas`, `atascos_repetidos`, `reparaciones_s` y `consultas_con_filas`.
+- Si no hay resultados: «Cierre diagnóstico» en segundos, sin la llamada de varios minutos del informe.
+
+## Limitaciones
+
+- La identidad de un atasco depende de lo que el modelo declara en «busca». Si cambia «busca» en cada intento sin
+  resolver nada, los atascos cuentan como distintos y el corte llega por `sin_progreso`, también tras 3 preguntas.
+- `abandonar` solo se ofrece en las reparaciones. En un paso normal el modelo ya puede elegir otra pregunta.
+- El plazo por reparación limita la espera de cada pedido, no la velocidad de Ollama.
