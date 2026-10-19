@@ -289,13 +289,33 @@ def _print_evaluation(db, mid) -> int:
     return 0 if run["objective_met"] else 1
 
 
+def _print_raw_answers(db, mid) -> None:
+    """Respuestas crudas del modelo en la etapa A (y sus reparaciones), para diagnosticar argumentos inválidos."""
+    print("Respuestas crudas de la etapa A (investigación):")
+    for st in db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY n, id", (mid,)):
+        st = dict(st)
+        ctx = json.loads(st["context_json"]) if st.get("context_json") else {}
+        tries = ctx.get("respuestas_modelo") or ([{"raw": st["raw"], "problema": st.get("analysis") or ""}]
+                                                 if st["status"] == "invalida" and st.get("raw") else [])
+        if not tries:
+            continue
+        print(f"  Paso {st['n']} ({st['status']}, {st.get('repairs') or 0} reparaciones):")
+        for i, t in enumerate(tries):
+            label = "respuesta" if i == 0 else f"reparación {i}"
+            print(f"    {label}{' [esquema estricto]' if t.get('esquema') == 'estricto' else ''}: {t['raw'][:600]}")
+            print(f"      → {t['problema'] or 'aceptada'}")
+
+
 def cmd_explorer_report(args) -> int:
     cfg = _cfg(args)
     from .db import Database
 
     db = Database(cfg.db_path)
     db.migrate()
-    return _print_evaluation(db, args.mission)
+    rc = _print_evaluation(db, args.mission)
+    if args.respuestas:
+        _print_raw_answers(db, args.mission)
+    return rc
 
 
 def cmd_explorer_trial(args) -> int:
@@ -382,6 +402,7 @@ def main(argv=None) -> int:
     a.set_defaults(fn=cmd_explorer_setup)
     a = sub.add_parser("explorer-report", help="Muestra la evaluación de una exploración (solo lectura)")
     a.add_argument("mission")
+    a.add_argument("--respuestas", action="store_true", help="incluir las respuestas crudas del modelo en la etapa A")
     a.set_defaults(fn=cmd_explorer_report)
     a = sub.add_parser("explorer-trial", help="Expedición de ensayo sin interfaz con el modelo real")
     a.add_argument("conn")

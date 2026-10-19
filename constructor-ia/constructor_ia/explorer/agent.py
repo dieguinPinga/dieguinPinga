@@ -61,6 +61,8 @@ log = logging.getLogger(__name__)
 TOOLS = V.TOOLS
 EVIDENCE_RE = re.compile(r"^[FC]\d{1,9}$")
 MAX_REPAIRS = 2
+MAX_ENUM_TABLES = 80     # hasta aquí, los nombres de tablas van como opciones en el esquema de la etapa A
+MAX_ENUM_COLUMNS = 300
 MIN_LLM_S = 8.0
 ANTICIPATED_KEYS = ("hallazgos", "descubrimientos", "incertidumbres", "hipotesis", "resultado", "interpretacion")
 
@@ -623,86 +625,159 @@ class Explorer:
         return fid, certainty
 
     # Etapa A: investigación ------------------------------------------------
-    def _accept(self, d) -> tuple[dict | None, list[str], str]:
-        """Normaliza la respuesta; devuelve (paso, correcciones, problema_reparable)."""
+    def _accept(self, d) -> tuple[dict | None, list[str], V.StepProblem | None]:
+        """Normaliza la respuesta; devuelve (paso, correcciones, problema_reparable | None)."""
         try:
             step, notes = V.normalize_step(d, self.schema["tablas"], self._database)
         except V.StepProblem as e:
-            return None, [], str(e)
+            return None, [], e
         if step["herramienta"] == "sql":
             problem = V.precheck_sql(step["sql"], self.schema["tablas"], self._database)
             if problem:
-                return None, notes, problem
-        return step, notes, ""
+                return None, notes, V.StepProblem(problem, "sql", "sql", step["sql"][:80])
+        return step, notes, None
 
-    def _repair_messages(self, base: list[dict], raw: str, problem: str, d, level: int) -> list[dict]:
-        table = None
-        if isinstance(d, dict):
-            nested = d.get("argumentos") if isinstance(d.get("argumentos"), dict) else {}
-            table = d.get("tabla") or nested.get("tabla")
-        cols = ""
-        if table:
-            real, _ = V.resolve_table(str(table), self.schema["tablas"], self._database)
+    # Esquemas de la etapa A ---------------------------------------------------
+    def _names(self) -> tuple[list[str], list[str]]:
+        tables = list(self.schema["tablas"])
+        cols = list(dict.fromkeys(c["nombre"] for t in self.schema["tablas"].values() for c in t["columnas"]))
+        return tables, cols
+
+    def _decide_schema(self) -> dict:
+        """Esquema de la etapa A con los nombres REALES como opciones (enum).
+
+        La salida estructurada no puede emitir null en un campo de texto, así que un modelo chico escribe
+        «null» cuando un argumento no aplica. Con enum, la gramática solo admite nombres existentes; el modelo
+        sigue eligiendo cuál. Con bases muy grandes se vuelve a texto libre para no inflar el mensaje.
+        """
+        schema = json.loads(json.dumps(DECIDE_SCHEMA))
+        tables, cols = self._names()
+        props = schema["properties"]
+        if 0 < len(tables) <= MAX_ENUM_TABLES:
+            props["tabla"] = props["tabla_destino"] = {"type": "string", "enum": tables}
+        if 0 < len(cols) <= MAX_ENUM_COLUMNS:
+            props["columna"] = props["columna_destino"] = {"type": "string", "enum": cols}
+        return schema
+
+    def _strict_schema(self, tool: str) -> dict:
+        """Esquema estricto para una reparación repetida: los argumentos de la herramienta son obligatorios."""
+        schema = self._decide_schema()
+        schema["required"] = ["pregunta", "por_que", "herramienta"] + list(V.REQUIRED.get(tool, ()))
+        keep = set(schema["required"]) | {"evidencia"} | set(V.TOOL_ARGS.get(tool, ()))
+        schema["properties"] = {k: v for k, v in schema["properties"].items() if k in keep}
+        schema["properties"]["herramienta"] = {"type": "string", "enum": [tool, "terminar"]}
+        return schema
+
+    def _repair_messages(self, base: list[dict], raw: str, problem: V.StepProblem, d, level: int,
+                         repeated: bool) -> list[dict]:
+        tool = str((d or {}).get("herramienta", "")).strip().lower() if isinstance(d, dict) else ""
+        needs = V.REQUIRED.get(tool)
+        tables = list(self.schema["tablas"])
+        lines = [f"Tu respuesta anterior NO se ejecutó (no se gastó un paso). Problema: {problem}."]
+        if problem.kind == "falta_argumento" and problem.field in ("tabla", "tabla_destino"):
+            lines.append(f"En «{problem.field}» tenés que escribir el nombre exacto de UNA tabla, la que vos elijas "
+                         f"según tu pregunta. Tablas existentes: {', '.join(tables)}.")
+        elif problem.kind in ("falta_argumento", "columna_inexistente") and problem.field in ("columna", "columna_destino"):
+            tk = "tabla" if problem.field == "columna" else "tabla_destino"
+            real, _ = V.resolve_table(str((d or {}).get(tk) or ""), self.schema["tablas"], self._database)
             if real:
-                cols = f"\nColumnas de {real}: " + ", ".join(c["nombre"] for c in self.schema["tablas"][real]["columnas"])
-        fix = (f"Tu respuesta anterior NO se ejecutó (no se gastó un paso). Problema: {problem}.\n"
-               f"Las tablas SÍ existen y están disponibles: {', '.join(self.schema['tablas'])}.{cols}\n"
-               "Respondé de nuevo el MISMO objeto JSON corregido, con los argumentos completos.")
-        return base + [{"role": "assistant", "content": (raw or "")[:(600, 400, 250, 150, 80)[level]]},
-                       {"role": "user", "content": fix}]
+                lines.append(f"Columnas de {real}: " + ", ".join(c["nombre"] for c in self.schema["tablas"][real]["columnas"]))
+            else:
+                lines.append("Elegí primero la tabla y luego una de sus columnas (están en ESTRUCTURA OBSERVADA).")
+        elif problem.kind in ("tabla_inexistente", "otra_base"):
+            lines.append(f"Las tablas SÍ existen y están disponibles: {', '.join(tables)}. Usá uno de esos nombres.")
+        if problem.received and str(problem.received).strip().lower() in V.PLACEHOLDERS:
+            lines.append(f"«{problem.received}» no es un nombre: es un texto de relleno. No lo escribas en ningún "
+                         "campo; omití los campos que la herramienta no usa.")
+        if needs is not None:
+            lines.append(f"«{tool}» usa: {', '.join(V.TOOL_ARGS[tool]) or 'ningún argumento'}"
+                         + (f" (obligatorios: {', '.join(needs)})" if needs else "") + ".")
+        lines.append("Podés corregir los argumentos o elegir otra herramienta si te sirve más para tu pregunta.")
+        if repeated:
+            lines.append("ATENCIÓN: repetiste el mismo error. No copies tu respuesta anterior: escribí una nueva.")
+        # La respuesta anterior no se reenvía completa: copiarla es justamente lo que repite el error.
+        prev = (raw or "")[:(300, 200, 150, 100, 60)[level]]
+        return base + [{"role": "assistant", "content": prev}, {"role": "user", "content": "\n".join(lines)}]
 
     def _decide(self, mid, description, state, limits, cancel):
-        """Etapa A con reparaciones. Devuelve (paso | None, correcciones, problema, reparaciones, info, anticipadas)."""
+        """Etapa A con reparaciones. Devuelve (paso, correcciones, problema, reparaciones, info, d, anticipadas, intentos).
+
+        Para no repetir errores idénticos: si una reparación reproduce el mismo problema, la siguiente usa un esquema
+        estricto (argumentos de la herramienta obligatorios, solo nombres reales); si aun así se repite, no se
+        insiste más en este paso.
+        """
         b: Budget = state["budget"]
         np_ = self.cfg.explorer_decide_num_predict
         timeout = lambda: min(self.cfg.explorer_model.timeout_s, b.loop_remaining)  # noqa: E731
-        d, info = self._call(mid, "A", lambda lv: self._decide_prompt(description, state, limits, lv), DECIDE_SCHEMA,
+        schema = self._decide_schema()
+        d, info = self._call(mid, "A", lambda lv: self._decide_prompt(description, state, limits, lv), schema,
                              cancel, timeout(), np_)
-        step, notes, problem, repairs, anticipated = None, [], "", 0, []
+        step, notes, problem, repairs, anticipated, attempts, sigs, strict = None, [], None, 0, [], [], [], False
         while True:
             if isinstance(d, dict):
-                anticipated += [k for k in ANTICIPATED_KEYS if d.get(k)]
+                anticipated += [k for k in ANTICIPATED_KEYS if d.get(k) and k not in anticipated]
             if d is None:
-                problem = self._invalid_reason(info)
+                problem = V.StepProblem(self._invalid_reason(info), "formato")
             else:
                 step, notes, problem = self._accept(d)
-            if (not problem or d is None or repairs >= MAX_REPAIRS or b.loop_remaining < MIN_LLM_S
+            attempts.append({"raw": (info.get("raw") or "")[:1500], "problema": str(problem) if problem else "",
+                             "firma": problem.signature if problem else "", "esquema": "estricto" if strict else "normal"})
+            if (problem is None or d is None or repairs >= MAX_REPAIRS or b.loop_remaining < MIN_LLM_S
                     or info.get("context_exhausted")):
                 break
+            repeated = problem.signature in sigs
+            if repeated and strict:
+                self._event(mid, "aviso", f"Paso {state['steps'] + 1}: el modelo repitió el mismo error aun con el "
+                            "esquema estricto; no se insiste en este paso")
+                break
+            sigs.append(problem.signature)
             repairs += 1
             state["repairs"] += 1
-            self._event(mid, "aviso", f"Paso {state['steps'] + 1}: solicitud no ejecutable ({problem[:220]}); se pide "
-                        f"una reparación {repairs}/{MAX_REPAIRS} sin consumir el paso")
+            tool = str(d.get("herramienta", "")).strip().lower()
+            if repeated and tool in V.TOOLS:
+                schema, strict = self._strict_schema(tool), True
+            self._event(mid, "aviso", f"Paso {state['steps'] + 1}: solicitud no ejecutable ({str(problem)[:220]}); se "
+                        f"pide una reparación {repairs}/{MAX_REPAIRS} sin consumir el paso"
+                        + (" (error repetido: esquema estricto)" if repeated else ""))
             prev_raw, prev_d, prev_problem = info["raw"], d, problem
             d, info = self._call(mid, "A", lambda lv: self._repair_messages(
-                self._decide_prompt(description, state, limits, lv), prev_raw, prev_problem, prev_d, lv),
-                DECIDE_SCHEMA, cancel, timeout(), np_)
-        return step, notes, problem, repairs, info, d, anticipated
+                self._decide_prompt(description, state, limits, lv), prev_raw, prev_problem, prev_d, lv, repeated),
+                schema, cancel, timeout(), np_)
+        return step, notes, problem, repairs, info, d, anticipated, attempts
 
     def _step(self, mid, broker, description, state, limits, cancel) -> bool:
         b: Budget = state["budget"]
         n = state["steps"] + 1
         self.missions.set_state(mid, "explorando", attempt=n)
-        step, notes, problem, repairs, info, d, anticipated = self._decide(mid, description, state, limits, cancel)
+        step, notes, problem, repairs, info, d, anticipated, attempts = self._decide(mid, description, state, limits,
+                                                                                    cancel)
         ctx_a = info.get("context")
         if problem:
             state["invalid"] += 1
             state["invalid_total"] += 1
-            state["last_invalid"] = problem
+            state["last_invalid"] = str(problem)
             self.db.execute("INSERT INTO explore_steps(mission_id, conn, n, question, rationale, evidence_json, tool,"
                             " args_json, status, analysis, repairs, raw, context_json, created_at)"
                             " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (mid, self._conn, n, str((d or {}).get("pregunta", ""))[:500], "", "{}",
-                             str((d or {}).get("herramienta", ""))[:30], "{}", "invalida", problem[:1000], repairs,
-                             info["raw"][:2000], json.dumps({"decision": ctx_a}), time.time()))
-            self._event(mid, "aviso", f"Respuesta inválida del modelo ({problem[:200]}); no se ejecutó nada")
+                             str((d or {}).get("herramienta", ""))[:30], "{}", "invalida", str(problem)[:1000], repairs,
+                             info["raw"][:2000], json.dumps({"decision": ctx_a, "respuestas_modelo": attempts},
+                                                            ensure_ascii=False), time.time()))
+            self._event(mid, "aviso", f"Respuesta inválida del modelo ({str(problem)[:200]}); no se ejecutó nada")
             if info.get("context_exhausted"):
                 state["ended"] = "contexto_insuficiente"
                 self._event(mid, "explorador", "No se puede armar un mensaje de investigación que entre en el "
                             "contexto del modelo; se pasa al informe")
                 return False
+            if problem.signature and problem.signature == state.get("last_invalid_sig"):
+                # Mismo error en dos pasos seguidos (con sus reparaciones): insistir solo gasta tiempo.
+                state["ended"] = "respuestas_repetidas"
+                self._event(mid, "explorador", f"El modelo repitió el mismo error en dos pasos seguidos ({str(problem)[:160]}); "
+                            "se detiene la exploración para no gastar el presupuesto en el mismo error")
+                return False
+            state["last_invalid_sig"] = problem.signature
             return True
-        state["invalid"], state["last_invalid"] = 0, None
+        state["invalid"], state["last_invalid"], state["last_invalid_sig"] = 0, None, None
         state["steps"] = n
         conn = self._conn
         if anticipated:
@@ -721,6 +796,8 @@ class Explorer:
         state["pending_cycle"] = None
         args = {k: step[k] for k in ("tabla", "columna", "tabla_destino", "columna_destino", "sql") if step.get(k)}
         ctx = {"decision": ctx_a}
+        if len(attempts) > 1:
+            ctx["respuestas_modelo"] = attempts  # reparaciones de este paso, para diagnóstico
         step_id = self.db.execute(
             "INSERT INTO explore_steps(mission_id, conn, n, question, rationale, evidence_json, tool, args_json, status,"
             " repairs, raw, context_json, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1065,6 +1142,8 @@ class Explorer:
         if self._read_tables and not state.get("cycles"):
             reasons.append("no se completó ningún ciclo pregunta → consulta → registros reales → interpretación "
                            "respaldada → nueva pregunta")
+        if state["ended"] == "respuestas_repetidas":
+            reasons.append("el modelo repitió el mismo error de argumentos en pasos seguidos (ver respuestas crudas)")
         if state["ended"] == "contexto_insuficiente":
             reasons.append("el mensaje mínimo no entra en el contexto configurado del modelo")
         if unverified:

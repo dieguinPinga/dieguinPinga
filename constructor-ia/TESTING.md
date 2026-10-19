@@ -24,12 +24,13 @@ python3 -m unittest discover -s tests -t . -v
 
 | `tests/test_explorer_regresion.py` (13) | Regresiones de la primera expedición real (0.4.1): base equivocada en `information_schema` reparada sin ejecutarse y conteos afirmados desde 0 filas marcados sin verificar; herramientas sin argumentos o anidados reparadas sin consumir pasos; contraste de afirmaciones con estado, filas y cifras; comentarios de tablas y columnas en el contexto como pistas no confiables; presupuesto de tiempo total que incluye inválidas e informe; proceso ≠ calidad ≠ objetivo, y reintento del informe. Detalle en EXPLORADOR.md §0.4.1. |
 | `tests/test_explorer_contexto.py` (15) | Regresiones de M20261018-bdcbec (0.4.2): estimación de tokens contra conteos medidos con el vocabulario de Qwen; reserva de respuesta; reducción por niveles y vista por columnas sin perder evidencia; tabla ancha numérica (29 columnas) que entra en num_ctx=4096 y completa el ciclo; desborde `exceed_context_size_error` aprendido y nunca reenviado; contexto imposible que termina sin reintentos idénticos; etapa A sin afirmaciones anticipadas; etapa B contrastada (cifras, valores literales, evidencia ficticia, vigencia de registros históricos); resumen no respaldado que no vuelve al modelo. Detalle en EXPLORADOR.md §0.4.2. |
+| `tests/test_explorer_argumentos.py` (11) | Regresiones de la prueba real de 0.4.2 en caverna_01 (0.4.3): el texto «null» es un valor ausente y no una tabla; los argumentos que la herramienta no usa no invalidan el paso; nombres reales nunca tratados como relleno; esquema de la etapa A con nombres reales (enum) y esquema estricto ante un error repetido; la tabla la elige el modelo, nunca el sistema; errores idénticos que se cortan en vez de repetirse; respuestas crudas guardadas. Detalle en EXPLORADOR.md §0.4.3. |
 
 ### Resultado de la última ejecución (entorno de desarrollo de Claude)
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 168 tests in 118.607s   (v0.4.2; incluye regresiones de M20261018-bdcbec: contexto y dos etapas)
+Ran 179 tests in 125.304s   (v0.4.3; incluye regresiones de caverna_01: argumentos «null»)
 OK
 ```
 

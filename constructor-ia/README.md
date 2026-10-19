@@ -26,6 +26,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   En 0.4.2: ciclo en dos etapas (investigación → interpretación de registros reales), contexto del modelo
   medido y reducido sin perder evidencia, sin reintentos idénticos ante un contexto excedido, y distinción
   entre registros históricos y estado actual.
+  En 0.4.3: argumentos de relleno («null») tratados como ausentes, nombres reales como opciones del esquema,
+  reparaciones precisas sin bucles de errores idénticos y respuestas crudas del modelo para diagnóstico.
 
 ## Proyectos que evolucionan (v0.4.0)
 

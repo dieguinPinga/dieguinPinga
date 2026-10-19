@@ -505,3 +505,101 @@ c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollbac
   VENCIDO» aunque estuviera en otra columna.
 - Cada paso con datos hace dos llamadas al modelo (A y B). En CPU eso reduce los pasos posibles dentro de los
   20 minutos, a cambio de que cada hallazgo se base en un resultado real.
+
+---
+
+# Cambios 0.4.3: argumentos «null» y bucles de reparación
+
+Primera prueba real de 0.4.2 sobre `caverna_01`: la exploración repetía «la tabla "null" no existe», agotaba
+las dos reparaciones y volvía al mismo error, sin ejecutar consultas.
+
+## Causa
+
+1. El esquema JSON de la etapa A declaraba todos los argumentos como **texto**. La salida estructurada de
+   Ollama no puede emitir un JSON `null` en un campo de texto, así que cuando un argumento «no aplica», el
+   modelo escribe la **palabra** `"null"`.
+2. `normalize_step()` descartaba `None` y `""`, pero no el texto `"null"`. Lo trataba como un nombre de tabla
+   que no existe.
+3. Además validaba **todos** los argumentos aunque la herramienta no los usara. Un `muestra` con una tabla
+   real se rechazaba igual si traía `"columna": "null"`. La prueba de regresión lo confirma contra el código
+   0.4.2. Es probable que la prueba real cayera en este caso.
+4. La reparación pedía «Respondé de nuevo el **MISMO** objeto JSON corregido» y reenviaba la respuesta
+   anterior completa: un modelo chico la copia, «null» incluido.
+
+## Corrección (sin elegir tablas por el modelo)
+
+| Cambio | Detalle |
+|---|---|
+| Valores de relleno = ausentes | `null`, `None`, `n/a`, `-`, `ninguna`, etc. cuentan como «sin valor». Un nombre que **existe** en la base (aunque se llame `null`) nunca se trata como relleno. |
+| Solo se validan los argumentos de la herramienta elegida | `muestra` usa `tabla`; `perfil` usa `tabla` y opcionalmente `columna`; `frecuentes` usa `tabla` y `columna`; `relacion` usa los cuatro; `sql` usa `sql`. Los demás se ignoran y quedan anotados en las correcciones. |
+| Nombres reales en el esquema | En la etapa A, `tabla`/`tabla_destino` y `columna`/`columna_destino` son un `enum` con los nombres observados (hasta 80 tablas y 300 columnas; con más, texto libre). La gramática ya no admite «null». **El modelo sigue eligiendo cuál.** |
+| Reparación precisa | Dice qué campo llegó como «null», que es un texto de relleno, qué usa la herramienta, que escriba el nombre de la tabla **que él elija** entre las existentes, y que puede cambiar de herramienta. Ya no pide «el mismo objeto»: solo se reenvía un fragmento de la respuesta anterior. |
+| Sin bucles idénticos | Cada problema tiene una firma (tipo, campo, valor). Si la reparación repite la misma firma, la siguiente usa un **esquema estricto**: los argumentos de esa herramienta son obligatorios y solo se admiten nombres reales. Si aun así se repite, no se insiste en ese paso. Si dos pasos seguidos terminan con el mismo error, la exploración se detiene (`respuestas_repetidas`) en vez de gastar el presupuesto. |
+| Respuestas crudas guardadas | Cada intento de la etapa A (respuesta y reparaciones) queda en `explore_steps.context_json.respuestas_modelo`, con su problema, su firma y el esquema usado. Se ven en la UI («Respuestas crudas del modelo en la etapa A») y con `explorer-report <misión> --respuestas`. |
+
+Pruebas: `tests/test_explorer_argumentos.py` (11). Contra el código 0.4.2, las dos regresiones de
+comportamiento fallan: `muestra` con tabla real y `"columna": "null"` se rechazaba, y el error idéntico se
+repetía en bucle.
+
+## Inspeccionar las respuestas reales de caverna_01 (antes de actualizar)
+
+0.4.2 guardó la última respuesta cruda de cada paso inválido y los avisos con cada problema. Este comando abre
+la base **en solo lectura** (`mode=ro`), no modifica nada y no requiere detener el servicio. Muestra la
+exploración más reciente:
+
+```bash
+~/constructor-ia/venv/bin/python3 - <<'FIN'
+import os, sqlite3
+c = sqlite3.connect("file:" + os.path.expanduser("~/constructor-ia/data/constructor.db") + "?mode=ro", uri=True)
+mid = c.execute("SELECT id FROM missions WHERE json_extract(spec_json, '$.mode')='exploracion'"
+                " ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+print("Misión", mid)
+for n, st, rep, an, raw in c.execute("SELECT n, status, repairs, analysis, raw FROM explore_steps"
+                                     " WHERE mission_id=? ORDER BY id", (mid,)):
+    print(f"Paso {n} [{st}] reparaciones={rep}: {an or ''}\n  respuesta cruda: {raw or '(no guardada)'}")
+for (msg,) in c.execute("SELECT message FROM events WHERE mission_id=? AND kind='aviso' ORDER BY id LIMIT 40", (mid,)):
+    print("aviso:", msg)
+FIN
+```
+
+Qué buscar: si la respuesta cruda trae `"tabla": "null"` (el modelo no eligió tabla) o una tabla real con
+`"columna": "null"` u otros campos en «null» (el caso que 0.4.2 rechazaba sin motivo).
+
+Después de actualizar: `~/constructor-ia/bin/constructor-ia explorer-report <misión> --respuestas`.
+
+## Actualización por SSH (0.4.2 → 0.4.3)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.3-argumentos
+git checkout claude/constructor-ia-0.4.3-argumentos
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+- Sin migraciones nuevas: el esquema de la base sigue en 0005.
+- `config.toml` no cambia.
+- Solo se actualiza Constructor IA; ningún otro servicio se toca.
+
+## Rollback (0.4.3 → 0.4.2)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.2' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+Sin cambios de esquema que deshacer. Detalle cosmético: en pasos con reparaciones hechos por 0.4.3, la UI de
+0.4.2 muestra una línea de contexto de más («nivel undefined»), porque no conoce `respuestas_modelo`.
+
+## Limitaciones
+
+- Con más de 80 tablas o 300 columnas, el esquema vuelve a texto libre para no inflar el mensaje. Ahí rigen la
+  normalización y la reparación, pero no la restricción gramatical.
+- El `enum` de columnas reúne las de todas las tablas: el modelo todavía puede elegir una columna de otra
+  tabla. Eso se detecta y se repara con la lista de columnas de la tabla elegida.
+- Que la gramática respete el `enum` depende de Ollama. Si una versión lo ignorara, siguen valiendo la
+  normalización, la reparación precisa y el corte de bucles.

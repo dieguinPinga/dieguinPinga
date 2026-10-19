@@ -157,8 +157,8 @@ class D2ToolArgumentsTests(Base):
         self.assertEqual([s["repairs"] for s in steps[:2]], [1, 1])
         self.assertIn("mayúsculas", json.loads(steps[0]["evidence_json"])["correcciones"][0])
         repair_msg = self.fake.requests[1]["messages"][-1]["content"]
-        self.assertIn("necesita: tabla; faltó: tabla", repair_msg)
-        self.assertIn("Las tablas SÍ existen", repair_msg, "nunca se sugiere que las tablas no estén disponibles")
+        self.assertIn("necesita: tabla; faltó «tabla»", repair_msg)
+        self.assertIn("Tablas existentes:", repair_msg, "nunca se sugiere que las tablas no estén disponibles")
         metrics = json.loads(run["metrics_json"])
         self.assertEqual(metrics["reparaciones"], 2)
         self.assertEqual(metrics["respuestas_invalidas"], 0)
@@ -169,9 +169,10 @@ class D2ToolArgumentsTests(Base):
                         report=good_report)
         m, run = self.run_script(script, limits={"max_steps": 5})
         inv = [s for s in self.steps() if s["status"] == "invalida"]
-        self.assertEqual(len(inv), 3, "3 respuestas irreparables seguidas detienen la exploración")
-        self.assertTrue(all(s["repairs"] == 2 and "faltó: tabla" in s["analysis"] for s in inv))
-        self.assertEqual(run["ended_reason"], "respuestas_invalidas")
+        # 0.4.3: el MISMO error en dos pasos seguidos (cada uno con sus reparaciones) detiene la exploración
+        self.assertEqual(len(inv), 2, "un error idéntico repetido no se insiste hasta agotar el presupuesto")
+        self.assertTrue(all(s["repairs"] == 2 and "faltó «tabla»" in s["analysis"] for s in inv))
+        self.assertEqual(run["ended_reason"], "respuestas_repetidas")
 
 
 @unittest.skipUnless(mariadb_fixture.available(), "MariaDB no instalado")

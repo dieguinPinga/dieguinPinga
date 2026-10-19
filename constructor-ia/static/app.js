@@ -899,12 +899,21 @@ function interpretationBox(st) {
     (it.hipotesis || []).length ? h("ul", {}, ...it.hipotesis.map(claim)) : "");
 }
 
+function rawAttempts(st) {
+  const tries = (st.context && st.context.respuestas_modelo) || [];
+  if (!tries.length) return st.raw ? h("pre", { class: "console", text: st.raw }) : "";
+  return h("details", { class: "small" }, h("summary", { text: `Respuestas crudas del modelo en la etapa A (${tries.length})` }),
+    ...tries.map((t, i) => h("div", {},
+      h("p", { class: "muted", text: `${i === 0 ? "Respuesta" : `Reparación ${i}`}${t.esquema === "estricto" ? " · esquema estricto" : ""} → ${t.problema || "aceptada"}` }),
+      h("pre", { class: "console", text: t.raw }))));
+}
+
 function contextNote(st) {
   const ctx = st.context;
   if (!ctx) return "";
   const parts = [];
   for (const [stage, d] of Object.entries(ctx)) {
-    if (!d) continue;
+    if (!d || (stage !== "decision" && stage !== "interpretacion")) continue;
     const label = stage === "decision" ? "A" : "B";
     const over = (d.intentos || []).filter((a) => a.desborde).length;
     parts.push(d.agotado ? `etapa ${label}: no entró en el contexto` :
@@ -953,7 +962,7 @@ async function renderExploration(box, mid, m) {
       steps.append(h("details", { class: "item" },
         h("summary", {}, `Paso ${st.n} · `, h("span", { class: "badge bad", text: "respuesta inválida" }), ` ${st.analysis || ""}`.slice(0, 160)),
         h("p", { class: "muted small", text: `Reparaciones intentadas: ${st.repairs || 0}. No se ejecutó ninguna consulta.` }),
-        st.raw ? h("pre", { class: "console", text: st.raw }) : ""));
+        rawAttempts(st)));
       continue;
     }
     const q = qById[st.query_id];
@@ -969,6 +978,7 @@ async function renderExploration(box, mid, m) {
       st.analysis ? h("p", { class: "small ok", text: `Comprobado por el sistema: ${st.analysis}` }) : "",
       (ev.anticipadas_descartadas || []).length ? h("p", { class: "small bad", text: `Etapa A: la respuesta traía ${ev.anticipadas_descartadas.join(", ")} antes de ver resultados; se descartaron sin registrarse.` }) : "",
       interpretationBox(st),
+      st.repairs ? rawAttempts(st) : "",
       contextNote(st)));
   }
   const unverified = d.facts.filter((f) => f.certainty === "sin_verificar");

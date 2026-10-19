@@ -28,6 +28,20 @@ REQUIRED = {
     "terminar": (),
 }
 ARG_KEYS = ("tabla", "columna", "tabla_destino", "columna_destino", "sql")
+# Argumentos que cada herramienta usa (los demás se ignoran: no pueden invalidar el paso)
+TOOL_ARGS = {
+    "muestra": ("tabla",),
+    "perfil": ("tabla", "columna"),
+    "frecuentes": ("tabla", "columna"),
+    "relacion": ("tabla", "columna", "tabla_destino", "columna_destino"),
+    "sql": ("sql",),
+    "terminar": (),
+}
+# Textos de relleno que el modelo escribe cuando un campo «no aplica»: la salida estructurada declara los
+# argumentos como texto y no puede emitir un JSON null, así que aparece la palabra "null".
+PLACEHOLDERS = {"null", "none", "nil", "undefined", "nan", "n/a", "na", "-", "--", "—", "?", "ninguna", "ninguno",
+                "nada", "vacio", "vacío", "no aplica", "sin tabla", "sin columna", "<tabla>", "<columna>", "tabla",
+                "columna", "nombre", "string", "...", "…"}
 NESTED_KEYS = ("argumentos", "args", "parametros", "parámetros", "arguments", "params", "input")
 ALIASES = {"table": "tabla", "column": "columna", "target_table": "tabla_destino", "target_column": "columna_destino",
            "tabla_origen": "tabla", "columna_origen": "columna", "query": "sql", "consulta": "sql"}
@@ -40,8 +54,36 @@ def _clean_ident(v) -> str:
     return s
 
 
+def is_placeholder(v, real_names: set | None = None) -> bool:
+    """True si el valor equivale a «sin valor» (None, vacío o un texto de relleno como "null").
+
+    real_names: nombres existentes (en minúsculas); un nombre real nunca se considera relleno.
+    """
+    if v is None:
+        return True
+    if isinstance(v, (dict, list)):
+        return not v
+    s = _clean_ident(v).lower()
+    if s and real_names and s in real_names:
+        return False
+    return not s or s in PLACEHOLDERS
+
+
 class StepProblem(ValueError):
-    """Problema reparable de una respuesta del modelo (no consume un paso)."""
+    """Problema reparable de una respuesta del modelo (no consume un paso).
+
+    field: argumento afectado; received: lo que llegó (para que la reparación lo cite con precisión);
+    kind: falta_argumento | tabla_inexistente | columna_inexistente | otra_base | herramienta | pregunta | formato.
+    """
+
+    def __init__(self, msg: str, kind: str = "formato", field: str | None = None, received=None):
+        super().__init__(msg)
+        self.kind, self.field, self.received = kind, field, received
+
+    @property
+    def signature(self) -> str:
+        """Identidad del problema para detectar repeticiones (mismo error, mismo campo, mismo valor)."""
+        return f"{self.kind}|{self.field}|{str(self.received)[:80].lower()}"
 
 
 def resolve_table(name: str, tables: dict, database: str) -> tuple[str | None, str]:
@@ -49,6 +91,8 @@ def resolve_table(name: str, tables: dict, database: str) -> tuple[str | None, s
     raw = _clean_ident(name)
     if not raw:
         return None, "falta el nombre de la tabla"
+    if raw.lower() in PLACEHOLDERS and raw.lower() not in {t.lower() for t in tables}:
+        return None, f"falta el nombre de la tabla (llegó el texto «{raw}», que no es un nombre)"
     if "." in raw:
         db, _, rest = raw.partition(".")
         if db.strip("`").lower() != database.lower():
@@ -84,50 +128,67 @@ def resolve_column(table: str, name: str, tables: dict) -> tuple[str | None, str
 
 
 def normalize_step(d, tables: dict, database: str) -> tuple[dict, list[str]]:
-    """Devuelve (paso_normalizado, correcciones). Lanza StepProblem con un mensaje reparable."""
+    """Devuelve (paso_normalizado, correcciones). Lanza StepProblem con un mensaje reparable.
+
+    Solo se toman y validan los argumentos que usa la herramienta elegida; los textos de relleno («null»,
+    «None», «n/a»…) cuentan como ausentes. Nunca se elige una tabla en nombre del modelo.
+    """
     if not isinstance(d, dict):
-        raise StepProblem("la respuesta no fue un objeto JSON válido")
+        raise StepProblem("la respuesta no fue un objeto JSON válido", "formato")
     tool = str(d.get("herramienta", "")).strip().lower()
     if tool not in TOOLS:
-        raise StepProblem(f"«herramienta» debe ser una de: {', '.join(TOOLS)} (se recibió «{tool or 'nada'}»)")
-    if not str(d.get("pregunta", "")).strip():
-        raise StepProblem("falta «pregunta»: escribí qué querés averiguar con este paso")
-    args = {}
+        raise StepProblem(f"«herramienta» debe ser una de: {', '.join(TOOLS)} (se recibió «{tool or 'nada'}»)",
+                          "herramienta", "herramienta", tool)
+    if is_placeholder(d.get("pregunta")):
+        raise StepProblem("falta «pregunta»: escribí qué querés averiguar con este paso", "pregunta", "pregunta",
+                          d.get("pregunta"))
+    real = {t.lower() for t in tables} | {c["nombre"].lower() for t in tables.values() for c in t["columnas"]}
+    raw_args, placeholders = {}, {}
     for src in [d] + [d[k] for k in NESTED_KEYS if isinstance(d.get(k), dict)]:
         for k, v in src.items():
             key = ALIASES.get(k, k)
-            if key in ARG_KEYS and v not in (None, "") and key not in args:
-                args[key] = str(v)[:4000]
-    if "tabla" in args and "columna" not in args and "." in _clean_ident(args["tabla"]):
-        t, _, c = _clean_ident(args["tabla"]).rpartition(".")
+            if key not in ARG_KEYS or key in raw_args or isinstance(v, (dict, list)):
+                continue
+            if is_placeholder(v, real):
+                if v is not None and str(v).strip():
+                    placeholders.setdefault(key, str(v).strip()[:40])
+                continue
+            raw_args[key] = str(v)[:4000]
+    if "tabla" in raw_args and "columna" not in raw_args and "." in _clean_ident(raw_args["tabla"]):
+        t, _, c = _clean_ident(raw_args["tabla"]).rpartition(".")
         if t in tables or t.lower() in {x.lower() for x in tables}:
-            args["tabla"], args["columna"] = t, c
+            raw_args["tabla"], raw_args["columna"] = t, c
+    used = TOOL_ARGS[tool]
+    args = {k: v for k, v in raw_args.items() if k in used}
     notes = []
+    ignored = sorted(k for k in raw_args if k not in used)
+    if ignored:
+        notes.append(f"se ignoraron argumentos que «{tool}» no usa: {', '.join(ignored)}")
     missing = [k for k in REQUIRED[tool] if not args.get(k)]
-    if tool == "perfil" and args.get("columna") == "":
-        args.pop("columna")
     if missing:
-        raise StepProblem(f"la herramienta «{tool}» necesita: {', '.join(REQUIRED[tool])}; faltó: {', '.join(missing)}. "
-                          "Pasá los argumentos como campos del JSON (p. ej. \"tabla\": \"nombre\")")
+        field = missing[0]
+        got = placeholders.get(field)
+        detail = (f"«{field}» llegó como el texto «{got}», que no es un valor" if got
+                  else f"faltó «{field}»")
+        raise StepProblem(f"la herramienta «{tool}» necesita: {', '.join(REQUIRED[tool])}; {detail}",
+                          "falta_argumento", field, got)
     for tk, ck in (("tabla", "columna"), ("tabla_destino", "columna_destino")):
-        if tk in args and tool != "sql":
+        if tk in args:
             real, note = resolve_table(args[tk], tables, database)
             if real is None:
-                raise StepProblem(note)
+                raise StepProblem(note, "otra_base" if "otra base" in note else "tabla_inexistente", tk, args[tk])
             if note:
                 notes.append(note)
             args[tk] = real
             if args.get(ck):
                 col, note = resolve_column(real, args[ck], tables)
                 if col is None:
-                    raise StepProblem(note)
+                    raise StepProblem(note, "columna_inexistente", ck, args[ck])
                 if note:
                     notes.append(note)
                 args[ck] = col
-    out = dict(d)
+    out = {k: v for k, v in d.items() if k not in ARG_KEYS and k not in NESTED_KEYS}
     out["herramienta"] = tool
-    for k in ARG_KEYS:
-        out.pop(k, None)
     out.update(args)
     return out, notes
 
