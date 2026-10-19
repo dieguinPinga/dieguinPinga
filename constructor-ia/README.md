@@ -32,6 +32,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   que no se truncan, tiempos de cada llamada y `constructor-ia ollama-diag` (memoria, swap, PSI, CPU).
   En 0.4.5: conocimiento acumulativo — ¿la consulta responde la pregunta?, ¿repite lo ya hecho?, ¿aporta algo
   nuevo?, ¿la conclusión excede su evidencia? — con procedencia, certeza e historial de cada hecho preservados.
+  En 0.4.6: la reparación de «falta la columna» da al modelo los nombres válidos y el campo obligatorio, y usa
+  (con aviso) la columna que él mismo nombró; el informe separa conocimiento nuevo, histórico y propuestas.
 
 ## Proyectos que evolucionan (v0.4.0)
 

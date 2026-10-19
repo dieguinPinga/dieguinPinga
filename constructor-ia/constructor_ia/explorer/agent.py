@@ -307,7 +307,9 @@ class Explorer:
                  # 0.4.5: conocimiento acumulativo
                  "cycles_new": 0, "pending_knowledge": None, "aportes": {}, "supported_claims": 0,
                  "repairs_kind": {}, "repeats_justified": 0, "data_changes": 0, "generalized": 0,
-                 "respuestas": {}, "busca_otro": 0}
+                 "respuestas": {}, "busca_otro": 0,
+                 # 0.4.6: lo que el informe afirma sin evidencia propia de esta expedición (síntesis histórica)
+                 "report_historical": []}
         self._conn = conn
         self._mid = mid
         self._database = ""
@@ -315,6 +317,8 @@ class Explorer:
         self._overflows = self._reductions = 0
         self._generalized = 0
         self._current_scope = None
+        self._broker = None
+        self._sql_checks: dict[str, dict] = {}   # validación de las consultas propuestas (EXPLAIN), por SQL
         self._budget = budget
         self._calls: list[dict] = []          # cada llamada a Ollama con sus tiempos (diagnóstico)
         self._timeouts = self._timeouts_seguidos = 0
@@ -330,6 +334,7 @@ class Explorer:
             if not info.get("verified"):
                 raise ExplorationAborted("fallida", "Conexión bloqueada (fallo cerrado): " + str(info.get("reason")))
             self._database = broker.conn.database
+            self._broker = broker
             self._backfill_signatures(conn)
             self._event(mid, "explorador", f"Conexión {conn} verificada: solo lectura, límites de sesión aplicados. "
                         f"Presupuesto: {limits['minutos']} min (reserva para el informe: {budget.reserve:.0f} s). "
@@ -877,12 +882,50 @@ class Explorer:
         return fid, certainty, {"aporte": aporte, "relacion_con": rel, "motivo": why, "resultado": outcome}
 
     # Etapa A: investigación ------------------------------------------------
+    def _intent_column(self, d) -> tuple[str | None, list[str], str | None, str | None]:
+        """Columna que el MODELO ya eligió: (columna, nombradas, fuente, tabla).
+
+        Fuentes, en orden: su «columna_objetivo» (si es una columna real de la tabla que eligió) o su «pregunta», solo
+        si nombra exactamente UNA columna de esa tabla. Si nombra varias o ninguna, no se elige nada por él.
+        """
+        if not isinstance(d, dict):
+            return None, [], None, None
+        nested = d.get("argumentos") if isinstance(d.get("argumentos"), dict) else {}
+        table, _ = V.resolve_table(str(d.get("tabla") or nested.get("tabla") or ""), self.schema["tablas"], self._database)
+        if not table:
+            return None, [], None, None
+        target = d.get("columna_objetivo")
+        if not V.is_placeholder(target):
+            col, _ = V.resolve_column(table, str(target), self.schema["tablas"])
+            if col:
+                return col, [col], "columna_objetivo", table
+        cols = [c["nombre"] for c in self.schema["tablas"][table]["columnas"]]
+        named = V.columns_named(str(d.get("pregunta") or ""), cols)
+        return (named[0] if len(named) == 1 else None), named, ("pregunta" if len(named) == 1 else None), table
+
     def _accept(self, d) -> tuple[dict | None, list[str], V.StepProblem | None]:
         """Normaliza la respuesta; devuelve (paso, correcciones, problema_reparable | None)."""
+        applied = None
+        if isinstance(d, dict):
+            tool = str(d.get("herramienta", "")).strip().lower()
+            busca = str(d.get("busca") or "").strip().lower()
+            nested = d.get("argumentos") if isinstance(d.get("argumentos"), dict) else {}
+            no_column = V.is_placeholder(d.get("columna")) and V.is_placeholder(nested.get("columna"))
+            if tool in ("perfil", "frecuentes") and no_column and (tool == "frecuentes" or busca in K.NEEDS_COLUMN):
+                col, _, src, _ = self._intent_column(d)
+                if col:
+                    # La herramienta llegó sin columna, pero el modelo ya la había elegido: se usa SU decisión y se
+                    # deja constancia (no se inventa ni se elige otra).
+                    d = {**d, "columna": col}
+                    applied = (f"se usó la columna «{col}» que elegiste en tu "
+                               + ("«columna_objetivo»" if src == "columna_objetivo" else "pregunta")
+                               + f" (la herramienta «{tool}» llegó sin columna)")
         try:
             step, notes = V.normalize_step(d, self.schema["tablas"], self._database)
         except V.StepProblem as e:
             return None, [], e
+        if applied:
+            notes = [applied] + notes
         if step["herramienta"] == "sql":
             problem = V.precheck_sql(step["sql"], self.schema["tablas"], self._database)
             if problem:
@@ -959,23 +1002,75 @@ class Explorer:
         # y los nombres de columna igual se validan y reparan en normalize_step.
         return schema
 
-    def _strict_schema(self, tool: str) -> dict:
-        """Esquema estricto para una reparación repetida: los argumentos de la herramienta son obligatorios."""
+    def _strict_schema(self, tool: str, busca: str | None = None) -> dict:
+        """Esquema estricto para una reparación repetida: los argumentos de la herramienta son obligatorios (y la
+        columna, si la pregunta la necesita)."""
         schema = self._decide_schema()
         schema["required"] = ["pregunta", "por_que", "herramienta"] + list(V.REQUIRED.get(tool, ()))
+        if tool == "perfil" and busca in K.NEEDS_COLUMN:
+            schema["required"].append("columna")
         keep = (set(schema["required"]) | {"evidencia", "busca", "columna_objetivo", "repetir_porque"}
                 | set(V.TOOL_ARGS.get(tool, ())))
         schema["properties"] = {k: v for k, v in schema["properties"].items() if k in keep}
         schema["properties"]["herramienta"] = {"type": "string", "enum": [tool, "terminar"]}
         return schema
 
+    def _family(self, problem: V.StepProblem | None, d) -> str:
+        """Identidad del problema para detectar repeticiones. «Falta la columna» tiene dos caminos (perfil sin columna
+        para una pregunta que la necesita, frecuentes sin columna): alternarlos es el MISMO error."""
+        if problem is None:
+            return ""
+        busca = str((d or {}).get("busca") or "").strip().lower() if isinstance(d, dict) else ""
+        if ((problem.kind == "coherencia" and busca in K.NEEDS_COLUMN)
+                or (problem.kind == "falta_argumento" and problem.field == "columna")):
+            return "falta_columna"
+        return problem.signature
+
+    def _repair_schema(self, problem: V.StepProblem, d) -> dict | None:
+        """Esquema de reparación para «falta la columna»: columna OBLIGATORIA y solo columnas reales de la tabla que el
+        modelo eligió; herramientas que pueden responder lo que busca (y sql). La tabla y la pregunta siguen siendo
+        las del modelo."""
+        if self._family(problem, d) != "falta_columna":
+            return None
+        busca = str(d.get("busca") or "").strip().lower()
+        tool = str(d.get("herramienta") or "").strip().lower()
+        _, _, _, table = self._intent_column(d)
+        able = [t for t in ("perfil", "frecuentes")
+                if busca in (K.capabilities(K.tool_shape(t, {"tabla": "t", "columna": "c"})) or set())]
+        if not able:
+            able = [tool] if tool in ("perfil", "frecuentes") else ["frecuentes"]
+        schema = self._decide_schema()
+        props = schema["properties"]
+        props["herramienta"] = {"type": "string", "enum": able + ["sql"]}
+        if table:
+            props["tabla"] = {"type": "string", "enum": [table]}
+            props["columna"] = {"type": "string", "enum": [c["nombre"] for c in self.schema["tablas"][table]["columnas"]]}
+        schema["required"] = list(dict.fromkeys(schema["required"] + ["tabla", "columna"]))
+        return schema
+
     def _repair_messages(self, base: list[dict], raw: str, problem: V.StepProblem, d, level: int,
                          repeated: bool) -> list[dict]:
         tool = str((d or {}).get("herramienta", "")).strip().lower() if isinstance(d, dict) else ""
-        needs = V.REQUIRED.get(tool)
+        busca = str((d or {}).get("busca") or "").strip().lower() if isinstance(d, dict) else ""
+        needs = list(V.REQUIRED.get(tool) or ()) if tool in V.REQUIRED else None
+        if needs is not None and tool == "perfil" and busca in K.NEEDS_COLUMN:
+            needs.append("columna")  # para ESA pregunta la columna es obligatoria
         tables = list(self.schema["tablas"])
         lines = [f"Tu respuesta anterior NO se ejecutó (no se gastó un paso). Problema: {problem}."]
-        if problem.kind == "falta_argumento" and problem.field in ("tabla", "tabla_destino"):
+        if self._family(problem, d) == "falta_columna":
+            _, named, _, table = self._intent_column(d)
+            label = K.BUSCA_LABEL.get(busca, "lo que buscás")
+            if table:
+                cols = [c["nombre"] for c in self.schema["tablas"][table]["columnas"]]
+                lines.append(f"Tu pregunta busca {label} en la tabla «{table}» que elegiste: completá «columna» con UNA de "
+                             f"sus columnas (es obligatoria para esa pregunta). Columnas válidas de {table}: {', '.join(cols)}.")
+                if len(named) > 1:
+                    lines.append(f"En tu pregunta nombraste varias columnas ({', '.join(named)}): elegí una.")
+            else:
+                lines.append("Elegí la tabla y UNA de sus columnas (están en ESTRUCTURA OBSERVADA): la columna es "
+                             "obligatoria para esa pregunta.")
+            lines.append(f"Responden {label}: {K.HOW.get(busca, 'frecuentes(tabla, columna) o sql')}.")
+        elif problem.kind == "falta_argumento" and problem.field in ("tabla", "tabla_destino"):
             lines.append(f"En «{problem.field}» tenés que escribir el nombre exacto de UNA tabla, la que vos elijas "
                          f"según tu pregunta. Tablas existentes: {', '.join(tables)}.")
         elif problem.kind in ("falta_argumento", "columna_inexistente") and problem.field in ("columna", "columna_destino"):
@@ -990,7 +1085,7 @@ class Explorer:
         if problem.received and str(problem.received).strip().lower() in V.PLACEHOLDERS:
             lines.append(f"«{problem.received}» no es un nombre: es un texto de relleno. No lo escribas en ningún "
                          "campo; omití los campos que la herramienta no usa.")
-        if needs is not None:
+        if needs is not None and self._family(problem, d) != "falta_columna":
             lines.append(f"«{tool}» usa: {', '.join(V.TOOL_ARGS[tool]) or 'ningún argumento'}"
                          + (f" (obligatorios: {', '.join(needs)})" if needs else "") + ".")
         lines.append("Podés corregir los argumentos o elegir otra herramienta si te sirve más para tu pregunta.")
@@ -1013,7 +1108,7 @@ class Explorer:
         schema = self._decide_schema()
         d, info = self._call(mid, "A", lambda lv: self._decide_prompt(description, state, limits, lv), schema,
                              cancel, timeout(), np_)
-        step, notes, problem, repairs, anticipated, attempts, sigs, strict = None, [], None, 0, [], [], [], False
+        step, notes, problem, repairs, anticipated, attempts, sigs, strict = None, [], None, 0, [], [], [], None
         while True:
             if isinstance(d, dict):
                 anticipated += [k for k in ANTICIPATED_KEYS if d.get(k) and k not in anticipated]
@@ -1022,25 +1117,32 @@ class Explorer:
             else:
                 step, notes, problem = self._accept(d)
             attempts.append({"raw": (info.get("raw") or "")[:1500], "problema": str(problem) if problem else "",
-                             "firma": problem.signature if problem else "", "esquema": "estricto" if strict else "normal"})
+                             "firma": self._family(problem, d) if d is not None else (problem.signature if problem else ""),
+                             "esquema": strict or "normal"})
             if (problem is None or d is None or repairs >= MAX_REPAIRS or b.loop_remaining < MIN_LLM_S
                     or info.get("context_exhausted") or info.get("timeout")):
                 break
-            repeated = problem.signature in sigs
+            fam = self._family(problem, d)
+            repeated = fam in sigs
             if repeated and strict:
                 self._event(mid, "aviso", f"Paso {state['steps'] + 1}: el modelo repitió el mismo error aun con el "
-                            "esquema estricto; no se insiste en este paso")
+                            "esquema de reparación; no se insiste en este paso")
                 break
-            sigs.append(problem.signature)
+            sigs.append(fam)
             repairs += 1
             state["repairs"] += 1
             state["repairs_kind"][problem.kind] = state["repairs_kind"].get(problem.kind, 0) + 1
             tool = str(d.get("herramienta", "")).strip().lower()
-            if repeated and tool in V.TOOLS:
-                schema, strict = self._strict_schema(tool), True
+            fix = self._repair_schema(problem, d)
+            if fix is not None:
+                # «Falta la columna»: desde la primera reparación, esquema con la columna obligatoria y sus nombres reales.
+                schema, strict = fix, "reparacion_columna"
+            elif repeated and tool in V.TOOLS:
+                schema, strict = self._strict_schema(tool, str(d.get("busca") or "").strip().lower()), "estricto"
             self._event(mid, "aviso", f"Paso {state['steps'] + 1}: solicitud no ejecutable ({str(problem)[:220]}); se "
                         f"pide una reparación {repairs}/{MAX_REPAIRS} sin consumir el paso"
-                        + (" (error repetido: esquema estricto)" if repeated else ""))
+                        + {"reparacion_columna": " (columna obligatoria, con sus nombres válidos)",
+                           "estricto": " (error repetido: esquema estricto)"}.get(strict or "", ""))
             prev_raw, prev_d, prev_problem = info["raw"], d, problem
             d, info = self._call(mid, "A", lambda lv: self._repair_messages(
                 self._decide_prompt(description, state, limits, lv), prev_raw, prev_problem, prev_d, lv, repeated),
@@ -1079,13 +1181,14 @@ class Explorer:
                 self._event(mid, "explorador", "No se puede armar un mensaje de investigación que entre en el "
                             "contexto del modelo; se pasa al informe")
                 return False
-            if problem.signature and problem.signature == state.get("last_invalid_sig"):
+            family = self._family(problem, d)
+            if family and family == state.get("last_invalid_sig"):
                 # Mismo error en dos pasos seguidos (con sus reparaciones): insistir solo gasta tiempo.
                 state["ended"] = "respuestas_repetidas"
                 self._event(mid, "explorador", f"El modelo repitió el mismo error en dos pasos seguidos ({str(problem)[:160]}); "
                             "se detiene la exploración para no gastar el presupuesto en el mismo error")
                 return False
-            state["last_invalid_sig"] = problem.signature
+            state["last_invalid_sig"] = family
             return True
         state["invalid"], state["last_invalid"], state["last_invalid_sig"] = 0, None, None
         state["steps"] = n
@@ -1496,11 +1599,24 @@ class Explorer:
         return ""
 
     # Informe final ----------------------------------------------------------
+    def _own_queries(self) -> int:
+        return self.db.one("SELECT COUNT(*) FROM explore_queries WHERE mission_id=? AND origin='agente' AND status='ok'",
+                           (self._mid,))[0]
+
     def _report_prompt(self, description, compact: bool, level: int = 0) -> list[dict]:
         facts = [f for f in self.maps.facts(self._conn, limit=200) if f["certainty"] != "sin_verificar"]
+        # Primero lo de esta expedición; cada hecho dice de dónde viene.
+        facts.sort(key=lambda f: f["mission_id"] != self._mid)
         width = REPORT_WIDTH[level]
-        lines = "\n".join(f"F{f['id']} [{f['certainty']}] {f['kind']}: {_clean_cell(f['text'], width)}"
+        origin = lambda f: "ESTA EXPEDICIÓN" if f["mission_id"] == self._mid else "histórico"  # noqa: E731
+        lines = "\n".join(f"F{f['id']} [{origin(f)} · {f['certainty']}] {f['kind']}: {_clean_cell(f['text'], width)}"
                           for f in facts[:REPORT_FACTS[level]])
+        own = self._own_queries()
+        scope = (f"En esta expedición se ejecutaron {own} consultas con resultado. «descubrimientos» son SOLO lo que surgió "
+                 "en esta expedición (cita C# de esta expedición o F# marcados ESTA EXPEDICIÓN). Lo histórico podés "
+                 "usarlo como contexto en el resumen, pero no es un descubrimiento nuevo. " if own else
+                 "Esta expedición terminó sin consultas con resultado: no hay descubrimientos nuevos; dejá «descubrimientos» "
+                 "vacío y aclaralo en el resumen. ")
         size = ("Sé BREVE: resumen de 3 frases, hasta 4 descubrimientos de una frase, descripciones de una frase y "
                 "UNA consulta por aplicación." if compact or level >= 3 else "")
         read = ", ".join(sorted(self._read_tables)) or "ninguna (no se leyeron registros reales)"
@@ -1509,7 +1625,8 @@ class Explorer:
                     self._header(description, level)
                     + f"Tablas cuyos registros se leyeron: {read}\n\nMAPA CONSTRUIDO (solo hechos respaldados):\n"
                     f"{lines or '(vacío)'}\n\n"
-                    "Presentá tus descubrimientos (cada uno citando F#/C#; las cifras deben aparecer en esa evidencia; los "
+                    + scope
+                    + "Presentá tus descubrimientos (cada uno citando F#/C#; las cifras deben aparecer en esa evidencia; los "
                     "registros con fecha son históricos) y EXACTAMENTE tres aplicaciones que se podrían construir con "
                     "estos datos (tablero, informe o herramienta), cada una con 1 a 3 consultas SELECT sobre tablas "
                     "existentes. Indicá las incertidumbres que quedan. " + size + "\nINFORME: respondé con el JSON.")}]
@@ -1549,11 +1666,20 @@ class Explorer:
         if report:
             for dsc in (report.get("descubrimientos") or [])[:12]:
                 if isinstance(dsc, dict) and str(dsc.get("texto", "")).strip():
+                    ev, _ = self._valid_evidence(dsc.get("evidencia"))
+                    if ev and not self._has_own_evidence(ev):
+                        # Solo cita conocimiento de expediciones anteriores: es una síntesis histórica, no un
+                        # descubrimiento de esta expedición. No se registra como hecho nuevo.
+                        state["report_historical"].append({"texto": str(dsc["texto"])[:600], "evidencia": ev})
+                        self._event(mid, "aviso", f"El informe cita solo conocimiento histórico ({', '.join(ev)}): "
+                                    "se presenta como contexto, no como descubrimiento de esta expedición")
+                        continue
                     self._record_claim(mid, "hallazgo", str(dsc["texto"]), dsc.get("evidencia"))
             apps = self._valid_apps(report)
             for app_data, ev in apps[:3]:
                 fid = self.maps.add_note(conn, "oportunidad", f"{app_data['nombre']}: {app_data['descripcion'][:300]}",
-                                         evidence=ev, mission_id=mid, data=app_data)
+                                         evidence=ev, mission_id=mid, data={**app_data, "registro": "propuesta"},
+                                         certainty="hipotesis")
                 self._event(mid, "descubrimiento", f"Aplicación propuesta F{fid}: {app_data['nombre']}")
             for u in (report.get("incertidumbres") or [])[:8]:
                 self.maps.add_note(conn, "incertidumbre", str(u), mission_id=mid, certainty="hipotesis")
@@ -1562,19 +1688,48 @@ class Explorer:
                            "apps": len(self._valid_apps(report)) if report else 0}
         self._write_report_files(mid, conn, report, state, partial)
 
+    def _has_own_evidence(self, ev: list[str]) -> bool:
+        """¿La evidencia incluye algo de ESTA expedición? (_valid_evidence ya restringe las C# a esta expedición)."""
+        for e in ev:
+            if e[0] == "C":
+                return True
+            r = self.db.one("SELECT mission_id FROM explore_facts WHERE conn=? AND id=?", (self._conn, int(e[1:])))
+            if r and r[0] == self._mid:
+                return True
+        return False
+
+    def _check_proposed_sql(self, sql: str) -> dict:
+        """Una consulta propuesta: filtro de solo lectura, tablas existentes y, si hay conexión, EXPLAIN en MariaDB
+        (verifica tablas y COLUMNAS contra el esquema real sin ejecutar la consulta)."""
+        if sql in self._sql_checks:
+            return self._sql_checks[sql]
+        try:
+            checked = sqlguard.check(sql)
+        except sqlguard.SqlRejected as e:
+            out = {"sql": sql[:1000], "valida": False, "verificada": False, "motivo": str(e)}
+            self._sql_checks[sql] = out
+            return out
+        problem = V.precheck_sql(checked, self.schema["tablas"], self._database) if hasattr(self, "schema") else ""
+        out = {"sql": checked, "valida": not problem, "verificada": False, **({"motivo": problem} if problem else {})}
+        if not problem and self._broker is not None and re.match(r"(?is)^\s*(select|with)\b", checked):
+            o = self._broker.run(f"EXPLAIN {checked}", mission_id=self._mid, step=None, origin="sistema",
+                                 tool="validacion", question="¿La consulta propuesta es válida para el esquema real?",
+                                 rationale="Validación de una aplicación propuesta (EXPLAIN, sin ejecutarla)")
+            if o.status == "ok":
+                out.update(valida=True, verificada=True)
+            elif o.status in ("error", "rechazada"):
+                out.update(valida=False, verificada=True, motivo=(o.error or o.status)[:300])
+        if not out["verificada"] and out["valida"]:
+            out["motivo"] = "no se pudo verificar contra la base (se comprobaron solo las tablas)"
+        self._sql_checks[sql] = out
+        return out
+
     def _valid_apps(self, report) -> list[tuple[dict, list]]:
         out = []
         for app in (report.get("aplicaciones") or [])[:3]:
             if not isinstance(app, dict) or not str(app.get("nombre", "")).strip():
                 continue
-            consultas = []
-            for sql in (app.get("consultas") or [])[:3]:
-                try:
-                    checked = sqlguard.check(str(sql))
-                    problem = V.precheck_sql(checked, self.schema["tablas"], self._database) if hasattr(self, "schema") else ""
-                    consultas.append({"sql": checked, "valida": not problem, **({"motivo": problem} if problem else {})})
-                except sqlguard.SqlRejected as e:
-                    consultas.append({"sql": str(sql)[:1000], "valida": False, "motivo": str(e)})
+            consultas = [self._check_proposed_sql(str(sql)) for sql in (app.get("consultas") or [])[:3]]
             if not any(c["valida"] for c in consultas):
                 continue
             ev, _ = self._valid_evidence(app.get("evidencia"))
@@ -1632,6 +1787,12 @@ class Explorer:
             "respuestas_a_preguntas": state.get("respuestas", {}),
             "preguntas_no_respondidas": state.get("respuestas", {}).get("no_respondida", 0),
             "pasos_con_busca_otro": state.get("busca_otro", 0),
+            "consultas_propias_con_resultado": self._own_queries(),
+            "afirmaciones_historicas_del_informe": len(state.get("report_historical", [])),
+            "consultas_propuestas": {
+                "validas": sum(1 for c in self._sql_checks.values() if c["valida"] and c["verificada"]),
+                "invalidas": sum(1 for c in self._sql_checks.values() if not c["valida"]),
+                "sin_verificar": sum(1 for c in self._sql_checks.values() if c["valida"] and not c["verificada"])},
             "cobertura": {"columnas_estudiadas": cov["exploradas"], "columnas_totales": cov["totales"],
                           "al_inicio": state.get("coverage_start", cov["exploradas"])},
         }
@@ -1649,6 +1810,9 @@ class Explorer:
         elif state.get("cycles") and not state.get("cycles_new"):
             reasons.append("hubo ciclos formales, pero ninguno aportó conocimiento nuevo (confirmaciones, repeticiones o "
                            "aportes indeterminados)")
+        if not self._own_queries():
+            reasons.append("esta expedición no ejecutó ninguna consulta: no hay descubrimientos propios (lo histórico "
+                           "se presenta aparte)")
         if state["ended"] == "ollama_sin_respuesta":
             reasons.append("Ollama aceptó pedidos pero no respondió a tiempo en pedidos seguidos (servidor ocupado o "
                            "trabado; ver exploracion/llamadas_ollama.json y el diagnóstico de Ollama)")
@@ -1677,12 +1841,12 @@ class Explorer:
         return evaluation
 
     def _write_report_files(self, mid, conn, report, state, partial) -> None:
+        """Informe en tres partes separadas: lo NUEVO de esta expedición, lo HISTÓRICO y las PROPUESTAS."""
         facts = self.maps.facts(conn, limit=500)
         snap = self.maps.last_snapshot(conn)
-        by = {}
-        for f in facts:
-            by.setdefault(f["kind"], []).append(f)
         rep = state.get("report") or {}
+        own = [f for f in facts if f["mission_id"] == mid]
+        historical = [f for f in facts if f["mission_id"] != mid]
         md = [f"# Informe de exploración {mid}{' (PARCIAL)' if partial else ''}", "",
               f"Conexión: `{conn}` · observado: {time.strftime('%Y-%m-%d %H:%M', time.localtime(snap['observed_at'])) if snap else '—'}"
               f" · pasos: {state['steps']} · consultas del agente: {state['queries']} · ciclos formales: "
@@ -1697,33 +1861,76 @@ class Explorer:
             md += ["## Resumen del agente (interpretación)", "", str(report["resumen"])[:3000], ""]
         else:
             md += ["## Resumen del agente", "", "_No hay resumen interpretativo del modelo en esta exploración._", ""]
-        titles = [("estructura", "Estructura"), ("relacion", "Relaciones"), ("estadistica", "Estadísticas"),
-                  ("advertencia", "Advertencias"), ("cambio", "Cambios de esquema"), ("hallazgo", "Hallazgos"),
-                  ("oportunidad", "Aplicaciones posibles"), ("incertidumbre", "Incertidumbres")]
+
+        def item(f, with_origin=False):
+            ev = ", ".join(f["evidence"]) if f["evidence"] else "sin evidencia citada"
+            out = [f"- F{f['id']} **{f['certainty']}** — {f['text']} _(evidencia: {ev}"
+                   + (f"; creado en {f['mission_id']}" if with_origin else "") + ")_"]
+            d = f.get("data") or {}
+            if f["kind"] in ("hallazgo", "advertencia") and (d.get("alcance") or d.get("aporte")):
+                out.append(f"    - alcance: {d.get('alcance') or 'no determinado'}"
+                           + (f" · aporte: {d['aporte'].replace('_', ' ')}" if d.get("aporte") else "")
+                           + (f" · {d['detalle']}" if d.get("verificacion") == "generaliza_mas_alla_de_la_evidencia" else ""))
+            return out
+
+        # 1. Conocimiento NUEVO de esta expedición
+        md += ["## 1. Conocimiento nuevo de esta expedición", ""]
+        if not self._own_queries():
+            md += ["_Esta expedición no ejecutó ninguna consulta: no tiene descubrimientos propios._", ""]
+        titles = [("hallazgo", "Hallazgos"), ("advertencia", "Advertencias"), ("estadistica", "Estadísticas calculadas"),
+                  ("relacion", "Relaciones"), ("cambio", "Cambios"), ("estructura", "Estructura"),
+                  ("incertidumbre", "Incertidumbres")]
         for kind, title in titles:
-            items = [f for f in by.get(kind, []) if f["certainty"] != "sin_verificar"]
+            items = [f for f in own if f["kind"] == kind and f["certainty"] != "sin_verificar"]
             if items:
-                md += [f"## {title}", ""]
+                md += [f"### {title}", ""]
                 for f in sorted(items, key=lambda x: x["id"]):
-                    ev = ", ".join(f["evidence"]) if f["evidence"] else "sin evidencia citada"
-                    md.append(f"- F{f['id']} **{f['certainty']}** — {f['text']} _(evidencia: {ev})_")
-                    d = f.get("data") or {}
-                    if kind in ("hallazgo", "advertencia") and (d.get("alcance") or d.get("aporte")):
-                        md.append(f"    - alcance: {d.get('alcance') or 'no determinado'}"
-                                  + (f" · aporte: {d['aporte'].replace('_', ' ')}" if d.get("aporte") else "")
-                                  + (f" · {d['detalle']}" if d.get("verificacion") == "generaliza_mas_alla_de_la_evidencia" else ""))
-                    if kind == "oportunidad" and f.get("data"):
-                        for cq in f["data"].get("consultas", []):
-                            md.append(f"    - `{cq['sql'][:300]}`" + ("" if cq.get("valida") else f" ⚠ {cq.get('motivo')}"))
+                    md += item(f)
                 md.append("")
-        unverified = [f for f in facts if f["certainty"] == "sin_verificar"]
+        unverified = [f for f in own if f["certainty"] == "sin_verificar"]
         if unverified:
-            md += ["## Afirmaciones sin verificar (NO son descubrimientos)", ""]
+            md += ["### Afirmaciones sin verificar (NO son descubrimientos)", ""]
             for f in sorted(unverified, key=lambda x: x["id"]):
                 md.append(f"- F{f['id']} — {f['text']} _({(f.get('data') or {}).get('detalle', '')})_")
             md.append("")
+        # 2. Conocimiento HISTÓRICO (expediciones anteriores)
+        md += ["## 2. Conocimiento histórico (de expediciones anteriores)", "",
+               "_Registrado antes de esta expedición. Se conserva con su procedencia; no es un descubrimiento de esta "
+               "expedición._", ""]
+        touched = [f for f in historical if f.get("last_mission_id") == mid and f["kind"] in ("hallazgo", "advertencia")]
+        if touched:
+            md += ["### Reobservado o confirmado en esta expedición", ""]
+            for f in sorted(touched, key=lambda x: x["id"]):
+                md += item(f, with_origin=True)
+            md.append("")
+        if state.get("report_historical"):
+            md += ["### Síntesis del agente sobre conocimiento histórico", ""]
+            for h in state["report_historical"]:
+                md.append(f"- {h['texto']} _(cita: {', '.join(h['evidencia'])})_")
+            md.append("")
+        rest = [f for f in historical if f["certainty"] in ("comprobado", "inferencia") and f not in touched
+                and f["kind"] in ("hallazgo", "advertencia", "estadistica", "relacion", "cambio")]
+        if rest:
+            md += ["### Hechos respaldados registrados", ""]
+            for f in sorted(rest, key=lambda x: x["id"]):
+                md += item(f, with_origin=True)
+            md.append("")
+        # 3. PROPUESTAS
+        md += ["## 3. Propuestas de aplicaciones (no son hallazgos)", ""]
+        props = [f for f in own if f["kind"] == "oportunidad"]
+        if not props:
+            md += ["_Sin propuestas en esta expedición._", ""]
+        for f in sorted(props, key=lambda x: x["id"]):
+            md.append(f"- F{f['id']} — {f['text']}")
+            for cq in (f.get("data") or {}).get("consultas", []):
+                mark = ("✓ válida para el esquema real" if cq.get("valida") and cq.get("verificada") else
+                        f"⚠ {cq.get('motivo')}" if cq.get("motivo") else "")
+                md.append(f"    - `{cq['sql'][:300]}` {mark}")
+        md.append("")
         self.files.save(mid, "exploracion/informe.md", "\n".join(md), "informe")
         self.files.save(mid, "exploracion/mapa.json", json.dumps(
             {"conexion": conn, "estructura": snap["schema"] if snap else None,
-             "hechos": [{k: f[k] for k in ("id", "kind", "certainty", "subject", "text", "evidence", "data")} for f in facts]},
+             "hechos": [{k: f[k] for k in ("id", "kind", "certainty", "subject", "text", "evidence", "data", "mission_id")}
+                        | {"origen": "esta_expedicion" if f["mission_id"] == mid else "historico"} for f in facts],
+             "sintesis_historica_del_informe": state.get("report_historical", [])},
             ensure_ascii=False, indent=1, default=str), "informe")

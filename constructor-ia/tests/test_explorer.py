@@ -401,7 +401,7 @@ def scripted_agent(log: list):
                 {"texto": "Hay 777777 registros", "tipo": "hallazgo", "evidencia": [f"C{q}"]}],
                 "hipotesis": [], "incertidumbres": []})
         if "MAPA CONSTRUIDO" in prompt:
-            facts = re.findall(r"^F(\d+) \[comprobado\]", prompt, re.M)
+            facts = re.findall(r"^F(\d+) \[[^\]]*comprobado\]", prompt, re.M)
             tables = re.findall(r"tabla (\w+):", prompt)
             t = tables[0] if tables else "x"
             return json.dumps({

@@ -411,3 +411,23 @@ def salvage_json(text: str, max_tries: int = 400) -> dict | None:
         if isinstance(obj, dict):
             return obj
     return None
+
+
+def columns_named(text: str, columns: list[str]) -> list[str]:
+    """Columnas (de la lista dada) que el texto nombra literalmente, en orden de aparición.
+
+    Coincidencia exacta de palabra, sin distinguir mayúsculas ni acentos («símbolo» no es «symbol»: no se adivina
+    por parecido). Sirve para reconocer una elección que el propio modelo ya escribió.
+    """
+    import unicodedata
+
+    def fold(s: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFKD", str(s).lower()) if not unicodedata.combining(c))
+
+    words = re.findall(r"[a-z_][a-z0-9_]*", fold(text or "").replace("`", " "))
+    by = {fold(c): c for c in columns}
+    out = []
+    for w in words:
+        if w in by and by[w] not in out:
+            out.append(by[w])
+    return out

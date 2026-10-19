@@ -967,3 +967,136 @@ c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollbac
   sentido). En ese caso la afirmación queda como hipótesis con su alcance, no se descarta.
 - `busca` lo declara el propio modelo; si elige «otro», no hay control de coherencia. La métrica
   `pasos_con_busca_otro` permite detectarlo.
+
+---
+
+# Cambios 0.4.6: reparación de «falta la columna» e informe sin mezclar historia
+
+Primera exploración real de 0.4.5 (M20261019-448547, `caverna_01`):
+- 10,2 min, 0 consultas, 3 respuestas inválidas y 6 reparaciones.
+- Ollama respondió bien: 10 respuestas completas.
+
+Qwen3 preguntaba por los valores distintos de una columna que **nombraba en su propia pregunta**, pero alternaba
+entre `perfil(tabla)` sin columna y `frecuentes(tabla)` sin columna. Además, el informe registró F85–F87 como
+inferencias respaldadas sin haber ejecutado ninguna consulta.
+
+## Causas (reproducidas)
+
+La secuencia de prueba reproduce exactamente la misión: tres pasos de tres intentos, cada paso terminando con
+una forma distinta del error. Con 0.4.5 da **0 consultas, 3 respuestas inválidas y 6 reparaciones**.
+
+1. **El mensaje de reparación engañaba.** Decía «perfil usa: tabla, columna (obligatorios: tabla)». Es cierto para
+   contar filas, pero falso para una pregunta por valores distintos.
+2. **Dos firmas para el mismo error.** `perfil` sin columna daba `coherencia|…` y `frecuentes` sin columna daba
+   `falta_argumento|columna|…`. Alternar las dos formas nunca contaba como repetición: no se activaba el esquema
+   estricto y las reparaciones se agotaban.
+3. **El esquema estricto de `perfil` no exigía columna** ni ofrecía las columnas válidas.
+4. **La columna que el modelo ya había elegido** en su pregunta no se aprovechaba.
+5. **El informe mezclaba historia con descubrimientos.** Una afirmación que solo citaba hechos de expediciones
+   anteriores se verificaba contra ellos y se registraba como inferencia de la expedición actual.
+6. **Las consultas de las aplicaciones propuestas** solo se comprobaban a nivel de tablas, no de columnas.
+
+## Corrección
+
+**Etapa A (el control de coherencia se mantiene igual de estricto):**
+- **Se aprovecha la columna que el modelo eligió, de forma transparente.** Si `perfil` o `frecuentes` llegan sin
+  columna para una pregunta que la necesita, se usa la columna que el propio modelo eligió:
+  - primero su `columna_objetivo`, si es una columna real de la tabla que eligió;
+  - si no, su `pregunta`, solo si nombra **exactamente una** columna de esa tabla (coincidencia exacta de palabra,
+    sin adivinar por parecido).
+  Queda la nota visible «se usó la columna «X» que elegiste en tu pregunta». Si nombra varias o ninguna, no se
+  elige nada por él.
+- **«Falta la columna» es un único error** (`falta_columna`), venga de `perfil` o de `frecuentes`. La alternancia
+  cuenta como repetición, dentro de un paso y entre pasos.
+- **Reparación concreta desde el primer intento.** El mensaje dice que la columna es obligatoria para esa pregunta,
+  lista las columnas válidas de la tabla que el modelo eligió y, si nombró varias, le pide que elija una. El
+  esquema de reparación:
+  - exige `tabla` y `columna`;
+  - `tabla` = la que eligió el modelo;
+  - `columna` = solo columnas reales de esa tabla;
+  - herramientas = las que pueden responder lo que busca, más `sql`.
+  Si aun así repite el error, no se insiste en ese paso, y dos pasos seguidos con el mismo error detienen la
+  exploración.
+- **El esquema estricto** de `perfil` exige la columna cuando la pregunta la necesita.
+
+**Informe: tres partes separadas.**
+1. **Conocimiento nuevo de esta expedición:** hechos creados en ella. Si no ejecutó consultas, lo dice
+   explícitamente.
+2. **Conocimiento histórico:** creado antes; se conserva con su procedencia. Incluye lo reobservado o confirmado en
+   esta expedición y la **síntesis del agente** sobre lo histórico, es decir, las afirmaciones del informe que solo
+   citan hechos de expediciones anteriores. Esas afirmaciones **no** se registran como hechos nuevos.
+3. **Propuestas de aplicaciones (no son hallazgos):** se guardan con certeza `hipotesis` y marca `propuesta`. Sus
+   consultas se contrastan con el **esquema real mediante `EXPLAIN` en MariaDB**, que verifica tablas y columnas
+   sin ejecutar la consulta: «✓ válida para el esquema real» o el error real (p. ej. `Unknown column`). Una
+   propuesta sin ninguna consulta válida se descarta.
+
+El mensaje del informe al modelo marca cada hecho como «ESTA EXPEDICIÓN» o «histórico». Si no hubo consultas, le
+pide dejar «descubrimientos» vacío. La UI muestra las mismas tres secciones.
+
+**Métricas nuevas:**
+- `consultas_propias_con_resultado`;
+- `afirmaciones_historicas_del_informe`;
+- `consultas_propuestas` (válidas, inválidas, sin verificar);
+- motivo explícito en la evaluación cuando la expedición no ejecutó consultas.
+
+**Sin cambios:** el filtro de solo lectura, la verificación de evidencia y la procedencia de la memoria. La prueba
+del informe comprueba que el hecho histórico citado conserva certeza, texto y expedición creadora.
+
+## Pruebas
+
+`tests/test_explorer_reparacion.py` (5):
+- la secuencia exacta de la misión;
+- reparación con columna obligatoria y nombres reales cuando la pregunta no nombra columna;
+- alternancia sin resolución tratada como un único error repetido;
+- pregunta que nombra varias columnas, sin decidir por el modelo;
+- expedición sin consultas: historia y propuestas separadas, consultas propuestas contrastadas con `EXPLAIN`, y
+  memoria histórica intacta.
+
+Las cinco fallan con el código 0.4.5.
+
+## Actualización por SSH (0.4.5 → 0.4.6)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.6-reparacion
+git checkout claude/constructor-ia-0.4.6-reparacion
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+Sin migraciones nuevas (el esquema sigue en 0006). `config.toml` no cambia. No se tocan Ollama, MariaDB,
+Node-RED ni otros servicios.
+
+## Rollback (0.4.6 → 0.4.5)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.5' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+Sin cambios de esquema que deshacer. Las propuestas creadas por 0.4.6 quedan con certeza `hipotesis`, y las
+consultas `EXPLAIN` de validación quedan como consultas del sistema (`tool = validacion`); la 0.4.5 las muestra
+como cualquier otra.
+
+## Qué mirar en la próxima prueba
+
+- En la traza de `explorer-report`: «se usó la columna «…» que elegiste en tu pregunta», o reparaciones con «es
+  obligatoria para esa pregunta» seguidas de una consulta ejecutada.
+- `consultas_propias_con_resultado > 0` y menos `reparaciones` por paso.
+- En el informe:
+  - la sección 1 solo con lo de esta expedición;
+  - la sección 2 con lo histórico y su expedición de origen;
+  - la sección 3 con las propuestas, cada consulta marcada como válida o con su error real.
+
+## Limitaciones
+
+- Una pregunta que nombra la columna con otra palabra («el símbolo» por `symbol`) no se aprovecha: no se adivina
+  por parecido. En ese caso actúa la reparación con la lista de columnas válidas.
+- `EXPLAIN` verifica que la consulta sea válida para el esquema, no que responda bien a lo que la propuesta
+  promete.
+- Si la expedición termina sin conexión (cancelación), las consultas propuestas quedan «sin verificar» (solo se
+  comprobaron las tablas).

@@ -1017,14 +1017,26 @@ async function renderExploration(box, mid, m) {
       contextNote(st)));
   }
   const unverified = d.facts.filter((f) => f.certainty === "sin_verificar");
-  const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", oportunidad: "Aplicaciones propuestas", cambio: "Cambios de esquema" };
+  // 0.4.6: lo NUEVO de esta expedición, lo HISTÓRICO (creado antes) y las PROPUESTAS, por separado.
+  const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", cambio: "Cambios" };
+  const own = d.facts.filter((f) => f.origen !== "historico");
+  const hist = d.facts.filter((f) => f.origen === "historico" && !["oportunidad", "estructura"].includes(f.kind));
   const facts = h("div");
+  facts.append(h("h2", { class: "mt", text: "Conocimiento nuevo de esta expedición" }));
+  if (!own.some((f) => kinds[f.kind] && f.certainty !== "sin_verificar")) facts.append(h("p", { class: "muted small", text: d.evaluation && d.evaluation.metrics && d.evaluation.metrics.consultas_propias_con_resultado === 0 ? "Esta expedición no ejecutó ninguna consulta: no tiene descubrimientos propios." : "Sin hechos nuevos registrados." }));
   for (const [k, title] of Object.entries(kinds)) {
-    const fs = d.facts.filter((f) => f.kind === k && f.certainty !== "sin_verificar");
+    const fs = own.filter((f) => f.kind === k && f.certainty !== "sin_verificar");
     if (!fs.length) continue;
-    facts.append(h("h3", { class: "mt", text: `${title} (${fs.length})` }), h("div", { class: "list" }, ...fs.map((f) => factItem(f, k === "oportunidad" ? buildButton(d.spec.conn, f) : ""))));
+    facts.append(h("h3", { class: "mt", text: `${title} (${fs.length})` }), h("div", { class: "list" }, ...fs.map((f) => factItem(f))));
   }
-  if (unverified.length) facts.append(h("h3", { class: "mt bad", text: `Afirmaciones sin verificar (${unverified.length}) — no son descubrimientos` }), h("div", { class: "list" }, ...unverified.map((f) => factItem(f))));
+  const ownUnverified = unverified.filter((f) => f.origen !== "historico");
+  if (ownUnverified.length) facts.append(h("h3", { class: "mt bad", text: `Afirmaciones sin verificar (${ownUnverified.length}) — no son descubrimientos` }), h("div", { class: "list" }, ...ownUnverified.map((f) => factItem(f))));
+  if (hist.length) facts.append(h("h2", { class: "mt", text: `Conocimiento histórico reobservado o confirmado en esta expedición (${hist.length})` }),
+    h("p", { class: "muted small", text: "Creado en expediciones anteriores; se conserva con su procedencia. No es un descubrimiento de esta expedición." }),
+    h("div", { class: "list" }, ...hist.map((f) => factItem(f))));
+  const props = own.filter((f) => f.kind === "oportunidad");
+  if (props.length) facts.append(h("h2", { class: "mt", text: `Propuestas de aplicaciones (${props.length}) — no son hallazgos` }),
+    h("div", { class: "list" }, ...props.map((f) => factItem(f, h("div", {}, ...((f.data || {}).consultas || []).map((c) => h("p", { class: `small mono ${c.valida ? "" : "bad"}`, text: `${c.sql}${c.valida && c.verificada ? "  ✓ válida para el esquema real" : (c.motivo ? `  ⚠ ${c.motivo}` : "")}` })), buildButton(d.spec.conn, f))))));
   box.replaceChildren(
     evalBox,
     h("div", { class: "panel" },

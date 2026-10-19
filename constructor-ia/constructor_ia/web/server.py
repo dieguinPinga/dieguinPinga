@@ -803,7 +803,8 @@ class Handler(BaseHTTPRequestHandler):
             evaluation["metrics"] = json.loads(evaluation.pop("metrics_json"))
             evaluation["reasons"] = json.loads(evaluation.pop("reasons_json"))
         self._json(200, {"spec": spec, "steps": steps, "queries": queries, "evaluation": evaluation,
-                         "facts": [f for f in facts if mid in (f["mission_id"], f.get("last_mission_id"))],
+                         "facts": [{**f, "origen": "esta_expedicion" if f["mission_id"] == mid else "historico"}
+                                   for f in facts if mid in (f["mission_id"], f.get("last_mission_id"))],
                          "uncertainties": [f for f in facts if f["kind"] == "incertidumbre"][:30],
                          "progress": {"steps": len([x for x in steps if x["status"] != "en_curso"]),
                                       "max_steps": spec["max_steps"], "queries": agent_q,

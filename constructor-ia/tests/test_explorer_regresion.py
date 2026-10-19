@@ -58,7 +58,7 @@ class Script:
 
 
 def good_report(prompt, info):
-    facts = re.findall(r"^F(\d+) \[comprobado\]", prompt, re.M)
+    facts = re.findall(r"^F(\d+) \[[^\]]*comprobado\]", prompt, re.M)
     t = info["tables"][0]
     apps = [{"nombre": f"App {i}", "tipo": "tablero", "descripcion": "d", "consultas": [f"SELECT COUNT(*) FROM `{t}`"],
              "evidencia": []} for i in range(3)]
