@@ -34,6 +34,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   nuevo?, ¿la conclusión excede su evidencia? — con procedencia, certeza e historial de cada hecho preservados.
   En 0.4.6: la reparación de «falta la columna» da al modelo los nombres válidos y el campo obligatorio, y usa
   (con aviso) la columna que él mismo nombró; el informe separa conocimiento nuevo, histórico y propuestas.
+  En 0.4.7: el alcance sale del SQL realmente ejecutado (un LIMIT interior impide certificar la tabla completa),
+  nombres SQL distintos de valores, frases sin cortar, reformulaciones que no cuentan como nuevas y
+  `explorer-reevaluar` (simulación primero) para reevaluar la memoria sin cambiar los hechos existentes.
 
 ## Proyectos que evolucionan (v0.4.0)
 

@@ -10,6 +10,9 @@ Certezas:
                 vacía o con error, o cifras que no aparecen en el resultado). No es un descubrimiento.
 Nada de esto escribe en la base explorada.
 
+Certeza efectiva (0.4.7): la del último evento del historial de cada hecho. Una reevaluación (explorer-reevaluar)
+agrega un evento «reevaluado» y un registro en explore_reviews, sin tocar el texto ni la certeza original del hecho.
+
 Procedencia (0.4.5): mission_id es la expedición que CREÓ el hecho y no se sobrescribe; last_mission_id es la última
 que lo observó. Cada cambio queda en explore_fact_history con el estado anterior. Una afirmación del modelo repetida
 nunca cambia su texto original ni le baja la certeza: se registra como confirmación o reafirmación.
@@ -29,6 +32,10 @@ RANK = {"sin_verificar": 0, "hipotesis": 1, "inferencia": 2, "comprobado": 3}
 KINDS = ("estructura", "relacion", "estadistica", "advertencia", "hallazgo", "incertidumbre", "oportunidad", "cambio")
 NUMERIC_RE = re.compile(r"^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|bit)", re.I)
 TEMPORAL_RE = re.compile(r"^(date|datetime|timestamp|time|year)", re.I)
+TEXT_MAX = 1000  # largo máximo guardado de un hecho (más largo: se marca como incompleto)
+# Certeza efectiva de explore_facts f: la del último evento de su historial (o la original si no tiene historial).
+EFFECTIVE_SQL = ("COALESCE((SELECT h.certainty_after FROM explore_fact_history h WHERE h.fact_id = f.id"
+                 " ORDER BY h.id DESC LIMIT 1), f.certainty)")
 
 
 def is_numeric(col_type: str) -> bool:
@@ -188,6 +195,12 @@ class MapStore:
         return schema, changes, prev is None
 
     # Hechos ------------------------------------------------------------
+    def effective(self, fact_id: int, fallback: str | None = None) -> str | None:
+        """Certeza efectiva: la del último evento del historial (incluidas las reevaluaciones)."""
+        r = self.db.one("SELECT certainty_after FROM explore_fact_history WHERE fact_id=? ORDER BY id DESC LIMIT 1",
+                        (fact_id,))
+        return r[0] if r and r[0] else fallback
+
     def _history(self, fact_id: int, conn: str, mission_id, event: str, before: str | None, after: str | None,
                  text: str | None, evidence, data) -> None:
         self.db.execute("INSERT INTO explore_fact_history(fact_id, conn, mission_id, event, certainty_before,"
@@ -213,7 +226,8 @@ class MapStore:
             changed = (row["certainty"] != certainty or row["text"] != text[:1000] or row["data_json"] != data_json
                        or row["status"] != "vigente")
             if changed:
-                self._history(row["id"], conn, mission_id, "reobservado", row["certainty"], certainty, row["text"],
+                self._history(row["id"], conn, mission_id, "reobservado", self.effective(row["id"], row["certainty"]),
+                              certainty, row["text"],
                               json.loads(row["evidence_json"] or "[]"),
                               json.loads(row["data_json"]) if row["data_json"] else None)
             self.db.execute("UPDATE explore_facts SET certainty=?, text=?, data_json=?, evidence_json=?, last_mission_id=?,"
@@ -237,7 +251,7 @@ class MapStore:
         que lo creó ni baja la certeza.
         """
         assert kind in KINDS and certainty in CERTAINTIES
-        text = " ".join(str(text).split())[:600]
+        text = " ".join(str(text).split())[:TEXT_MAX]
         if len(text) < 4:
             return None, "descartado"
         subject = kind + ":" + hashlib.sha1(text.lower().encode()).hexdigest()[:16]
@@ -250,22 +264,25 @@ class MapStore:
         new_ev = [e for e in (evidence or []) if e not in old_ev]
         entry = {"mision": mission_id, "evidencia": evidence or [], "certeza": certainty, "ts": round(time.time(), 1),
                  **({"verificacion": data.get("verificacion"), "detalle": data.get("detalle")} if data else {})}
-        old_rank, new_rank = RANK.get(row["certainty"], -1), RANK.get(certainty, -1)
+        # Se compara con la certeza EFECTIVA (una reevaluación pudo haberla bajado); la columna original solo sube.
+        current = self.effective(row["id"], row["certainty"])
+        old_rank, new_rank = RANK.get(current, -1), RANK.get(certainty, -1)
         merged = dict(old_data)
-        if row["certainty"] != "descartado" and new_rank > old_rank:
+        if current != "descartado" and new_rank > old_rank:
             outcome, final = "certeza_subio", certainty
             # El respaldo nuevo es mejor: se adoptan su verificación y su alcance; lo anterior queda en el historial.
             merged.update({k: v for k, v in (data or {}).items() if k not in ("confirmaciones", "reafirmaciones")})
         elif new_rank == old_rank:
-            outcome, final = "confirmado", row["certainty"]
+            outcome, final = "confirmado", current
             merged["confirmaciones"] = (old_data.get("confirmaciones") or []) + [entry]
         else:
-            outcome, final = "reafirmado_sin_respaldo", row["certainty"]
+            outcome, final = "reafirmado_sin_respaldo", current
             merged["reafirmaciones"] = (old_data.get("reafirmaciones") or []) + [entry]
-        self._history(row["id"], conn, mission_id, outcome, row["certainty"], final, text, evidence or [], data)
+        self._history(row["id"], conn, mission_id, outcome, current, final, text, evidence or [], data)
+        stored = final if RANK.get(final, -1) > RANK.get(row["certainty"], -1) else row["certainty"]
         self.db.execute("UPDATE explore_facts SET certainty=?, data_json=?, evidence_json=?, last_mission_id=?,"
                         " clave=COALESCE(clave, ?), updated_at=? WHERE id=?",
-                        (final, json.dumps(merged, default=str), json.dumps((old_ev + new_ev)[:20]), mission_id, clave,
+                        (stored, json.dumps(merged, default=str), json.dumps((old_ev + new_ev)[:20]), mission_id, clave,
                          time.time(), row["id"]))
         return row["id"], outcome
 
@@ -295,19 +312,60 @@ class MapStore:
         return bool(self.db.one("SELECT 1 FROM explore_queries WHERE conn=? AND id=?", (conn, query_id)))
 
     def facts(self, conn: str, kinds=None, status: str = "vigente", limit: int = 500) -> list[dict]:
-        sql = "SELECT * FROM explore_facts WHERE conn=? AND status=?"
+        """Hechos con su certeza EFECTIVA en «certainty» (la original queda en «certeza_original»)."""
+        sql = f"SELECT f.*, {EFFECTIVE_SQL} AS certeza_efectiva FROM explore_facts f WHERE f.conn=? AND f.status=?"
         args: list = [conn, status]
         if kinds:
-            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            sql += f" AND f.kind IN ({','.join('?' * len(kinds))})"
             args += list(kinds)
-        sql += " ORDER BY id DESC LIMIT ?"
+        sql += " ORDER BY f.id DESC LIMIT ?"
+        reviewed = self._reviewed(conn)
         out = []
         for r in self.db.all(sql, (*args, limit)):
             d = dict(r)
+            d["certeza_original"] = d["certainty"]
+            d["certainty"] = d.pop("certeza_efectiva") or d["certainty"]
             d["data"] = json.loads(d.pop("data_json")) if d.get("data_json") else None
             d["evidence"] = json.loads(d.pop("evidence_json") or "[]")
+            if d["id"] in reviewed:
+                d["reevaluacion"] = reviewed[d["id"]]
             out.append(d)
         return out
+
+    # Reevaluaciones (0.4.7) --------------------------------------------
+    def _has_reviews(self) -> bool:
+        return bool(self.db.one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='explore_reviews'"))
+
+    def _reviewed(self, conn: str) -> dict:
+        """Última reevaluación de cada hecho reevaluado: {id: {regla, veredicto, detalle, ...}}."""
+        if not self._has_reviews():
+            return {}
+        out = {}
+        for r in self.db.all("SELECT * FROM explore_reviews WHERE conn=? AND objeto='hecho' ORDER BY id", (conn,)):
+            out[r["objeto_id"]] = {"regla": r["regla"], "veredicto": r["veredicto"], "detalle": r["detalle"],
+                                   "certeza_anterior": r["certeza_anterior"], "certeza_nueva": r["certeza_nueva"],
+                                   "version": r["version"], "plan": r["plan"], "revision": r["id"]}
+        return out
+
+    def reviews(self, conn: str, objeto: str, objeto_id: int) -> list[dict]:
+        if not self._has_reviews():
+            return []
+        out = []
+        for r in self.db.all("SELECT * FROM explore_reviews WHERE conn=? AND objeto=? AND objeto_id=? ORDER BY id",
+                             (conn, objeto, objeto_id)):
+            d = dict(r)
+            for k in ("antes_json", "despues_json", "evidencia_json"):
+                d[k[:-5]] = json.loads(d.pop(k)) if d.get(k) else None
+            out.append(d)
+        return out
+
+    def query_scope(self, conn: str, query_id: int) -> dict | None:
+        """Alcance EFECTIVO de una consulta: el de su última reevaluación o el registrado al ejecutarla."""
+        for rv in reversed(self.reviews(conn, "consulta", query_id)):
+            if (rv.get("despues") or {}).get("alcance"):
+                return rv["despues"]["alcance"]
+        r = self.db.one("SELECT alcance_json FROM explore_queries WHERE conn=? AND id=?", (conn, query_id))
+        return json.loads(r[0]) if r and r[0] else None
 
     # Observación de estructura ----------------------------------------
     def register_schema_facts(self, conn: str, mission_id: str, schema: dict, evidence: dict) -> None:

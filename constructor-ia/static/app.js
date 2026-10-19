@@ -867,7 +867,8 @@ const QUALITY = { cumplido: "ok", parcial: "", insuficiente: "bad" };
 const certBadge = (c) => h("span", { class: `badge cert-${c}`, text: CERT[c] || c });
 
 const APORTE = { nuevo: "conocimiento nuevo", amplia: "amplía lo conocido", difiere_alcance: "difiere (otro alcance)", difiere_tiempo: "difiere (otro momento)",
-  confirma: "confirma lo conocido", contradice: "posible contradicción", indeterminado: "aporte indeterminado", trivial: "trivial", hipotesis: "hipótesis", sin_respaldo: "sin respaldo" };
+  confirma: "confirma lo conocido", contradice: "posible contradicción", indeterminado: "aporte indeterminado", trivial: "trivial", hipotesis: "hipótesis", sin_respaldo: "sin respaldo",
+  reformula: "reformula lo conocido", redondeo_compatible: "compatible por redondeo" };
 
 function factItem(f, extra) {
   const d = f.data || {};
@@ -883,7 +884,8 @@ function factItem(f, extra) {
   return h("div", { class: "item" },
     h("div", { class: "row between" }, h("span", { class: "small mono", text: `F${f.id}` }),
       h("span", {}, d.aporte && APORTE[d.aporte] ? h("span", { class: `badge ${["nuevo", "amplia", "difiere_alcance", "difiere_tiempo"].includes(d.aporte) ? "ok" : (d.aporte === "contradice" ? "bad" : "")}`, text: APORTE[d.aporte] }) : "", " ", certBadge(f.certainty))),
-    h("div", { class: "small pre-wrap", text: f.text }),
+    h("div", { class: "small pre-wrap", text: f.text + (d.texto_incompleto ? " [texto cortado]" : "") }),
+    f.reevaluacion ? h("div", { class: "bad small", text: `Reevaluado (${f.reevaluacion.regla}, ${f.reevaluacion.version}): certeza original ${f.certeza_original} → efectiva ${f.certainty} · ${f.reevaluacion.detalle || f.reevaluacion.veredicto}` }) : "",
     general ? h("div", { class: "bad small", text: `Generaliza más allá de la evidencia: ${d.detalle || ""}${d.verificar_con ? ` · para verificar: ${d.verificar_con}` : ""}` }) :
       (d.verificacion && d.verificacion !== "respaldada" ? h("div", { class: "bad small", text: `No respaldada: ${d.detalle || d.verificacion}` }) : ""),
     d.alcance ? h("div", { class: "muted small", text: `Alcance de la evidencia: ${d.alcance}${d.alcance_declarado ? ` · declarado por el modelo: ${d.alcance_declarado}` : ""}` }) : "",
@@ -1019,16 +1021,20 @@ async function renderExploration(box, mid, m) {
   const unverified = d.facts.filter((f) => f.certainty === "sin_verificar");
   // 0.4.6: lo NUEVO de esta expedición, lo HISTÓRICO (creado antes) y las PROPUESTAS, por separado.
   const kinds = { hallazgo: "Descubrimientos", relacion: "Relaciones", estadistica: "Estadísticas", advertencia: "Advertencias", cambio: "Cambios" };
+  // 0.4.7: reformular, confirmar o redondear algo ya sabido no es conocimiento nuevo.
+  const restated = (f) => ["reformula", "redondeo_compatible", "confirma"].includes((f.data || {}).aporte);
   const own = d.facts.filter((f) => f.origen !== "historico");
+  const ownRestated = own.filter((f) => ["hallazgo", "advertencia"].includes(f.kind) && f.certainty !== "sin_verificar" && restated(f));
   const hist = d.facts.filter((f) => f.origen === "historico" && !["oportunidad", "estructura"].includes(f.kind));
   const facts = h("div");
   facts.append(h("h2", { class: "mt", text: "Conocimiento nuevo de esta expedición" }));
   if (!own.some((f) => kinds[f.kind] && f.certainty !== "sin_verificar")) facts.append(h("p", { class: "muted small", text: d.evaluation && d.evaluation.metrics && d.evaluation.metrics.consultas_propias_con_resultado === 0 ? "Esta expedición no ejecutó ninguna consulta: no tiene descubrimientos propios." : "Sin hechos nuevos registrados." }));
   for (const [k, title] of Object.entries(kinds)) {
-    const fs = own.filter((f) => f.kind === k && f.certainty !== "sin_verificar");
+    const fs = own.filter((f) => f.kind === k && f.certainty !== "sin_verificar" && !ownRestated.includes(f));
     if (!fs.length) continue;
     facts.append(h("h3", { class: "mt", text: `${title} (${fs.length})` }), h("div", { class: "list" }, ...fs.map((f) => factItem(f))));
   }
+  if (ownRestated.length) facts.append(h("h3", { class: "mt", text: `Reformulaciones y confirmaciones (${ownRestated.length}) — no suman conocimiento nuevo` }), h("div", { class: "list" }, ...ownRestated.map((f) => factItem(f))));
   const ownUnverified = unverified.filter((f) => f.origen !== "historico");
   if (ownUnverified.length) facts.append(h("h3", { class: "mt bad", text: `Afirmaciones sin verificar (${ownUnverified.length}) — no son descubrimientos` }), h("div", { class: "list" }, ...ownUnverified.map((f) => factItem(f))));
   if (hist.length) facts.append(h("h2", { class: "mt", text: `Conocimiento histórico reobservado o confirmado en esta expedición (${hist.length})` }),

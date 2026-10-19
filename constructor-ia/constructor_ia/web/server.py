@@ -754,7 +754,10 @@ class Handler(BaseHTTPRequestHandler):
         fact = dict(row)
         fact["data"] = json.loads(fact.pop("data_json")) if fact.get("data_json") else None
         fact["evidence"] = json.loads(fact.pop("evidence_json") or "[]")
-        self._json(200, {"fact": fact, "history": maps.history(name, int(fact_id))})
+        fact["certeza_original"] = fact["certainty"]
+        fact["certainty"] = maps.effective(fact["id"], fact["certainty"])
+        self._json(200, {"fact": fact, "history": maps.history(name, int(fact_id)),
+                         "reevaluaciones": maps.reviews(name, "hecho", int(fact_id))})
 
     @route("GET", r"/api/explorer/maps/([a-z0-9_]{1,40})")
     def api_explorer_map(self, s, name):

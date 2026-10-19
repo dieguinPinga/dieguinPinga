@@ -304,8 +304,9 @@ def _print_evaluation(db, mid) -> int:
         if notes:
             print(f"      contexto: {'; '.join(notes)}")
     print("Hallazgos respaldados:")
-    for f in db.all("SELECT id, text FROM explore_facts WHERE mission_id=? AND kind IN ('hallazgo','advertencia')"
-                    " AND certainty='inferencia' ORDER BY id", (mid,)):
+    from .explorer.mapstore import EFFECTIVE_SQL
+    for f in db.all(f"SELECT f.id, f.text FROM explore_facts f WHERE f.mission_id=? AND f.kind IN ('hallazgo','advertencia')"
+                    f" AND {EFFECTIVE_SQL}='inferencia' ORDER BY f.id", (mid,)):
         print(f"  F{f[0]} {f[1][:200]}")
     print("Aplicaciones propuestas:")
     for f in db.all("SELECT id, text FROM explore_facts WHERE mission_id=? AND kind='oportunidad' ORDER BY id", (mid,)):
@@ -355,17 +356,78 @@ def cmd_explorer_fact(args) -> int:
         print(f"No existe el hecho F{args.id} en {args.conn}", file=sys.stderr)
         return 2
     d = json.loads(row["data_json"] or "{}") or {}
-    print(f"F{row['id']} [{row['kind']} · {row['certainty']} · {row['status']}] {row['text']}")
+    maps = MapStore(db)
+    eff = maps.effective(row["id"], row["certainty"])
+    print(f"F{row['id']} [{row['kind']} · {eff}" + (f" (original: {row['certainty']})" if eff != row["certainty"] else "")
+          + f" · {row['status']}] {row['text']}")
     print(f"  creado en {row['mission_id']} · última observación en {row['last_mission_id']} · evidencia "
           f"{', '.join(json.loads(row['evidence_json'] or '[]')) or '—'}")
     for k in ("verificacion", "detalle", "alcance", "alcance_declarado", "aporte", "aporte_motivo", "relacion_con",
               "verificar_con"):
         if d.get(k):
             print(f"  {k}: {d[k]}")
+    for rv in maps.reviews(args.conn, "hecho", args.id):
+        print(f"  reevaluado ({rv['regla']}, {rv['version']}, plan {rv['plan']}): {rv['certeza_anterior']} → "
+              f"{rv['certeza_nueva']} · {rv['detalle']}")
     print("Historial:")
-    for e in MapStore(db).history(args.conn, args.id):
+    for e in maps.history(args.conn, args.id):
         print(f"  {time.strftime('%Y-%m-%d %H:%M', time.localtime(e['created_at']))} {e['event']} ({e['mission_id']}): "
               f"{e['certainty_before']} → {e['certainty_after']}" + (f" · evidencia {', '.join(e['evidence'])}" if e['evidence'] else ""))
+    return 0
+
+
+def cmd_explorer_reevaluate(args) -> int:
+    """Reevalúa la memoria con las reglas de 0.4.7. Por defecto SOLO SIMULA (base abierta en solo lectura)."""
+    cfg = _cfg(args)
+    from .db import Database
+    from .explorer.reevaluate import Reevaluator
+
+    only = {x.strip().upper() for x in (args.solo or "").split(",") if x.strip()} or None
+    if not args.aplicar:
+        if not Path(cfg.db_path).exists():
+            print(f"No existe la base {cfg.db_path}", file=sys.stderr)
+            return 2
+        rv = Reevaluator(Database(cfg.db_path, readonly=True), args.conn)
+        items = rv.plan(only)
+        code = rv.code(items)
+        if args.json:
+            print(json.dumps({"plan": code, "items": items}, ensure_ascii=False, indent=1, default=str))
+        else:
+            for it in items:
+                ref = f"{'C' if it['objeto'] == 'consulta' else 'F'}{it['id']}"
+                cert = (f"{it['certeza_anterior']} → {it['certeza_nueva']}" if it["objeto"] == "hecho" else "alcance")
+                print(f"{ref:>6} [{it['regla']}] {cert}: {it['detalle']}")
+            counts: dict = {}
+            for it in items:
+                counts[it["regla"]] = counts.get(it["regla"], 0) + 1
+            print(f"\nSIMULACIÓN — no se escribió nada. {len(items)} reevaluaciones"
+                  + (f" ({', '.join(f'{k}: {v}' for k, v in counts.items())})" if counts else "") + f". Plan {code}.")
+            if items:
+                print(f"Para aplicarlo (con copia de seguridad previa): constructor-ia explorer-reevaluar {args.conn}"
+                      + (f" --solo {','.join(sorted(only))}" if only else "") + f" --aplicar --plan {code}")
+        return 0
+    if not args.plan:
+        print("Aplicar exige --plan con el código de una simulación revisada", file=sys.stderr)
+        return 2
+    backup = Path(cfg.data_dir / "backups" / time.strftime("constructor-%Y%m%d-%H%M%S-pre-reevaluacion.db"))
+    backup.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    src, dst = sqlite3.connect(cfg.db_path), sqlite3.connect(backup)
+    with dst:
+        src.backup(dst)
+    src.close()
+    dst.close()
+    os.chmod(backup, 0o600)
+    print(f"Copia de seguridad: {backup}")
+    db = Database(cfg.db_path)
+    db.migrate()
+    rv = Reevaluator(db, args.conn)
+    items = rv.plan(only)
+    try:
+        n = rv.apply(items, args.plan, authorized_by=f"cli:{os.environ.get('USER', '?')}")
+    except (ValueError, RuntimeError) as e:
+        print(f"No se aplicó nada: {e}", file=sys.stderr)
+        return 1
+    print(f"Aplicadas {n} reevaluaciones del plan {args.plan}. Los hechos conservan su texto y su certeza original.")
     return 0
 
 
@@ -490,6 +552,13 @@ def main(argv=None) -> int:
     a.add_argument("conn")
     a.add_argument("id", type=int)
     a.set_defaults(fn=cmd_explorer_fact)
+    a = sub.add_parser("explorer-reevaluar", help="Reevalúa la memoria con las reglas actuales (por defecto: simulación)")
+    a.add_argument("conn")
+    a.add_argument("--solo", help="limitar a estos objetos, p. ej. F106,C61")
+    a.add_argument("--json", action="store_true")
+    a.add_argument("--aplicar", action="store_true", help="registrar el plan (exige --plan de una simulación)")
+    a.add_argument("--plan", help="código del plan simulado que se autoriza")
+    a.set_defaults(fn=cmd_explorer_reevaluate)
     a = sub.add_parser("ollama-diag", help="Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, CPU)")
     a.add_argument("--segundos", type=float, default=1200, help="duración del muestreo (default 1200)")
     a.add_argument("--intervalo", type=float, default=1.0)

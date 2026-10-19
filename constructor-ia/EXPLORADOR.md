@@ -1100,3 +1100,172 @@ como cualquier otra.
   promete.
 - Si la expedición termina sin conexión (cancelación), las consultas propuestas quedan «sin verificar» (solo se
   comprobaron las tablas).
+
+---
+
+# Cambios 0.4.7: memoria confiable (alcance real, identificadores, textos cortados, reformulaciones)
+
+Auditoría de la memoria real de 0.4.6: 19 misiones, 64 consultas, 116 hechos, 126 eventos de historial, SQLite
+íntegra. Se encontraron cuatro problemas.
+
+## Causas
+
+1. **C61 / F106: cobertura completa certificada sin estar demostrada.**
+   - C61 era `frecuentes` sobre una tabla de unas 900 mil filas (estimación del motor), con `LIMIT 100000` en una
+     subconsulta.
+   - Las herramientas del sistema usaban la forma `tool_shape` (sin límites), y las filas analizadas solo se
+     conocían para `perfil`. Con `analyzed=None`, `scope` daba `capped=false`.
+   - Resultado: se guardó `agregado_total`, `completo=true` y `forma.limit=null`, y F106 («C61 analizó toda la
+     tabla») quedó como inferencia respaldada.
+   - Además, `claim_scope_check` dejaba pasar tres casos: el alcance declarado («muestra») mandaba sobre un texto que
+     decía «toda la tabla»; frases como «la totalidad» no se reconocían; y un alcance desconocido se aceptaba.
+2. **F104: nombres buscados como datos.** Todo literal entre comillas se buscaba en el resultado. En un resultado
+   agregado solo hay alias, así que el nombre de una tabla o columna nunca aparecía. Al revés, un alias se
+   «encontraba» en los encabezados como si fuera un valor.
+3. **F97: frases cortadas.** La gramática de Ollama corta la cadena en el `maxLength` del esquema (180 para
+   hallazgos, 140 para hipótesis e incertidumbres) aunque la frase no haya terminado.
+4. **Reformulaciones contadas como conocimiento nuevo.**
+   - Al clasificar, se excluían los hechos nacidos de la misma consulta.
+   - Dos hallazgos que decían lo mismo, o la reformulación de una estadística del sistema, salían como «nuevo».
+   - Un redondeo (3.2 frente a 3.21) se tomaba como una diferencia.
+
+## Corrección
+
+**Alcance según el SQL ejecutado** (`knowledge.sql_limits`, `scope(sql=…)`):
+- Se distinguen el LIMIT exterior (recorta el resultado) y los interiores (subconsultas y CTE: recortan las filas
+  analizadas). La forma registrada lleva ambos.
+- La cobertura completa se certifica solo si está **demostrada**: sin LIMIT interior, o con menos filas analizadas
+  que ese límite, o con un conteo **exacto** de la tabla menor que el límite.
+- `frecuentes` informa las filas analizadas solo cuando el resultado muestra todos los grupos (la suma de «veces»).
+- Si no se puede demostrar, el alcance es `agregado_muestra` («hasta N filas por un LIMIT interior, de ~M filas»),
+  con `cobertura: no_demostrada`.
+- `claim_scope_check`: lo que el texto dice explícitamente («toda la tabla», «la totalidad», «el total de
+  registros», «analizó toda…») manda sobre el alcance declarado. Si el alcance de la evidencia no se puede
+  determinar, una afirmación sobre la tabla completa queda como hipótesis.
+- Si la evidencia son solo hechos citados, se usa el alcance de la consulta que originó cada uno.
+
+**Identificadores frente a valores** (`validation.classify_literals`). Cada literal se clasifica:
+- **Valor de dato:** debe estar en las celdas del resultado (o en un hecho citado), nunca en los encabezados.
+- **Alias:** una columna del resultado o un `AS x` del SQL. Es un nombre, no un dato; presentado como valor («el
+  valor «x»») no se acepta.
+- **Identificador:** un nombre del esquema que figura en el SQL citado. Si la evidencia no lo usa, queda
+  `identificadores_ajenos`.
+- **Parámetro:** una cifra del SQL citado (un `LIMIT 100000`, un alias `p95`). Se acepta como parámetro, no como dato.
+
+La clasificación queda en `data.literales` del hecho.
+
+**Textos completos:**
+- La etapa B pide hasta 2 hallazgos de una frase completa, de hasta 280 caracteres (antes 3 de 180). Las hipótesis
+  e incertidumbres van hasta 200 (antes 140). La respuesta más larga posible (~468 tokens) sigue entrando en la
+  reserva de 512.
+- Un texto que ocupa el límite sin terminar la frase se guarda marcado (`texto_incompleto`), con certeza hipótesis.
+- El largo guardado sube de 600 a 1000 caracteres. Las propuestas se recortan de forma visible («[…]»), y el texto
+  completo queda en sus datos.
+
+**Conocimiento nuevo:**
+- `classify` compara también con los hechos de la misma consulta. Decir lo mismo que uno de ellos es `reformula`;
+  coincidir con otra consulta es `confirma`; un valor que es el redondeo de uno conocido es `redondeo_compatible`
+  (no demuestra igualdad ni diferencia). Ninguno de los tres es conocimiento nuevo.
+- Compartir columnas **no** hace equivalentes a dos hechos de claves distintas. Solo se reconoce una reformulación
+  si nació de la misma consulta y no trae ningún valor nuevo.
+- `hechos_nuevos` cuenta **unidades** distintas. Si el modelo reformula una estadística que el sistema acaba de
+  crear con esa consulta, la unidad es esa estadística, contada una sola vez.
+- Métricas nuevas: `reformulaciones`, `redondeos_compatibles` y `afirmaciones_truncadas`. El informe y la UI separan
+  «Reformulaciones y confirmaciones (no suman conocimiento nuevo)».
+
+## Reevaluación de la memoria existente (sin cambiar los 116 hechos)
+
+- **Migración 0007** (solo agrega): crea la tabla `explore_reviews` y un índice.
+- La **certeza efectiva** de un hecho es la del último evento de su historial. La certeza original sigue en
+  `explore_facts.certainty`, y el texto no se toca.
+- La interfaz, los mensajes al modelo, la clasificación y `explorer-hecho` usan la certeza efectiva y muestran la
+  original y la reevaluación.
+- Una evidencia nueva posterior puede volver a subir la certeza efectiva (queda en el historial). La columna original
+  nunca baja.
+
+`constructor-ia explorer-reevaluar <conexión>` **solo simula**: abre la base en modo de solo lectura (ni siquiera
+migra) y lista qué cambiaría y por qué, con un código de plan. Las reglas se aplican en orden:
+1. `alcance_consulta`: el alcance de cada consulta se recalcula con su SQL ejecutado. El alcance original de la
+   consulta se conserva y el nuevo queda en la reevaluación.
+2. `verificacion`: se vuelve a contrastar, con la fecha original de la afirmación, separando identificadores, alias,
+   parámetros y valores.
+3. `alcance_afirmacion`: una afirmación sobre la tabla completa cuya evidencia no la cubre pasa a hipótesis.
+4. `texto_incompleto`: un texto cortado en un límite anterior (180, 140 o 600) no se certifica.
+5. `aporte`: lo contado como nuevo que solo reformula o redondea algo ya registrado. Cambia el aporte, no la certeza.
+
+Aplicar exige `--aplicar --plan <código>` (el de la simulación revisada; con `--solo F106,C61`, el de esa
+simulación). Antes de escribir:
+- se hace una copia `data/backups/constructor-…-pre-reevaluacion.db`;
+- se vuelve a calcular el plan y, si cambió, no se aplica nada.
+
+Cada punto queda en `explore_reviews` (regla, versión, plan, antes y después, evidencia y quién lo autorizó) y, para
+los hechos, como evento `reevaluado` del historial. Una reevaluación aplicada no se repite.
+
+## Pruebas
+
+`tests/test_explorer_memoria.py` (20), con datos sintéticos (ningún nombre ni valor de la base auditada):
+- C59, C60 y C61: perfil(tabla), perfil(tabla, columna) y frecuentes con `LIMIT 100000` interior; cobertura
+  demostrada solo cuando corresponde; LIMIT interiores en el SQL propio del modelo.
+- F106 y las frases explícitas sobre la tabla completa; un alcance desconocido no se certifica.
+- F104: identificadores en un resultado agregado, nombres ajenos a la evidencia, alias que no son datos y cifras del
+  SQL como parámetros.
+- F97: un texto cortado en 179 caracteres frente a una frase completa de ~250.
+- Reformulación, confirmación, columnas compartidas que no bastan y redondeo compatible.
+- Memoria sintética en estado 0.4.6 con 116 hechos:
+  - la simulación no escribe nada (huella del archivo idéntica);
+  - aplicar sin el código del plan no escribe;
+  - aplicada, los 116 hechos quedan idénticos (texto, certeza original, procedencia y fechas), la certeza efectiva
+    cambia solo donde corresponde y la reevaluación no se repite;
+  - el comando de consola con `--solo`, la copia de seguridad previa y `explorer-hecho`.
+- De punta a punta con el agente real y el MariaDB privado de pruebas, con el tope de muestra en 100 sobre una tabla
+  de 300 filas. Con 0.4.6 esta prueba reproduce el defecto: C61 sale `agregado_total, completo=True`.
+
+## Actualización por SSH (0.4.6 → 0.4.7)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.7-memoria
+git checkout claude/constructor-ia-0.4.7-memoria
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+Al arrancar, el servicio aplica la migración 0007 (solo agrega). `config.toml` no cambia. No se tocan Ollama,
+MariaDB, Node-RED ni otros servicios.
+
+## Reevaluar la memoria real (después de instalar, solo si lo autorizás)
+
+```bash
+~/constructor-ia/bin/constructor-ia explorer-reevaluar caverna_01            # simulación: no escribe nada
+~/constructor-ia/bin/constructor-ia explorer-reevaluar caverna_01 --json > ~/reevaluacion-plan.json
+# revisar el plan; aplicar SOLO con autorización explícita, todo o una parte:
+~/constructor-ia/bin/constructor-ia explorer-reevaluar caverna_01 --solo C61,F106 --aplicar --plan <código>
+~/constructor-ia/bin/constructor-ia explorer-hecho caverna_01 106
+```
+
+## Rollback (0.4.7 → 0.4.6)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.6' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+- 0.4.6 funciona sobre la base migrada: ignora `explore_reviews` y usa la certeza original de cada hecho, que nunca
+  se modificó.
+- Si 0.4.6 vuelve a observar un hecho reevaluado, su evento queda último en el historial. Al volver a 0.4.7, simular
+  de nuevo con `explorer-reevaluar`: la regla que corresponda vuelve a proponerse.
+- Si se aplicó una reevaluación y se quiere volver exactamente al estado anterior, restaurar la copia
+  `data/backups/constructor-…-pre-reevaluacion.db` con el servicio detenido (INSTALL.md §10, Recuperación ante fallos).
+
+## Limitaciones
+
+- Un texto cortado se detecta por ocupar el límite sin terminar la frase. Una frase completa que termina sin
+  puntuación justo en el límite también se marca: es un error conservador.
+- El alcance recalculado de consultas viejas usa las filas de la tabla registradas entonces (o la estimación del
+  último esquema). No se vuelve a consultar MariaDB.
+- `redondeo_compatible` se reconoce cuando el valor conocido tiene más decimales. Otras equivalencias (porcentajes,
+  unidades) quedan como diferencias o como `indeterminado`.

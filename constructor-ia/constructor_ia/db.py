@@ -12,12 +12,19 @@ MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 
 
 class Database:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, readonly: bool = False):
         self.path = Path(path)
+        self.readonly = readonly  # solo lectura: no crea, no migra ni escribe (p. ej. simulaciones)
         self._local = threading.local()
 
     def connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
+        if conn is None and self.readonly:
+            conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=15, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=15000")
+            self._local.conn = conn
         if conn is None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.path, timeout=15, isolation_level=None)

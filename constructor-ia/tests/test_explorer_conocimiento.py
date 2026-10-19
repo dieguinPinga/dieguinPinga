@@ -131,7 +131,7 @@ class MigrationTests(unittest.TestCase):
         c.commit()
         c.close()
         db = Database(path)
-        self.assertEqual(db.migrate(), 6)
+        self.assertEqual(db.migrate(), 7)  # hasta la última migración (0007 solo agrega reevaluaciones)
         got = [tuple(r) for r in db.all("SELECT conn, mission_id, kind, certainty, subject, text, evidence_json FROM"
                                         " explore_facts ORDER BY id")]
         self.assertEqual(got, rows, "la migración no cambia ningún hecho")

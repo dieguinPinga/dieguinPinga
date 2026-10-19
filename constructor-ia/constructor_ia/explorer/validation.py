@@ -273,11 +273,78 @@ GENERIC_CODES = {"SQL", "NULL", "ID", "PK", "FK", "JSON", "CSV", "API", "UTC", "
                  "BY", "JOIN", "ON", "AS", "IS", "IN", "DESC", "ASC", "TRUE", "FALSE", "HTML", "URL", "UUID"}
 
 
+def _literals_at(text: str) -> list[tuple[str, int]]:
+    """(literal, posición): textos entre comillas y códigos EN MAYÚSCULAS, sin repetir."""
+    found = [(m.group(1).strip(), m.start()) for m in QUOTED_RE.finditer(text or "")]
+    found += [(m.group(1), m.start()) for m in CODE_RE.finditer(text or "")
+              if m.group(1) not in GENERIC_CODES and not re.fullmatch(r"[CF]\d+", m.group(1))]
+    out, seen = [], set()
+    for v, pos in sorted(found, key=lambda x: x[1]):
+        if v and v not in seen:
+            seen.add(v)
+            out.append((v, pos))
+    return out
+
+
 def literal_values(text: str) -> list[str]:
-    """Valores que la afirmación presenta como datos: códigos EN MAYÚSCULAS y textos entre comillas."""
-    vals = [m.group(1) for m in QUOTED_RE.finditer(text or "")]
-    vals += [c for c in CODE_RE.findall(text or "") if c not in GENERIC_CODES and not re.fullmatch(r"[CF]\d+", c)]
-    return list(dict.fromkeys(v.strip() for v in vals if v.strip()))
+    """Literales de la afirmación: códigos EN MAYÚSCULAS y textos entre comillas (valores o nombres)."""
+    return [v for v, _ in _literals_at(text)]
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFKD", str(s).lower()) if not unicodedata.combining(c))
+
+
+IDENT_RE = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)?")
+VALUE_CTX_RE = re.compile(r"\b(?:el|un|los|unos|del|al)\s+valor(?:es)?\s*$|\bvalor(?:es)?\s*$")
+TERMINAL_RE = re.compile(r"[.!?…»\"'”’)\]]\s*$")
+
+
+def is_truncated(text: str, limit: int | None) -> bool:
+    """¿El texto llegó cortado por un límite de longitud? (ocupa el límite y no termina una frase)."""
+    t = " ".join(str(text or "").split())
+    return bool(limit) and len(t) >= limit - 3 and not TERMINAL_RE.search(t)
+
+
+def classify_literals(text: str, evidence: list[dict], names: set | None) -> dict:
+    """Separa los literales de una afirmación en VALORES de datos, IDENTIFICADORES SQL y ALIAS (0.4.7).
+
+    * valor: aparece en las CELDAS del resultado citado (o en el texto de un hecho citado), nunca en los encabezados.
+    * alias: nombre de una columna del resultado o un «AS x» del SQL citado: es un nombre, no un dato.
+    * identificador: nombre de tabla o columna del esquema que figura en el SQL citado (o en un hecho citado).
+    Un literal presentado como valor («el valor «x»») solo puede ser un valor. Devuelve listas y los problemas:
+    «ausentes» (ni valor ni nombre) y «ajenos» (nombres del esquema que la evidencia citada no usa).
+    """
+    cells = " ".join(e.get("celdas", e.get("texto", "")) for e in evidence).lower()
+    cells_f = _fold(cells)
+    alias, sql_words, fact_words = set(), set(), set()
+    for e in evidence:
+        if e.get("tipo") == "consulta":
+            alias |= {_fold(c) for c in e.get("columnas") or []}
+            sql = _fold(e.get("sql") or "").replace("`", "")
+            alias |= set(re.findall(r"\bas\s+([a-z_][a-z0-9_]*)", sql))
+            sql_words |= set(re.findall(r"[a-z_][a-z0-9_]*", sql))
+        else:
+            fact_words |= set(re.findall(r"[a-z_][a-z0-9_]*", _fold(e.get("texto", ""))))
+    out = {"valores": [], "identificadores": [], "alias": [], "ausentes": [], "ajenos": []}
+    for v, pos in _literals_at(text):
+        fv = _fold(v).strip("` ").strip()
+        as_value = bool(VALUE_CTX_RE.search(_fold((text or "")[:pos]).rstrip()))
+        if v.lower() in cells or fv in cells_f:
+            out["valores"].append(v)
+        elif not as_value and fv in alias:
+            out["alias"].append(v)
+        elif not as_value and names and IDENT_RE.fullmatch(fv) and all(p in names for p in fv.split(".")):
+            parts = fv.split(".")
+            if all(p in sql_words or p in alias or p in fact_words for p in parts):
+                out["identificadores"].append(v)
+            else:
+                out["ajenos"].append(v)
+        else:
+            out["ausentes"].append(v)
+    return out
 
 
 TS_RE = re.compile(r"(?<!\d)((?:19|20)\d\d)-([01]\d)-([0-3]\d)(?:[ T]([0-2]\d):([0-5]\d)(?::([0-5]\d))?)?(?!\d)")
@@ -316,11 +383,15 @@ def temporal_note(rows: list, now: float | None = None) -> str:
             "no demuestran el estado ACTUAL salvo que sean de la última hora.")
 
 
-def verify_claim(text: str, evidence: list[dict], now: float | None = None) -> tuple[str, str, str]:
+def verify_claim(text: str, evidence: list[dict], now: float | None = None, names: set | None = None,
+                 out: dict | None = None) -> tuple[str, str, str]:
     """Contrasta una afirmación con su evidencia.
 
-    evidence: [{"id": "C7", "tipo": "consulta", "status": ..., "row_count": n, "utilidad": ..., "texto": resultado}]
+    evidence: [{"id": "C7", "tipo": "consulta", "status": ..., "row_count": n, "utilidad": ..., "texto": resultado,
+                "celdas": solo valores, "columnas": encabezados, "sql": consulta}]
               o [{"id": "F3", "tipo": "hecho", "certainty": ..., "texto": ...}]
+    names: nombres del esquema (tablas y columnas, en minúsculas sin acentos) para distinguir identificadores SQL de
+    valores. out: si se pasa, recibe la clasificación de los literales.
     Devuelve (certeza, veredicto, detalle): certeza «inferencia» si está respaldada, si no «sin_verificar».
     """
     if not evidence:
@@ -333,19 +404,30 @@ def verify_claim(text: str, evidence: list[dict], now: float | None = None) -> t
         return "sin_verificar", "evidencia_vacia", f"la evidencia citada no aporta datos ({states})"
     numbers = [n for n in NUM_RE.findall(text or "") if len(re.sub(r"\D", "", n)) >= 2]
     if numbers:
-        haystack = " ".join(e.get("texto", "") for e in usable)
-        tokens = set()
+        # Las cifras se buscan en los DATOS (celdas), no en los encabezados ni alias del resultado.
+        haystack = " ".join(e.get("celdas", e.get("texto", "")) for e in usable)
+        tokens, params = set(), set()
         for tok in re.findall(r"-?\d[\d.,]*", haystack):
             tokens |= _norm_num(tok.rstrip(".,"))
+        # Una cifra del SQL citado (un LIMIT, un alias como p95) es un PARÁMETRO de la consulta, no un dato.
+        for tok in re.findall(r"-?\d[\d.,]*", " ".join(e.get("sql") or "" for e in usable if e["tipo"] == "consulta")):
+            params |= _norm_num(tok.rstrip(".,"))
         missing = [n for n in numbers if not (_norm_num(n) & tokens)]
+        if out is not None and missing:
+            out["parametros"] = [n for n in missing if _norm_num(n) & params]
+        missing = [n for n in missing if not (_norm_num(n) & params)]
         if missing:
             return ("sin_verificar", "cifras_no_encontradas",
                     f"cifras que no aparecen en la evidencia citada: {', '.join(missing[:5])}")
-    haystack_all = " ".join(e.get("texto", "") for e in usable).lower()
-    absent = [v for v in literal_values(text) if v.lower() not in haystack_all]
-    if absent:
+    lits = classify_literals(text, usable, names)
+    if out is not None:
+        out.update({k: v for k, v in lits.items() if v})
+    if lits["ajenos"]:
+        return ("sin_verificar", "identificadores_ajenos",
+                f"nombres del esquema que la evidencia citada no usa: {', '.join(lits['ajenos'][:5])}")
+    if lits["ausentes"]:
         return ("sin_verificar", "valores_no_encontrados",
-                f"valores que no aparecen en la evidencia citada: {', '.join(absent[:5])}")
+                f"valores que no aparecen en los datos de la evidencia citada: {', '.join(lits['ausentes'][:5])}")
     if CURRENT_RE.search(text or ""):
         ts = timestamps(" ".join(e.get("texto", "") for e in usable if e["tipo"] == "consulta"))
         now = time.time() if now is None else now
@@ -357,6 +439,15 @@ def verify_claim(text: str, evidence: list[dict], now: float | None = None) -> t
                     "afirma algo ACTUAL o vigente, pero el registro más reciente de la evidencia es del "
                     + time.strftime("%Y-%m-%d %H:%M", time.localtime(max(ts))) + " (histórico)")
     return "inferencia", "respaldada", "contrastada con " + ", ".join(e["id"] for e in usable[:5])
+
+
+def evidence_cells(result_json: str | None) -> tuple[str, list[str]]:
+    """(valores de las celdas, encabezados) de un resultado registrado."""
+    try:
+        r = json.loads(result_json or "null") or {}
+    except ValueError:
+        return "", []
+    return " ".join(str(v) for row in r.get("rows") or [] for v in row), [str(c) for c in r.get("columns") or []]
 
 
 def evidence_text(result_json: str | None) -> str:
