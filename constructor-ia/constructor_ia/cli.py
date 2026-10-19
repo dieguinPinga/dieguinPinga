@@ -258,8 +258,9 @@ def _print_evaluation(db, mid) -> int:
     print("Traza del ciclo (pregunta → consulta → registros → interpretación → siguiente pregunta):")
     for st in db.all("SELECT * FROM explore_steps WHERE mission_id=? ORDER BY n, id", (mid,)):
         st = dict(st)
-        if st["status"] == "invalida":
-            print(f"  Paso {st['n']}: respuesta inválida — {(st.get('analysis') or '')[:160]}")
+        if st["status"] in ("invalida", "sin_respuesta"):
+            label = "respuesta inválida" if st["status"] == "invalida" else "Ollama no respondió"
+            print(f"  Paso {st['n']}: {label} — {(st.get('analysis') or '')[:160]}")
             continue
         q = db.one("SELECT status, row_count FROM explore_queries WHERE id=?", (st["query_id"],)) if st.get("query_id") else None
         res = f"C{st['query_id']} {q['status']}, {q['row_count']} filas" if q else "sin consulta"
@@ -269,14 +270,28 @@ def _print_evaluation(db, mid) -> int:
             print(f"      etapa A: se descartaron {', '.join(ev['anticipadas_descartadas'])} anticipados (sin resultado)")
         it = json.loads(st["interpretation"]) if st.get("interpretation") else None
         if it and it.get("estado") == "valida":
-            print(f"      etapa B: {it['resumen'][:160]} [{it['resumen_verificacion']}] · "
+            print(f"      etapa B ({it.get('forma', 'completa')}): {it['resumen'][:160]} [{it['resumen_verificacion']}] · "
                   f"{it['respaldados']} hallazgos respaldados de {len(it['hallazgos'])}")
         elif it:
             print(f"      etapa B: sin interpretación válida — {it.get('motivo', '')[:160]}")
         ctx = json.loads(st["context_json"]) if st.get("context_json") else {}
-        notes = [f"{k}: nivel {v.get('nivel', '—')}, ~{v.get('tokens_estimados', '?')} tokens"
-                 + (" (con desborde)" if any(a.get("desborde") for a in v.get("intentos", [])) else "")
-                 for k, v in ctx.items() if v]
+        notes = []
+        for k, v in ctx.items():
+            if not isinstance(v, dict):
+                continue
+            last = (v.get("intentos") or [{}])[-1]
+            t = last.get("tiempos") or {}
+            note = f"{k}: nivel {v.get('nivel', '—')}, ~{v.get('tokens_estimados', '?')} tokens"
+            if any(a.get("desborde") for a in v.get("intentos", [])):
+                note += " (con desborde)"
+            if t:
+                note += (f", {t['reloj_ms'] / 1000:.0f} s (prompt {t.get('tokens_prompt')} tok, generó "
+                         f"{t.get('tokens_generados')} tok a {t.get('generacion_tokens_s')} tok/s"
+                         + (f", sin explicar {t['sin_explicar_ms'] / 1000:.0f} s" if t.get("sin_explicar_ms") else "")
+                         + f", fin {t.get('fin')})")
+            if last.get("timeout"):
+                note += f", SIN RESPUESTA de Ollama tras {last['timeout']['espera_s']} s ({last['timeout']['fase']})"
+            notes.append(note)
         if notes:
             print(f"      contexto: {'; '.join(notes)}")
     print("Hallazgos respaldados:")
@@ -316,6 +331,37 @@ def cmd_explorer_report(args) -> int:
     if args.respuestas:
         _print_raw_answers(db, args.mission)
     return rc
+
+
+def cmd_ollama_diag(args) -> int:
+    """Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, cgroup, CPU) cruzado con las llamadas."""
+    from . import diag_ollama as D
+
+    cfg = _cfg(args)
+    calls = None
+    if args.mision:
+        from .db import Database
+        from .files import FileStore
+
+        db = Database(cfg.db_path)
+        raw = FileStore(db, cfg.missions_dir).read_rel(args.mision, "exploracion/llamadas_ollama.json")
+        if raw is None:
+            print(f"La misión {args.mision} no tiene registro de llamadas (exploraciones desde 0.4.4).", file=sys.stderr)
+        else:
+            calls = json.loads(raw)
+    if args.analizar:
+        data = D.load(Path(args.analizar))
+    else:
+        out = Path(args.salida or cfg.log_dir / time.strftime("ollama-diag-%Y%m%d-%H%M%S.jsonl"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        data = D.collect(cfg.ollama_url, args.segundos, args.intervalo, args.pid, out)
+    report = D.analyze(data, calls)
+    print(D.render(report))
+    print(D.journal_hint(data["meta"]))
+    if not args.analizar:
+        Path(str(out) + ".resumen.json").write_text(json.dumps(report, ensure_ascii=False, indent=1))
+        print(f"Muestras: {out} · resumen: {out}.resumen.json")
+    return 0
 
 
 def cmd_explorer_trial(args) -> int:
@@ -404,6 +450,14 @@ def main(argv=None) -> int:
     a.add_argument("mission")
     a.add_argument("--respuestas", action="store_true", help="incluir las respuestas crudas del modelo en la etapa A")
     a.set_defaults(fn=cmd_explorer_report)
+    a = sub.add_parser("ollama-diag", help="Diagnóstico de solo lectura del Ollama CPU (memoria, swap, PSI, CPU)")
+    a.add_argument("--segundos", type=float, default=1200, help="duración del muestreo (default 1200)")
+    a.add_argument("--intervalo", type=float, default=1.0)
+    a.add_argument("--pid", type=int, help="PID del servidor Ollama CPU si no se detecta solo")
+    a.add_argument("--salida", help="archivo .jsonl de muestras (default: logs/ollama-diag-*.jsonl)")
+    a.add_argument("--mision", help="cruzar con las llamadas registradas de esta exploración")
+    a.add_argument("--analizar", help="analizar un .jsonl ya capturado en vez de muestrear")
+    a.set_defaults(fn=cmd_ollama_diag)
     a = sub.add_parser("explorer-trial", help="Expedición de ensayo sin interfaz con el modelo real")
     a.add_argument("conn")
     a.add_argument("--minutes", type=int, default=20)

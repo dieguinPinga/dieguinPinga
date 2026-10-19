@@ -603,3 +603,148 @@ Sin cambios de esquema que deshacer. Detalle cosmético: en pasos con reparacion
   tabla. Eso se detecta y se repara con la lista de columnas de la tabla elegida.
 - Que la gramática respete el `enum` depende de Ollama. Si una versión lo ignorara, siguen valiendo la
   normalización, la reparación precisa y el corte de bucles.
+
+---
+
+# Cambios 0.4.4: bloqueos de Ollama CPU e interpretaciones acotadas
+
+Exploración real M20261018-3571c4 (0.4.3): C35 y C36 devolvieron diez registros reales cada una, pero la etapa B
+se truncó una y otra vez. Después Ollama CPU (puerto 11435) pasó 317 580 ms «actualizando su caché de prompts»,
+Constructor informó un timeout «al contactar a Ollama CPU» y la misión terminó **fallida**. Ollama completó el
+pedido abandonado con HTTP 500 a los 5m18s y luego siguió respondiendo con HTTP 200.
+
+## Qué explica cada parte (lo comprobado y lo que falta medir)
+
+**Comprobado en Constructor (reproducido en pruebas):**
+
+1. **La misión falló por una clasificación errónea, no porque Ollama estuviera caído.** El socket del cliente
+   tenía el mismo plazo que el vigilante del tiempo total. Cuando el servidor acepta el pedido pero no envía nada,
+   a veces vencía primero el socket: el error decía «No se pudo contactar a Ollama» y el agente, al ver
+   «contactar», lo trataba como servidor caído y abortaba la misión. El plazo real era fraccionario
+   (`min(300 s, tiempo restante)`) y el vigilante revisa cada 0,5 s, así que el socket ganaba casi siempre. Con
+   el mismo escenario simulado, 0.4.3 termina *fallida* y 0.4.4 *completada* con el ciclo cerrado.
+2. **El pedido abandonado seguía ocupando el servidor.** Ollama atiende un pedido a la vez: el siguiente pedido
+   espera en cola detrás del abandonado (lo que viste: HTTP 500 a los 5m18s, después HTTP 200).
+3. **Las truncas de la etapa B consumían el tiempo.** La interpretación no tenía límites de cantidad ni de largo
+   y el reintento usaba la misma reserva de 900 tokens. A ~4 tokens/s eso son ~225 s por intento, más la
+   evaluación del prompt.
+
+**Cuentas con los datos informados (no son mediciones):**
+
+- KV cache de Qwen3-4B (36 capas, 8 cabezas KV × 128, f16): **~144 KiB por token**. 1437 MiB en 4 contextos son
+  ~359 MiB cada uno, es decir **~2500 tokens por contexto**: el tamaño de nuestros mensajes. Los contextos
+  guardados en la caché de prompts son, casi seguro, los pedidos recientes de Constructor.
+- Memoria aproximada de Ollama CPU durante la exploración: pesos de Qwen3-4B Q4 (~2,5 GiB) + KV activo con
+  `num_ctx=4096` (~576 MiB) + caché de prompts (1,4 GiB) + búferes ≈ **4,5–5 GiB**, en una VivoBook de 5,7 GiB
+  que además ejecuta MariaDB, Node-RED, Vigilanti y el Ollama principal. La presión de memoria es **plausible**,
+  pero no está demostrada. Que haya 1 GiB en swap no prueba nada: importa si se **lee** swap mientras Ollama no
+  responde.
+
+**Lo que falta medir en la VivoBook** (para eso es `ollama-diag`): si durante los 317 s hubo lecturas de swap y
+fallos de página mayores en el proceso de Ollama (presión de memoria); si Ollama usó CPU sin responder (cómputo
+propio del servidor al copiar estados de la caché); si estuvo casi sin CPU (espera o bloqueo interno); si su
+cgroup llegó a `memory.high`/`memory.max`; o si otros procesos ocuparon la CPU.
+
+## Cambios en Constructor
+
+| Cambio | Detalle |
+|---|---|
+| Ocupado ≠ caído | La conexión tiene un plazo propio de 5 s: si falla, Ollama **no está disponible**; se comprueba 3 veces antes de declarar la misión fallida. Si Ollama acepta el pedido y no responde, el error es `OllamaTimeout`, con la fase (`espera` o `generacion`): falla esa llamada, no la misión. El socket tiene 30 s de margen y nunca se adelanta al vigilante, que revisa cada 0,2 s. |
+| Pedido siguiente con más plazo | Tras un timeout, el próximo pedido recibe el doble de plazo (dentro del presupuesto), porque espera en cola detrás del abandonado. Con **2 timeouts seguidos** se deja de insistir: finalización `ollama_sin_respuesta`, informe automático sin pedirle otro informe al modelo y motivo explícito. El proceso queda *completada* y la evaluación dice por qué el resultado es insuficiente. Un timeout en la etapa A no cuenta como respuesta inválida del modelo. |
+| Etapa B acotada | Esquema con límites: resumen ≤ 200 caracteres, ≤ 3 hallazgos de ≤ 180, ≤ 1 hipótesis y ≤ 1 incertidumbre. La respuesta máxima posible estima 451 tokens (con la estimación pesimista), dentro de la reserva `interpret_num_predict = 512`. Antes no había límite y la reserva era de 900. |
+| Sin truncas repetidas | Si la respuesta se trunca, se **recuperan sus partes completas**: nunca se termina un texto cortado y lo recuperado se contrasta igual con la evidencia. Si no hay nada recuperable, se pide **una sola** interpretación mínima (una frase y un hallazgo, reserva de 256), en vez de repetir la misma de 512/900. |
+| Etapa A acotada | Largos máximos en pregunta, por qué, argumentos y SQL. Se retiró el `enum` de columnas de 0.4.3: repetía todas las columnas dos veces (~500 tokens estimados por mensaje). El de tablas se mantiene. |
+| Reserva según la velocidad medida | Con la velocidad de generación más baja de las últimas tres llamadas (y suponiendo que el prompt se evalúa entero), la reserva baja si no terminaría dentro del plazo. Hay un piso por etapa y queda anotado el motivo. |
+| Prefijo estable | Un único mensaje de sistema para las etapas A, B y el informe, y el mismo comienzo del mensaje de usuario (misión y base). Las marcas «leída/sin leer» salieron de la estructura (cambiaban en cada paso). Así Ollama puede reutilizar la evaluación del prefijo en vez de recalcularla, lo que en CPU cuesta decenas de segundos por pedido. Solo el nivel mínimo de contexto usa un sistema compacto por etapa. |
+| Tiempos medidos | Cada llamada registra el tiempo de reloj, el primer byte, los `load/prompt_eval/eval/total_duration` que informa Ollama, los tokens/s y el **tiempo sin explicar** (reloj menos carga, prompt y generación). Están en `exploracion/llamadas_ollama.json`, en la evaluación (`metrics.ollama`), en la traza de `explorer-report` y en la UI. |
+
+## Diagnóstico en la VivoBook (solo lectura; no cambia ningún servicio)
+
+`constructor-ia ollama-diag` lee `/proc`, `/sys/fs/cgroup` y `GET /api/ps` de la instancia configurada en
+Constructor (`ollama.url`, 11435). Se niega a apuntar al puerto 11434.
+
+```bash
+# Terminal 1: muestreo durante la prueba (cada 1 s, 25 min)
+~/constructor-ia/bin/constructor-ia ollama-diag --segundos 1500
+# Terminal 2: la prueba (con el servicio detenido para no competir por Ollama CPU)
+systemctl --user stop constructor-ia
+~/constructor-ia/bin/constructor-ia explorer-trial caverna_01 --minutes 20 --steps 15 --queries 30 --yes
+systemctl --user start constructor-ia
+# Después: cruzar las muestras con cada llamada de esa exploración
+~/constructor-ia/bin/constructor-ia ollama-diag --analizar ~/constructor-ia/logs/ollama-diag-<fecha>.jsonl --mision <misión>
+~/constructor-ia/bin/constructor-ia explorer-report <misión>
+```
+
+- Si Ollama CPU corre con otro usuario, el proceso no se detecta solo: el comando lista los candidatos y se
+  indica con `--pid`. Para eso leer `/proc` como root (`sudo`) también es solo lectura.
+- El comando sugiere el `journalctl` de la unidad de Ollama CPU para la misma ventana, filtrando líneas de
+  caché, slot y prompt.
+
+**Cómo leer los indicios** (cada uno cita sus cifras; no son conclusiones automáticas):
+
+| Indicio | Qué significa | Qué hacer (con aprobación, solo en 11435) |
+|---|---|---|
+| PRESIÓN DE MEMORIA: MiB leídos de swap, fallos mayores, tiempo con tareas trabadas por memoria (PSI full) | El bloqueo coincide con lecturas de swap: el swap **sí** explica la lentitud | Reducir la memoria de Ollama CPU (ver abajo) |
+| «Hay N MiB en swap pero casi sin lecturas» | El swap ocupado **no** explica la lentitud | Buscar la causa en el servidor |
+| LÍMITE DEL CGROUP (`memory.events high/max`) | systemd estrangula a Ollama por `MemoryHigh`/`MemoryMax` | Revisar los límites de esa unidad |
+| CONTENCIÓN DE CPU | Otros procesos ocupaban la CPU (ver `top_cpu` en las muestras) | Programar las pruebas fuera de esos momentos |
+| Sin presión y Ollama con CPU alta | El tiempo se fue en cómputo propio del servidor (p. ej. copiar estados de la caché) | Problema o configuración del servidor |
+| Sin presión y Ollama casi sin CPU | Espera o bloqueo interno del servidor | Problema del servidor: registros con journalctl |
+
+**Opciones para Ollama CPU, solo después de medir y con aprobación del operador.** Ninguna afecta al puerto
+11434 ni se aplica en esta versión:
+
+- Si `/api/ps` muestra **dos modelos cargados** (Qwen3 4B y el 1.7B del chat), son ~1,3 GiB más: conviene no
+  usar el chat durante las pruebas o descargar el modelo del chat.
+- Cuantizar el KV cache (`OLLAMA_KV_CACHE_TYPE=q8_0` con `OLLAMA_FLASH_ATTENTION=1`) reduce a la mitad el KV
+  activo y el tamaño de cada contexto guardado.
+- Revisar si Ollama 0.34 permite limitar el tamaño de su caché de prompts (`ollama serve --help` y la
+  documentación de esa versión). No lo supongo: depende de la versión instalada.
+
+## Actualización por SSH (0.4.3 → 0.4.4)
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.4.4-ollama
+git checkout claude/constructor-ia-0.4.4-ollama
+git pull --ff-only
+bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
+~/constructor-ia/bin/constructor-ia selftest
+~/constructor-ia/bin/constructor-ia explorer-verify caverna_01
+```
+
+- Sin migraciones nuevas.
+- `config.toml` no necesita cambios. Opcional: `[explorer] interpret_num_predict = 512` (valor por defecto).
+- Ollama, MariaDB, Node-RED y los demás servicios no se tocan.
+
+## Rollback (0.4.4 → 0.4.3)
+
+```bash
+~/constructor-ia/venv/bin/python3 -c "
+import sqlite3, time; c = sqlite3.connect('$HOME/constructor-ia/data/constructor.db')
+c.execute(\"UPDATE missions SET state='cancelada', finished_at=?, error='rollback a 0.4.3' WHERE state IN ('pendiente','explorando') AND json_extract(spec_json, '\$.mode')='exploracion'\", (time.time(),)); c.commit()"
+~/constructor-ia/bin/rollback.sh
+```
+
+Sin cambios de esquema que deshacer. Los pasos con estado `sin_respuesta` y los archivos
+`llamadas_ollama.json` quedan como registro; la UI de 0.4.3 los muestra como pasos comunes.
+
+## Objetivo de la próxima prueba
+
+Un ciclo respaldado con Qwen3 4B local: pregunta → consulta → registros → interpretación respaldada → nueva
+pregunta.
+
+- En `explorer-report`: `ciclos_completos ≥ 1` y, en la traza, `etapa B (completa|recuperada|minima): …` con al
+  menos un hallazgo respaldado.
+- En `metrics.ollama`: `timeouts` en 0, o pocos y sin terminar la misión; `truncadas` bajas;
+  `generacion_tokens_s` cerca de 4.
+- `ollama-diag --mision` muestra qué pasó en cada llamada lenta.
+
+## Limitaciones
+
+- Que la gramática respete `maxLength`/`maxItems` depende de la versión de Ollama. Si no los respetara, la
+  reserva acotada, la recuperación de truncas y la interpretación mínima siguen funcionando.
+- El «tiempo sin explicar» depende de los campos `*_duration` que informe Ollama. Si el bloqueo ocurre antes de
+  empezar el pedido, puede aparecer como espera de primer byte o como timeout en fase `espera`.
+- Los indicios de `ollama-diag` usan umbrales simples y conservadores: orientan la investigación, no
+  reemplazan mirar las cifras y los registros del servidor.

@@ -17,11 +17,30 @@ from urllib.parse import urlsplit
 from .config import ModelConfig
 
 THINK_RE = re.compile(r"<think>.*?(</think>|$)", re.S)
+CONNECT_TIMEOUT_S = 5.0   # conectar (no generar): si no alcanza, el servidor no está escuchando
+SOCKET_MARGIN_S = 30.0    # el socket nunca se adelanta al vigilante del plazo total
 MAX_RESPONSE_CHARS = 200_000
 
 
 class OllamaError(Exception):
     pass
+
+
+class OllamaUnavailable(OllamaError):
+    """No se pudo establecer la conexión: el servidor no está escuchando."""
+
+
+class OllamaTimeout(OllamaError):
+    """El servidor aceptó el pedido pero no respondió a tiempo.
+
+    phase: «espera» (no llegó ni el encabezado: el servidor estaba ocupado o trabado antes de generar) o
+    «generacion» (empezó a responder y no terminó). En ambos casos el servidor sigue vivo y probablemente sigue
+    procesando el pedido abandonado: no es lo mismo que «no disponible».
+    """
+
+    def __init__(self, msg: str, phase: str, waited_s: float):
+        super().__init__(msg)
+        self.phase, self.waited_s = phase, waited_s
 
 
 class ContextOverflow(OllamaError):
@@ -80,6 +99,32 @@ class Generation:
     eval_tokens: int | None
     duration_ms: int
     truncated: bool
+    # Tiempos informados por Ollama (ms) y medidos por el cliente: su diferencia revela esperas del servidor
+    # que no son carga del modelo, evaluación del prompt ni generación (p. ej. cola o mantenimiento de caché).
+    load_ms: int | None = None
+    prompt_eval_ms: int | None = None
+    eval_ms: int | None = None
+    total_ms: int | None = None
+    first_byte_ms: int | None = None
+
+    def timings(self) -> dict:
+        def rate(tokens, ms):
+            return round(tokens / (ms / 1000), 2) if tokens and ms else None
+        known = sum(x for x in (self.load_ms, self.prompt_eval_ms, self.eval_ms) if x)
+        return {
+            "reloj_ms": self.duration_ms, "primer_byte_ms": self.first_byte_ms, "total_ollama_ms": self.total_ms,
+            "carga_ms": self.load_ms, "prompt_ms": self.prompt_eval_ms, "generacion_ms": self.eval_ms,
+            "tokens_prompt": self.prompt_tokens, "tokens_generados": self.eval_tokens,
+            "prompt_tokens_s": rate(self.prompt_tokens, self.prompt_eval_ms),
+            "generacion_tokens_s": rate(self.eval_tokens, self.eval_ms),
+            # tiempo de reloj que Ollama no atribuye a carga, prompt ni generación
+            "sin_explicar_ms": max(0, self.duration_ms - known) if self.total_ms is not None else None,
+            "fin": self.done_reason,
+        }
+
+
+def _ms(ns) -> int | None:
+    return int(ns / 1_000_000) if isinstance(ns, (int, float)) and ns >= 0 else None
 
 
 class InferenceGate:
@@ -159,14 +204,24 @@ class OllamaClient:
         if fmt is not None:
             payload["format"] = fmt
         start = time.monotonic()
-        conn = self._conn(timeout=model.timeout_s)
+        # Conexión con plazo corto: si el servidor no escucha, es «no disponible». Una vez conectado, el plazo total
+        # lo controla el vigilante; el socket tiene un margen mayor para no adelantarse y confundir un servidor
+        # ocupado con uno caído.
+        conn = self._conn(timeout=min(CONNECT_TIMEOUT_S, model.timeout_s))
+        try:
+            conn.connect()
+        except OSError as e:
+            conn.close()
+            raise OllamaUnavailable(f"No se pudo contactar a Ollama: {e}") from None
+        conn.sock.settimeout(model.timeout_s + SOCKET_MARGIN_S)
         stop = threading.Event()
         why: list[str] = []
+        got_headers: list[float] = []
 
         def watchdog():
             # Cierra el socket si se cancela o se agota el plazo total: Ollama
             # detecta la desconexión y aborta la inferencia.
-            while not stop.wait(0.5):
+            while not stop.wait(0.2):
                 if cancel is not None and cancel.is_set():
                     why.append("cancel")
                 elif time.monotonic() - start > model.timeout_s:
@@ -186,20 +241,30 @@ class OllamaClient:
         size = 0
         final: dict = {}
 
-        def check_abort():
+        def check_abort(timed_out: bool = False):
             if why and why[0] == "cancel":
                 raise Cancelled()
-            if why:
-                raise OllamaError(f"Tiempo de generación agotado ({model.timeout_s} s)")
+            if why or timed_out:
+                waited = time.monotonic() - start
+                if got_headers:
+                    raise OllamaTimeout(f"Tiempo de generación agotado ({model.timeout_s:.0f} s): Ollama empezó a "
+                                        "responder pero no terminó", "generacion", waited)
+                raise OllamaTimeout(f"Ollama no respondió en {waited:.0f} s: aceptó el pedido pero no envió nada "
+                                    "(servidor ocupado o trabado; puede seguir procesando el pedido abandonado)",
+                                    "espera", waited)
 
         try:
             try:
                 conn.request("POST", "/api/chat", body=json.dumps(payload),
                              headers={"Content-Type": "application/json"})
                 resp = conn.getresponse()
+                got_headers.append(time.monotonic())
+            except TimeoutError:
+                check_abort(timed_out=True)
+                raise
             except (OSError, http.client.HTTPException) as e:
                 check_abort()
-                raise OllamaError(f"No se pudo contactar a Ollama: {e}") from None
+                raise OllamaError(f"Ollama cortó la conexión sin responder: {e}") from None
             if resp.status != 200:
                 body = resp.read(4000).decode("utf-8", "replace")
                 try:
@@ -214,6 +279,9 @@ class OllamaClient:
             while True:
                 try:
                     line = resp.readline(1_000_000)
+                except TimeoutError:
+                    check_abort(timed_out=True)
+                    raise
                 except (OSError, http.client.HTTPException) as e:
                     check_abort()
                     raise OllamaError(f"Conexión con Ollama interrumpida: {e}") from None
@@ -255,4 +323,7 @@ class OllamaClient:
             prompt_tokens=final.get("prompt_eval_count"), eval_tokens=final.get("eval_count"),
             duration_ms=int((time.monotonic() - start) * 1000),
             truncated=(not done) or reason == "length",
+            load_ms=_ms(final.get("load_duration")), prompt_eval_ms=_ms(final.get("prompt_eval_duration")),
+            eval_ms=_ms(final.get("eval_duration")), total_ms=_ms(final.get("total_duration")),
+            first_byte_ms=int((got_headers[0] - start) * 1000) if got_headers else None,
         )

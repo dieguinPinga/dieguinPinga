@@ -42,7 +42,7 @@ class Script:
             q = re.search(r"EVIDENCIA DE ESTE RESULTADO: C(\d+)", prompt).group(1)
             r = (self.interpret(prompt, {**self.info, "q": q}) if self.interpret
                  else {"resumen": "Se observaron registros reales.", "hallazgos": []})
-            return r if isinstance(r, str) else json.dumps(r)
+            return r if isinstance(r, str) or (isinstance(r, dict) and r.get("_raw")) else json.dumps(r)
         info = parse_prompt(prompt) if "ESTRUCTURA OBSERVADA" in prompt else self.info
         if "ESTRUCTURA OBSERVADA" in prompt:
             self.info = info
@@ -54,7 +54,7 @@ class Script:
         f = self.steps[self.i]
         self.i += 1
         r = f(prompt, self.info)
-        return r if isinstance(r, str) else json.dumps(r)
+        return r if isinstance(r, str) or (isinstance(r, dict) and r.get("_raw")) else json.dumps(r)
 
 
 def good_report(prompt, info):

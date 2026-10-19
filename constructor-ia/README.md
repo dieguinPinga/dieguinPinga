@@ -28,6 +28,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   entre registros históricos y estado actual.
   En 0.4.3: argumentos de relleno («null») tratados como ausentes, nombres reales como opciones del esquema,
   reparaciones precisas sin bucles de errores idénticos y respuestas crudas del modelo para diagnóstico.
+  En 0.4.4: Ollama ocupado ≠ caído (la misión no falla por un bloqueo del servidor), interpretaciones acotadas
+  que no se truncan, tiempos de cada llamada y `constructor-ia ollama-diag` (memoria, swap, PSI, CPU).
 
 ## Proyectos que evolucionan (v0.4.0)
 

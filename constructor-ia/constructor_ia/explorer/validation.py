@@ -366,3 +366,48 @@ def evidence_text(result_json: str | None) -> str:
         return ""
     rows = r.get("rows") or []
     return " ".join(str(v) for row in rows for v in row) + " " + " ".join(r.get("columns") or [])
+
+
+def salvage_json(text: str, max_tries: int = 400) -> dict | None:
+    """Recupera el objeto JSON más largo posible de una respuesta truncada por el límite de generación.
+
+    Recorre el texto llevando la pila de llaves y corchetes; prueba cortes justo después de un valor completo
+    (cierre de cadena, objeto o arreglo), desde el final hacia atrás, cerrando lo que quedó abierto. Nunca se
+    completa un texto a medio escribir ni se inventa contenido: lo que no llegó a generarse queda ausente (p. ej. un
+    hallazgo sin «evidencia», que luego se contrasta contra la consulta interpretada).
+    """
+    start = text.find("{")
+    if start < 0:
+        return None
+    s = text[start:]
+    stack, cuts = [], []
+    in_str = esc = False
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+                cuts.append((i + 1, "".join(reversed(stack))))
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if not stack:
+                break
+            stack.pop()
+            cuts.append((i + 1, "".join(reversed(stack))))
+            if not stack:
+                break
+    for pos, closers in reversed(cuts[-max_tries:]):
+        try:
+            obj = json.loads(s[:pos] + closers)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None

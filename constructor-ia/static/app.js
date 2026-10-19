@@ -892,8 +892,9 @@ function interpretationBox(st) {
       it.raw ? h("pre", { class: "console", text: it.raw }) : "");
   }
   const claim = (c) => h("li", {}, certBadge(c.certeza), ` ${c.texto}`, c.id ? h("span", { class: "muted mono", text: ` F${c.id}` }) : "");
+  const forma = { recuperada: " (recuperada de una respuesta truncada)", minima: " (mínima)", minima_recuperada: " (mínima, recuperada)" }[it.forma] || "";
   return h("div", { class: "panel small" },
-    h("p", {}, h("strong", { text: "Etapa B — interpretación: " }), it.resumen,
+    h("p", {}, h("strong", { text: `Etapa B — interpretación${forma}: ` }), it.resumen,
       it.resumen_verificacion !== "respaldada" ? h("span", { class: "bad", text: ` (resumen no respaldado: ${it.resumen_verificacion}; no volvió al modelo)` }) : ""),
     it.hallazgos.length ? h("ul", {}, ...it.hallazgos.map(claim)) : h("p", { class: "muted", text: "Sin hallazgos." }),
     (it.hipotesis || []).length ? h("ul", {}, ...it.hipotesis.map(claim)) : "");
@@ -913,11 +914,16 @@ function contextNote(st) {
   if (!ctx) return "";
   const parts = [];
   for (const [stage, d] of Object.entries(ctx)) {
-    if (!d || (stage !== "decision" && stage !== "interpretacion")) continue;
-    const label = stage === "decision" ? "A" : "B";
+    const labels = { decision: "A", interpretacion: "B", interpretacion_minima: "B mínima" };
+    if (!d || !labels[stage]) continue;
+    const label = labels[stage];
     const over = (d.intentos || []).filter((a) => a.desborde).length;
+    const last = (d.intentos || [])[d.intentos ? d.intentos.length - 1 : 0] || {};
+    const t = last.tiempos;
+    const time = t ? `, ${Math.round(t.reloj_ms / 1000)} s (generó ${t.tokens_generados} tokens a ${t.generacion_tokens_s} tokens/s${t.sin_explicar_ms ? `, ${Math.round(t.sin_explicar_ms / 1000)} s sin explicar por Ollama` : ""})` : "";
+    const stalled = last.timeout ? `, SIN RESPUESTA de Ollama tras ${last.timeout.espera_s} s` : "";
     parts.push(d.agotado ? `etapa ${label}: no entró en el contexto` :
-      `etapa ${label}: nivel ${d.nivel} de reducción, ~${d.tokens_estimados} tokens estimados de ${d.num_ctx}${over ? `, ${over} desborde(s) informados por Ollama` : ""}`);
+      `etapa ${label}: nivel ${d.nivel ?? "—"} de reducción, ~${d.tokens_estimados ?? "?"} tokens estimados de ${d.num_ctx}${over ? `, ${over} desborde(s) informados por Ollama` : ""}${time}${stalled}`);
   }
   return parts.length ? h("p", { class: "muted small", text: `Contexto: ${parts.join(" · ")}` }) : "";
 }
@@ -954,10 +960,18 @@ async function renderExploration(box, mid, m) {
       ev.metrics.ciclos_completos !== undefined ? h("dt", { text: "Ciclos" }) : "",
       ev.metrics.ciclos_completos !== undefined ? h("dd", { class: ev.metrics.ciclos_completos ? "ok" : "bad", text: `${ev.metrics.ciclos_completos} ciclos completos (pregunta → consulta → registros → interpretación respaldada → nueva pregunta) · ${ev.metrics.interpretaciones_validas} interpretaciones válidas, ${ev.metrics.interpretaciones_fallidas} fallidas · ${ev.metrics.respuestas_con_afirmaciones_anticipadas} respuestas con afirmaciones anticipadas (descartadas)` }) : "",
       ev.metrics.desbordes_de_contexto !== undefined ? h("dt", { text: "Contexto" }) : "",
-      ev.metrics.desbordes_de_contexto !== undefined ? h("dd", { text: `${ev.metrics.desbordes_de_contexto} desbordes informados por Ollama · ${ev.metrics.mensajes_reducidos} mensajes reducidos · factor de tokens ${ev.metrics.factor_tokens}` }) : ""),
+      ev.metrics.desbordes_de_contexto !== undefined ? h("dd", { text: `${ev.metrics.desbordes_de_contexto} desbordes informados por Ollama · ${ev.metrics.mensajes_reducidos} mensajes reducidos · factor de tokens ${ev.metrics.factor_tokens}` }) : "",
+      ev.metrics.ollama ? h("dt", { text: "Ollama" }) : "",
+      ev.metrics.ollama ? h("dd", { text: `${ev.metrics.ollama.llamadas} llamadas (${ev.metrics.ollama.completas} completas, ${ev.metrics.ollama.truncadas} truncadas, ${ev.metrics.ollama.timeouts} sin respuesta) · ${ev.metrics.ollama.reloj_total_s} s en total · generación ${ev.metrics.ollama.generacion_tokens_s ?? "—"} tokens/s · prompt ${ev.metrics.ollama.prompt_tokens_s ?? "—"} tokens/s · hasta ${ev.metrics.ollama.sin_explicar_max_s} s sin explicar por Ollama en una llamada` }) : ""),
     ev.reasons.length ? h("ul", { class: "small" }, ...ev.reasons.map((r) => h("li", { text: r }))) : "") : "";
   const steps = h("div", { class: "list" });
   for (const st of d.steps.slice().reverse()) {
+    if (st.status === "sin_respuesta") {
+      steps.append(h("details", { class: "item" },
+        h("summary", {}, `Paso ${st.n} · `, h("span", { class: "badge bad", text: "Ollama no respondió" })),
+        h("p", { class: "muted small", text: st.analysis || "" }), contextNote(st)));
+      continue;
+    }
     if (st.status === "invalida") {
       steps.append(h("details", { class: "item" },
         h("summary", {}, `Paso ${st.n} · `, h("span", { class: "badge bad", text: "respuesta inválida" }), ` ${st.analysis || ""}`.slice(0, 160)),

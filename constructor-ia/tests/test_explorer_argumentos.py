@@ -90,7 +90,7 @@ class SchemaTests(unittest.TestCase):
         schema = self.explorer(TABLES)._decide_schema()
         self.assertEqual(schema["properties"]["tabla"]["enum"], ["ops", "eventos"])
         self.assertEqual(schema["properties"]["tabla_destino"]["enum"], ["ops", "eventos"])
-        self.assertEqual(schema["properties"]["columna"]["enum"], ["id", "precio", "tipo"])
+        self.assertNotIn("enum", schema["properties"]["columna"], "0.4.4: columnas como texto (el enum pesaba ~500 tokens)")
         self.assertNotIn("tabla", schema["required"], "elegir tabla no es obligatorio: depende de la herramienta")
 
     def test_strict_schema_requires_the_tools_arguments(self):

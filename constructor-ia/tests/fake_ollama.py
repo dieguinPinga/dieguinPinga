@@ -18,6 +18,13 @@ class FakeOllama:
         # HTTP 400 con exceed_context_size_error (como Ollama), sin consumir respuestas.
         self.ctx_counter = None
         self.overflows: list[dict] = []
+        # Simulación de un servidor de un solo slot (como Ollama con un pedido a la vez): un pedido abandonado por
+        # el cliente sigue ocupando el servidor hasta terminar.
+        self.serial = False
+        self._slot = threading.Lock()
+        self.header_delay = 0.0      # demora antes de enviar encabezados (servidor ocupado/trabado), para todos
+        self.durations = None        # callable(body, text) -> dict con load/prompt_eval/eval/total en ns
+        self.completed: list[dict] = []
         self.disconnects = 0
         self.active = 0
         self.max_active = 0
@@ -65,6 +72,8 @@ class FakeOllama:
                         self.wfile.write(msg)
                         self.close_connection = True
                         return
+                if outer.serial:
+                    outer._slot.acquire()
                 with outer._lock:
                     outer.requests.append(body)
                     text = outer.responses.pop(0) if outer.responses else outer.default
@@ -72,7 +81,14 @@ class FakeOllama:
                         text = text(body)
                     outer.active += 1
                     outer.max_active = max(outer.max_active, outer.active)
+                # Respuesta detallada: {"text", "header_delay", "done_reason", "eval_count", "prompt_eval_count", …}
+                spec = text if isinstance(text, dict) else {}
+                if spec:
+                    text = spec.get("text", "")
+                delay = spec.get("header_delay", outer.header_delay)
                 try:
+                    if delay:
+                        time.sleep(delay)
                     if isinstance(text, Exception):
                         self.send_response(500)
                         msg = json.dumps({"error": str(text)}).encode()
@@ -89,16 +105,27 @@ class FakeOllama:
                             time.sleep(outer.delay)
                         self.wfile.write((json.dumps({"message": {"role": "assistant", "content": p}, "done": False}) + "\n").encode())
                         self.wfile.flush()
-                    self.wfile.write((json.dumps({"message": {"role": "assistant", "content": ""}, "done": True,
-                                                  "done_reason": "stop", "eval_count": len(text) // 4,
-                                                  "prompt_eval_count": 100}) + "\n").encode())
+                    final = {"message": {"role": "assistant", "content": ""}, "done": True,
+                             "done_reason": spec.get("done_reason", "stop"),
+                             "eval_count": spec.get("eval_count", len(text) // 4),
+                             "prompt_eval_count": spec.get("prompt_eval_count", 100)}
+                    if outer.durations:
+                        final.update(outer.durations(body, text))
+                    for k in ("load_duration", "prompt_eval_duration", "eval_duration", "total_duration"):
+                        if k in spec:
+                            final[k] = spec[k]
+                    self.wfile.write((json.dumps(final) + "\n").encode())
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
+                    with outer._lock:
+                        outer.completed.append(body)
+                except (BrokenPipeError, ConnectionResetError, OSError):
                     with outer._lock:
                         outer.disconnects += 1
                 finally:
                     with outer._lock:
                         outer.active -= 1
+                    if outer.serial:
+                        outer._slot.release()
                     self.close_connection = True
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
