@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -124,7 +125,7 @@ class Executor:
         run_dir.mkdir(mode=0o700)
         (run_dir / "code").mkdir(mode=0o755)
         (run_dir / "harness").mkdir(mode=0o755)
-        for name in ("harness.py", "child_runner.py"):
+        for name in ("harness.py", "child_runner.py", "instrument_runner.py", "investiga.py"):
             shutil.copyfile(PAYLOAD_DIR / name, run_dir / "harness" / name)
             os.chmod(run_dir / "harness" / name, 0o444)
         if files is None:
@@ -132,7 +133,8 @@ class Executor:
         from ..webproject import valid_path
 
         for rel, content in files.items():
-            if rel != "solucion.py" and not valid_path(rel):
+            lib = re.fullmatch(r"bib/[a-z][a-z0-9_]{0,60}\.py", rel)  # instrumentos anteriores reutilizados
+            if rel not in ("solucion.py", "instrumento.py") and not lib and not valid_path(rel):
                 raise RuntimeError(f"ruta de proyecto inválida: {rel[:80]}")
             target = run_dir / "code" / rel
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -269,6 +271,150 @@ class Executor:
             res.status, res.result = "ok", parsed
             return res
         except (OSError, RuntimeError, LimiterError) as e:
+            res.status, res.reason = "error", f"Fallo del ejecutor: {e}"
+            if proc is not None:
+                self._kill(proc, unit)
+            return res
+        finally:
+            if bpf_fd is not None:
+                os.close(bpf_fd)
+            if proc is not None:
+                if proc.poll() is None:
+                    self._kill(proc, unit)
+                for fh in (proc.stdin, proc.stdout, proc.stderr):
+                    try:
+                        fh.close()
+                    except (OSError, ValueError):
+                        pass
+            res.cleanup_verified = self._verify_cleanup(res.limits.get("cgroup"), unit)
+            res.duration_ms = int((time.monotonic() - t0) * 1000)
+            self._remove_dir(run_dir)
+
+    # Instrumentos: ejecución interactiva con canal de consultas ------------
+    def run_instrument(self, files: dict[str, str], request: dict, rpc, wall_s: float,
+                       cancel: threading.Event | None = None) -> ExecResult:
+        """Ejecuta un instrumento (files["instrumento.py"] y bibliotecas en bib/) con el mismo aislamiento.
+
+        request: {"parametros", "esquema", "presupuesto"}. rpc(pedido) -> respuesta: el anfitrión atiende cada pedido
+        de consulta FIRMADO por el arnés (el instrumento nunca habla con MariaDB). wall_s: plazo total de reloj.
+        """
+        if not self.enabled:
+            return ExecResult("blocked", reason=f"Ejecución bloqueada: {self.disabled_reason}")
+        with self._lock:
+            return self._run_interactive(files, request, rpc, wall_s, cancel or threading.Event())
+
+    def _run_interactive(self, files, request, rpc, wall_s, cancel) -> ExecResult:
+        import queue
+
+        t0 = time.monotonic()
+        unit = f"cia-job-{secrets.token_hex(8)}"
+        run_dir = self._prepare_dir(None, files)
+        nonce = secrets.token_bytes(32)
+        payload = {"nonce": nonce.hex(), "mode": "instrumento", "case_timeout": self.cfg.sandbox_case_timeout_s,
+                   **request}
+        data = (json.dumps(payload, default=str) + "\n").encode()
+        bpf_fd, proc = None, None
+        res = ExecResult("error", unit=unit)
+        lines: "queue.Queue[bytes | None]" = queue.Queue(maxsize=64)
+
+        def read_lines(fh):
+            buf = b""
+            while True:
+                try:
+                    chunk = fh.read1(65536)
+                except (OSError, ValueError):
+                    chunk = b""
+                if not chunk:
+                    lines.put(None)
+                    return
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    lines.put(line)
+                if len(buf) > STDOUT_CAP:
+                    lines.put(None)
+                    return
+
+        try:
+            if self.cfg.sandbox_seccomp:
+                bpf_fd = os.memfd_create("cia-seccomp", 0)
+                os.write(bpf_fd, seccomp.build_filter())
+                os.lseek(bpf_fd, 0, os.SEEK_SET)
+            cmd = self.limiter.wrap(self.bwrap_command(run_dir, bpf_fd), unit)
+            env = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+            for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+                if k in os.environ:
+                    env[k] = os.environ[k]
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    pass_fds=(bpf_fd,) if bpf_fd is not None else (), start_new_session=True,
+                                    cwd=run_dir, env=env)
+            if bpf_fd is not None:
+                os.close(bpf_fd)
+                bpf_fd = None
+            err = _Reader(proc.stderr, STDERR_CAP)
+            threading.Thread(target=read_lines, args=(proc.stdout,), daemon=True).start()
+            try:
+                res.limits = self.limiter.verify(proc.pid, unit, alive=lambda: proc.poll() is None)
+            except LimiterError as e:
+                self._kill(proc, unit)
+                res.status, res.reason = "blocked", str(e)
+                return res
+            if not res.limits.get("verified") and not self.allow_unverified_limits:
+                self._kill(proc, unit)
+                res.status, res.reason = "blocked", "Límites de recursos no verificados"
+                return res
+            proc.stdin.write(data)
+            proc.stdin.flush()
+            deadline = t0 + wall_s
+            cg = res.limits.get("cgroup")
+            parsed = None
+            while True:
+                if cancel.is_set():
+                    self._kill(proc, unit)
+                    res.status, res.reason = "cancelled", "Cancelada por el operador"
+                    return res
+                if time.monotonic() > deadline:
+                    self._kill(proc, unit)
+                    res.status, res.reason = "timeout", f"Plazo total de la ejecución agotado ({wall_s:.0f} s)"
+                    return res
+                try:
+                    line = lines.get(timeout=0.2)
+                except queue.Empty:
+                    res.oom_kills = self._oom_kills(cg, res.oom_kills)
+                    continue
+                if line is None:
+                    break
+                text = line.decode("utf-8", "replace")
+                if text.startswith("CIA-RPC "):
+                    body, _, mac = text[len("CIA-RPC "):].rpartition(" ")
+                    want = hmac.new(nonce, body.encode(), hashlib.sha256).hexdigest()
+                    if not hmac.compare_digest(want, mac):
+                        self._kill(proc, unit)
+                        res.status, res.reason = "error", "pedido del canal sin firma válida"
+                        return res
+                    reply = rpc(json.loads(body))
+                    proc.stdin.write((json.dumps(reply, ensure_ascii=False, default=str) + "\n").encode())
+                    proc.stdin.flush()
+                elif text.startswith("CIA-RESULT "):
+                    parsed = self._parse(text, nonce)
+                    res.oom_kills = self._oom_kills(cg, res.oom_kills)
+                    self._close_stdin(proc)
+                    break
+            try:
+                proc.wait(timeout=max(1.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                self._kill(proc, unit)
+            res.oom_kills = self._oom_kills(cg, res.oom_kills)
+            err.join(2)
+            res.stderr = err.buf.decode("utf-8", "replace")[-4000:]
+            if parsed is None:
+                res.status = "oom" if res.oom_kills else "error"
+                res.reason = ("Se superó el límite de memoria del sandbox" if res.oom_kills else
+                              f"El arnés no produjo un resultado válido (código {proc.returncode})")
+                return res
+            res.status, res.result = "ok", parsed
+            return res
+        except (OSError, RuntimeError, LimiterError, ValueError) as e:
             res.status, res.reason = "error", f"Fallo del ejecutor: {e}"
             if proc is not None:
                 self._kill(proc, unit)

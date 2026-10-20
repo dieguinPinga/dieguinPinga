@@ -98,6 +98,16 @@ class Config:
     investigador_contexto_tokens: int = 1400   # tope del contexto seleccionado de la memoria
     investigador_pedido_num_predict: int = 320
     investigador_lectura_num_predict: int = 720
+    # Instrumentos de investigación (0.6): presupuestos OPERATIVOS por ejecución (no son decisiones metodológicas)
+    instrumentos_consultas: int = 20
+    instrumentos_filas: int = 50_000          # filas transferidas al instrumento (las agregaciones en SQL no cuentan)
+    instrumentos_bytes_mb: int = 8
+    instrumentos_segundos: int = 60           # cálculo del instrumento (sin contar la espera de MariaDB)
+    instrumentos_resultado_kb: int = 4
+    instrumentos_codigo_kb: int = 24
+    instrumentos_retencion_dias: int = 30     # resultados no anclados: caducan por tiempo…
+    instrumentos_cuota_mb: int = 50           # …y por cuota de almacenamiento
+    instrumentos_modulos_extra: list = field(default_factory=list)  # capacidades verificadas que se agreguen
 
     max_attempts: int = 3
     max_attempts_limit: int = 6
@@ -278,6 +288,24 @@ def load(path: Path | None = None, base_dir: Path | None = None) -> Config:
     cfg.max_events_per_mission = _int(retention, "max_events_per_mission", cfg.max_events_per_mission, 100, 20000)
     cfg.log_max_bytes = _int(retention, "log_max_bytes", cfg.log_max_bytes, 100_000, 50_000_000)
     cfg.log_backups = _int(retention, "log_backups", cfg.log_backups, 1, 20)
+    ins = raw.get("instrumentos", {})
+    cfg.instrumentos_consultas = _int(ins, "consultas", cfg.instrumentos_consultas, 1, 1000)
+    cfg.instrumentos_filas = _int(ins, "filas", cfg.instrumentos_filas, 100, 5_000_000)
+    cfg.instrumentos_bytes_mb = _int(ins, "bytes_mb", cfg.instrumentos_bytes_mb, 1, 512)
+    cfg.instrumentos_segundos = _int(ins, "segundos", cfg.instrumentos_segundos, 5, 3600)
+    cfg.instrumentos_resultado_kb = _int(ins, "resultado_kb", cfg.instrumentos_resultado_kb, 1, 256)
+    cfg.instrumentos_codigo_kb = _int(ins, "codigo_kb", cfg.instrumentos_codigo_kb, 2, 256)
+    cfg.instrumentos_retencion_dias = _int(ins, "retencion_dias", cfg.instrumentos_retencion_dias, 1, 3650)
+    cfg.instrumentos_cuota_mb = _int(ins, "cuota_mb", cfg.instrumentos_cuota_mb, 1, 10_000)
+    extra = ins.get("modulos_extra", [])
+    if not isinstance(extra, list) or not all(isinstance(m, str) and m.replace("_", "").isalnum() for m in extra):
+        raise ConfigError("[instrumentos] modulos_extra debe ser una lista de nombres de módulos")
+    from .instrumentos.estatico import NEVER_MODULES
+
+    never = sorted(set(m.split(".")[0] for m in extra) & NEVER_MODULES)
+    if never:
+        raise ConfigError(f"[instrumentos] modulos_extra no puede habilitar {', '.join(never)}")
+    cfg.instrumentos_modulos_extra = list(extra)
     inv = raw.get("investigador", {})
     cfg.investigador_max_ciclos = _int(inv, "max_ciclos", cfg.investigador_max_ciclos, 1, 50)
     cfg.investigador_max_minutos = _int(inv, "max_minutos", cfg.investigador_max_minutos, 1, 240)

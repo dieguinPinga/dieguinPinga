@@ -130,6 +130,18 @@ repair_num_predict = 192  # tokens de una respuesta de reparación
 # pedido_num_predict = 320    # pregunta inicial
 # lectura_num_predict = 720   # interpretación + siguiente pregunta (una sola respuesta por ciclo)
 
+# Instrumentos de investigación (0.6, ver INSTRUMENTOS.md): presupuestos OPERATIVOS por ejecución y retención.
+# [instrumentos]
+# consultas = 20
+# filas = 50000          # filas transferidas al instrumento (agregar en SQL para estudiar millones)
+# bytes_mb = 8
+# segundos = 60          # cálculo del instrumento, sin contar la espera de MariaDB
+# resultado_kb = 4
+# codigo_kb = 24
+# retencion_dias = 30    # las salidas no ancladas caducan por tiempo…
+# cuota_mb = 50          # …y por cuota (se conservan receta, consultas, huella y hash)
+# modulos_extra = []     # capacidades verificadas, p. ej. ["numpy"]; os/sys/socket… nunca se habilitan
+
 # Una entrada por base autorizada. La contraseña va en un archivo 0600 aparte (nunca aquí):
 #   ~/constructor-ia/bin/constructor-ia explorer-setup prrr_market   (ver EXPLORADOR.md)
 # [[explorer.connections]]

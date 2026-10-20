@@ -43,6 +43,11 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
 - 0.5.0-exp1: **investigador experimental** (`constructor-ia investigar`, ver INVESTIGADOR.md), separado del
   Explorador: Qwen3 interpreta la evidencia real y formula su siguiente pregunta en la misma respuesta; un motor
   determinista mide sin inventar; una memoria de investigaciones registra ciclos, dudas, dependencias y costo.
+- 0.6.0-exp1: **instrumentos de investigación** (ver INSTRUMENTOS.md). Fase 0: canal seguro entre Python aislado
+  y el intermediario MariaDB (presupuestos operativos, cobertura verificada, versiones inmutables, caducidad por
+  tiempo y cuota, evidencia anclada). Fase 1: `constructor-ia laboratorio-instrumentos`, que compara modelos
+  escribiendo, evaluando, corrigiendo y reutilizando instrumentos sobre una base sintética con verdad conocida, en un
+  MariaDB privado y desechable. La Fase 2 (investigación autónoma con instrumentos) no está implementada.
 
 ## Proyectos que evolucionan (v0.4.0)
 

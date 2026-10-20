@@ -548,6 +548,90 @@ def cmd_ollama_diag(args) -> int:
     return 0
 
 
+def cmd_lab_instruments(args) -> int:
+    """Fase 1: laboratorio de instrumentos con los modelos reales, sobre una base sintética en un MariaDB PRIVADO."""
+    import subprocess
+
+    cfg = _cfg(args)
+    if not args.yes:
+        print("Agregue --yes para confirmar: crea un MariaDB privado y desechable (datadir y socket propios, sin red; "
+              "no toca el MariaDB instalado) y usa Ollama CPU durante bastante tiempo.", file=sys.stderr)
+        return 2
+    try:
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
+                                timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        active = False
+    if active:
+        print("El servicio constructor-ia está activo: deténgalo (systemctl --user stop constructor-ia) para no "
+              "competir por Ollama CPU.", file=sys.stderr)
+        return 2
+    from .laboratorio import corrida, informe, privado, tareas
+    from .laboratorio.protocolo import Modelo
+    from .ollama import OllamaClient, OllamaError
+    from .sandbox.executor import Executor
+
+    try:
+        sel = tareas.seleccionar([t for t in args.tareas.split(",") if t.strip()])
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    faltan = privado.disponible()
+    if faltan:
+        print(f"No se puede crear el MariaDB privado: faltan {', '.join(faltan)}.", file=sys.stderr)
+        return 2
+    cfg.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ex = Executor(cfg)
+    report = ex.self_test()
+    if not report["ok"]:
+        print("El aislamiento no está operativo (constructor-ia selftest): el laboratorio no ejecuta código.",
+              file=sys.stderr)
+        return 1
+    ollama = OllamaClient(cfg.ollama_url)
+    modelos = [m.strip() for m in args.modelos.split(",") if m.strip()]
+    try:
+        disponibles = ollama.tags()
+    except OllamaError as e:
+        print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+        return 1
+    faltan = [m for m in modelos if m not in disponibles]
+    if faltan:
+        print(f"Modelos no instalados en {cfg.ollama_url}: {', '.join(faltan)} (no se descargan).", file=sys.stderr)
+        return 2
+    base = cfg.explorer_model
+    lab = [Modelo(ollama, base, m, num_ctx=args.num_ctx or base.num_ctx,
+                  temperatura=base.temperature if args.temperatura is None else args.temperatura,
+                  timeout_s=base.timeout_s) for m in modelos]
+    salida = cfg.data_dir / "laboratorio" / time.strftime("%Y%m%d-%H%M%S")
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    servidor = privado.ServidorPrivado(salida / "mariadb", conservar=args.conservar_mariadb)
+    try:
+        res = corrida.correr(cfg, executor=ex, servidor=servidor, modelos=lab, tareas=sel,
+                             repeticiones=args.repeticiones, semilla=args.semilla, escala=args.escala, salida=salida,
+                             max_correcciones=args.correcciones, cancel=stop,
+                             log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+    finally:
+        servidor.detener()
+    j, m = informe.escribir(res, salida)
+    print()
+    print(m.read_text())
+    print(f"Resultados: {j}\nResumen: {m}")
+    return 0 if res["estado"] == "completa" else 1
+
+
+def cmd_lab_compare(args) -> int:
+    from .laboratorio import informe
+
+    try:
+        a, b = (json.loads(Path(x).read_text()) for x in (args.a, args.b))
+    except (OSError, ValueError) as e:
+        print(f"No se pudo leer: {e}", file=sys.stderr)
+        return 2
+    print(informe.comparar(a, b))
+    return 0
+
+
 def cmd_explorer_trial(args) -> int:
     """Expedición de ensayo sin interfaz, con el modelo real configurado (para la VivoBook)."""
     import subprocess
@@ -672,6 +756,24 @@ def main(argv=None) -> int:
     a.add_argument("--mission-text", dest="mission_text")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_explorer_trial)
+    a = sub.add_parser("laboratorio-instrumentos",
+                       help="Fase 1: compara modelos escribiendo instrumentos sobre una base sintética (MariaDB privado)")
+    a.add_argument("--modelos", default="qwen3:4b-instruct,qwen3:1.7b", help="separados por comas")
+    a.add_argument("--tareas", default="T1,T2,T3,T4,T5,C,R", help="subconjunto de T1,T2,T3,T4,T5,C,R")
+    a.add_argument("--repeticiones", type=int, default=1)
+    a.add_argument("--semilla", type=int, default=7)
+    a.add_argument("--escala", choices=["pequena", "normal", "grande"], default="normal")
+    a.add_argument("--correcciones", type=int, default=2, help="máximo de versiones corregidas por tarea")
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, help="contexto (igual para todos; default el del explorador)")
+    a.add_argument("--temperatura", type=float, help="igual para todos; default la del explorador")
+    a.add_argument("--conservar-mariadb", dest="conservar_mariadb", action="store_true",
+                   help="no borrar el datadir privado al terminar (para inspección)")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_instruments)
+    a = sub.add_parser("laboratorio-comparar", help="Compara dos resultados.json del laboratorio (solo lectura)")
+    a.add_argument("a")
+    a.add_argument("b")
+    a.set_defaults(fn=cmd_lab_compare)
     a = sub.add_parser("explorer-verify", help="Verifica privilegios y límites de una conexión del Explorador")
     a.add_argument("conn")
     a.set_defaults(fn=cmd_explorer_verify)

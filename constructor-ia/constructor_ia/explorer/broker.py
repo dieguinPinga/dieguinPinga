@@ -212,10 +212,13 @@ class Broker:
     # Ejecución --------------------------------------------------------
     def run(self, sql: str, *, mission_id: str | None = None, step: int | None = None, origin: str = "agente",
             tool: str = "sql", question: str = "", rationale: str = "", cancel: threading.Event | None = None,
-            max_rows: int | None = None) -> QueryOutcome:
+            max_rows: int | None = None, max_bytes: int | None = None) -> QueryOutcome:
         cfg = self.cfg
-        # Las consultas de esquema del propio sistema (information_schema) pueden traer más filas.
-        ceiling = SYSTEM_MAX_ROWS if origin == "sistema" else cfg.explorer_max_rows
+        # Las consultas de esquema del propio sistema (information_schema) pueden traer más filas. Los instrumentos
+        # (0.6) tienen su propio techo operativo; su presupuesto por ejecución lo controla el canal del anfitrión.
+        ceiling = (SYSTEM_MAX_ROWS if origin == "sistema" else
+                   int(getattr(cfg, "instrumentos_filas", cfg.explorer_max_rows)) if origin == "instrumento" else
+                   cfg.explorer_max_rows)
         max_rows = min(max_rows or cfg.explorer_max_rows, ceiling)
         out = QueryOutcome("error", sql=sql)
         try:
@@ -240,6 +243,9 @@ class Broker:
                 if cancel is not None:
                     threading.Thread(target=self._watch_cancel, args=(cancel, done, conn, tid), daemon=True).start()
                 byte_cap = cfg.explorer_max_result_kb * 1024 * (4 if origin == "sistema" else 1)
+                if origin == "instrumento":
+                    top = int(getattr(cfg, "instrumentos_bytes_mb", 8)) * 1024 * 1024
+                    byte_cap = min(int(max_bytes or top), top)
                 res = conn.query(out.sql, max_rows=max_rows, max_bytes=byte_cap,
                                  timeout=cfg.explorer_query_timeout_s + 2)
                 out.columns = [col.name for col in res.columns]

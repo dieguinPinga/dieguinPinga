@@ -30,6 +30,9 @@ import time
 PY = sys.executable
 CHILD = "/work/harness/child_runner.py"
 CODE = "/work/code/solucion.py"
+IRUNNER = "/work/harness/instrument_runner.py"
+INSTRUMENT = "/work/code/instrumento.py"
+RPC_LINE_MAX = 16_000_000
 OUT_CAP = 64 * 1024
 ERR_CAP = 16 * 1024
 
@@ -839,6 +842,98 @@ def run_web_checks(spec, node, timeout, cpu_s):
     return results
 
 
+# --- Instrumentos de investigación: canal de consultas ---------------------
+
+def run_instrument(req, nonce, stdin):
+    """Ejecuta medir(db, p) de un instrumento en un proceso hijo NO confiable.
+
+    Cada pedido de consulta del hijo se firma con el nonce y se pasa al anfitrión ("CIA-RPC <json> <hmac>"); la
+    respuesta del anfitrión vuelve por stdin y se entrega al hijo. El tiempo de cálculo del instrumento se mide sin
+    contar la espera del anfitrión (MariaDB); el anfitrión impone además su propio plazo total y los presupuestos.
+    """
+    budget = req.get("presupuesto") or {}
+    compute_s = float(budget.get("segundos", 60))
+    max_rpc = int(budget.get("consultas", 20)) * 2 + 10  # tope de mensajes (consultas + estimaciones)
+    p = subprocess.Popen([PY, "-I", "-S", IRUNNER, INSTRUMENT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, cwd="/tmp", preexec_fn=child_limits(int(compute_s) + 1),
+                         start_new_session=True)
+    err = Drain(p.stderr, ERR_CAP)
+    out = {"rpc": 0, "timeout": False, "error": None, "instrumento": None}
+    t0 = time.monotonic()
+    waited = 0.0
+    buf = b""
+    fd = p.stdout.fileno()
+
+    def to_child(data: bytes) -> bool:
+        try:
+            p.stdin.write(data)
+            p.stdin.flush()
+            return True
+        except OSError:
+            return False
+
+    to_child((json.dumps({"parametros": req.get("parametros") or {}, "esquema": req.get("esquema") or {},
+                          "presupuesto": budget}) + "\n").encode())
+    try:
+        while True:
+            while b"\n" not in buf:
+                remaining = compute_s - (time.monotonic() - t0 - waited)
+                if remaining <= 0:
+                    out["timeout"] = True
+                    return out
+                r, _, _ = select.select([fd], [], [], remaining)
+                if not r:
+                    continue
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    out["error"] = "el instrumento terminó sin entregar un resultado"
+                    return out
+                buf += chunk
+                if len(buf) > RPC_LINE_MAX:
+                    out["error"] = "mensaje del instrumento demasiado grande"
+                    return out
+            line, buf = buf.split(b"\n", 1)
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                out["error"] = "mensaje del instrumento ilegible"
+                return out
+            if msg.get("final"):
+                out["instrumento"] = msg
+                return out
+            if not msg.get("rpc") or msg.get("op") not in ("consultar", "estimar"):
+                out["error"] = "pedido desconocido en el canal"
+                return out
+            out["rpc"] += 1
+            if out["rpc"] > max_rpc:
+                out["error"] = f"demasiados pedidos al canal (más de {max_rpc})"
+                return out
+            body = json.dumps({"id": msg.get("id"), "op": msg["op"], "sql": str(msg.get("sql", ""))[:20000],
+                               "max_filas": msg.get("max_filas")}, ensure_ascii=False, separators=(",", ":"))
+            mac = hmac.new(nonce, body.encode(), hashlib.sha256).hexdigest()
+            t = time.monotonic()
+            sys.stdout.write("CIA-RPC " + body + " " + mac + "\n")
+            sys.stdout.flush()
+            reply = stdin.readline(RPC_LINE_MAX)
+            waited += time.monotonic() - t
+            if not reply:
+                out["error"] = "el anfitrión cerró el canal"
+                return out
+            if not to_child(reply if reply.endswith(b"\n") else reply + b"\n"):
+                out["error"] = "el instrumento cerró el canal"
+                return out
+    finally:
+        out["calculo_s"] = round(time.monotonic() - t0 - waited, 3)
+        out["espera_s"] = round(waited, 3)
+        kill_group(p)
+        try:
+            p.wait(5)
+        except subprocess.TimeoutExpired:
+            pass
+        err.join(1)
+        out["stderr"] = err.text()[-2000:]
+
+
 # --- Sondas de aislamiento (autodiagnóstico) -------------------------------
 
 def probe(opts, timeout, cpu_s):
@@ -922,7 +1017,8 @@ def probe(opts, timeout, cpu_s):
 
 
 def main():
-    line = sys.stdin.buffer.readline(4_000_000)
+    stdin = sys.stdin.buffer
+    line = stdin.readline(4_000_000)
     req = json.loads(line)
     nonce = bytes.fromhex(req["nonce"])
     nondump = set_nondumpable()
@@ -933,6 +1029,8 @@ def main():
     mode = req.get("mode")
     if mode == "probe":
         result["probe"] = probe(req.get("probe", {}), timeout, cpu_s)
+    elif mode == "instrumento":
+        result["instrumento"] = run_instrument(req, nonce, stdin)
     else:
         spec = req["spec"]
         cases, load_error = [], None
