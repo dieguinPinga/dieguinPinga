@@ -690,13 +690,26 @@ def cmd_lab_pilot(args) -> int:
     except OllamaError as e:
         print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
         return 1
-    salida = Path(args.reanudar) if args.reanudar else cfg.data_dir / "laboratorio" / ("piloto-" + time.strftime(
+    prefijo = "ensayo-" if args.ensayo else "piloto-"
+    salida = Path(args.reanudar) if args.reanudar else cfg.data_dir / "laboratorio" / (prefijo + time.strftime(
         "%Y%m%d-%H%M%S"))
+    try:
+        piloto.preparar_salida(salida, args.ensayo)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
     base = cfg.explorer_model
 
-    def crear_modelo():  # mismas opciones en todos los brazos (PILOTO.md, presupuestos)
-        return Modelo(ollama, base, args.modelo, num_ctx=6144, temperatura=0.2, timeout_s=base.timeout_s,
+    def crear_modelo():  # mismas opciones en todos los brazos (PILOTO.md, presupuestos y Enmienda 2)
+        return Modelo(ollama, base, args.modelo, num_ctx=6144, temperatura=0.2, timeout_s=piloto.TIMEOUT_S,
                       num_predict_codigo=2048, num_predict_json=768)
+
+    if args.ensayo:
+        defectos, repeticiones, pres = ("D2",), 1, piloto.Presupuesto(**piloto.PRESUPUESTO_ENSAYO)
+        print("ENSAYO TÉCNICO (excluido del análisis preregistrado): D2, 1 repetición, 5 brazos, "
+              f"{pres.llamadas} llamadas por episodio.", flush=True)
+    else:
+        defectos, repeticiones, pres = tuple(args.defectos.split(",")), args.repeticiones, piloto.Presupuesto()
 
     if (salida / "mariadb").exists():
         import shutil
@@ -705,15 +718,15 @@ def cmd_lab_pilot(args) -> int:
     try:
         ent = Entorno(cfg, ex, servidor, salida)
         mut = None if args.sin_mutantes else mutantes.estudiar(ent, log=lambda m: None)
-        res = piloto.correr(cfg, ent=ent, crear_modelo=crear_modelo, defectos=tuple(args.defectos.split(",")),
-                            repeticiones=args.repeticiones, brazos=tuple(args.brazos.split(",")), salida=salida,
-                            log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+        res = piloto.correr(cfg, ent=ent, crear_modelo=crear_modelo, defectos=defectos, repeticiones=repeticiones,
+                            brazos=tuple(args.brazos.split(",")), salida=salida, presupuesto=pres,
+                            ensayo=args.ensayo, log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
         ent.cerrar()
     finally:
         servidor.detener()
     print(PI.escribir(salida, res, mut).read_text())
     print(f"Resultados en {salida} (episodios.jsonl, prompts.jsonl, piloto.json, resumen.md). "
-          f"Para reanudar: laboratorio-piloto --yes --reanudar {salida}")
+          f"Para reanudar: laboratorio-piloto --yes{' --ensayo' if args.ensayo else ''} --reanudar {salida}")
     return 0
 
 
@@ -895,6 +908,8 @@ def main(argv=None) -> int:
     a.add_argument("--brazos", default="A,B,B*,C,D")
     a.add_argument("--reanudar", help="carpeta de un piloto interrumpido: se saltan los episodios ya hechos")
     a.add_argument("--sin-mutantes", dest="sin_mutantes", action="store_true")
+    a.add_argument("--ensayo", action="store_true",
+                   help="ensayo técnico pequeño (D2, 1 repetición, 2 llamadas por episodio), EXCLUIDO del análisis")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_pilot)
     a = sub.add_parser("laboratorio-revisar",

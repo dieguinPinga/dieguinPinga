@@ -162,6 +162,20 @@ class UnitTests(unittest.TestCase):
         self.assertFalse(V.umbral(ev(a=False, b=True), ev(a=True, b=False))[0], "regresión")
         self.assertFalse(V.umbral(ev(a=False, b=False), ev(a=False, b=False))[0], "sin mejora")
 
+    def test_trial_and_preregistered_runs_never_mix(self):
+        d = Path(tempfile.mkdtemp())
+        PL.preparar_salida(d / "ensayo", True)
+        (d / "ensayo" / "episodios.jsonl").write_text("{}\n")
+        self.assertTrue((d / "ensayo" / PL.MARCA_ENSAYO).exists())
+        with self.assertRaises(ValueError):
+            PL.preparar_salida(d / "ensayo", False)
+        PL.preparar_salida(d / "real", False)
+        (d / "real" / "episodios.jsonl").write_text("{}\n")
+        with self.assertRaises(ValueError):
+            PL.preparar_salida(d / "real", True)
+        self.assertEqual(PL.preparar_salida(d / "real", False), d / "real", "reanudar la misma clase sí")
+        self.assertGreaterEqual(PL.TIMEOUT_S, 900, "Enmienda 2")
+
     def test_leak_audit(self):
         d1 = B.DEFECTOS["D1"]
         limpio = [{"partes": [("coordinador", "texto"), ("codigo", CORRECTA_D1)]}]
@@ -247,6 +261,15 @@ class PilotCircuitTests(unittest.TestCase):
         self.assertEqual(guiones, [], "reanudar no repite episodios ni la detección")
         self.assertEqual((salida / "episodios.jsonl").read_text(), antes)
         self.assertEqual(len(res2["episodios"]), 2)
+
+    def test_technical_trial_is_marked_and_excluded(self):
+        salida = self.dir / "ensayo"
+        res, _ = self.correr(competente, salida, repeticiones=1, brazos=("B", "A"), defectos=("D2",), ensayo=True,
+                             presupuesto=PL.Presupuesto(**PL.PRESUPUESTO_ENSAYO))
+        self.assertTrue(res["ensayo"])
+        self.assertTrue((salida / PL.MARCA_ENSAYO).exists())
+        self.assertTrue(PI.markdown(res, None).startswith("# ENSAYO TÉCNICO — EXCLUIDO DEL ANÁLISIS PREREGISTRADO"))
+        self.assertTrue(all(len(e["llamadas"]) <= 2 for e in res["episodios"]))
 
     def test_budget_is_enforced(self):
         def terco(tipo, prompt):

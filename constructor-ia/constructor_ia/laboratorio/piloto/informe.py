@@ -13,7 +13,13 @@ SENALES = {"R1": "B* ≤ C en todos los defectos: en el piloto, el tamaño del c
 
 
 def markdown(res: dict | None, mut: dict | None) -> str:
-    L = ["# Piloto de microtareas — resultados", "",
+    if res and res.get("ensayo"):
+        L = ["# ENSAYO TÉCNICO — EXCLUIDO DEL ANÁLISIS PREREGISTRADO", "",
+             "Solo comprueba que Qwen real, el sandbox y el MariaDB privado funcionan juntos (D2, 1 repetición, "
+             "presupuesto reducido). Sus resultados no se leen como evidencia a favor ni en contra.", ""]
+    else:
+        L = []
+    L += ["# Piloto de microtareas — resultados", "",
          "Preregistro: `PILOTO.md` (commit anterior al código). Los episodios con fugas se excluyen de la lectura.", ""]
     contra = list((res or {}).get("lectura", {}).get("contra_la_hipotesis", []))
     senales = dict((res or {}).get("lectura", {}).get("senales", {}))

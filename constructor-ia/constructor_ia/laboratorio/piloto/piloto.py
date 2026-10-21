@@ -16,6 +16,26 @@ from . import brazos as BR
 from . import verificaciones as V
 
 
+TIMEOUT_S = 900   # Enmienda 2: igual para todos los brazos; 300 s cortaría las reescrituras completas
+MARCA_ENSAYO = "ENSAYO_TECNICO"
+PRESUPUESTO_ENSAYO = {"llamadas": 2, "segundos": 1800.0, "deteccion": 1}
+
+
+def preparar_salida(salida: Path, ensayo: bool) -> Path:
+    """Una carpeta es de ensayo técnico o de la corrida preregistrada, nunca de las dos: la marca lo impide al
+    reanudar."""
+    salida = Path(salida)
+    if salida.exists() and any(p.name != "mariadb" for p in salida.iterdir()):
+        es_ensayo = (salida / MARCA_ENSAYO).exists()
+        if es_ensayo != ensayo:
+            raise ValueError(f"{salida} es de {'un ensayo técnico' if es_ensayo else 'la corrida preregistrada'}: "
+                             "no se mezclan")
+    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if ensayo:
+        (salida / MARCA_ENSAYO).write_text("Ensayo técnico: EXCLUIDO del análisis preregistrado (PILOTO.md).\n")
+    return salida
+
+
 @dataclass
 class Presupuesto:
     llamadas: int = 6
@@ -136,9 +156,8 @@ def auditar(llamadas: list[dict], brazo: str, defecto: B.Defecto) -> list[str]:
 
 
 def correr(cfg, *, ent, crear_modelo, defectos=("D1", "D2"), repeticiones: int = 2, brazos=BR.BRAZOS,
-           salida: Path, presupuesto: Presupuesto | None = None, log=print) -> dict:
-    salida = Path(salida)
-    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+           salida: Path, presupuesto: Presupuesto | None = None, ensayo: bool = False, log=print) -> dict:
+    salida = preparar_salida(salida, ensayo)
     pres = presupuesto or Presupuesto()
     archivo = salida / "episodios.jsonl"
     hechos = {}
@@ -199,7 +218,7 @@ def correr(cfg, *, ent, crear_modelo, defectos=("D1", "D2"), repeticiones: int =
                 log(f"   {brazo}: {'CORREGIDO' if juez['corregido'] else 'no corregido'} "
                     f"({r['motivo_fin']}, {len(modelo.llamadas)} llamadas)" + (f" FUGAS: {fugas}" if fugas else ""))
     episodios = [hechos[k] for k in sorted(hechos)]
-    res = {"version": VERSION, "preregistro": "PILOTO.md", "presupuesto": pres.as_dict(), "defectos": list(defectos),
+    res = {"version": VERSION, "preregistro": "PILOTO.md", "ensayo": ensayo, "presupuesto": pres.as_dict(), "defectos": list(defectos),
            "repeticiones": repeticiones, "brazos": list(brazos), "detecciones": detecciones, "episodios": episodios}
     res["lectura"] = leer(res)
     return res

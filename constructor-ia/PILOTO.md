@@ -197,6 +197,9 @@ que todavía no existe, para no sobreajustar a estos 51 mutantes:
 
 ## Anexo operativo: cómo se corre (no modifica el preregistro)
 
+> **Reemplazado por el Anexo 2.** Los comandos de abajo usan la instalación (`~/constructor-ia/bin`), y eso exigiría
+> instalar la rama. El Anexo 2 corre el piloto desde un checkout aparte, sin instalar nada.
+
 Código: `constructor_ia/laboratorio/piloto/`.
 
 | Archivo | Contenido |
@@ -244,3 +247,105 @@ No se midió en la VivoBook.
 | `*.sqlite` | un almacén por episodio, más la detección y el juez, por separado |
 
 Se usa el MariaDB privado y desechable del laboratorio: no toca el servicio MariaDB, sus bases ni su configuración.
+
+---
+
+## Enmienda 2 (2026-10-21, antes de cualquier corrida con modelo): tiempo máximo por llamada y ensayo técnico
+
+1. **Tiempo máximo por llamada: 900 s para todos los brazos** (`piloto.TIMEOUT_S`). Antes valía 300 s, el valor por
+   defecto del explorador.
+   - Con las mediciones de Diego (≈ 15 s + 0,24 s por token), una reescritura completa de más de unos 1.200 tokens
+     superaría los 300 s.
+   - Eso habría castigado a los brazos de reescritura completa (A, C y D) y no a las microtareas: un sesgo **a favor**
+     de la hipótesis.
+   - Motivo: equidad entre brazos, no ningún resultado.
+2. **Ensayo técnico** (`--ensayo`), pedido por Diego y ChatGPT:
+   - alcance: D2, 1 repetición, los 5 brazos, 2 llamadas por episodio y 1 de detección, más el estudio de mutantes;
+   - comprueba que Qwen real, el sandbox y el MariaDB privado funcionan juntos;
+   - **queda excluido del análisis preregistrado:**
+     - su carpeta lleva la marca `ENSAYO_TECNICO`;
+     - el informe empieza con «ENSAYO TÉCNICO — EXCLUIDO DEL ANÁLISIS PREREGISTRADO»;
+     - el código impide reanudar una carpeta de ensayo como corrida real, y al revés.
+
+## Anexo 2: correr el piloto SIN instalar la rama
+
+`update.sh` **reemplaza la instalación**: la versión actual pasa a `app.prev` y la nueva queda en servicio. Por eso
+el piloto no se instala. Corre desde un checkout aparte con `scripts/piloto.sh`, que:
+
+- usa su propia carpeta, `~/constructor-ia-piloto`, con su configuración (`config.toml`, permisos 0600) y sus datos
+  (permisos 0700);
+- usa el intérprete del entorno virtual existente solo para ejecutar, en modo aislado (`-I`), sin instalarle nada;
+- comprueba que el código cargado sea el del checkout y no el instalado;
+- se niega a correr desde la instalación o a poner su carpeta dentro de ella.
+
+**No toca:** `~/constructor-ia/app`, la base `~/constructor-ia/data/constructor.db`, `~/constructor-ia/config`, el
+servicio systemd, el MariaDB instalado, Ollama 11434, Node-RED, Vigilancia, Tailscale ni OpenClaw.
+
+### Pasos en la VivoBook (los hacen ustedes)
+
+```bash
+# 0) Python del entorno virtual (hace falta >= 3.11)
+~/constructor-ia/venv/bin/python3 --version
+
+# 1) Checkout aparte con git worktree: el checkout de siempre no cambia de rama
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.7-piloto-microtareas
+git worktree add ~/src/cia-piloto origin/claude/constructor-ia-0.7-piloto-microtareas
+git -C ~/src/cia-piloto log --oneline -5          # debe mostrar el preregistro (9862c7b) antes del código
+
+# 2) Huellas de la instalación ANTES (para demostrar después que no cambió)
+find ~/constructor-ia/app -type f | sort | xargs sha256sum | sha256sum > ~/piloto-huella-app-antes.txt
+sha256sum ~/constructor-ia/config/config.toml > ~/piloto-huella-config-antes.txt
+
+# 3) Aislamiento, con la carpeta propia del piloto
+bash ~/src/cia-piloto/constructor-ia/scripts/piloto.sh selftest      # debe decir AISLAMIENTO OPERATIVO
+
+# 4) Detener SOLO el servicio constructor-ia mientras dura el ensayo (el piloto se niega a competir por Ollama CPU)
+systemctl --user stop constructor-ia
+sha256sum ~/constructor-ia/data/constructor.db > ~/piloto-huella-db-antes.txt
+
+# 5) ENSAYO TÉCNICO (excluido del análisis): ≤ 11 llamadas al modelo, más los mutantes (sin modelo, ~1 min)
+bash ~/src/cia-piloto/constructor-ia/scripts/piloto.sh laboratorio-piloto --yes --ensayo
+
+# 6) Comprobar que la instalación no cambió y volver a arrancar el servicio
+sha256sum -c ~/piloto-huella-db-antes.txt
+find ~/constructor-ia/app -type f | sort | xargs sha256sum | sha256sum | diff - ~/piloto-huella-app-antes.txt \
+  && echo "app intacta"
+sha256sum -c ~/piloto-huella-config-antes.txt
+systemctl --user start constructor-ia
+```
+
+**Qué mirar en el ensayo** (`~/constructor-ia-piloto/data/laboratorio/ensayo-<fecha>/resumen.md`):
+
+- **Integridad:** 0 fugas y 0 presupuesto excedido.
+- **Que Qwen real produzca respuestas utilizables.** En `prompts.jsonl` están los textos crudos. Una respuesta con
+  formato inválido no es una falla técnica: es un dato del modelo.
+- **Que el MariaDB privado se haya borrado:** no debe quedar la carpeta `mariadb/`.
+- **Tiempos reales por llamada:** sirven para estimar la duración del piloto completo.
+
+**Después, la corrida preregistrada** (en otro momento, con el servicio detenido y las mismas huellas antes y
+después):
+
+```bash
+bash ~/src/cia-piloto/constructor-ia/scripts/piloto.sh laboratorio-piloto --yes
+# si se interrumpe:
+bash ~/src/cia-piloto/constructor-ia/scripts/piloto.sh laboratorio-piloto --yes --reanudar \
+  ~/constructor-ia-piloto/data/laboratorio/piloto-<fecha>
+```
+
+### Rollback (deshacer todo)
+
+Como no se instaló nada, deshacer es borrar:
+
+```bash
+git -C ~/src/dieguinPinga worktree remove ~/src/cia-piloto
+rm -rf ~/constructor-ia-piloto           # antes, guardar los resultados que quieran conservar
+```
+
+Si el servicio quedó detenido: `systemctl --user start constructor-ia`.
+
+### Recursos durante la corrida
+
+- El MariaDB privado usa unos 64 MB de buffer y su carpeta de datos es temporal.
+- Qwen3 4B usa su memoria habitual en Ollama CPU.
+- La VivoBook tiene 5,7 GiB y otros servicios activos. Elegir el momento es decisión de ustedes.
