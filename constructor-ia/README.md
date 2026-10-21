@@ -51,6 +51,10 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   En 0.6.1, tras la primera prueba real: «terminó» ≠ «midió» (errores capturados, cobertura nula), diagnóstico
   compacto para reparar instrumentos (error, línea, datos con sus tipos, intentos anteriores), fallas de formato
   reparadas sin reescribir el instrumento, corte ante el mismo error y `laboratorio-revisar` (solo lectura).
+- Piloto de microtareas verificables (rama `claude/constructor-ia-0.7-piloto-microtareas`, experimental, solo en
+  `laboratorio/piloto/`): preregistro en [PILOTO.md](PILOTO.md) (commiteado antes del código), cinco brazos
+  (A = 0.6.1, B, B*, C, D), juez aislado con auditoría de fugas, `laboratorio-mutantes` (sin modelo) y
+  `laboratorio-piloto` (reanudable).
 
 ## Proyectos que evolucionan (v0.4.0)
 

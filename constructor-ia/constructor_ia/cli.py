@@ -621,6 +621,102 @@ def cmd_lab_instruments(args) -> int:
     return 0 if res["estado"] == "completa" else 1
 
 
+def _piloto_preparar(args, necesita_modelo: bool):
+    """Comprobaciones comunes del piloto: servicio detenido, MariaDB privado posible, aislamiento operativo."""
+    import subprocess
+
+    cfg = _cfg(args)
+    if not args.yes:
+        print("Agregue --yes: crea un MariaDB privado y desechable (sin red, no toca el MariaDB instalado)"
+              + (" y usa Ollama CPU durante horas." if necesita_modelo else "."), file=sys.stderr)
+        raise SystemExit(2)
+    try:
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
+                                timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        active = False
+    if active:
+        print("El servicio constructor-ia está activo: deténgalo para no competir por CPU y Ollama.", file=sys.stderr)
+        raise SystemExit(2)
+    from .laboratorio import privado
+    from .sandbox.executor import Executor
+
+    faltan = privado.disponible()
+    if faltan:
+        print(f"No se puede crear el MariaDB privado: faltan {', '.join(faltan)}.", file=sys.stderr)
+        raise SystemExit(2)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ex = Executor(cfg)
+    if not ex.self_test()["ok"]:
+        print("El aislamiento no está operativo (constructor-ia selftest): no se ejecuta código.", file=sys.stderr)
+        raise SystemExit(1)
+    return cfg, ex
+
+
+def cmd_lab_mutants(args) -> int:
+    """Estudio de mutantes SIN MODELO: detección y localización del coordinador solo."""
+    from .laboratorio import privado
+    from .laboratorio.piloto import informe as PI, mutantes
+    from .laboratorio.piloto.entorno import Entorno
+
+    cfg, ex = _piloto_preparar(args, necesita_modelo=False)
+    salida = Path(args.salida) if args.salida else cfg.data_dir / "laboratorio" / ("mutantes-" + time.strftime(
+        "%Y%m%d-%H%M%S"))
+    servidor = privado.ServidorPrivado(salida / "mariadb")
+    try:
+        ent = Entorno(cfg, ex, servidor, salida)
+        mut = mutantes.estudiar(ent, log=lambda m: print(m, flush=True))
+        ent.cerrar()
+    finally:
+        servidor.detener()
+    print(PI.escribir(salida, None, mut).read_text())
+    return 0
+
+
+def cmd_lab_pilot(args) -> int:
+    """Piloto preregistrado (PILOTO.md): 2 defectos × repeticiones × 5 brazos, con el modelo real."""
+    from .laboratorio import privado
+    from .laboratorio.piloto import informe as PI, mutantes, piloto
+    from .laboratorio.piloto.entorno import Entorno
+    from .laboratorio.protocolo import Modelo
+    from .ollama import OllamaClient, OllamaError
+
+    cfg, ex = _piloto_preparar(args, necesita_modelo=True)
+    ollama = OllamaClient(cfg.ollama_url)
+    try:
+        if args.modelo not in ollama.tags():
+            print(f"El modelo {args.modelo} no está instalado en {cfg.ollama_url} (no se descarga).", file=sys.stderr)
+            return 2
+    except OllamaError as e:
+        print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+        return 1
+    salida = Path(args.reanudar) if args.reanudar else cfg.data_dir / "laboratorio" / ("piloto-" + time.strftime(
+        "%Y%m%d-%H%M%S"))
+    base = cfg.explorer_model
+
+    def crear_modelo():  # mismas opciones en todos los brazos (PILOTO.md, presupuestos)
+        return Modelo(ollama, base, args.modelo, num_ctx=6144, temperatura=0.2, timeout_s=base.timeout_s,
+                      num_predict_codigo=2048, num_predict_json=768)
+
+    if (salida / "mariadb").exists():
+        import shutil
+        shutil.rmtree(salida / "mariadb")
+    servidor = privado.ServidorPrivado(salida / "mariadb")
+    try:
+        ent = Entorno(cfg, ex, servidor, salida)
+        mut = None if args.sin_mutantes else mutantes.estudiar(ent, log=lambda m: None)
+        res = piloto.correr(cfg, ent=ent, crear_modelo=crear_modelo, defectos=tuple(args.defectos.split(",")),
+                            repeticiones=args.repeticiones, brazos=tuple(args.brazos.split(",")), salida=salida,
+                            log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+        ent.cerrar()
+    finally:
+        servidor.detener()
+    print(PI.escribir(salida, res, mut).read_text())
+    print(f"Resultados en {salida} (episodios.jsonl, prompts.jsonl, piloto.json, resumen.md). "
+          f"Para reanudar: laboratorio-piloto --yes --reanudar {salida}")
+    return 0
+
+
 def cmd_lab_review(args) -> int:
     from .laboratorio import informe
 
@@ -787,6 +883,20 @@ def main(argv=None) -> int:
                    help="no borrar el datadir privado al terminar (para inspección)")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_instruments)
+    a = sub.add_parser("laboratorio-mutantes",
+                       help="Estudio sin modelo: cuánto detecta y localiza el coordinador solo (MariaDB privado)")
+    a.add_argument("--salida")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_mutants)
+    a = sub.add_parser("laboratorio-piloto", help="Piloto preregistrado de microtareas (PILOTO.md), modelo real")
+    a.add_argument("--modelo", default="qwen3:4b-instruct")
+    a.add_argument("--defectos", default="D1,D2")
+    a.add_argument("--repeticiones", type=int, default=2)
+    a.add_argument("--brazos", default="A,B,B*,C,D")
+    a.add_argument("--reanudar", help="carpeta de un piloto interrumpido: se saltan los episodios ya hechos")
+    a.add_argument("--sin-mutantes", dest="sin_mutantes", action="store_true")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_pilot)
     a = sub.add_parser("laboratorio-revisar",
                        help="Revisión de solo lectura de una corrida: llamadas, textos crudos, código y consultas")
     a.add_argument("carpeta", help="data/laboratorio/<fecha>")

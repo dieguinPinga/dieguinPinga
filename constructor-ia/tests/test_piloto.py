@@ -1,0 +1,267 @@
+"""Piloto de microtareas (PILOTO.md): banco, ensamblado, localizador, suite, umbral, auditoría y circuito completo.
+
+Los guiones de modelo validan el CIRCUITO (aislamiento del oráculo, autoría, presupuestos, reanudación, lectura
+preregistrada), NO la capacidad de un modelo: eso se mide con laboratorio-piloto y Qwen3 real.
+"""
+import json
+import re
+import tempfile
+import unittest
+from pathlib import Path
+
+from constructor_ia.instrumentos import estatico
+from constructor_ia.laboratorio.piloto import banco as B
+from constructor_ia.laboratorio.piloto import brazos as BR
+from constructor_ia.laboratorio.piloto import informe as PI
+from constructor_ia.laboratorio.piloto import localizador as L
+from constructor_ia.laboratorio.piloto import parches as P
+from constructor_ia.laboratorio.piloto import piloto as PL
+from constructor_ia.laboratorio.piloto import verificaciones as V
+from constructor_ia.laboratorio.piloto.entorno import Entorno
+from constructor_ia.sandbox.executor import Executor
+from constructor_ia.sandbox.limiter import NullLimiter
+
+from . import mariadb_fixture
+from .helpers import bwrap_works, make_cfg
+
+VERIFICADOR = '''
+import datetime
+
+def medir(db, p):
+    s = p["salida"]
+    ancho = int(p["parametros"].get("ancho_min", 15))
+    malos, ejemplos = set(), []
+    total = int(db.consultar("SELECT COUNT(*) FROM lecturas").filas[0][0])
+    if s["cobertura"].get("leidas") != total:
+        malos.update(["leidas", "filas_analizadas"])
+        ejemplos.append({"salida": s["cobertura"].get("leidas"), "medido": total})
+    for w in s["resultado"]["ventanas"]:
+        ini = datetime.datetime.strptime(w["inicio"], "%Y-%m-%d %H:%M")
+        fin = ini + datetime.timedelta(minutes=ancho)
+        r = db.consultar("SELECT COALESCE(SUM(valor), 0) FROM lecturas WHERE valor > 0.5 AND valor < 900 AND "
+                         "momento >= '" + ini.strftime("%Y-%m-%d %H:%M:%S") + "' AND momento < '"
+                         + fin.strftime("%Y-%m-%d %H:%M:%S") + "'")
+        medido = float(r.filas[0][0])
+        if abs(medido - w["suma"]) > 0.01:
+            malos.update(["inicio", "suma"])
+            ejemplos.append({"inicio": w["inicio"], "suma": w["suma"], "medido": medido})
+    return {"resultado": {"ok": not malos, "campos": sorted(malos), "contraejemplos": ejemplos[:3]},
+            "cobertura": {"filas_analizadas": total}, "limitaciones": []}
+'''
+
+CORRECTA_D1 = "inicio = m - datetime.timedelta(minutes=m.minute % ancho)"
+
+
+def arreglar(codigo: str) -> str:
+    """Lo que haría un modelo competente con el programa completo (guion de prueba)."""
+    codigo = codigo.replace("% ancho + ancho)", "% ancho)")
+    return re.sub(r'    if "cobertura" not in cobertura:\n        cobertura = \{[^\n]*\}\n', "", codigo)
+
+
+class Guion:
+    """Modelo simulado sin HTTP: responde según el tipo de pedido."""
+
+    def __init__(self, responder, nombre="guion"):
+        self.responder, self.nombre, self.system, self.pedidos = responder, nombre, "", []
+
+    def pedir(self, tipo, prompt, *, json_out, cancel=None):
+        self.pedidos.append((tipo, prompt))
+        text = self.responder(tipo, prompt)
+        return text, {"tipo": tipo, "resultado": "completa", "tokens_prompt": len(prompt) // 4,
+                      "tokens_generados": len(text or "") // 4, "reloj_ms": 1000}
+
+
+def competente(tipo, prompt):
+    if tipo == "verificador":
+        return f"```python\n{VERIFICADOR.strip()}\n```"
+    if tipo == "micro":
+        bloques = re.split(r"\n(?=\d+\) línea )", prompt.split("Instrucciones candidatas")[1])
+        for i, b in enumerate(bloques):
+            marcadas = [ln for ln in b.splitlines() if ln.startswith(">>")]
+            if any("% ancho + ancho" in ln for ln in marcadas):
+                return f"CANDIDATO: {i}\nACCION: reemplazar\n```python\n{CORRECTA_D1}\n```"
+            if any('cobertura = {"leidas": 0' in ln for ln in marcadas) and 'if "cobertura" not in' in b or \
+                    any('if "cobertura" not in' in ln for ln in marcadas):
+                return f"CANDIDATO: {i}\nACCION: eliminar"
+        return "CANDIDATO: 1\nACCION: reemplazar\n```python\npass\n```"
+    if tipo == "completo":
+        code = prompt.split("Instrumento actual:\n```python\n")[1].split("```")[0]
+        return f"```python\n{arreglar(code)}```"
+    if tipo.startswith(("reparacion", "revision")):    # brazo A (0.6.1)
+        code = prompt.split("```python\n")[1].split("```")[0]
+        return f'```json\n{{"nombre": "ventanas", "parametros": {json.dumps(B.PARAMS_VISIBLES)}, "causa": "x"}}\n```' \
+               f"\n```python\n{arreglar(code)}```"
+    if tipo.startswith("evaluacion"):                 # brazo A: confía en lo que ve (no puede saber más)
+        return json.dumps({"responde": "si", "motivo": "parece correcto", "respuesta": {}, "mejora": ""})
+    return ""
+
+
+def incompetente(tipo, prompt):
+    if tipo == "verificador":
+        return "```python\ndef medir(db, p):\n    return 1 / 0\n```"
+    if tipo == "micro":
+        return "no sé"
+    if tipo == "completo":
+        return "```python\ndef medir(db, p):\n    return {}\n```"
+    if tipo.startswith("evaluacion"):
+        return json.dumps({"responde": "si", "motivo": "ok", "respuesta": {}, "mejora": ""})
+    return "```python\nimport os\ndef medir(db, p):\n    return {}\n```"
+
+
+class UnitTests(unittest.TestCase):
+    def test_bank_is_valid_and_defects_are_single_statements(self):
+        self.assertEqual(estatico.check(B.REFERENCIA), [])
+        for d in B.DEFECTOS.values():
+            self.assertEqual(estatico.check(d.codigo), [])
+            self.assertNotEqual(d.codigo, B.REFERENCIA)
+        ms = B.mutantes()
+        self.assertGreater(len(ms), 30)
+        self.assertEqual(len({m.codigo for m in ms}), len(ms), "mutantes distintos")
+        self.assertTrue(all(estatico.check(m.codigo) == [] for m in ms))
+
+    def test_judge_compares_leaves_without_domain_knowledge(self):
+        a = {"resultado": {"ventanas": [{"inicio": "x", "suma": 1.0}]}, "cobertura": {"leidas": 3}}
+        self.assertEqual(B.comparar(a, a), {"igual": True, "campos": []})
+        b = {"resultado": {"ventanas": [{"inicio": "y", "suma": 1.0004}]}, "cobertura": {"leidas": 4}}
+        self.assertEqual(B.comparar(b, a)["campos"], ["inicio", "leidas"])
+
+    def test_assembly_separates_model_and_coordinator_faults(self):
+        code = B.DEFECTOS["D1"].codigo
+        u = P.unidad_en(code, B.lineas_de(code, B.DEFECTOS["D1"].sembrada)[0])
+        ok = P.aplicar(code, u, "reemplazar", f"```python\n        {CORRECTA_D1}\n```")
+        self.assertIsNone(ok.atribucion, ok.detalle)
+        self.assertIn(CORRECTA_D1, ok.codigo)
+        self.assertEqual([ln for ln in ok.codigo.splitlines() if ln not in code.splitlines()],
+                         ["        " + CORRECTA_D1], "solo cambió la región")
+        self.assertEqual(P.aplicar(code, u, "reemplazar", "inicio = (").atribucion, "modelo")
+        d2 = B.DEFECTOS["D2"].codigo
+        u2 = P.unidad_en(d2, B.lineas_de(d2, B.DEFECTOS["D2"].sembrada)[1])
+        borrado = P.aplicar(d2, u2, "eliminar")
+        self.assertIsNone(borrado.atribucion)
+        self.assertIn('if "cobertura" not in cobertura:\n        pass', borrado.codigo, "bloque vacío → pass")
+        u_for = next(x for x in P.instrucciones(code) if x.compuesta and x.nodo.__class__.__name__ == "For")
+        self.assertEqual(P.aplicar(code, u_for, "reemplazar", "x = 1").atribucion, "modelo",
+                         "el encabezado de una compuesta debe terminar en «:»")
+
+    def test_localizer_needs_field_evidence_for_silent_defects(self):
+        d1 = B.DEFECTOS["D1"]
+        lineas = B.lineas_de(d1.codigo, d1.sembrada)
+        self.assertIsNotNone(L.acierta(L.localizar(d1.codigo, [{"campos": ["inicio"]}]), lineas))
+        self.assertIsNone(L.acierta(L.localizar(d1.codigo, [{"campos": []}]), lineas),
+                          "sin saber qué campo está mal, el defecto silencioso no aparece (desafío 1 → 2)")
+        d2 = B.DEFECTOS["D2"]
+        self.assertEqual(L.acierta(L.localizar(d2.codigo, [{"campos": ["filas_analizadas"]}]),
+                                   B.lineas_de(d2.codigo, d2.sembrada)), 1)
+        self.assertEqual(L.acierta(L.localizar(d2.codigo, [{"lugar": {"linea": 12}}]), (12, 12)), 1,
+                         "una excepción va primero")
+
+    def test_gate_accepts_only_improvement_without_regression(self):
+        def ev(**c):
+            return {"checks": {k: {"ok": v} for k, v in c.items()}}
+        self.assertTrue(V.umbral(ev(a=False, b=True), ev(a=True, b=True))[0])
+        self.assertFalse(V.umbral(ev(a=False, b=True), ev(a=True, b=False))[0], "regresión")
+        self.assertFalse(V.umbral(ev(a=False, b=False), ev(a=False, b=False))[0], "sin mejora")
+
+    def test_leak_audit(self):
+        d1 = B.DEFECTOS["D1"]
+        limpio = [{"partes": [("coordinador", "texto"), ("codigo", CORRECTA_D1)]}]
+        self.assertEqual(PL.auditar(limpio, "B", d1), [], "el código del modelo puede contener la corrección")
+        fuga = [{"partes": [("coordinador", "pista: " + CORRECTA_D1)]}]
+        self.assertTrue(PL.auditar(fuga, "B", d1))
+        marca = [{"partes": [("coordinador", BR.MARCA_ORACULO + " línea 19")]}]
+        self.assertTrue(PL.auditar(marca, "B", d1))
+        self.assertEqual(PL.auditar(marca, "B*", d1), [], "en B* el oráculo es legítimo")
+
+
+@unittest.skipUnless(bwrap_works() and mariadb_fixture.available(), "bubblewrap o MariaDB no disponibles")
+class PilotCircuitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.cfg = make_cfg(sandbox_timeout_s=30)
+        cls.cfg.data_dir.mkdir(parents=True, exist_ok=True)
+        cls.ex = Executor(cls.cfg, limiter=NullLimiter(), allow_unverified_limits=True)
+        assert cls.ex.self_test()["ok"]
+        cls.dir = Path(tempfile.mkdtemp(prefix="cia-piloto-"))
+        cls.ent = Entorno(cls.cfg, cls.ex, mariadb_fixture.server(), cls.dir / "ent", base="piloto_test",
+                          escala={"dias": 3, "por_dia": 300})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ent.cerrar()
+
+    def correr(self, responder, salida, **kw):
+        guiones = []
+
+        def crear():
+            g = Guion(responder)
+            guiones.append(g)
+            return g
+        res = PL.correr(self.cfg, ent=self.ent, crear_modelo=crear, salida=salida, log=lambda *_: None, **kw)
+        return res, guiones
+
+    def test_competent_script_full_pilot(self):
+        res, guiones = self.correr(competente, self.dir / "bueno", repeticiones=1)
+        ep = {(e["defecto"], e["brazo"]): e for e in res["episodios"]}
+        self.assertEqual(len(ep), 10)
+        det = res["detecciones"]
+        self.assertTrue(det["D1_r1"]["verificadores"][0]["detecta"], "el verificador del modelo ve D1")
+        self.assertEqual(sorted(det["D1_r1"]["verificadores"][0]["campos"]), ["inicio", "suma"])
+        self.assertFalse(any(not c["ok"] for c in det["D1_r1"]["sistema"].values()),
+                         "las invariantes del sistema NO ven D1 (silencioso)")
+        self.assertTrue(any(not c["ok"] for c in det["D2_r1"]["sistema"].values()), "el sistema ve D2")
+        for b in ("B", "B*", "C", "D"):
+            for d in ("D1", "D2"):
+                self.assertTrue(ep[(d, b)]["juez"]["corregido"], (d, b, ep[(d, b)]["pasos"]))
+        self.assertFalse(ep[("D1", "A")]["juez"]["corregido"], "A (0.6.1) se conforma: su evaluación dice «sí»")
+        self.assertTrue(ep[("D2", "A")]["juez"]["corregido"], "A repara D2: 0.6.1 detecta la medición sin evidencia")
+        self.assertEqual(ep[("D1", "B")]["pasos"][0]["resultado"], "aceptado")
+        self.assertEqual(len(ep[("D1", "B")]["llamadas"]), 1, "una sola microtarea")
+        integ = res["lectura"]["integridad"]
+        self.assertEqual((integ["fugas"], integ["presupuesto_excedido"]), (0, 0))
+        self.assertTrue(integ["apto_para_experimento_completo"])
+        cats = {(c["comparacion"], c["defecto"]): c["categoria"] for c in res["lectura"]["comparaciones"]}
+        self.assertEqual(cats[("B vs A", "D1")], "a favor")
+        self.assertEqual(cats[("B* vs C", "D1")], "empate")
+        md = PI.markdown(res, None)
+        self.assertLess(md.index("## Contra la hipótesis"), md.index("## Integridad"))
+        prompts = [json.loads(x) for x in (self.dir / "bueno" / "prompts.jsonl").read_text().splitlines()]
+        self.assertTrue(all(BR.MARCA_ORACULO not in json.dumps(p["partes"], ensure_ascii=False)
+                            for p in prompts if p["brazo"] in ("B", "D")))
+        self.assertTrue(any(BR.MARCA_ORACULO in json.dumps(p["partes"], ensure_ascii=False)
+                            for p in prompts if p["brazo"] == "B*"))
+        micro = next(p for p in prompts if p["brazo"] == "B" and p["defecto"] == "D1")
+        texto = "".join(t for _, t in micro["partes"])
+        self.assertNotIn("def medir", texto, "la microtarea no muestra el programa completo")
+
+    def test_incompetent_script_is_reported_against_the_hypothesis_and_resumes(self):
+        salida = self.dir / "malo"
+        res, _ = self.correr(incompetente, salida, repeticiones=1, brazos=("B", "B*"), defectos=("D1",))
+        self.assertFalse(res["detecciones"]["D1_r1"]["verificadores"][0]["valido"], "verificador inválido excluido")
+        self.assertTrue(res["lectura"]["senales"]["R3"], "D1 sin detectar")
+        self.assertTrue(any("ninguna verificación" in c for c in res["lectura"]["contra_la_hipotesis"]))
+        cat = {c["comparacion"]: c["categoria"] for c in res["lectura"]["comparaciones"]}
+        self.assertEqual(cat["B vs B*"], "no informativo")
+        self.assertTrue(all(not e["juez"]["corregido"] for e in res["episodios"]))
+        antes = (salida / "episodios.jsonl").read_text()
+        res2, guiones = self.correr(incompetente, salida, repeticiones=1, brazos=("B", "B*"), defectos=("D1",))
+        self.assertEqual(guiones, [], "reanudar no repite episodios ni la detección")
+        self.assertEqual((salida / "episodios.jsonl").read_text(), antes)
+        self.assertEqual(len(res2["episodios"]), 2)
+
+    def test_budget_is_enforced(self):
+        def terco(tipo, prompt):
+            if tipo == "verificador":
+                return f"```python\n{VERIFICADOR.strip()}\n```"
+            return "CANDIDATO: 1\nACCION: reemplazar\n```python\npass\n```" if tipo == "micro" else \
+                "```python\ndef medir(db, p):\n    return {}\n```"
+        res, _ = self.correr(terco, self.dir / "terco", repeticiones=1, brazos=("B",), defectos=("D1",),
+                             presupuesto=PL.Presupuesto(llamadas=4, segundos=999, deteccion=1))
+        e = res["episodios"][0]
+        self.assertLessEqual(len(e["llamadas"]), 4)
+        self.assertIn(e["motivo_fin"], ("presupuesto", "sin_progreso", "sin_candidatas"))
+        self.assertTrue(all(not p.get("aceptado") for p in e["pasos"]), "nada empeora la versión vigente")
+        self.assertFalse(e["juez"]["corregido"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -144,3 +144,103 @@ No depende de que la hipótesis salga favorecida. Se pasa al experimento complet
 - Todo el código nuevo vive en `constructor_ia/laboratorio/piloto/`.
 - El piloto usa el MariaDB privado y desechable del laboratorio. Las transformaciones de datos, si las hubiera,
   se hacen solo sobre la base sintética de ese servidor privado.
+
+---
+
+## Enmienda 1 (2026-10-21): resultado del estudio de mutantes y correcciones de implementación
+
+Escrita **después** de correr el estudio de mutantes (sin modelo, en el entorno de desarrollo de Claude: sandbox real
+y MariaDB privado, base `pequena` semilla 7). El texto preregistrado de arriba no cambia.
+
+### Resultado
+
+- **Mutantes:** 51 en total; 12 equivalentes (el juez no ve diferencia) y 39 no equivalentes.
+- **Desafío 1, detección del sistema:** S1 a S3 detectan **29 de 39 (74 %)**. **R4 no se activa.**
+  - Los cambios de operador aritmético, la clase del defecto D1, se detectan **0 de 3** veces.
+  - El «not» eliminado se detecta 0 de 1 veces.
+  - Las invariantes genéricas ven bien las fallas de cobertura y de ejecución, y no ven las fallas silenciosas de
+    cálculo.
+- **Desafío 2, localización con la detección del sistema:** top 1 en 14 %, **top 3 en 28 %**. **R5 se activa:**
+  «el localizador estático no alcanza».
+- **Localización con detección oráculo** (el juez dice qué campos difieren; es una cota del localizador aislado):
+  top 3 en 36 %.
+- **Por qué falla la localización,** en 21 casos:
+  - **15 son omisiones** (instrucción eliminada). Un localizador que señala instrucciones existentes no puede
+    señalar una ausencia.
+  - **6 quedaron en el puesto 4**: las constantes de inicialización, castigadas por la regla «la última escritura
+    primero».
+  - **0 quedaron fuera de la rebanada.** La rebanada es completa; fallan el orden y el tratamiento de las omisiones.
+  - Sin contar las omisiones, el top 3 acierta en 8 de 14 casos (57 %).
+
+### Correcciones de implementación hechas antes de cualquier corrida con modelo
+
+1. **Localizador.** La regla «las instrucciones que solo arman la salida van al final» marcaba cualquier diccionario
+   con la clave buscada. Eso incluía `cobertura = {"leidas": 0, …}`, que es justamente el defecto D2. La intención
+   documentada era castigar solo la construcción de la salida devuelta (`return`), y así quedó.
+   - La encontró la prueba del circuito (`tests/test_piloto.py`).
+   - **No cambió ningún número del estudio de mutantes**: se volvió a correr y dio exactamente lo mismo.
+2. **Ensamblador.** Cuando se reemplaza el encabezado de una instrucción compuesta sin «:», el error que recibe el
+   modelo ahora explica que para quitar el bloque la acción es «eliminar». Antes decía «unexpected indent». La
+   atribución al modelo no cambia.
+
+### Qué NO se cambia por este resultado
+
+El localizador de los brazos B y D queda **como está**. Cambiarlo después de ver los mutantes sería ajustar al banco.
+
+Las dos mejoras que el resultado sugiere se evaluarán como una **variante separada**, sobre una **referencia nueva**
+que todavía no existe, para no sobreajustar a estos 51 mutantes:
+
+- microtareas de omisión: «¿falta algo en este bloque?»;
+- otro orden de candidatas.
+
+---
+
+## Anexo operativo: cómo se corre (no modifica el preregistro)
+
+Código: `constructor_ia/laboratorio/piloto/`.
+
+| Archivo | Contenido |
+|---|---|
+| `banco.py` | referencia, D1, D2, mutantes y juez |
+| `parches.py` | unidades editables y ensamblado verificado |
+| `localizador.py` | localizador estático |
+| `verificaciones.py` | suite con autoría y umbral de aceptación |
+| `brazos.py` | los cinco brazos y el presupuesto |
+| `piloto.py` | orquestador, auditoría de fugas, lectura preregistrada y reanudación |
+| `mutantes.py` | estudio de mutantes |
+| `informe.py` | informe; empieza con «Contra la hipótesis» |
+
+En la VivoBook, cuando ustedes lo decidan:
+
+```bash
+~/constructor-ia/bin/constructor-ia selftest                 # debe decir AISLAMIENTO OPERATIVO
+systemctl --user stop constructor-ia
+# 1) sin modelo, unos minutos: desafíos 1 y 2 del coordinador solo
+~/constructor-ia/bin/constructor-ia laboratorio-mutantes --yes
+# 2) el piloto con Qwen3 4B: 20 episodios
+~/constructor-ia/bin/constructor-ia laboratorio-piloto --yes --modelo qwen3:4b-instruct
+#    si se interrumpe, se retoma sin repetir lo hecho:
+~/constructor-ia/bin/constructor-ia laboratorio-piloto --yes --reanudar ~/constructor-ia/data/laboratorio/piloto-<fecha>
+systemctl --user start constructor-ia
+```
+
+**Duración estimada,** con el modelo de tiempos que surge de sus mediciones (≈ 15 s fijos + 0,24 s por token
+generado), como **cota superior:**
+
+- hasta 128 llamadas;
+- en el peor caso, unas 4 a 5 horas: los brazos A, C y D agotan sus 6 reescrituras completas de ≈ 190 s cada una;
+- con microtareas que resuelven en 1 o 2 llamadas, bastante menos.
+
+No se midió en la VivoBook.
+
+**Archivos que deja** en `data/laboratorio/piloto-<fecha>/`:
+
+| Archivo | Contenido |
+|---|---|
+| `episodios.jsonl` | un episodio por línea, con el juez, los pasos, la atribución y el costo |
+| `prompts.jsonl` | cada prompt con sus partes etiquetadas por origen y la respuesta cruda |
+| `deteccion.json` | los verificadores escritos por el modelo, con su validez y lo que detectan |
+| `piloto.json` y `resumen.md` | la lectura preregistrada |
+| `*.sqlite` | un almacén por episodio, más la detección y el juez, por separado |
+
+Se usa el MariaDB privado y desechable del laboratorio: no toca el servicio MariaDB, sus bases ni su configuración.
