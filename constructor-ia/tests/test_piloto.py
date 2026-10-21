@@ -243,6 +243,12 @@ class PilotCircuitTests(unittest.TestCase):
                             for p in prompts if p["brazo"] in ("B", "D")))
         self.assertTrue(any(BR.MARCA_ORACULO in json.dumps(p["partes"], ensure_ascii=False)
                             for p in prompts if p["brazo"] == "B*"))
+        rev = PI.revisar(self.dir / "bueno")
+        self.assertIn("Tipo: corrida preregistrada", rev)
+        self.assertIn("Fugas: 0; presupuesto excedido: 0", rev)
+        self.assertIn("MariaDB privado borrado: sí", rev)
+        self.assertIn("partes: coordinador, evidencia, oraculo", rev, "el oráculo se ve, etiquetado, en B*")
+        self.assertIn("autoría de la falla", rev)
         micro = next(p for p in prompts if p["brazo"] == "B" and p["defecto"] == "D1")
         texto = "".join(t for _, t in micro["partes"])
         self.assertNotIn("def medir", texto, "la microtarea no muestra el programa completo")
@@ -288,3 +294,109 @@ class PilotCircuitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+FAKE_SYSTEMCTL = r'''#!/usr/bin/env bash
+echo "systemctl $*" >> "$FAKE_LOG"
+args=" $* "
+case "$args" in
+  *" is-active "*constructor-ia*)
+    if [ "$(cat "$FAKE_STATE")" = active ]; then [[ "$args" == *quiet* ]] || echo active; exit 0
+    else [[ "$args" == *quiet* ]] || echo inactive; exit 3; fi ;;
+  *" stop constructor-ia.service "*) echo inactive > "$FAKE_STATE" ;;
+  *" start constructor-ia.service "*) echo active > "$FAKE_STATE" ;;
+esac
+exit 0
+'''
+
+FAKE_PILOTO = r'''import os, sys, time
+log = lambda m: open(os.environ["FAKE_LOG"], "a").write(m + "\n")
+estado = open(os.environ["FAKE_STATE"]).read().strip()
+log("piloto " + " ".join(sys.argv[1:]) + " servicio=" + estado)
+modo = os.environ["FAKE_MODO"]
+try:
+    if modo == "ok":
+        sys.exit(0)
+    if modo == "falla":
+        sys.exit(3)
+    time.sleep(600)
+except KeyboardInterrupt:
+    log("piloto: limpieza")
+    sys.exit(1)
+'''
+
+
+class StagesScriptTests(unittest.TestCase):
+    """scripts/piloto_etapas.sh: el servicio constructor-ia SIEMPRE vuelve a quedar como estaba."""
+
+    @classmethod
+    def setUpClass(cls):
+        import shutil
+        cls.ok = shutil.which("timeout") and shutil.which("flock")
+
+    def setUp(self):
+        if not self.ok:
+            self.skipTest("faltan timeout o flock")
+        self.w = Path(tempfile.mkdtemp(prefix="cia-etapas-"))
+        (self.w / "bin").mkdir()
+        (self.w / "bin" / "systemctl").write_text(FAKE_SYSTEMCTL)
+        (self.w / "bin" / "systemd-run").write_text('#!/usr/bin/env bash\necho "systemd-run $*" >> "$FAKE_LOG"\n'
+                                                    'exit "${FAKE_RUN_RC:-0}"\n')
+        (self.w / "piloto.py").write_text(FAKE_PILOTO)
+        (self.w / "piloto.sh").write_text(f'#!/usr/bin/env bash\nexec python3 {self.w / "piloto.py"} "$@"\n')
+        for f in ("bin/systemctl", "bin/systemd-run", "piloto.sh"):
+            (self.w / f).chmod(0o755)
+
+    def correr(self, modo, *, senal=None, inicial="active", limite="20", run_rc="0"):
+        import os
+        import signal
+        import subprocess
+        import time
+        log, state = self.w / f"log.{modo}", self.w / f"state.{modo}"
+        state.write_text(inicial + "\n")
+        log.write_text("")
+        env = dict(os.environ, PATH=f"{self.w / 'bin'}:{os.environ['PATH']}", PILOTO_SH=str(self.w / "piloto.sh"),
+                   CIA_PILOTO_DIR=str(self.w / "base"), PILOTO_UNIDAD="s", FAKE_LOG=str(log), FAKE_STATE=str(state),
+                   FAKE_MODO=modo, FAKE_RUN_RC=run_rc)
+        script = Path(__file__).resolve().parent.parent / "scripts" / "piloto_etapas.sh"
+        p = subprocess.Popen(["bash", str(script), "ensayo", limite], env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True)
+        if senal:
+            for _ in range(100):
+                if "piloto ensayo" in log.read_text() or "piloto laboratorio" in log.read_text():
+                    break
+                time.sleep(0.1)
+            p.send_signal(getattr(signal, senal))
+        out, _ = p.communicate(timeout=120)
+        return p.returncode, state.read_text().strip(), log.read_text(), out
+
+    def test_service_is_restored_on_success_failure_interrupt_hangup_and_time_limit(self):
+        for modo, senal, limite in (("ok", None, "20"), ("falla", None, "20"), ("cuelga", "SIGINT", "20"),
+                                    ("cuelga", "SIGHUP", "20"), ("cuelga", None, "10")):
+            with self.subTest(modo=modo, senal=senal, limite=limite):
+                rc, estado, log, out = self.correr(modo, senal=senal, limite=limite)
+                self.assertEqual(estado, "active", (out, log))
+                self.assertIn("servicio=inactive", log, "el ensayo corrió con el servicio detenido")
+                self.assertIn("--on-active=25s" if limite == "20" else "--on-active=15s", log, "respaldo armado")
+                self.assertIn("start constructor-ia.service", log)
+                self.assertIn("stop cia-piloto-restaurar.timer", log.split("start constructor-ia.service")[-1],
+                              "con el servicio de vuelta, el respaldo se desarma")
+                if modo == "cuelga":
+                    self.assertIn("piloto: limpieza", log, "el ensayo recibió SIGINT y limpió (MariaDB privado)")
+                if modo == "ok":
+                    self.assertEqual(rc, 0)
+                else:
+                    self.assertNotEqual(rc, 0)
+
+    def test_service_that_was_stopped_stays_stopped(self):
+        rc, estado, log, out = self.correr("ok", inicial="inactive")
+        self.assertEqual((rc, estado), (0, "inactive"))
+        self.assertNotIn("start constructor-ia.service", log)
+        self.assertNotIn("systemd-run", log)
+
+    def test_without_a_backup_timer_nothing_is_stopped(self):
+        rc, estado, log, out = self.correr("ok", run_rc="1")
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(estado, "active")
+        self.assertNotIn("stop constructor-ia.service", log)
+        self.assertNotIn("piloto laboratorio", log, "el ensayo no corre si no hay respaldo")

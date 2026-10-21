@@ -93,3 +93,56 @@ def escribir(salida: Path, res: dict | None, mut: dict | None) -> Path:
     p = salida / "resumen.md"
     p.write_text(markdown(res, mut))
     return p
+
+
+def revisar(carpeta: Path, max_respuesta: int = 400) -> str:
+    """Revisión de SOLO LECTURA de una carpeta del piloto (o del ensayo): integridad, cada llamada al modelo con su
+    tiempo, el origen de las partes de su prompt y el comienzo de la respuesta cruda, y la autoría de cada paso."""
+    carpeta = Path(carpeta)
+    L = [f"Carpeta: {carpeta}"]
+    ensayo = (carpeta / "ENSAYO_TECNICO").exists()
+    L.append("Tipo: " + ("ENSAYO TÉCNICO (excluido del análisis)" if ensayo else "corrida preregistrada"))
+    L.append("MariaDB privado borrado: " + ("sí" if not (carpeta / "mariadb").exists() else "NO (quedó la carpeta)"))
+    L.append("Clave desechable borrada: " + ("sí" if not (carpeta / "clave-desechable").exists() else "NO"))
+    eps = [json.loads(x) for x in (carpeta / "episodios.jsonl").read_text().splitlines() if x.strip()] \
+        if (carpeta / "episodios.jsonl").exists() else []
+    prompts = [json.loads(x) for x in (carpeta / "prompts.jsonl").read_text().splitlines() if x.strip()] \
+        if (carpeta / "prompts.jsonl").exists() else []
+    L.append(f"Episodios: {len(eps)}; llamadas registradas: {len(prompts)}")
+    L.append(f"Fugas: {sum(len(e['fugas']) for e in eps)}; presupuesto excedido: "
+             f"{sum(1 for e in eps if not e['presupuesto_respetado'])}")
+    det = carpeta / "deteccion.json"
+    if det.exists():
+        L.append("\n== Detección compartida")
+        for k, d in json.loads(det.read_text()).items():
+            for c in d.get("llamadas", []):
+                L.append(f"  {k} llamada {c.get('tipo')}: {c.get('resultado')}, {c.get('tokens_generados')} tokens, "
+                         f"{(c.get('reloj_ms') or 0) / 1000:.1f} s")
+            for v in d["verificadores"]:
+                L.append(f"  {k} {v['id']}: " + ("INVÁLIDO: " + str((v.get('error') or {}).get('error'))[:200]
+                                                if not v["valido"] else
+                                                f"válido, {'detecta ' + str(v['campos']) if v['detecta'] else 'no detecta'}"))
+    for e in eps:
+        j = e["juez"]
+        L.append(f"\n== {e['defecto']} r{e['repeticion']} brazo {e['brazo']}: "
+                 f"{'CORREGIDO' if j['corregido'] else 'no corregido'} · fin {e['motivo_fin']} · "
+                 f"{len(e['llamadas'])} llamadas · {e['segundos_modelo']} s de modelo")
+        for c in e["llamadas"]:
+            L.append(f"   llamada {c.get('tipo')}: {c.get('resultado')}, {c.get('tokens_prompt')} → "
+                     f"{c.get('tokens_generados')} tokens, {(c.get('reloj_ms') or 0) / 1000:.1f} s"
+                     + (f", error: {c['error']}" if c.get("error") else ""))
+        for i, p in enumerate(e["pasos"], 1):
+            if isinstance(p, dict) and "candidatas" in p:
+                L.append(f"   paso {i}: candidatas {p['candidatas']} → {p.get('resultado')}"
+                         f" (autoría de la falla: {p.get('atribucion') or 'ninguna'}; {p.get('razon') or p.get('detalle')})")
+            elif isinstance(p, dict):
+                L.append(f"   intento v{p.get('version')}: {p.get('firma') or 'sin falla'} ({p.get('resultado')})")
+        for p in [x for x in prompts if (x["defecto"], x["repeticion"], x["brazo"]) ==
+                  (e["defecto"], e["repeticion"], e["brazo"])]:
+            origenes = sorted({o for o, _ in p["partes"]})
+            resp = (p.get("respuesta") or "").strip().replace("\n", "\n      ")
+            L.append(f"   prompt {p['n']} ({p.get('tipo')}), partes: {', '.join(origenes)}\n      respuesta: "
+                     + (resp[:max_respuesta] + ("…" if len(resp) > max_respuesta else "") if resp else "(vacía)"))
+    if (carpeta / "resumen.md").exists():
+        L += ["", "== resumen.md", (carpeta / "resumen.md").read_text()]
+    return "\n".join(L)

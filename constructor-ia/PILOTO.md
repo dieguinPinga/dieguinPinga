@@ -269,6 +269,9 @@ Se usa el MariaDB privado y desechable del laboratorio: no toca el servicio Mari
 
 ## Anexo 2: correr el piloto SIN instalar la rama
 
+> Los pasos del ensayo técnico quedaron detallados y automatizados en el **Anexo 3**, con la restauración
+> garantizada del servicio. Este anexo explica el porqué.
+
 `update.sh` **reemplaza la instalación**: la versión actual pasa a `app.prev` y la nueva queda en servicio. Por eso
 el piloto no se instala. Corre desde un checkout aparte con `scripts/piloto.sh`, que:
 
@@ -349,3 +352,126 @@ Si el servicio quedó detenido: `systemctl --user start constructor-ia`.
 - El MariaDB privado usa unos 64 MB de buffer y su carpeta de datos es temporal.
 - Qwen3 4B usa su memoria habitual en Ollama CPU.
 - La VivoBook tiene 5,7 GiB y otros servicios activos. Elegir el momento es decisión de ustedes.
+
+---
+
+## Anexo 3: ensayo técnico en la VivoBook, por etapas
+
+Se usa `scripts/piloto_etapas.sh`, que vive en el checkout aparte. Cada etapa se corre a mano por SSH y se revisa
+antes de seguir. **Solo la etapa 4 detiene algo**, y lo único que detiene es `constructor-ia`, durante el ensayo.
+
+La etapa 4 restaura el servicio con tres capas:
+
+1. **Trampa del script:** al terminar, fallar, recibir Ctrl-C o perder la sesión SSH (SIGHUP), interrumpe el ensayo
+   con SIGINT y vuelve a arrancar `constructor-ia`. El SIGINT hace que el ensayo limpie su MariaDB privado.
+2. **Temporizador de respaldo** de systemd: `cia-piloto-restaurar.timer`, transitorio, a límite + 5 minutos. Si el
+   script muriera sin poder reaccionar (por ejemplo con `kill -9`), arranca el servicio igual. Si el temporizador no
+   se puede armar, **no se detiene nada**.
+3. **Límite de tiempo** del ensayo: 90 minutos por defecto, máximo 180.
+
+Las tres capas tienen pruebas automáticas (`tests/test_piloto.py`, `StagesScriptTests`). Cubren éxito, falla,
+Ctrl-C, caída de SSH, límite de tiempo, servicio que ya estaba detenido y temporizador imposible de armar.
+
+### Etapa 1 — estado actual (solo lectura; todavía no existe el checkout)
+
+```bash
+systemctl --user is-active constructor-ia; systemctl --user is-enabled constructor-ia
+grep -o 'VERSION = "[^"]*"' ~/constructor-ia/app/constructor_ia/__init__.py
+~/constructor-ia/venv/bin/python3 --version                        # hace falta >= 3.11
+systemctl --user list-units --type=service --state=running --no-pager
+systemctl list-units --type=service --state=running --no-pager      # solo se listan: no se tocan
+curl -s http://127.0.0.1:11435/api/tags | python3 -m json.tool | grep '"name"'
+free -h; df -h ~; nproc
+for b in mariadbd mariadb-install-db mariadb bwrap systemd-run timeout flock git tmux; do
+  printf '%-20s %s\n' "$b" "$(command -v $b || echo FALTA)"; done
+ls -d ~/constructor-ia-piloto ~/src/cia-piloto 2>/dev/null || echo "sin restos de ensayos anteriores"
+git -C ~/src/dieguinPinga status --short | head
+```
+
+Para seguir, todo esto tiene que cumplirse:
+
+- `constructor-ia` en el estado que esperan;
+- Python 3.11 o más;
+- `qwen3:4b-instruct` en la lista de Ollama CPU;
+- ningún binario en FALTA, salvo `tmux`, que es opcional.
+
+### Etapa 2 — checkout aparte de la rama y su commit
+
+```bash
+cd ~/src/dieguinPinga
+git fetch origin claude/constructor-ia-0.7-piloto-microtareas
+git worktree add --detach ~/src/cia-piloto origin/claude/constructor-ia-0.7-piloto-microtareas
+git -C ~/src/cia-piloto rev-parse HEAD         # debe coincidir con el commit que les indicó Claude
+git -C ~/src/cia-piloto log --oneline -6       # el preregistro 9862c7b aparece ANTES del código del piloto
+git -C ~/src/dieguinPinga status --short       # el checkout de siempre no cambió
+```
+
+### Etapa 3 — el entorno del piloto es propio
+
+```bash
+E=~/src/cia-piloto/constructor-ia/scripts/piloto_etapas.sh
+bash $E huellas antes        # solo lectura de la instalación; guarda las huellas en ~/constructor-ia-piloto/huellas
+bash $E entorno
+```
+
+Qué esperar de `entorno`:
+
+- `[piloto] código: ~/src/cia-piloto/constructor-ia`, y no `~/constructor-ia/app`;
+- `"data_dir": ~/constructor-ia-piloto/data` y `"ollama_url": http://127.0.0.1:11435`;
+- los binarios encontrados y `qwen3:4b-instruct: instalado`;
+- `RESULTADO: AISLAMIENTO OPERATIVO`. Si dice `EJECUCIÓN BLOQUEADA`, no se sigue.
+
+El MariaDB privado recién se crea en la etapa 4, dentro de la carpeta del ensayo, con `--no-defaults`, socket propio y
+`--skip-networking`.
+
+### Etapa 4 — el ensayo técnico con Qwen3 4B real
+
+Si existe `tmux`, conviene abrir una sesión antes (`tmux new -s piloto`): así una caída de SSH no lo interrumpe. Sin
+`tmux`, una caída lo interrumpe, el servicio vuelve solo y el ensayo se puede reanudar.
+
+```bash
+bash $E ensayo 90
+```
+
+- **Lo que hace:**
+  1. arma el temporizador de respaldo;
+  2. detiene solo `constructor-ia`;
+  3. toma la huella de la base productiva;
+  4. corre `laboratorio-piloto --ensayo`: primero el estudio de mutantes (~1 min, sin modelo) y después D2 con los 5
+     brazos (≤ 11 llamadas);
+  5. compara la huella de la base;
+  6. vuelve a arrancar el servicio y desarma el temporizador.
+- **Duración esperada:** de 20 a 45 minutos. No se midió; el tope es de 90.
+- **Al final debe decir:** `base productiva: sin cambios` y `constructor-ia.service activo de nuevo`.
+
+### Etapa 5 — resultados, prompts y autoría (solo lectura)
+
+```bash
+bash $E revisar                    # LARGO=1500 bash $E revisar  → respuestas crudas más largas
+```
+
+Qué mirar:
+
+- tipo `ENSAYO TÉCNICO`;
+- MariaDB privado y clave desechable borrados;
+- 0 fugas y ningún presupuesto excedido;
+- en cada llamada: tiempo real, tokens y `completa` o `truncada`;
+- en cada prompt: las partes por origen. Un `oraculo` solo puede aparecer en B\* y C;
+- la respuesta cruda de Qwen;
+- en cada paso: las candidatas del localizador y la autoría de cada falla (modelo o coordinador);
+- «Procesos del MariaDB privado que hayan quedado: ninguno».
+
+### Etapa 6 — la instalación quedó intacta
+
+```bash
+bash $E huellas despues
+bash $E comparar                   # app, config, servicios y puertos: «igual»
+systemctl --user is-active constructor-ia
+systemctl --user list-timers --all --no-pager | grep cia-piloto || echo "sin temporizador de respaldo pendiente"
+```
+
+Si `comparar` muestra diferencias en servicios ajenos, puede ser un cambio propio de ese servicio durante el ensayo:
+se revisa, no se corrige a ciegas.
+
+**Deshacer todo** (ver el Anexo 2): `git -C ~/src/dieguinPinga worktree remove ~/src/cia-piloto` y borrar
+`~/constructor-ia-piloto` después de guardar los resultados que quieran conservar.

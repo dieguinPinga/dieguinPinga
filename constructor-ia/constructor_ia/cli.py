@@ -730,6 +730,17 @@ def cmd_lab_pilot(args) -> int:
     return 0
 
 
+def cmd_lab_pilot_review(args) -> int:
+    from .laboratorio.piloto import informe as PI
+
+    try:
+        print(PI.revisar(Path(args.carpeta), max_respuesta=args.largo))
+    except (OSError, ValueError, KeyError) as e:
+        print(f"No se pudo revisar {args.carpeta}: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def cmd_lab_review(args) -> int:
     from .laboratorio import informe
 
@@ -912,6 +923,11 @@ def main(argv=None) -> int:
                    help="ensayo técnico pequeño (D2, 1 repetición, 2 llamadas por episodio), EXCLUIDO del análisis")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_pilot)
+    a = sub.add_parser("laboratorio-piloto-revisar",
+                       help="Revisión de solo lectura de un piloto o ensayo: llamadas, prompts, respuestas y autoría")
+    a.add_argument("carpeta")
+    a.add_argument("--largo", type=int, default=400, help="caracteres de cada respuesta cruda a mostrar")
+    a.set_defaults(fn=cmd_lab_pilot_review)
     a = sub.add_parser("laboratorio-revisar",
                        help="Revisión de solo lectura de una corrida: llamadas, textos crudos, código y consultas")
     a.add_argument("carpeta", help="data/laboratorio/<fecha>")
