@@ -7,8 +7,9 @@ Son fijas y pocas a propósito: comunicación, no mediciones. Qué medir y cómo
         ...
         return {"resultado": {...}, "cobertura": {...}, "limitaciones": [...]}
 
-* db.consultar(sql, max_filas)  → Resultado: columnas, filas, truncado, motivo, consulta (C#); r.valores("col") convierte
-  a número (los DECIMAL, como AVG(), llegan como texto). Cada consulta pasa por el
+* db.consultar(sql, max_filas)  → Resultado: columnas, tipos (tipo MariaDB de cada columna), filas, truncado, motivo,
+  consulta (C#); r.valores("col") convierte a número (los DECIMAL, como AVG() o FLOOR() de un DECIMAL, llegan como
+  texto: hay que convertirlos con float() antes de compararlos o calcular). Cada consulta pasa por el
   intermediario de solo lectura del anfitrión (no hay credenciales ni red en el sandbox). Conviene agregar en SQL
   (GROUP BY, COUNT, SUM…): así se estudian millones de registros transfiriendo pocas filas.
 * db.estimar(sql)              → {"filas_estimadas": n, "plan": [...]} con EXPLAIN, sin ejecutar la consulta.
@@ -37,8 +38,9 @@ class ConsultaFallida(Exception):
 
 
 class Resultado:
-    def __init__(self, columnas, filas, truncado, motivo, consulta):
+    def __init__(self, columnas, filas, truncado, motivo, consulta, tipos=None):
         self.columnas, self.filas, self.truncado, self.motivo, self.consulta = columnas, filas, truncado, motivo, consulta
+        self.tipos = list(tipos or [])
 
     def __iter__(self):
         return iter(self.filas)
@@ -83,7 +85,7 @@ def _pedir(op, **kw):
 def consultar(sql, max_filas=10000):
     r = _pedir("consultar", sql=str(sql), max_filas=int(max_filas))
     return Resultado(r.get("columnas") or [], r.get("filas") or [], bool(r.get("truncado")), r.get("motivo") or "",
-                     r.get("consulta"))
+                     r.get("consulta"), r.get("tipos"))
 
 
 def estimar(sql):

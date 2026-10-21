@@ -34,6 +34,33 @@ def compact_schema(schema: dict) -> dict:
             for t, v in (schema.get("tablas") or {}).items()}
 
 
+def _lugar(raw) -> dict | None:
+    """El lugar del error lo informa el proceso NO confiable: se acota y se tipa antes de guardarlo."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        linea = int(raw.get("linea"))
+    except (TypeError, ValueError):
+        linea = None
+    return {"archivo": str(raw.get("archivo") or "")[:80], "linea": linea, "funcion": str(raw.get("funcion") or "")[:80],
+            "codigo": str(raw.get("codigo") or "")[:200]}
+
+
+def _excepciones(raw) -> list[dict]:
+    out = []
+    for e in raw if isinstance(raw, list) else []:
+        if isinstance(e, dict):
+            try:
+                veces = max(1, int(e.get("veces") or 1))
+            except (TypeError, ValueError):
+                veces = 1
+            out.append({"tipo": str(e.get("tipo") or "")[:80], "mensaje": str(e.get("mensaje") or "")[:200],
+                        "veces": veces, **(_lugar(e) or {})})
+        if len(out) >= 8:
+            break
+    return out
+
+
 def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, params: dict, schema: dict,
              mission_id: str | None = None, budget: Presupuesto | None = None, cancel=None) -> dict:
     inst = almacen.get(instrument_id)
@@ -78,11 +105,15 @@ def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, par
     if h.get("error") or not final:
         return record("error", error=h.get("error") or "sin resultado", accounting=accounting,
                       fingerprint=fingerprint, cost=cost)
+    excepciones = _excepciones(final.get("excepciones"))
     if not final.get("ok"):
+        falla = {"tipo": str(final.get("exc") or "")[:80], "mensaje": str(final.get("msg") or "")[:500],
+                 "lugar": _lugar(final.get("lugar"))}
         return record("error", error=f"{final.get('exc')}: {final.get('msg')}\n{final.get('tb') or ''}".strip(),
-                      accounting=accounting, fingerprint=fingerprint, cost=cost)
+                      accounting=accounting, fingerprint=fingerprint, cost=cost,
+                      verdict={"falla": falla, "excepciones_capturadas": excepciones})
     output = final.get("valor")
-    verdict = verify(output, accounting, canal.agg_numbers, budget.resultado_bytes)
+    verdict = verify(output, accounting, canal.agg_numbers, budget.resultado_bytes, excepciones)
     kept = output if verdict["bytes"] <= budget.resultado_bytes else {"_descartada": "salida demasiado grande"}
     return record("ok" if verdict["contrato"] else "contrato_incumplido", output=kept, accounting=accounting,
                   verdict=verdict, fingerprint=fingerprint, cost=cost,

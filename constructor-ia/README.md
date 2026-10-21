@@ -48,6 +48,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   tiempo y cuota, evidencia anclada). Fase 1: `constructor-ia laboratorio-instrumentos`, que compara modelos
   escribiendo, evaluando, corrigiendo y reutilizando instrumentos sobre una base sintética con verdad conocida, en un
   MariaDB privado y desechable. La Fase 2 (investigación autónoma con instrumentos) no está implementada.
+  En 0.6.1, tras la primera prueba real: «terminó» ≠ «midió» (errores capturados, cobertura nula), diagnóstico
+  compacto para reparar instrumentos (error, línea, datos con sus tipos, intentos anteriores), fallas de formato
+  reparadas sin reescribir el instrumento, corte ante el mismo error y `laboratorio-revisar` (solo lectura).
 
 ## Proyectos que evolucionan (v0.4.0)
 

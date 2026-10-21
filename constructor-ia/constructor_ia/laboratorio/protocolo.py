@@ -6,7 +6,12 @@ Por tarea:
 2. EJECUCIÓN: revisión estática → sandbox con el canal de consultas → verificación (contrato y cobertura).
 3. EVALUACIÓN: el modelo ve la salida y la verificación y decide si responde la pregunta (si | parcial | no), con la
    respuesta en la forma pedida y, si no alcanza, qué mejorar.
-4. CORRECCIÓN: si la ejecución falló o el modelo dijo que no alcanza, escribe una versión nueva (hasta un máximo).
+4. CORRECCIÓN, distinguiendo tres fallas:
+   - de comunicación (la autoevaluación no se pudo leer) → se diagnostica y se repara LA RESPUESTA, no el instrumento;
+   - del instrumento (no terminó, o terminó sin medir: error capturado, sin evidencia, contrato) → REPARACIÓN con un
+     diagnóstico compacto (error, línea, datos recibidos con sus tipos, salida, intentos anteriores);
+   - del método (la medición es válida pero no responde) → REVISIÓN del método.
+   Con presupuesto: máximo de versiones nuevas por tarea y corte si el mismo error persiste.
 5. PUNTAJE: la respuesta final se compara con la verdad medida directamente; la autoevaluación se contrasta con el
    puntaje (calibración).
 
@@ -25,6 +30,7 @@ import re
 import time
 
 from ..ollama import Cancelled, ContextOverflow, OllamaError, OllamaUnavailable
+from ..instrumentos import diagnostico as D
 from ..instrumentos.almacen import Almacen
 from ..instrumentos.canal import Presupuesto
 from ..instrumentos.medicion import compact_schema, ejecutar
@@ -65,9 +71,15 @@ def medir(db, p):
     ...
 ```"""
 
-FORMATO_EVAL = ('Respondé SÓLO con JSON: {"responde": "si" | "parcial" | "no", "motivo": "por qué", '
+FORMATO_EVAL = ('Respondé SÓLO con JSON, breve: {"responde": "si" | "parcial" | "no", '
+                '"motivo": "una o dos frases", '
                 '"respuesta": <la respuesta en la forma pedida, con los valores medidos>, '
-                '"mejora": "qué cambiar en el instrumento si no alcanza (vacío si responde)"}')
+                '"mejora": "una o dos frases: qué cambiar si no alcanza (vacío si responde)"}')
+
+FORMATO_REPARACION = FORMATO_CODIGO.replace(
+    '"bibliotecas": []}', '"bibliotecas": [],\n "causa": "qué causaba la falla y qué cambiaste para corregirla"}')
+
+RESPONDE = {"si": "si", "sí": "si", "parcial": "parcial", "no": "no"}
 
 BLOCK_RE = re.compile(r"```([a-zA-Z]*)[ \t]*\n(.*?)```", re.S)
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
@@ -96,6 +108,86 @@ def parse_json(text: str):
         except ValueError:
             pass
     return None
+
+
+def normalizar_responde(v):
+    return RESPONDE.get(str(v).strip().strip(".").lower()) if isinstance(v, str) else None
+
+
+def cerrar_json(text: str):
+    """Rescata un objeto JSON CORTADO (p. ej. por el límite de tokens): cierra la cadena y las llaves abiertas, o
+    retrocede hasta el último miembro completo. Devuelve el dict rescatado o None. No inventa valores."""
+    text = THINK_RE.sub("", text or "")
+    a = text.find("{")
+    if a < 0:
+        return None
+    s = text[a:]
+    stack, in_str, esc, cuts = [], False, False, []
+    for i, ch in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            if not stack:
+                s = s[:i + 1]
+                break
+        elif ch == "," and stack:
+            cuts.append((i, list(stack)))
+    else:
+        candidatos = [s + ('"' if in_str and not esc else "") + "".join(reversed(stack))]
+        candidatos += [s[:i] + "".join(reversed(st)) for i, st in reversed(cuts)]
+        for c in candidatos:
+            try:
+                d = json.loads(c)
+            except ValueError:
+                continue
+            if isinstance(d, dict):
+                return d
+        return None
+    try:
+        d = json.loads(s)
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def diagnosticar_respuesta(text, call: dict) -> dict:
+    """Por qué una respuesta JSON no se pudo usar. Conserva el texto crudo (hasta 8000 caracteres) para estudiarlo."""
+    d = {"fin": call.get("resultado"), "tokens_generados": call.get("tokens_generados"),
+         "largo": len(text or ""), "crudo": (text or "")[:8000]}
+    if text is None:
+        return {**d, "causa": "sin_respuesta", "detalle": call.get("error") or call.get("resultado")}
+    limpio = THINK_RE.sub("", text).strip()
+    if not limpio:
+        return {**d, "causa": "vacia", "detalle": "la respuesta no tiene texto"}
+    data = parse_json(text)
+    if data is None:
+        try:
+            json.loads(limpio)
+            detalle = "?"
+        except ValueError as e:
+            pos = getattr(e, "pos", 0) or 0
+            detalle = f"{getattr(e, 'msg', str(e))} en el carácter {pos}: «…{limpio[max(0, pos - 50):pos + 30]}»"
+        causa = "cortada_por_limite" if call.get("resultado") == "truncada" else "json_invalido"
+        if causa == "cortada_por_limite":
+            detalle = f"se alcanzó el límite de {call.get('tokens_generados')} tokens generados; " + detalle
+        return {**d, "causa": causa, "detalle": detalle}
+    if not isinstance(data, dict):
+        return {**d, "causa": "no_es_objeto", "detalle": type(data).__name__}
+    if "responde" not in data:
+        return {**d, "causa": "falta_responde", "detalle": f"claves: {sorted(data)[:8]}"}
+    return {**d, "causa": "valor_invalido", "detalle": f"responde = {data.get('responde')!r}"}
 
 
 def parse_diseno(text: str) -> tuple[dict | None, str | None, list[str]]:
@@ -170,11 +262,13 @@ class Sesion:
     """Una pasada de las tareas para UN modelo y UNA repetición, sobre su propia base sintética y su propio almacén."""
 
     def __init__(self, *, cfg, modelo: Modelo, executor, broker, almacen: Almacen, server, info: dict, schema: dict,
-                 max_correcciones: int = 2, cancel=None, log=print, avanzar=None):
+                 max_correcciones: int = 3, reparaciones_formato: int = 1, max_mismo_error: int = 3, cancel=None,
+                 log=print, avanzar=None):
         modelo.system = SYSTEM.replace("{resultado_kb}", str(cfg.instrumentos_resultado_kb))
         self.cfg, self.modelo, self.executor, self.broker, self.almacen = cfg, modelo, executor, broker, almacen
         self.server, self.info, self.schema = server, info, schema
         self.max_corr, self.cancel, self.log = max_correcciones, cancel, log
+        self.rep_formato, self.max_mismo = reparaciones_formato, max(2, max_mismo_error)
         self.budget = Presupuesto.from_cfg(cfg)
         self.avanzar = avanzar
         self.instrumento_de: dict[str, int] = {}   # tarea → último instrumento usado
@@ -195,9 +289,21 @@ class Sesion:
     def _diseno_prompt(self, t):
         return self._contexto(t) + "\nDiseñá el experimento y escribí el instrumento.\n" + FORMATO_CODIGO
 
-    def _correccion_prompt(self, t, code, que_paso):
-        return (self._contexto(t) + f"\nInstrumento anterior:\n```python\n{code}```\nQué pasó: {que_paso}\n\n"
-                "Escribí una versión corregida que sí responda la pregunta.\n" + FORMATO_CODIGO)
+    def _reparacion_prompt(self, t, inst, code, diag_txt, hist_txt):
+        return (self._contexto(t) + f"\nInstrumento actual ({inst['modulo']}):\n```python\n{code}```\n"
+                f"DIAGNÓSTICO DE SU EJECUCIÓN (el instrumento no midió):\n{diag_txt}\n"
+                + (f"{hist_txt}\n" if hist_txt else "")
+                + "\nEncontrá la CAUSA en el código usando la línea, los datos recibidos y sus tipos. Corregila y "
+                "devolvé el instrumento completo. No captures errores para devolver un resultado vacío: si algo falla, "
+                "dejá que la excepción se vea. Si el mismo error ya persistió, tu cambio anterior no atacó la causa: "
+                "cambiá de enfoque.\n" + FORMATO_REPARACION)
+
+    def _revision_prompt(self, t, inst, code, ev, diag_txt):
+        return (self._contexto(t) + f"\nInstrumento actual ({inst['modulo']}):\n```python\n{code}```\n"
+                f"Su ejecución fue técnicamente válida:\n{diag_txt}\n"
+                f"Pero tu evaluación fue «{ev['responde']}»: {ev['motivo']}\nMejora propuesta: {ev['mejora']}\n\n"
+                "Revisá el MÉTODO (qué medir y cómo) para que la medición responda la pregunta, y devolvé el "
+                "instrumento completo.\n" + FORMATO_CODIGO)
 
     def _eval_prompt(self, t, inst, run):
         v = run.get("verdict") or {}
@@ -205,9 +311,12 @@ class Sesion:
                 f"Instrumento {inst['modulo']} (propósito: {inst['manifest'].get('proposito', '?')}) ejecutado con "
                 f"parámetros {_j(run.get('params'))}.\nEstado: {run['status']}\n"
                 f"SALIDA:\n```json\n{_j(run.get('output'), 4500)}\n```\n"
-                f"Verificación automática: cobertura {v.get('cobertura')}, filas crudas recibidas "
-                f"{v.get('filas_recibidas')}, truncada {v.get('truncada')}, parcial sin declarar "
-                f"{v.get('parcial_sin_declarar')}, necesidades {_j(v.get('necesidades'), 600)}.\n\n"
+                f"Verificación automática: medición {v.get('medicion')}, cobertura {v.get('cobertura')}, filas "
+                f"crudas recibidas {v.get('filas_recibidas')}, truncada {v.get('truncada')}, parcial sin declarar "
+                f"{v.get('parcial_sin_declarar')}, necesidades {_j(v.get('necesidades'), 600)}"
+                + "".join(f"\nAdvertencia: {a}" for a in v.get("advertencias") or []) + ".\n"
+                "La verificación automática sólo dice si hubo datos detrás del resultado, no si responde la pregunta."
+                "\n\n"
                 "¿Esta medición responde realmente la pregunta? Sé crítico: un resumen que no distingue lo que la "
                 "pregunta pide NO la responde.\n" + FORMATO_EVAL)
 
@@ -230,7 +339,8 @@ class Sesion:
             raise LaboratorioAbortado(f"ejecución {run['status']}: {run.get('error')}")
         acc = run.get("accounting") or {}
         v = run.get("verdict") or {}
-        self.log(f"    {inst['modulo']}: {run['status']}" + (f" cobertura={v.get('cobertura')}" if v else "")
+        self.log(f"    {inst['modulo']}: {run['status']}"
+                 + (f" medición={v.get('medicion')} cobertura={v.get('cobertura')}" if v.get("medicion") else "")
                  + (f" ({(run.get('error') or '')[:120]})" if run["status"] != "ok" else ""))
         return {"run_id": run["id"], "instrumento_id": inst["id"], "modulo": inst["modulo"],
                 "version": inst["version"], "parametros": params, "estado": run["status"],
@@ -238,52 +348,117 @@ class Sesion:
                 "cobertura": v.get("cobertura"), "truncada": v.get("truncada"),
                 "parcial_sin_declarar": v.get("parcial_sin_declarar"), "necesidades": len(v.get("necesidades") or []),
                 "consultas": (acc.get("usado") or {}).get("consultas"), "filas": (acc.get("usado") or {}).get("filas"),
+                "medicion": v.get("medicion"), "firma": D.firma(run),
+                "excepciones_capturadas": len(v.get("excepciones_capturadas") or []),
                 "costo": run.get("cost"), "_run": run}
 
+    def _interpretar(self, text, call) -> dict | None:
+        data = parse_json(text) if text is not None else None
+        if isinstance(data, dict) and normalizar_responde(data.get("responde")):
+            return data
+        return None
+
     def _evaluar(self, t, inst, run, reg) -> dict | None:
+        """Autoevaluación conceptual. Si la respuesta no se puede leer, se diagnostica y se repara la RESPUESTA (no el
+        instrumento); si tampoco, se rescata lo que esté completo; si nada sirve, queda «ilegible»."""
         text, call = self.modelo.pedir(f"evaluacion-{t.id}", self._eval_prompt(t, inst, run), json_out=True,
                                        cancel=self.cancel)
-        data = parse_json(text) if text is not None else None
-        call["formato_ok"] = isinstance(data, dict) and data.get("responde") in ("si", "parcial", "no")
+        data = self._interpretar(text, call)
+        call["formato_ok"] = data is not None
         reg["llamadas"].append(call)
-        if not call["formato_ok"]:
-            reg["evaluaciones"].append({"formato_ok": False, "crudo": (text or "")[:300]})
+        formato, diags, crudos = "ok", [], [text]
+        for _ in range(self.rep_formato if data is None else 0):
+            diag = diagnosticar_respuesta(text, call)
+            diags.append(diag)
+            self.log(f"    autoevaluación ilegible ({diag['causa']}): se pide reparar el formato")
+            prompt = (f"Tu evaluación anterior de la tarea {t.id} no se pudo leer: {diag['causa']} — {diag['detalle']}."
+                      f"\nSu comienzo fue:\n{(diag['crudo'] or '')[:1200]}\n\nNo cambies tu conclusión ni el "
+                      "instrumento: reescribí LA MISMA evaluación, más breve.\n"
+                      f"Forma de la respuesta: {_j(t.forma)}\n" + FORMATO_EVAL)
+            text, call = self.modelo.pedir(f"formato-{t.id}", prompt, json_out=True, cancel=self.cancel)
+            data = self._interpretar(text, call)
+            call["formato_ok"] = data is not None
+            reg["llamadas"].append(call)
+            crudos.append(text)
+            formato = "reparado"
+        if data is None:
+            diags.append(diagnosticar_respuesta(text, call))
+            for crudo in reversed(crudos):
+                rescatado = cerrar_json(crudo) if crudo else None
+                if rescatado and normalizar_responde(rescatado.get("responde")):
+                    data, formato = rescatado, "rescatado"
+                    break
+        if data is None:
+            reg["evaluaciones"].append({"formato": "ilegible", "diagnostico_formato": diags})
+            self.log("    autoevaluación ilegible: no se reescribe el instrumento por un problema de formato")
             return None
-        ev = {"responde": data["responde"], "motivo": str(data.get("motivo") or "")[:400],
-              "respuesta": data.get("respuesta"), "mejora": str(data.get("mejora") or "")[:400]}
+        ev = {"formato": formato, "responde": normalizar_responde(data["responde"]),
+              "motivo": str(data.get("motivo") or "")[:400], "respuesta": data.get("respuesta"),
+              "mejora": str(data.get("mejora") or "")[:400]}
+        if diags:
+            ev["diagnostico_formato"] = diags
         reg["evaluaciones"].append(ev)
-        self.log(f"    autoevaluación: {ev['responde']} — {ev['motivo'][:100]}")
+        self.log(f"    autoevaluación ({formato}): {ev['responde']} — {ev['motivo'][:100]}")
         return ev
 
     def _ciclo(self, t, reg, inst, code, correcciones_usadas: int) -> tuple[dict | None, dict | None]:
-        """Ejecutar → evaluar → corregir mientras queden correcciones. Devuelve (última evaluación, instrumento)."""
-        ev = None
+        """Ejecutar → (medición inválida: reparar | válida: evaluar → revisar el método) mientras quede presupuesto.
+        Devuelve (última evaluación legible, instrumento)."""
+        ev, cambio = None, None
+        intentos = reg.setdefault("intentos", [])
         while True:
-            m = self._medir(inst, (inst["manifest"].get("parametros") or {}) if isinstance(inst["manifest"], dict)
-                            else {})
+            params = inst["manifest"].get("parametros") or {} if isinstance(inst["manifest"], dict) else {}
+            m = self._medir(inst, params)
             run = m.pop("_run")
             reg["versiones"].append(m)
-            if m["estado"] == "ok":
-                ev = self._evaluar(t, inst, run, reg)
-                if ev is not None and ev["responde"] == "si":
-                    return ev, inst
-                que_paso = (f"El instrumento corrió, pero tu evaluación fue «{ev['responde']}»: {ev['motivo']}. "
-                            f"Mejora propuesta: {ev['mejora']}. Salida: {_j(run.get('output'), 1500)}") if ev else \
-                    f"Salida: {_j(run.get('output'), 1500)} (la evaluación no tuvo el formato pedido)"
+            firma = m["firma"]
+            prev = intentos[-1] if intentos else None
+            if prev is None:
+                resultado = "primera"
+            elif cambio and cambio["identico"]:
+                resultado = "sin_cambios"
+            elif not firma:
+                resultado = "corregido" if prev["firma"] else "sin_falla"
             else:
-                que_paso = f"Estado {m['estado']}: {m['error']}"
+                resultado = "mismo_error" if firma == prev["firma"] else "error_distinto"
+            intentos.append({"version": inst["version"], "modulo": inst["modulo"], "estado": m["estado"],
+                             "medicion": m["medicion"], "firma": firma, "resultado": resultado, "cambio": cambio,
+                             "causa_declarada": (inst["manifest"] or {}).get("causa") if prev else None})
+            diag_txt = D.texto(D.diagnosticar(run))
+            if firma:  # el instrumento no midió: reparar con diagnóstico
+                racha = 1
+                for i in reversed(intentos[:-1]):
+                    if i["firma"] != firma:
+                        break
+                    racha += 1
+                if racha >= self.max_mismo:
+                    reg["error_persistente"] = {"firma": firma, "veces": racha}
+                    self.log(f"    el mismo error se repitió {racha} veces: se detiene la reparación")
+                    return ev, inst
+                tipo, prompt = "reparacion", self._reparacion_prompt(t, inst, code, diag_txt,
+                                                                       D.historial_texto(intentos))
+            else:  # midió: ¿responde la pregunta? (evaluación conceptual del modelo)
+                ev = self._evaluar(t, inst, run, reg)
+                if ev is None:
+                    reg["evaluacion_ilegible"] = True
+                    return None, inst
+                if ev["responde"] == "si":
+                    return ev, inst
+                tipo, prompt = "revision", self._revision_prompt(t, inst, code, ev, diag_txt)
             if correcciones_usadas >= self.max_corr:
                 return ev, inst
             correcciones_usadas += 1
             reg["correcciones"] += 1
-            nuevo = self._escribir(t, reg, "correccion", self._correccion_prompt(t, code, que_paso))
+            reg[tipo + "es"] = reg.get(tipo + "es", 0) + 1
+            nuevo = self._escribir(t, reg, tipo, prompt)
             if nuevo is None:
                 return ev, inst
-            manifest, code = nuevo
-            previo = inst["id"]
+            manifest, nuevo_code = nuevo
+            cambio = D.cambio(code, nuevo_code)
+            code = nuevo_code
             inst = self._guardar(t, manifest, code, parent=inst)
-            if inst["id"] == previo:
-                reg["codigo_repetido"] = reg.get("codigo_repetido", 0) + 1  # la «corrección» no cambió nada
+            if cambio["identico"]:
+                reg["codigo_repetido"] = reg.get("codigo_repetido", 0) + 1
 
     def _escribir(self, t, reg, tipo, prompt) -> tuple[dict, str] | None:
         text, call = self.modelo.pedir(f"{tipo}-{t.id}", prompt, json_out=False, cancel=self.cancel)
@@ -308,7 +483,7 @@ class Sesion:
             inst = self._guardar(t, {"nombre": "resumen_lecturas", "proposito": "resumen global de lecturas",
                                      "parametros": {}}, T.INSUFICIENTE.lstrip())
             ev, inst = self._ciclo(t, reg, inst, T.INSUFICIENTE.lstrip(), 0)
-            first = next((e for e in reg["evaluaciones"] if e.get("formato_ok", True)), None)
+            first = next((e for e in reg["evaluaciones"] if e.get("responde")), None)
             reg["detecto_insuficiencia"] = bool(first and first["responde"] != "si")
         else:
             nuevo = None
@@ -360,7 +535,8 @@ class Sesion:
         m = self._medir(elegido, params)
         run = m.pop("_run")
         reg["versiones"].append(m)
-        if m["estado"] != "ok":
+        if m["firma"]:  # no midió con los parámetros elegidos
+            reg["diagnostico"] = D.diagnosticar(run)
             return None, elegido
         return self._evaluar(t, elegido, run, reg), elegido
 
@@ -369,7 +545,9 @@ def resumen(registros: list[dict]) -> dict:
     """Métricas agregadas de una sesión (o de varias repeticiones de un mismo modelo)."""
     llamadas = [c for r in registros for c in r["llamadas"]]
     versiones = [v for r in registros for v in r["versiones"]]
-    escritas = [c for c in llamadas if c["tipo"].startswith(("diseno", "correccion"))]
+    escritas = [c for c in llamadas if c["tipo"].startswith(("diseno", "reparacion", "revision"))]
+    intentos = [i for r in registros for i in r.get("intentos") or []]
+    evals = [e for r in registros for e in r["evaluaciones"]]
     cal = [r["calibracion"] for r in registros if r.get("calibracion")]
     corr = [r for r in registros if r.get("correccion_exitosa") is not None]
     n = len(registros) or 1
@@ -385,15 +563,26 @@ def resumen(registros: list[dict]) -> dict:
         "evaluacion_con_formato": frac([c for c in llamadas if c["tipo"].startswith("evaluacion")],
                                        lambda c: c.get("formato_ok")),
         "correcciones_sin_cambios": sum(r.get("codigo_repetido", 0) for r in registros),
+        "evaluaciones_formato_reparado": sum(1 for e in evals if e.get("formato") == "reparado"),
+        "evaluaciones_rescatadas": sum(1 for e in evals if e.get("formato") == "rescatado"),
+        "evaluaciones_ilegibles": sum(1 for e in evals if e.get("formato") == "ilegible"),
         "ejecuciones": len(versiones),
         "rechazadas_estatico": sum(1 for v in versiones if v["estado"] == "rechazado"),
         "ejecuciones_ok": frac(versiones, lambda v: v["estado"] == "ok"),
-        "cobertura_demostrada": frac([v for v in versiones if v["estado"] == "ok"],
+        "mediciones_validas": frac(versiones, lambda v: v.get("medicion") in ("valida", "parcial")),
+        "errores_de_calculo": sum(1 for v in versiones if v.get("medicion") == "error_de_calculo"),
+        "sin_evidencia": sum(1 for v in versiones if v.get("medicion") == "sin_evidencia"),
+        "cobertura_demostrada": frac([v for v in versiones if v.get("medicion") in ("valida", "parcial")],
                                      lambda v: v["cobertura"] == "demostrada"),
         "parcial_sin_declarar": sum(1 for v in versiones if v.get("parcial_sin_declarar")),
         "autoevaluacion_calibrada": frac(cal, lambda c: c == "calibrada"),
         "sobreconfianza": sum(1 for c in cal if c == "sobreconfianza"),
         "correcciones": sum(r["correcciones"] for r in registros),
+        "reparaciones": sum(r.get("reparaciones", 0) for r in registros),
+        "reparaciones_efectivas": sum(1 for i in intentos if i["resultado"] == "corregido"),
+        "reparaciones_mismo_error": sum(1 for i in intentos if i["resultado"] in ("mismo_error", "sin_cambios")),
+        "errores_persistentes": sum(1 for r in registros if r.get("error_persistente")),
+        "revisiones_metodo": sum(r.get("revisiones", 0) for r in registros),
         "correccion_exitosa": frac(corr, lambda r: r["correccion_exitosa"]),
         "detecto_insuficiencia": next((r.get("detecto_insuficiencia") for r in registros if r["tarea"] == "C"), None),
         "reutilizo": next((r.get("reutilizo") for r in registros if r["tarea"] == "R"), None),

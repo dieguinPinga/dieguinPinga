@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from ..config import Config, ExplorerConnection
 from ..db import Database
 from . import sqlguard
-from .mysqlproto import Connection, LimitExceeded, MySQLError
+from .mysqlproto import Connection, LimitExceeded, MySQLError, type_name
 
 log = logging.getLogger(__name__)
 ALLOWED_DB_PRIVS = {"SELECT", "SHOW VIEW"}
@@ -48,6 +48,7 @@ class QueryOutcome:
     sql: str
     columns: list[str] = field(default_factory=list)
     rows: list[list] = field(default_factory=list)
+    column_types: list[str] = field(default_factory=list)  # tipo MariaDB de cada columna (DECIMAL, BIGINT…)
     truncated: bool = False
     truncated_reason: str = ""
     ms: int = 0
@@ -249,6 +250,7 @@ class Broker:
                 res = conn.query(out.sql, max_rows=max_rows, max_bytes=byte_cap,
                                  timeout=cfg.explorer_query_timeout_s + 2)
                 out.columns = [col.name for col in res.columns]
+                out.column_types = [type_name(col) for col in res.columns]
                 out.rows = res.rows
                 out.truncated, out.truncated_reason, out.bytes = res.truncated, res.truncated_reason, res.bytes_read
                 out.status = "ok"

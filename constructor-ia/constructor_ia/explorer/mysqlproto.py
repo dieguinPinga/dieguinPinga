@@ -273,6 +273,20 @@ class Connection:
         self.close()
 
 
+# Nombres de los tipos del protocolo (para describir columnas; no cambia la conversión de valores).
+TYPE_NAMES = {0: "DECIMAL", 1: "TINYINT", 2: "SMALLINT", 3: "INT", 4: "FLOAT", 5: "DOUBLE", 6: "NULL", 7: "TIMESTAMP",
+              8: "BIGINT", 9: "MEDIUMINT", 10: "DATE", 11: "TIME", 12: "DATETIME", 13: "YEAR", 15: "VARCHAR", 16: "BIT",
+              245: "JSON", 246: "DECIMAL", 247: "ENUM", 248: "SET", 249: "BLOB", 250: "BLOB", 251: "BLOB", 252: "BLOB",
+              253: "VARCHAR", 254: "CHAR", 255: "GEOMETRY"}
+
+
+def type_name(col: Column) -> str:
+    name = TYPE_NAMES.get(col.type, f"TIPO_{col.type}")
+    if name in ("BLOB", "VARCHAR", "CHAR") and col.charset != BINARY_CHARSET:
+        return "TEXT" if name == "BLOB" else name
+    return name
+
+
 def _convert(v: bytes | None, col: Column):
     if v is None:
         return None

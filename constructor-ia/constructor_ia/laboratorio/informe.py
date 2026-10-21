@@ -8,14 +8,25 @@ METRICAS = [
     ("puntaje_medio", "Puntaje medio (0–1, contra la verdad)"),
     ("resueltas", "Tareas resueltas"),
     ("codigo_con_formato", "Código con el formato pedido"),
-    ("evaluacion_con_formato", "Autoevaluación con el formato pedido"),
+    ("evaluacion_con_formato", "Autoevaluación con el formato pedido (primera respuesta)"),
+    ("evaluaciones_formato_reparado", "Autoevaluaciones con formato reparado"),
+    ("evaluaciones_rescatadas", "Autoevaluaciones rescatadas (JSON cortado)"),
+    ("evaluaciones_ilegibles", "Autoevaluaciones ilegibles"),
     ("rechazadas_estatico", "Rechazos de la revisión estática"),
-    ("ejecuciones_ok", "Ejecuciones correctas"),
-    ("cobertura_demostrada", "Cobertura demostrada (ejecuciones ok)"),
+    ("ejecuciones_ok", "Ejecuciones técnicamente correctas"),
+    ("mediciones_validas", "Mediciones válidas (con datos detrás)"),
+    ("errores_de_calculo", "Errores de cálculo (excepción capturada)"),
+    ("sin_evidencia", "Mediciones sin evidencia"),
+    ("cobertura_demostrada", "Cobertura demostrada (mediciones válidas)"),
     ("parcial_sin_declarar", "Parciales sin declarar"),
     ("autoevaluacion_calibrada", "Autoevaluación calibrada"),
     ("sobreconfianza", "Sobreconfianza (dijo «sí» y falló)"),
-    ("correcciones", "Correcciones escritas"),
+    ("correcciones", "Versiones nuevas escritas"),
+    ("reparaciones", "Reparaciones del instrumento"),
+    ("reparaciones_efectivas", "Reparaciones que eliminaron la falla"),
+    ("reparaciones_mismo_error", "Reparaciones con el mismo error o sin cambios"),
+    ("errores_persistentes", "Tareas cortadas por error persistente"),
+    ("revisiones_metodo", "Revisiones del método"),
     ("correcciones_sin_cambios", "Correcciones que repitieron el mismo código"),
     ("correccion_exitosa", "Tareas corregidas que terminaron resueltas"),
     ("detecto_insuficiencia", "Detectó el instrumento insuficiente (C)"),
@@ -52,7 +63,8 @@ def markdown(res: dict) -> str:
     lines = [f"# Laboratorio de instrumentos — {res['estado']}", "",
              f"Versión {res['version']} · semilla {res['semilla']} · escala {res['escala']} "
              f"({res.get('dias')} días × {res.get('por_dia')} lecturas/día) · repeticiones {res['repeticiones']} · "
-             f"máximo de correcciones {res['max_correcciones']}", "",
+             f"máximo de versiones nuevas {res['max_correcciones']} · reparaciones de formato "
+             f"{res.get('reparaciones_formato', 0)} · corte por mismo error {res.get('max_mismo_error', '—')}", "",
              f"Presupuesto por ejecución: `{json.dumps(res['presupuesto'])}`", ""]
     if res.get("motivo"):
         lines += [f"**Abortado:** {res['motivo']}", ""]
@@ -67,10 +79,21 @@ def markdown(res: dict) -> str:
     for s in res["sesiones"]:
         lines.append(f"### {s['modelo']} — repetición {s['repeticion']}")
         for r in s["registros"]:
-            vers = ", ".join(f"{v['modulo']}:{v['estado']}" for v in r["versiones"]) or "sin ejecuciones"
+            vers = ", ".join(f"{v['modulo']}:{v['estado']}" + (f"/{v['medicion']}" if v.get("medicion") else "")
+                             for v in r["versiones"]) or "sin ejecuciones"
             lines.append(f"- **{r['tarea']}** {r['titulo']}: puntaje {r['puntaje']} — {r['detalle_puntaje']}. "
                          f"Autoevaluación {_fmt(r.get('autoevaluacion_final'))} ({_fmt(r.get('calibracion'))}); "
                          f"correcciones {r['correcciones']}; {vers}.")
+            for i in r.get("intentos") or []:
+                if i.get("firma") or i["resultado"] not in ("primera", "sin_falla"):
+                    lines.append(f"  - v{i['version']}: {i.get('firma') or 'sin falla'} ({i['resultado']})"
+                                 + (f" — causa declarada: {i['causa_declarada']}" if i.get("causa_declarada") else ""))
+            for e in r.get("evaluaciones") or []:
+                for d in e.get("diagnostico_formato") or []:
+                    lines.append(f"  - autoevaluación {e.get('formato')}: {d['causa']} — {d['detalle'][:160]}")
+            if r.get("error_persistente"):
+                lines.append(f"  - error persistente ({r['error_persistente']['veces']} veces): "
+                             f"{r['error_persistente']['firma']}")
         lines.append("")
     lines += ["## Opciones de los modelos (idénticas salvo el nombre)", "", "```json",
               json.dumps(res["modelos"], ensure_ascii=False, indent=1), "```", "", f"_{AVISO}_", ""]
@@ -87,7 +110,8 @@ def escribir(res: dict, salida: Path) -> tuple[Path, Path]:
 
 def comparar(a: dict, b: dict) -> str:
     """Compara dos corridas (p. ej. una por modelo, hechas en momentos distintos). Avisa si las condiciones difieren."""
-    cond = ("semilla", "escala", "dias", "por_dia", "tareas", "max_correcciones", "presupuesto")
+    cond = ("semilla", "escala", "dias", "por_dia", "tareas", "max_correcciones", "reparaciones_formato",
+            "max_mismo_error", "presupuesto", "version")
     distintas = [k for k in cond if a.get(k) != b.get(k)]
     opts = [{k: v for k, v in m.items() if k != "modelo"} for m in a["modelos"] + b["modelos"]]
     if any(o != opts[0] for o in opts):
@@ -106,3 +130,50 @@ def comparar(a: dict, b: dict) -> str:
         vals = [ta.get(t, {}).get(c[2:]) if c.startswith("A:") else tb.get(t, {}).get(c[2:]) for c, _ in cols]
         lines.append(f"| {t} | " + " | ".join(_fmt(v) for v in vals) + " |")
     return "\n".join(lines + ["", f"_{AVISO}_", ""])
+
+
+def revisar(carpeta: Path) -> str:
+    """Revisión de SOLO LECTURA de una corrida (también de 0.6.0): cada llamada al modelo con su fin y sus tokens, las
+    autoevaluaciones con su texto crudo, y el código y las consultas de cada instrumento (bases SQLite en modo ro)."""
+    import sqlite3
+
+    carpeta = Path(carpeta)
+    res = json.loads((carpeta / "resultados.json").read_text())
+    lines = [f"Corrida {carpeta.name} — versión {res.get('version')} — {res.get('estado')}", ""]
+    for s in res.get("sesiones", []):
+        lines.append(f"== {s['modelo']} — repetición {s['repeticion']}")
+        for r in s["registros"]:
+            lines.append(f"-- {r['tarea']}: puntaje {r['puntaje']} — {r['detalle_puntaje']}")
+            for c in r["llamadas"]:
+                lines.append(f"   llamada {c['tipo']}: {c['resultado']}, {c.get('tokens_generados')} tokens generados, "
+                             f"formato {'ok' if c.get('formato_ok') else 'INVÁLIDO'}")
+            for e in r.get("evaluaciones", []):
+                crudos = [d.get("crudo") for d in e.get("diagnostico_formato") or []] or [e.get("crudo")]
+                for d in e.get("diagnostico_formato") or []:
+                    lines.append(f"   evaluación {e.get('formato')}: {d['causa']} — {d['detalle']}")
+                for crudo in crudos:
+                    if crudo:
+                        lines.append(f"   texto crudo ({len(crudo)} caracteres guardados):\n{crudo}")
+                if e.get("responde"):
+                    lines.append(f"   evaluación: {e['responde']} — {e.get('motivo')}")
+        from .corrida import _slug
+
+        db_path = carpeta / f"{_slug(s['modelo'])}_r{s['repeticion']}" / "lab.sqlite"
+        if not db_path.exists():
+            continue
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            for iid, name, v, code in db.execute("SELECT id, name, version, code FROM inst_instruments ORDER BY id"):
+                lines.append(f"\n--- instrumento {name}_v{v}\n{code}")
+                for st, err, out in db.execute("SELECT status, error, output_json FROM inst_runs WHERE instrument_id=? "
+                                               "ORDER BY id", (iid,)):
+                    lines.append(f"    ejecución: {st}" + (f" — {err[:300]}" if err else "")
+                                 + (f"\n    salida: {out[:600]}" if out else ""))
+            lines.append("\n--- consultas de los instrumentos")
+            for tool, sql, st, n in db.execute("SELECT tool, sql_text, status, row_count FROM explore_queries WHERE "
+                                               "origin='instrumento' ORDER BY id"):
+                lines.append(f"    {tool} [{st}, {n} filas] {sql[:400]}")
+        finally:
+            db.close()
+        lines.append("")
+    return "\n".join(lines)

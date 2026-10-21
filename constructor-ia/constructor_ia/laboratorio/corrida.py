@@ -29,13 +29,15 @@ def _slug(s: str) -> str:
 
 
 def correr(cfg, *, executor, servidor, modelos: list[Modelo], tareas, repeticiones: int = 1, semilla: int = 7,
-           escala: str = "normal", salida: Path, max_correcciones: int = 2, cancel=None, log=print) -> dict:
+           escala: str = "normal", salida: Path, max_correcciones: int = 3, reparaciones_formato: int = 1,
+           max_mismo_error: int = 3, cancel=None, log=print) -> dict:
     salida = Path(salida)
     salida.mkdir(parents=True, exist_ok=True, mode=0o700)
     dims = ESCALAS[escala] if isinstance(escala, str) else dict(escala)
     out = {"version": VERSION, "inicio": time.time(), "semilla": semilla,
            "escala": escala if isinstance(escala, str) else "personalizada", **dims,
            "tareas": [t.id for t in tareas], "repeticiones": repeticiones, "max_correcciones": max_correcciones,
+           "reparaciones_formato": reparaciones_formato, "max_mismo_error": max_mismo_error,
            "presupuesto": Presupuesto.from_cfg(cfg).as_dict(), "modelos": [m.opciones() for m in modelos],
            "sesiones": [], "estado": "en_curso"}
     try:
@@ -44,7 +46,8 @@ def correr(cfg, *, executor, servidor, modelos: list[Modelo], tareas, repeticion
                 log(f"== {modelo.nombre} — repetición {rep}/{repeticiones}")
                 out["sesiones"].append(_sesion(cfg, executor, servidor, modelo, tareas, semilla, dims,
                                                salida / f"{_slug(modelo.nombre)}_r{rep}", f"lab_{mi}_{rep}",
-                                               rep, max_correcciones, cancel, log))
+                                               rep, max_correcciones, reparaciones_formato, max_mismo_error,
+                                               cancel, log))
         out["estado"] = "completa"
     except LaboratorioAbortado as e:
         out["estado"], out["motivo"] = "abortada", str(e)
@@ -56,7 +59,7 @@ def correr(cfg, *, executor, servidor, modelos: list[Modelo], tareas, repeticion
 
 
 def _sesion(cfg, executor, servidor, modelo, tareas, semilla, dims, directorio: Path, base: str, rep: int,
-            max_correcciones, cancel, log) -> dict:
+            max_correcciones, reparaciones_formato, max_mismo_error, cancel, log) -> dict:
     directorio.mkdir(parents=True, exist_ok=True, mode=0o700)
     info = sintetica.generar(servidor, base, semilla=semilla, **dims)
     pw = directorio / "clave-desechable"
@@ -75,7 +78,8 @@ def _sesion(cfg, executor, servidor, modelo, tareas, semilla, dims, directorio: 
             raise LaboratorioAbortado(f"la cuenta de solo lectura del laboratorio no se verificó: {broker.status}")
         schema = observar_esquema(broker)
         sesion = Sesion(cfg=cfg, modelo=modelo, executor=executor, broker=broker, almacen=Almacen(db, cfg),
-                        server=servidor, info=info, schema=schema, max_correcciones=max_correcciones, cancel=cancel,
+                        server=servidor, info=info, schema=schema, max_correcciones=max_correcciones,
+                        reparaciones_formato=reparaciones_formato, max_mismo_error=max_mismo_error, cancel=cancel,
                         log=log)
         for t in tareas:
             if t.id == "R":  # los datos cambian: día nuevo, registros tardíos y correcciones

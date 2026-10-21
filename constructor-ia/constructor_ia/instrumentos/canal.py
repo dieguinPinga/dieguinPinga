@@ -45,6 +45,18 @@ def _jsonable(v):
     return str(v)
 
 
+def describir_columnas(columnas, tipos, filas, max_cols: int = 12) -> list[dict]:
+    """Qué recibió el instrumento de cada columna: tipo MariaDB, tipo Python con el que llega y un ejemplo. Es lo que
+    hace falta para diagnosticar errores como comparar un DECIMAL (que llega como texto) con un número."""
+    out = []
+    for i, nombre in enumerate(list(columnas)[:max_cols]):
+        ejemplo = next((f[i] for f in filas if i < len(f) and f[i] is not None), None)
+        out.append({"nombre": str(nombre)[:60], "tipo_mariadb": tipos[i] if i < len(tipos) else "",
+                    "llega_como": type(ejemplo).__name__ if ejemplo is not None else "None",
+                    "ejemplo": repr(ejemplo)[:40] if ejemplo is not None else None})
+    return out
+
+
 class Canal:
     def __init__(self, broker, budget: Presupuesto, *, mission_id: str | None, ref: str, cancel=None):
         self.broker, self.budget, self.mission_id, self.ref, self.cancel = broker, budget, mission_id, ref, cancel
@@ -100,9 +112,10 @@ class Canal:
         self.used["consultas"] += 1
         rows = [[_jsonable(x) for x in r] for r in o.rows]
         agg = bool(AGG_RE.search(sql))
+        tipos = list(o.column_types) if len(o.column_types) == len(o.columns) else [""] * len(o.columns)
         entry = {"op": "consultar", "consulta": f"C{o.query_id}" if o.query_id else None, "sql": sql[:500],
                  "estado": o.status, "filas": len(rows), "bytes": o.bytes, "ms": o.ms, "agregada": agg,
-                 "truncado": bool(o.truncated)}
+                 "truncado": bool(o.truncated), "columnas": describir_columnas(o.columns, tipos, rows)}
         self.queries.append(entry)
         if o.status != "ok":
             return {"id": rid, "ok": False, "error": "consulta", "detalle": f"{o.status}: {o.error}"[:400],
@@ -122,11 +135,17 @@ class Canal:
                 motivo = f"el resultado tiene más de {want} filas (max_filas que pidió el instrumento): es PARCIAL"
             entry["motivo"] = motivo
         if agg and len(self.agg_numbers) < MAX_NUMBERS:
+            sums: dict = {}
             for r in rows:
-                for x in r:
+                for i, x in enumerate(r):
                     if isinstance(x, (int, float)) or (isinstance(x, str) and re.fullmatch(r"-?\d+(\.\d+)?", x)):
                         self.agg_numbers.add(str(x).split(".")[0] if str(x).endswith(".0") else str(x))
-        return {"id": rid, "ok": True, "columnas": list(o.columns), "filas": rows, "truncado": bool(o.truncated),
+                    if isinstance(x, int) and not isinstance(x, bool):
+                        sums[i] = sums.get(i, 0) + x
+            # la suma de una columna entera de un GROUP BY (p. ej. conteos por grupo) también respalda un total
+            self.agg_numbers.update(str(v) for v in sums.values())
+        return {"id": rid, "ok": True, "columnas": list(o.columns), "tipos": tipos, "filas": rows,
+                "truncado": bool(o.truncated),
                 "motivo": motivo, "consulta": entry["consulta"], "budget": self.remaining()}
 
     def accounting(self) -> dict:

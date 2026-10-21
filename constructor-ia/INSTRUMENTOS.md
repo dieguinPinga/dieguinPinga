@@ -1,4 +1,8 @@
-# Instrumentos de investigación (0.6.0-exp1): Fase 0 y Fase 1
+# Instrumentos de investigación (0.6.1-exp1): Fase 0 y Fase 1
+
+> **0.6.1:** después de la primera prueba real (Qwen3 4B, T1) se separó «terminó» de «midió», se agregó un
+> diagnóstico compacto para reparar instrumentos y se distinguen las fallas de formato, de instrumento y de método.
+> Detalle en [§0.6.1](#061-diagnóstico-de-la-primera-prueba-real-y-reparación).
 
 Un **instrumento** es un programa Python pequeño y reutilizable, escrito por el modelo. Tiene una función
 `medir(db, p)`, corre aislado y consulta MariaDB solamente a través de un canal de lectura. Devuelve una medición
@@ -81,8 +85,21 @@ El contenido de `resultado` es libre: lo inventa el instrumento. La verificació
     las filas crudas recibidas;
   - `compatible`: es menor que las filas recibidas;
   - `no_demostrada`: el instrumento afirma más de lo que pudo ver;
+  - `nula`: declara 0 filas (0.6.1: antes podía salir «demostrada» si algún resultado agregado valía 0);
   - `no_declarada`;
-- **recortes:** si alguna consulta fue truncada o se registraron necesidades, y si el instrumento lo declaró.
+- **recortes:** si alguna consulta fue truncada o se registraron necesidades, y si el instrumento lo declaró;
+- **medición** (0.6.1), separada del estado técnico:
+
+  | Estado | Significa |
+  |---|---|
+  | `contrato_invalido` | la salida no tiene la forma acordada |
+  | `error_de_calculo` | el instrumento capturó una excepción y devolvió un resultado sin datos, o la mencionó en su salida |
+  | `sin_evidencia` | 0 filas analizadas, ninguna fila recibida o resultado vacío |
+  | `parcial` | algún tope recortó los datos |
+  | `valida` | resultado estructurado con datos detrás; puede llevar advertencias (excepciones capturadas que no lo vaciaron) |
+
+  Las excepciones capturadas por el propio instrumento se registran dentro del sandbox (tipo, mensaje, línea y
+  código de esa línea) aunque el programa termine «bien».
 
 La verificación no decide si la medición responde la pregunta. Eso lo evalúa el modelo y, en el laboratorio, la
 verdad conocida.
@@ -173,12 +190,18 @@ o 0, siempre con el detalle que lo justifica. Las preguntas no revelan qué se s
 Para cada tarea:
 
 1. **Diseño:** el modelo responde un manifiesto JSON y el código.
-2. **Ejecución:** revisión estática, sandbox con canal y verificación.
-3. **Autoevaluación:** el modelo indica `responde` (si, parcial o no), el `motivo`, la `respuesta` en la forma pedida
-   y una `mejora`.
-4. **Corrección:** si la ejecución falló o la autoevaluación no fue «si», el modelo escribe una versión nueva, hasta
-   `--correcciones` veces (2 por defecto).
-5. **Puntaje:** la respuesta final se compara con la verdad. La autoevaluación se contrasta con el puntaje
+2. **Ejecución:** revisión estática, sandbox con canal y verificación (estado técnico y estado de la medición).
+3. **Si no midió** (falla técnica, `error_de_calculo`, `sin_evidencia` o `contrato_invalido`): **reparación**. No se
+   pide autoevaluación de algo que no midió. El modelo recibe el código actual y un diagnóstico compacto (ver §0.6.1)
+   y devuelve una versión nueva con el campo `causa` (qué causaba la falla y qué cambió).
+4. **Si midió:** **autoevaluación** conceptual (`responde` si/parcial/no, `motivo`, `respuesta` en la forma pedida,
+   `mejora`). Si dice «no» o «parcial»: **revisión del método**.
+5. **Si la autoevaluación no se puede leer:** se diagnostica la respuesta y se pide **reparar el formato**
+   (`--reparaciones-formato`, 1 por defecto) sin tocar el instrumento; si sigue ilegible se rescata lo completo de un
+   JSON cortado; si nada sirve, la tarea termina como «evaluación ilegible», sin reescribir el instrumento.
+6. **Presupuesto:** hasta `--correcciones` versiones nuevas por tarea (3 por defecto, reparaciones y revisiones
+   juntas). La reparación se corta antes si la misma falla aparece `--mismo-error` veces seguidas (3 por defecto).
+7. **Puntaje:** la respuesta final se compara con la verdad. La autoevaluación se contrasta con el puntaje
    (calibración).
 
 **Mismas condiciones para todos los modelos:** misma base (semilla), prompts, presupuestos, `num_ctx`, temperatura,
@@ -189,11 +212,13 @@ cancela, el laboratorio se **aborta**: una falla de infraestructura no se le cob
 ### Métricas (por modelo)
 
 - **Resultados:** puntaje medio y tareas resueltas.
-- **Formato:** código con el formato pedido y autoevaluación con el formato pedido.
-- **Ejecución y verificación:** rechazos estáticos, ejecuciones correctas, cobertura demostrada y parciales sin
-  declarar.
+- **Formato:** código con el formato pedido; autoevaluación con el formato pedido en la primera respuesta,
+  autoevaluaciones con formato reparado, rescatadas e ilegibles.
+- **Ejecución y verificación:** rechazos estáticos, ejecuciones técnicamente correctas, mediciones válidas, errores
+  de cálculo, mediciones sin evidencia, cobertura demostrada (sobre mediciones válidas) y parciales sin declarar.
 - **Autoevaluación:** calibrada, sobreconfianza (dijo «si» y falló) y subconfianza.
-- **Corrección y reutilización:** correcciones escritas, correcciones que repitieron el mismo código, tareas
+- **Corrección y reutilización:** versiones nuevas escritas; reparaciones, reparaciones que eliminaron la falla,
+  reparaciones con el mismo error o sin cambios, tareas cortadas por error persistente; revisiones del método; tareas
   corregidas que terminaron resueltas, si detectó el instrumento insuficiente (C) y si reutilizó sin reescribir (R).
 - **Costo:** llamadas, llamadas fallidas, tokens de entrada y generados, segundos de modelo y segundos totales.
 
@@ -201,8 +226,8 @@ cancela, el laboratorio se **aborta**: una falla de infraestructura no se le cob
 
 ```bash
 cd ~/src/dieguinPinga
-git fetch origin claude/constructor-ia-0.6-instrumentos
-git checkout claude/constructor-ia-0.6-instrumentos
+git fetch origin claude/constructor-ia-0.6.1-reparacion
+git checkout claude/constructor-ia-0.6.1-reparacion
 git pull --ff-only
 ~/constructor-ia/bin/constructor-ia backup                # copia de la base SQLite antes de actualizar
 bash ~/src/dieguinPinga/constructor-ia/scripts/update.sh
@@ -213,6 +238,8 @@ systemctl --user stop constructor-ia                      # para no competir por
 systemctl --user start constructor-ia
 # comparar dos corridas (por ejemplo, un modelo por noche):
 ~/constructor-ia/bin/constructor-ia laboratorio-comparar <a>/resultados.json <b>/resultados.json
+# revisar una corrida (solo lectura; también las de 0.6.0): llamadas, textos crudos, código y consultas
+~/constructor-ia/bin/constructor-ia laboratorio-revisar ~/constructor-ia/data/laboratorio/<fecha>
 ```
 
 - Para una primera prueba corta: `--tareas T1,T4,R --escala pequena`.
@@ -264,7 +291,20 @@ Ollama CPU (`ollama_url`, puerto 11435) y no descarga modelos. Si falta alguno, 
   - el analizador de respuestas, el puntaje contra verdades conocidas y la calibración;
   - los fenómenos sembrados y el cambio de datos;
   - el MariaDB privado (sin red y borrado al terminar);
-  - el circuito completo con dos guiones de Ollama simulado, uno competente y uno incompetente.
+  - el circuito completo con dos guiones de Ollama simulado, uno competente y uno incompetente;
+  - `laboratorio-revisar`.
+- **`tests/test_reparacion.py`** (0.6.1): regresiones de la primera prueba real, con sandbox y MariaDB reales:
+  1. un programa que captura una excepción y devuelve un resultado vacío → `error_de_calculo`, con la excepción, la
+     línea y su código;
+  2. cobertura declarada 0 después de un error → `nula`, aunque un resultado agregado valga 0;
+  3. un valor numérico de SQL que llega como texto → el diagnóstico muestra `DECIMAL→str` y la línea del error;
+     `Resultado.tipos` dentro del sandbox;
+  4. una autoevaluación ilegible (cortada por el límite, JSON inválido) → se diagnostica, se repara el formato, se
+     rescata o queda ilegible, **sin reescribir el instrumento**; el texto crudo completo queda guardado;
+  5. una reparación que no corrige el error → «MISMO ERROR» con el último cambio a la vista y corte acotado; y la
+     misma falla reparada en el segundo intento (una primera falla no es incapacidad);
+  6. una medición válida que no responde la pregunta → revisión del **método**, no reparación;
+  - y la secuencia completa de la corrida de T1 con el circuito nuevo; `laboratorio-revisar` sobre resultados de 0.6.0.
 
 **Las pruebas con guiones validan el circuito, no la capacidad de un modelo.** Esa capacidad se mide con
 `laboratorio-instrumentos` y los modelos reales.
@@ -272,9 +312,112 @@ Ollama CPU (`ollama_url`, puerto 11435) y no descarga modelos. Si falta alguno, 
 ## Limitaciones conocidas
 
 - **Cobertura «demostrada»:** basta con que la cifra declarada aparezca entre los números de alguna consulta
-  agregada. Es una comprobación de plausibilidad, no una prueba de que el cálculo use esas filas.
+  agregada (o entre las sumas de sus columnas enteras, desde 0.6.1). Es una comprobación de plausibilidad, no una
+  prueba de que el cálculo use esas filas.
+- **Excepciones capturadas:** se observan con `sys.settrace` en los marcos del instrumento (sin eventos por línea).
+  Es un diagnóstico, no una barrera: el instrumento no puede importar `sys` para apagarlo. Agrega un costo pequeño a
+  cada llamada a función de Python.
 - **Huella:** se basa en estimaciones del motor (ver arriba).
 - **Puntajes:** las tolerancias son explícitas, pero son una decisión de diseño. Con una sola repetición, una
   diferencia de una tarea entre modelos puede deberse al azar del muestreo.
 - **Prompts:** están en español y son iguales para ambos modelos. No se ajustaron a ninguno de los dos.
 - **Ejecución en la VivoBook:** no se midió el tiempo que tomará. Cada tarea implica entre 2 y 6 llamadas al modelo.
+
+## 0.6.1: diagnóstico de la primera prueba real y reparación
+
+Corrida: `laboratorio-instrumentos --modelos qwen3:4b-instruct --tareas T1 --escala pequena --correcciones 1`
+(0.6.0-exp1, commit `8787f7b`); 822,7 s, 4 llamadas, 2.772 tokens generados, puntaje 0.
+
+### Qué falló en el sistema (verificado en el código)
+
+1. **Falso positivo de cobertura.** El canal guardaba todos los números devueltos por consultas agregadas para
+   contrastar la cobertura. `filas_analizadas: 0` coincidía con cualquier 0 de esos resultados, por ejemplo el índice
+   del primer intervalo de `FLOOR((valor - mínimo) / ancho)`. Por eso 0 filas salían «demostradas». Corregido:
+   cobertura `nula`.
+2. **«Terminó» se confundía con «midió».** El instrumento atrapó el `TypeError` y devolvió `{"desde": 0, "hasta": 0}`.
+   El sandbox informaba `ok` y nada miraba si hubo un error atrapado. Corregido: estado de la medición
+   (`error_de_calculo`) y registro de excepciones capturadas.
+3. **Una autoevaluación ilegible provocaba reescribir el instrumento.** En 0.6.0, si la autoevaluación no se podía
+   leer, el siguiente paso era una «corrección» del código. Corregido: falla de formato → reparar la respuesta.
+4. **La corrección no tenía información para encontrar la causa.** El prompt de corrección de 0.6.0 decía sólo
+   «Salida: {…} (la evaluación no tuvo el formato pedido)». No incluía la línea, el código de esa línea ni los tipos de
+   los datos recibidos. El único rastro del error era el texto que el propio instrumento puso en `limitaciones`.
+   Con eso, conservar el error en la versión 2 es esperable. Corregido: diagnóstico compacto (abajo).
+5. **Se guardaban sólo 300 caracteres** de la respuesta rechazada. Corregido: hasta 8000, con el diagnóstico.
+
+### Por qué se rechazaron las dos autoevaluaciones (lo que se puede y no se puede afirmar)
+
+En 0.6.0 una autoevaluación se rechazaba si:
+
+- el texto no era JSON válido;
+- no era un objeto;
+- `responde` no era exactamente `si`, `parcial` o `no` (un `sí` con tilde también se rechazaba).
+
+Según el informe, ambas empezaban con `{"responde": "no", …`, así que el valor era válido. Las causas posibles que
+quedan son dos:
+
+- **cortada por el límite de tokens** (`num_predict_json` = 768). Con el formato JSON de Ollama la salida respeta la
+  gramática, así que una respuesta completa debería ser válida. Que no lo fuera apunta a un corte;
+- **JSON inválido** por otra causa.
+
+Los números son compatibles con el corte: si cada evaluación usó 768 tokens, quedan 1.236 para las dos escrituras de
+código. Pero eso **no lo demuestra**. `resultados.json` de esa corrida ya guarda, por llamada, `resultado`
+(`truncada` o `completa`) y `tokens_generados`. Lo resuelve, sin modificar nada:
+
+```bash
+~/constructor-ia/bin/constructor-ia laboratorio-revisar ~/constructor-ia/data/laboratorio/<fecha>
+```
+
+Si las líneas `llamada evaluacion-T1` dicen `truncada, 768 tokens generados`, fue el límite. Si dicen `completa`, el
+texto crudo mostrado (los 300 caracteres que se guardaron) indica el error. El mismo comando muestra:
+
+- el código de `rango_lecturas_v1` y `rango_lecturas_v2`;
+- las consultas que hicieron.
+
+Con eso se puede estudiar la segunda sospecha, la reconstrucción de los intervalos relativos al mínimo. **No pude
+revisar ese código: no está en el repositorio ni tengo acceso a la VivoBook.**
+
+Desde 0.6.1 el pedido de evaluación es explícitamente breve (motivo y mejora de una o dos frases), `sí` se acepta y
+cada falla de formato queda diagnosticada (causa, detalle con la posición del error, fin, tokens y texto crudo).
+
+### El diagnóstico de reparación
+
+Ejemplo real de las pruebas (un DECIMAL dividido por un entero, en el segundo intento fallido):
+
+```
+Estado técnico: error.
+Error sin capturar: TypeError: unsupported operand type(s) for /: 'str' and 'int' en instrumento.py línea 5 (medir): `prop = tarde / n`
+Datos recibidos:
+  C7 [ok] 1 filas: SELECT SUM(TIMESTAMPDIFF(SECOND, momento, recibido) > 3600) AS tarde, COUNT(*) AS n FROM lecturas
+      columnas: tarde DECIMAL→str '135', n BIGINT→int 4767
+Intentos anteriores:
+- v1: TypeError: unsupported operand type(s) for /: 'str' and 'int'
+- v2: TypeError: … → MISMO ERROR que la versión anterior: el cambio no lo corrigió
+Último cambio (v1 → v2):
+@@ -7 +7 @@
+-            "limitaciones": []}
++            "limitaciones": ["proporción global"]}
+```
+
+Además incluye el código actual completo, porque hace falta para modificarlo. No incluye las versiones anteriores
+completas (sólo el último cambio) ni registros largos. El prompt entero ronda los 3 KB. El diagnóstico es general:
+`constructor_ia/instrumentos/diagnostico.py` no sabe nada del laboratorio ni de T1. La «firma» de una falla (tipo y
+mensaje, sin números) permite reconocer que una reparación no cambió el error aunque cambien las líneas.
+
+### Una decisión que queda para ustedes: ¿DECIMAL como número?
+
+La causa del error de T1 es una trampa de nuestro transporte: MariaDB devuelve DECIMAL (también `AVG()`, `SUM()` de
+expresiones y `MIN()`/`FLOOR()` de columnas DECIMAL) y el canal lo entrega como texto para no perder precisión.
+Convertirlo a número en el canal eliminaría la trampa para cualquier modelo. **No lo cambié**, por dos razones:
+
+- cambiaría las condiciones respecto de la corrida 0.6.0;
+- haría desaparecer justamente el error con el que quieren medir la capacidad de reparación.
+
+Ahora el tipo es visible: está en el diagnóstico, en `Resultado.tipos` y en la documentación del canal. Si después
+de la próxima corrida prefieren quitar la trampa, es un cambio pequeño y localizado en `canal.py`.
+
+### Rollback de 0.6.1
+
+`~/constructor-ia/bin/rollback.sh` vuelve a 0.6.0. No hay migraciones nuevas: los campos nuevos viajan dentro de
+`verdict_json` y de `resultados.json`. La rama `claude/constructor-ia-0.6-instrumentos` sigue publicada sin cambios,
+y los resultados de la corrida real no se tocaron.

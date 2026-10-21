@@ -123,7 +123,7 @@ def competente(body):
         return json.dumps({"instrumento_id": inst["id"], "parametros": {"desde": d, "hasta": h}, "motivo": "mismo"})
     tid = "T3" if t == "C" else t
     nombre, params, code = INSTRUMENTOS[tid]
-    if t == "T2" and "Instrumento anterior" not in u:
+    if t == "T2" and "Instrumento actual" not in u:
         return _bloques(nombre, params, "def medir(db, p):\n    return 1 / 0\n")
     return _bloques(nombre, params, code)
 
@@ -316,6 +316,10 @@ class LabPipelineTests(unittest.TestCase):
         self.assertFalse(list(self.salida.rglob("clave-desechable")), "la clave desechable se borra")
         self.assertEqual(self.srv.sql("SHOW DATABASES LIKE 'lab\\_%'").stdout.strip(), "", "bases desechadas")
         res = json.loads(raw)
+        rev = informe.revisar(self.salida)
+        self.assertIn("llamada diseno-T1: completa", rev)
+        self.assertIn("--- instrumento concentracion_v1", rev)
+        self.assertIn("inst:concentracion_v1 [ok", rev)
         self.assertIn("Condiciones idénticas", informe.comparar(res, res))
         otra = copy.deepcopy(res)
         otra["modelos"][0]["temperatura"] = 0.7

@@ -609,7 +609,8 @@ def cmd_lab_instruments(args) -> int:
     try:
         res = corrida.correr(cfg, executor=ex, servidor=servidor, modelos=lab, tareas=sel,
                              repeticiones=args.repeticiones, semilla=args.semilla, escala=args.escala, salida=salida,
-                             max_correcciones=args.correcciones, cancel=stop,
+                             max_correcciones=args.correcciones, reparaciones_formato=args.reparaciones_formato,
+                             max_mismo_error=args.mismo_error, cancel=stop,
                              log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
     finally:
         servidor.detener()
@@ -618,6 +619,17 @@ def cmd_lab_instruments(args) -> int:
     print(m.read_text())
     print(f"Resultados: {j}\nResumen: {m}")
     return 0 if res["estado"] == "completa" else 1
+
+
+def cmd_lab_review(args) -> int:
+    from .laboratorio import informe
+
+    try:
+        print(informe.revisar(Path(args.carpeta)))
+    except (OSError, ValueError, KeyError) as e:
+        print(f"No se pudo revisar {args.carpeta}: {e}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def cmd_lab_compare(args) -> int:
@@ -763,13 +775,22 @@ def main(argv=None) -> int:
     a.add_argument("--repeticiones", type=int, default=1)
     a.add_argument("--semilla", type=int, default=7)
     a.add_argument("--escala", choices=["pequena", "normal", "grande"], default="normal")
-    a.add_argument("--correcciones", type=int, default=2, help="máximo de versiones corregidas por tarea")
+    a.add_argument("--correcciones", type=int, default=3,
+                   help="máximo de versiones nuevas por tarea (reparaciones y revisiones del método)")
+    a.add_argument("--reparaciones-formato", dest="reparaciones_formato", type=int, default=1,
+                   help="pedidos para reparar una autoevaluación ilegible (no reescriben el instrumento)")
+    a.add_argument("--mismo-error", dest="mismo_error", type=int, default=3,
+                   help="corta la reparación cuando el mismo error aparece estas veces seguidas (mínimo 2)")
     a.add_argument("--num-ctx", dest="num_ctx", type=int, help="contexto (igual para todos; default el del explorador)")
     a.add_argument("--temperatura", type=float, help="igual para todos; default la del explorador")
     a.add_argument("--conservar-mariadb", dest="conservar_mariadb", action="store_true",
                    help="no borrar el datadir privado al terminar (para inspección)")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_instruments)
+    a = sub.add_parser("laboratorio-revisar",
+                       help="Revisión de solo lectura de una corrida: llamadas, textos crudos, código y consultas")
+    a.add_argument("carpeta", help="data/laboratorio/<fecha>")
+    a.set_defaults(fn=cmd_lab_review)
     a = sub.add_parser("laboratorio-comparar", help="Compara dos resultados.json del laboratorio (solo lectura)")
     a.add_argument("a")
     a.add_argument("b")
