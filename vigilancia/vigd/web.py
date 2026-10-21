@@ -238,6 +238,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error_json(401, "no autenticado")
         if self.headers.get("X-Vig") != "1":
             return self.send_error_json(403, "falta cabecera X-Vig")
+        if path == "/api/settings/ai":
+            try:
+                enabled = bool(json.loads(body or b"{}")["enabled"])
+            except (ValueError, KeyError, TypeError):
+                return self.send_error_json(400, 'se espera {"enabled": true|false}')
+            with self.db() as c:
+                db.set_ai_enabled(c, enabled)
+            log.info("IA local %s desde la web", "activada" if enabled else "pausada")
+            return self.send_json(self.status())
         m = re.fullmatch(r"/api/events/(\d{1,12})/(star|delete|transcribe)", path)
         if not m:
             return self.send_error_json(404, "no encontrado")
@@ -322,10 +331,12 @@ class Handler(BaseHTTPRequestHandler):
                     state = "sin datos"
                 out[r["component"]] = {"state": state, "age_s": round(age, 1), "detail": json.loads(r["detail"])}
             q = dict(c.execute("SELECT transcript_status, COUNT(*) FROM events GROUP BY transcript_status").fetchall())
+            ai = db.ai_enabled(c)
         for comp in COMPONENTS:
             out.setdefault(comp, {"state": "sin datos", "age_s": None, "detail": {}})
         out["web"] = {"state": "ok", "age_s": 0, "detail": {"sse_clientes": self.app.sse}}
         return {"now": now, "components": out, "transcripciones": q,
+                "ia_local": {"habilitada_config": bool(self.app.cfg["transcription"]["enabled"]), "activa": ai},
                 "retencion_dias": self.app.cfg["general"]["retention_days"]}
 
     def api_stats(self, qs):

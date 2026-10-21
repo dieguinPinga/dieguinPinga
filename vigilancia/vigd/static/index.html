@@ -14,6 +14,7 @@
   <div class="indicators">
     <span id="ind-mic" class="ind off" title="Micrófono"><i></i>MIC</span>
     <span id="ind-cam" class="ind off" title="Cámara"><i></i>CAM</span>
+    <button id="ind-ai" type="button" class="ind ai" title="IA local (transcripción)" aria-pressed="true"><i></i>IA</button>
     <span id="ind-live" class="live" title="Actualización en vivo"></span>
     <form method="post" action="/logout"><button class="ghost small" type="submit">Salir</button></form>
   </div>
@@ -72,6 +73,12 @@
   </section>
 
   <section id="tab-status" hidden>
+    <div class="st ai-card">
+      <div class="st-head"><span>IA local (Whisper)</span><span id="ai-state" class="st-state other">—</span></div>
+      <p class="muted" id="ai-help">Al pausarla se corta la transcripción en curso y se libera la memoria del modelo.
+        La grabación de audio y video sigue igual; los eventos con voz quedan en cola y se transcriben al reanudar.</p>
+      <button id="ai-toggle" type="button">Pausar IA local</button>
+    </div>
     <div id="status-list" class="status-list"></div>
     <h3>Nivel del micrófono</h3>
     <div class="meter"><div id="meter-floor" class="meter-floor"></div><div id="meter-bar" class="meter-bar"></div></div>

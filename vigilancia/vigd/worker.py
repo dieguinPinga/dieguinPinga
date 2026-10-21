@@ -1,5 +1,8 @@
 """Transcripción asíncrona con faster-whisper, en un proceso aparte y con baja prioridad.
 
+Se puede pausar desde el dashboard (interruptor "IA local"): al pausar se corta la
+transcripción en curso, se libera el modelo y los eventos quedan en cola.
+
 Si este proceso falla, se queda sin memoria o está ocupado, la captura no se entera."""
 import gc
 import logging
@@ -12,6 +15,10 @@ from .config import Paths
 from .util import mem_available_mb
 
 log = logging.getLogger("worker")
+
+
+class Paused(Exception):
+    pass
 
 
 def run(cfg):
@@ -42,6 +49,15 @@ def run(cfg):
         avail = mem_available_mb()
         detail = {"modelo": tc["model"], "cargado": model is not None, "mem_libre_mb": avail,
                   "transcriptos": done, "pid": os.getpid()}
+        if not db.ai_enabled(conn):
+            if model is not None:
+                model = None
+                gc.collect()
+                log.info("IA local pausada desde el dashboard: modelo liberado")
+            db.set_status(conn, "worker", "pausado", {**detail, "cargado": False,
+                                                      "estado": "IA local pausada; los eventos quedan en cola"})
+            time.sleep(3)
+            continue
         row = conn.execute("SELECT e.id, m.relpath FROM events e JOIN media m ON m.event_id = e.id AND m.kind = 'audio' "
                            "WHERE e.transcript_status = 'pending' AND e.status = 'ready' "
                            "ORDER BY e.id DESC LIMIT 1").fetchone()
@@ -68,11 +84,19 @@ def run(cfg):
             t0 = time.time()
             segments, info = model.transcribe(paths.abs(row["relpath"]), language=tc["language"] or None,
                                               beam_size=1, vad_filter=True)
-            text = " ".join(s.text.strip() for s in segments).strip()
+            parts = []
+            for seg in segments:  # el modelo trabaja segmento a segmento: se puede cortar entre medio
+                if not db.ai_enabled(conn):
+                    raise Paused()
+                parts.append(seg.text.strip())
+            text = " ".join(parts).strip()
             db.update_event(conn, eid, transcript=text or None, transcript_lang=info.language,
                             transcript_status="done" if text else "empty")
             done += 1
             log.info("Evento %d transcripto en %.1f s (%d caracteres)", eid, time.time() - t0, len(text))
+        except Paused:
+            log.info("Transcripción del evento %d interrumpida: IA local pausada", eid)
+            db.update_event(conn, eid, transcript_status="pending")
         except Exception as e:
             log.exception("Error transcribiendo evento %d", eid)
             db.update_event(conn, eid, transcript_status="error", error=f"transcripción: {e}"[:500])

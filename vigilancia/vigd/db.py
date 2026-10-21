@@ -71,6 +71,17 @@ TYPE_FILTERS = {
 }
 
 
+def ai_enabled(conn):
+    """Interruptor de IA local (Whisper) que se controla desde el dashboard."""
+    row = conn.execute("SELECT value FROM meta WHERE key = 'ai_enabled'").fetchone()
+    return row is None or row[0] != "0"
+
+
+def set_ai_enabled(conn, enabled):
+    conn.execute("INSERT INTO meta(key, value) VALUES ('ai_enabled', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", ("1" if enabled else "0",))
+
+
 def connect(path):
     conn = sqlite3.connect(path, timeout=15, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row

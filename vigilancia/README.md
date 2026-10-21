@@ -108,6 +108,14 @@ También se pueden lanzar por separado: `capture`, `web` y `worker`.
 - **Estado**: procesos, micrófono (nivel en vivo contra el ruido ambiente), cámara (fps, brillo,
   aviso de oscuridad) y cola de transcripción.
 - Los indicadores **MIC** y **CAM** del encabezado laten en rojo mientras se está capturando.
+- **Interruptor de IA local**: el botón **IA** del encabezado, o la tarjeta "IA local" en la pestaña
+  Estado, pausa y reanuda Whisper sin reiniciar nada.
+  - Al pausar, se corta la transcripción en curso y se libera la memoria del modelo. Los eventos
+    con voz quedan en cola ("En cola") y se transcriben al reanudar.
+  - **La grabación de audio y video no se ve afectada.**
+  - El estado se guarda en la base (`meta.ai_enabled`), así que sobrevive a reinicios.
+  - Si `[transcription] enabled = false` en la configuración, el botón aparece deshabilitado.
+  - API: `POST /api/settings/ai` con `{"enabled": false}` (requiere sesión y la cabecera `X-Vig: 1`).
 
 ## Seguridad
 
@@ -151,7 +159,7 @@ los eventos más antiguos. Nunca se borra nada fuera de `data_dir`.
 | `events` | id, uid, started_at, ended_at, status (recording/processing/ready/error), category, labels (JSON), has_voice/has_sound/has_motion/impulsive/light_change, peak_db, mean_db, noise_floor_db, voice_ratio, motion_max, motion_ratio, transcript, transcript_status, starred, continuation_of, error, updated_at |
 | `media` | id, event_id → events (CASCADE), kind (audio/video/thumb), relpath (único, relativo a data_dir), mime, bytes, duration |
 | `status` | latido de cada proceso (captura, audio, video, worker) con su detalle JSON |
-| `meta` | schema_version |
+| `meta` | schema_version, ai_enabled (interruptor de IA local: "1"/"0") |
 
 Definición completa en `vigd/db.py`.
 

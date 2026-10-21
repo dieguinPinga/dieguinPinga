@@ -215,6 +215,7 @@ function renderDetail(ev, resetMedia) {
   t.hidden = !ev.media.audio;
   t.disabled = ev.transcript_status === 'pending' || ev.transcript_status === 'processing';
   t.textContent = ev.transcript_status === 'done' ? 'Transcribir de nuevo' : 'Transcribir';
+  if (aiState && !aiState.activa) t.textContent += ' (en cola: IA pausada)';
   t.onclick = async () => {
     try { upsertEvent(await api(`/api/events/${ev.id}/transcribe`, { method: 'POST' })); } catch (e) { toast(e.message); }
   };
@@ -322,6 +323,7 @@ function renderStatus(st) {
   const a = comps.audio || {}, v = comps.video || {};
   setInd('#ind-mic', a.state);
   setInd('#ind-cam', v.state);
+  renderAi(st.ia_local);
   $('#status-list').replaceChildren(...Object.keys(COMP_NAMES).map((k) => {
     const c = comps[k] || { state: 'sin datos', detail: {} };
     const cls = c.state === 'ok' ? 'ok' : c.state === 'error' ? 'error' : 'other';
@@ -342,6 +344,39 @@ function renderStatus(st) {
     $('#meter-text').textContent = `Nivel ${d.level_db} dBFS · ruido ambiente ${d.floor_db ?? '—'} dBFS · VAD ${d.vad ? 'activo' : 'no disponible'} (se actualiza cada ~3 s)`;
   }
 }
+// ---------- interruptor de IA local ----------
+let aiState = null;
+function renderAi(ai) {
+  if (!ai) return;
+  aiState = ai;
+  const chip = $('#ind-ai'), btn = $('#ai-toggle'), lbl = $('#ai-state');
+  const active = ai.habilitada_config && ai.activa;
+  chip.classList.toggle('on', active);
+  chip.classList.toggle('off', !active);
+  chip.classList.toggle('paused', ai.habilitada_config && !ai.activa);
+  chip.setAttribute('aria-pressed', String(active));
+  chip.disabled = btn.disabled = !ai.habilitada_config;
+  if (!ai.habilitada_config) {
+    chip.title = 'IA local deshabilitada en config.toml ([transcription] enabled = false)';
+    lbl.textContent = 'deshabilitada en config'; lbl.className = 'st-state other';
+    btn.textContent = 'Deshabilitada en la configuración';
+    return;
+  }
+  chip.title = active ? 'IA local activa — tocar para pausar' : 'IA local pausada — tocar para reanudar';
+  lbl.textContent = active ? 'activa' : 'pausada';
+  lbl.className = 'st-state ' + (active ? 'ok' : 'other');
+  btn.textContent = active ? 'Pausar IA local' : 'Reanudar IA local';
+}
+async function toggleAi() {
+  if (!aiState || !aiState.habilitada_config) return;
+  const enable = !aiState.activa;
+  if (!enable && !confirm('¿Pausar la IA local? Se corta la transcripción en curso y los eventos quedan en cola.')) return;
+  try {
+    renderStatus(await api('/api/settings/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enable }) }));
+  } catch (e) { toast(e.message); }
+}
+
 function setInd(sel, s) {
   const n = $(sel);
   n.classList.toggle('on', s === 'ok');
@@ -416,6 +451,8 @@ function init() {
   $('#snap-box').addEventListener('toggle', () => { if ($('#snap-box').open) refreshSnap(); });
   $('#snap-refresh').addEventListener('click', refreshSnap);
   $('#stats-days').addEventListener('change', loadStats);
+  $('#ind-ai').addEventListener('click', toggleAi);
+  $('#ai-toggle').addEventListener('click', toggleAi);
   setInterval(() => {  // refresca duraciones de eventos en curso
     for (const ev of state.events.values()) if (ev.status === 'recording') upsertEvent(ev);
   }, 5000);

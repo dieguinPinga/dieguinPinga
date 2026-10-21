@@ -120,6 +120,18 @@ class DbTest(unittest.TestCase):
             self.assertIsNone(db.get_event(conn, 1))
             conn.close()
 
+    def test_ai_toggle(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = Paths(d)
+            paths.ensure()
+            conn = db.init(paths.db)
+            self.assertTrue(db.ai_enabled(conn))
+            db.set_ai_enabled(conn, False)
+            self.assertFalse(db.ai_enabled(db.connect(paths.db)))  # visible desde otro proceso
+            db.set_ai_enabled(conn, True)
+            self.assertTrue(db.ai_enabled(conn))
+            conn.close()
+
     def test_path_validation(self):
         with tempfile.TemporaryDirectory() as d:
             paths = Paths(d)
