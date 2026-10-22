@@ -71,6 +71,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   controles de coherencia entre lo declarado y el código, antes del sandbox; la verificación sigue siendo lo único que acepta.
   v1.3.2: el juez compara también con una base sintética independiente (otros totales, reparto, valores, tiempos y
   bordes), que existe solo durante el juicio y a la que el coordinador no tiene acceso.
+  v1.3.3: el coordinador recuenta válidas e inválidas con SQL propio (`suite_ventanas.py`) y prueba cada reparación
+  también con datos variados propios, para no aceptar constantes copiadas de la evidencia.
 
 ## Proyectos que evolucionan (v0.4.0)
 

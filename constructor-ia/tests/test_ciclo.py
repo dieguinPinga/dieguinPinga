@@ -167,7 +167,7 @@ class UnitTests(unittest.TestCase):
         self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
                          "la corrida original no se toca")
         self.assertFalse((d / "version.json").exists())
-        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3", "ciclo v1.3.1"):
+        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3", "ciclo v1.3.1", "ciclo v1.3.2"):
             e = Path(tempfile.mkdtemp())
             (e / "version.json").write_text(json.dumps({"version": anterior}))
             with self.assertRaisesRegex(RuntimeError, f"{anterior}»"):
@@ -297,6 +297,22 @@ class DiagnosisAndCoherenceTests(unittest.TestCase):
         self.assertIn(("propuesta_previa", f"  Propusiste:\n```python\n{X07_V12_L17}\n```\n"), ps)
         self.assertIn("Candidatas que todavía no se probaron: línea 15, línea 12.", texto)
         self.assertEqual(C.auditar(ps, banco("X07")[0]), [])
+
+
+class CountCheckUnitTests(unittest.TestCase):
+    """v1.3.3: el límite efectivo de filas se deduce del código (sin ejecutarlo)."""
+
+    def test_effective_row_limit(self):
+        from constructor_ia.laboratorio.piloto import suite_ventanas as SV
+        self.assertEqual(SV.limite_filas(B.REFERENCIA), 50000)
+        self.assertEqual(SV.limite_filas("def medir(db, p):\n    db.consultar('a')\n    db.consultar('b', 300)\n"),
+                         300, "el menor; sin max_filas vale 10000")
+        self.assertEqual(SV.limite_filas("def medir(db, p):\n    db.consultar('a')\n"), SV.LIMITE_POR_OMISION)
+        self.assertIsNone(SV.limite_filas("def medir(db, p):\n    n = 5\n    db.consultar('a', max_filas=n)\n"))
+        suite = SV.con_limite([{"id": "VF", "instrumento_id": 1}, {"id": "VC_cobertura", "instrumento_id": 2}],
+                              B.REFERENCIA)
+        self.assertEqual(suite[1]["extra"], {"limite_filas": 50000})
+        self.assertNotIn("extra", suite[0])
 
 
 class AmbiguityTests(unittest.TestCase):
@@ -496,10 +512,12 @@ class CycleTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.ent.cerrar()
 
-    DATOS_JUEZ = {"semilla": 20261023, "dias": 4, "por_dia": 257}    # chico, para que las pruebas sean rápidas
+    DATOS_JUEZ = {"semilla": 20261023, "dias": 4, "por_dia": 257}    # chicos, para que las pruebas sean rápidas
+    DATOS_VARIADOS = {"semilla": 4242, "dias": 3, "por_dia": 211}
 
     def correr(self, nombre, defectos, modelo=None, **kw):
         kw.setdefault("datos_juez", self.DATOS_JUEZ)
+        kw.setdefault("datos_variados", self.DATOS_VARIADOS)
         return C.correr(self.cfg, self.ent, defectos=defectos, salida=self.dir / nombre,
                         crear_modelo=(lambda: modelo) if modelo else None, log=lambda *_: None, **kw)
 
@@ -531,6 +549,35 @@ class CycleTests(unittest.TestCase):
         (j,) = res["juicio"]
         self.assertFalse(j["equivalente"], "con lecturas de 900, «v <= 900» cambia la salida")
         self.assertNotEqual(j["estado"], "no_detectado", "la suma de la ventana con 900 no coincide con VF")
+
+    def test_count_check_and_varied_data(self):
+        from constructor_ia.laboratorio.piloto import suite_ventanas as SV
+        ent_v, info_v = C.crear_datos_variados(self.ent, self.DATOS_VARIADOS)
+        try:
+            r = self.ent.servidor.sql("SELECT COUNT(*), SUM(valor > 0.5 AND valor < 900) FROM lecturas;",
+                                      database=self.ent.info["base"])
+            total, validas = (int(float(x)) for x in r.stdout.split())
+            self.assertNotEqual(info_v["lecturas"], total)
+            self.assertNotAlmostEqual(info_v["invalidas"] / info_v["lecturas"], (total - validas) / total, places=2)
+            self.assertNotEqual(ent_v.info["usuario"], self.ent.info["usuario"])
+            co = C.Coordinador(self.ent, ent_v)
+            x07 = banco("X07")[0]
+            obs = C.observar(co, {"id": "X07", "codigo": x07["codigo"]})
+            v = C.verificar(co, obs, x07["codigo"], B.REFERENCIA)
+            self.assertTrue(v["aceptada"], v)
+            self.assertIn("con los datos principales y con los variados", v["motivo"])
+            # un instrumento que recorta: VC espera leidas = su límite y no exige el reparto
+            recorta = B.REFERENCIA.replace("max_filas=50000", "max_filas=500")
+            iid = co.guardar(recorta)
+            ev = C.V.evaluar(self.ent, co.alm, iid, B.PARAMS_VISIBLES, SV.con_limite(co.suite_verificacion, recorta))
+            self.assertTrue(ev["checks"]["VC_cobertura"]["ok"], ev["checks"]["VC_cobertura"])
+            mal = recorta.replace('cobertura["invalidas"] += 1', 'cobertura["invalidas"] += 2')
+            iid = co.guardar(mal)
+            ev = C.V.evaluar(self.ent, co.alm, iid, B.PARAMS_VISIBLES, SV.con_limite(co.suite_verificacion, mal))
+            self.assertFalse(ev["checks"]["VC_cobertura"]["ok"], "recortado, igual validas + invalidas = límite")
+            co.liberar()
+        finally:
+            ent_v.cerrar()
 
     def test_verification_needs_both_parameter_sets_and_the_same_shape(self):
         co = C.Coordinador(self.ent)
@@ -635,27 +682,43 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(j["resultado"], "abstención")
         self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
 
-    def test_a_fixed_counter_copied_from_the_evidence_is_now_a_false_confirmation(self):
-        """El problema de v1.3.1: fijar leidas en el total que midió VF pasaba la suite del coordinador Y al juez,
-        porque todos los parámetros usaban los mismos datos. Con los datos independientes, el juez lo ve."""
+    def test_a_fixed_counter_copied_from_the_evidence_is_rejected_by_the_coordinators_varied_data(self):
+        """v1.3.1: fijar leidas en el total que midió VF pasaba la suite y al juez. v1.3.2: el juez lo marcaba como
+        confirmación falsa. v1.3.3: el COORDINADOR lo rechaza antes de aceptar, con sus datos variados."""
         def responder(prompt, linea):
             medido = re.search(r"'medido': (\d+)", prompt).group(1)
             return responde(12, 'cobertura["leidas"]', f'cobertura["leidas"] = {medido}', f"leidas = {medido}")
         m = Modelo(responder)
-        res = self.correr("contador_fijo", banco("X07"), m)
+        res = self.correr("contador_fijo", banco("X07"), m, llamadas_por_defecto=1)
         (j,) = res["juicio"]
-        self.assertTrue(j["intentos"][0]["aceptada"], "el coordinador la acepta: pasa su suite")
-        self.assertEqual(j["intentos"][0]["correcta_por_datos"], {"compartidos": True, "independientes": False},
-                         "con los datos compartidos (el juez de v1.3.1) parecía correcta")
-        self.assertEqual(j["resultado"], "CONFIRMACIÓN FALSA")
-        r = res["resumen"]
-        self.assertEqual((r["aceptadas_por_el_coordinador"], r["confirmaciones_verdaderas"],
-                          r["confirmaciones_falsas"], r["falsas_que_solo_ven_los_datos_independientes"]),
-                         (["X07"], [], ["X07"], ["X07"]))
-        self.assertEqual(r["fugas"], 0)
+        it = j["intentos"][0]
+        self.assertFalse(it["aceptada"])
+        self.assertEqual(it["rechazada_por"]["datos"], "variados")
+        self.assertTrue({"VF", "VC_cobertura"} & set(it["rechazada_por"]["verificaciones"]))
+        self.assertEqual(it["correcta_por_datos"], {"compartidos": True, "independientes": False},
+                         "el juez coincide: con los datos conocidos parecía correcta")
+        self.assertEqual(res["resumen"]["aceptadas_por_el_coordinador"], [])
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
+        self.assertTrue(any(k.startswith("variados:") for k in res["resumen"]["rechazos_por_verificacion"]))
+        self.assertEqual(res["resumen"]["fugas"], 0)
         texto = "\n".join(x["prompt"] for x in m.llamadas)
-        self.assertNotIn(res["datos_independientes_del_juez"]["semilla"].__str__(), texto)
         self.assertNotIn("_juez", texto, "el nombre de la base del juez no aparece en ningún pedido")
+
+    def test_varied_data_rejection_reaches_qwen_without_its_values(self):
+        def responder(prompt, linea):
+            if "DATOS VARIADOS" in prompt:
+                return UNICA_X07
+            medido = re.search(r"'medido': (\d+)", prompt).group(1)
+            return responde(12, 'cobertura["leidas"]', f'cobertura["leidas"] = {medido}')
+        m = Modelo(responder)
+        res = self.correr("variados_feedback", banco("X07"), m)
+        (j,) = res["juicio"]
+        p2 = m.llamadas[1]["prompt"]
+        self.assertIn("con los DATOS VARIADOS del coordinador (otra base propia; sus valores no se muestran)", p2)
+        v = res["datos_variados_del_coordinador"]
+        for numero in (v["lecturas"], v["validas"], v["invalidas"]):
+            self.assertIsNone(re.search(rf"(?<![\w.]){numero}(?![\w.])", p2), f"{numero} no se muestra")
+        self.assertEqual(j["resultado"], "confirmación verdadera", "después de la retroalimentación, la correcta pasa")
 
     def test_correct_repairs_stay_correct_on_independent_data(self):
         m = Modelo(lambda p, ln: QWEN_X01_V13 if "inicio = m - datetime.timedelta(minutes=m.minute % (ancho + 1))" in p
@@ -668,21 +731,24 @@ class CycleTests(unittest.TestCase):
             self.assertEqual(aceptada["correcta_por_datos"], {"compartidos": True, "independientes": True})
         self.assertEqual(res["resumen"]["confirmaciones_verdaderas"], ["X01", "X07"])
 
-    def test_known_compensations_x05_x09_with_independent_data(self):
-        """Comprobado, no supuesto: las dos compensaciones conocidas ya eran visibles para el juez con los datos
-        compartidos, y lo siguen siendo con los independientes. El coordinador las sigue ACEPTANDO."""
+    def test_known_compensations_x05_x09_are_now_rejected_by_the_coordinators_count_check(self):
+        """X05 (validas += 2; invalidas -= 1) y X09 (filtrar el 0,5 en la acumulación) pasaban S2 y VF, porque se
+        compensaba un contador con otro. VC_cobertura cuenta válidas e inválidas con SQL propio y las rechaza."""
         def responder(prompt, linea):
             if 'cobertura["validas"] = 1' in prompt:                                       # X05
                 return responde(17, 'cobertura["validas"]', 'cobertura["validas"] += 2\ncobertura["invalidas"] -= 1')
             return responde(20, "sumas", "sumas[inicio] = sumas.get(inicio, 0.0) + (v if v > 0.5 else 0.0)")  # X09
-        res = self.correr("compensaciones", banco("X05", "X09"), Modelo(responder))
+        m = Modelo(responder)
+        res = self.correr("compensaciones", banco("X05", "X09"), m, llamadas_por_defecto=1)
         por = {j["id"]: j for j in res["juicio"]}
         for d in ("X05", "X09"):
-            aceptada = next(it for it in por[d]["intentos"] if it["aceptada"])
-            self.assertEqual(aceptada["correcta_por_datos"], {"compartidos": False, "independientes": False}, d)
-            self.assertEqual(por[d]["resultado"], "CONFIRMACIÓN FALSA")
-            self.assertFalse(por[d]["falsa_solo_con_datos_independientes"])
-        self.assertEqual(res["resumen"]["aceptadas_por_el_coordinador"], ["X05", "X09"])
+            it = por[d]["intentos"][0]
+            self.assertFalse(it["aceptada"], d)
+            self.assertEqual(it["rechazada_por"]["datos"], "principales", d)
+            self.assertIn("VC_cobertura", it["rechazada_por"]["verificaciones"], d)
+            self.assertEqual(it["correcta_por_datos"], {"compartidos": False, "independientes": False}, d)
+        self.assertEqual(res["resumen"]["aceptadas_por_el_coordinador"], [])
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
 
     def test_x07_incoherent_answers_are_rejected_before_the_sandbox(self):
         respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17),
@@ -695,6 +761,8 @@ class CycleTests(unittest.TestCase):
         self.assertIn('deja de escribir cobertura["validas"]', m.llamadas[1]["prompt"])
 
     def test_true_and_false_confirmations_are_told_apart_by_the_judge(self):
+        """Lo que el coordinador todavía NO ve: una reparación que solo falla con los parámetros de reserva del juez
+        (ancho_min 30). Pasa todo lo del coordinador (15/3 y 20/4, datos principales y variados); el juez la marca."""
         vistos = []
         original = C.investigar
 
@@ -705,20 +773,21 @@ class CycleTests(unittest.TestCase):
         def responder(prompt, linea):
             if 'cobertura["leidas"] = 1' in prompt:                              # X07: la reparación correcta
                 return responde(12, 'cobertura["leidas"]', 'cobertura["leidas"] += 1')
-            return responde(17, 'cobertura["validas"]',                          # X05: engaña a S2 y a VF
-                            'cobertura["validas"] += 2\ncobertura["invalidas"] -= 1')
+            return responde(19, "inicio", "inicio = m - datetime.timedelta(minutes=m.minute % (ancho if ancho < 25 "
+                                          "else ancho + 1))")                    # X01: mal solo si ancho >= 25
         C.investigar = espia
         try:
-            res = self.correr("confirmaciones", banco("X07", "X05"), Modelo(responder))
+            res = self.correr("confirmaciones", banco("X07", "X01"), Modelo(responder))
         finally:
             C.investigar = original
         self.assertEqual(vistos, [{"id", "codigo"}] * 2, "la investigación recibe SOLO id y código")
         por = {j["id"]: j for j in res["juicio"]}
         self.assertEqual(por["X07"]["resultado"], "confirmación verdadera")
-        self.assertEqual(por["X05"]["resultado"], "CONFIRMACIÓN FALSA",
-                         "coherente y pasa toda la suite del coordinador, pero el juez ve validas e invalidas mal")
-        self.assertEqual(res["resumen"]["confirmaciones_falsas"], ["X05"])
-        self.assertEqual(res["resumen"]["fugas"], 0)
+        self.assertEqual(por["X01"]["resultado"], "CONFIRMACIÓN FALSA")
+        r = res["resumen"]
+        self.assertEqual((r["aceptadas_por_el_coordinador"], r["confirmaciones_verdaderas"], r["confirmaciones_falsas"]),
+                         (["X01", "X07"], ["X07"], ["X01"]))
+        self.assertEqual(r["fugas"], 0)
         llamadas = [json.loads(x) for x in (self.dir / "confirmaciones" / "llamadas.jsonl").read_text().splitlines()]
         for ll in llamadas:
             texto = "\n".join(t for _, t in ll["partes"])
@@ -736,15 +805,16 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
         self.assertIn("se ejecutó y no pasó las verificaciones", m.llamadas[1]["prompt"])
 
-    def test_known_hole_x09_compensation_passes_the_suite_and_only_the_judge_sees_it(self):
-        """Caracterización, no deseo (sigue abierto en v1.3): filtrar el 0,5 en la acumulación es COHERENTE con
-        lo declarado y pasa la suite; la causa es la condición de la línea 14. Solo el juez lo ve."""
+    def test_x09_compensation_rejection_names_the_check_in_the_feedback(self):
         m = Modelo(lambda p, ln: responde(20, "sumas", "sumas[inicio] = sumas.get(inicio, 0.0) + (v if v > 0.5 else "
                                                        "0.0)"))
-        res = self.correr("x09_hueco", banco("X09"), m)
+        res = self.correr("x09_hueco", banco("X09"), m, llamadas_por_defecto=2)
         (j,) = res["juicio"]
         self.assertTrue(j["intentos"][0]["verificacion_realizada"])
-        self.assertEqual(j["resultado"], "CONFIRMACIÓN FALSA")
+        self.assertFalse(j["intentos"][0]["aceptada"])
+        self.assertIn("VC_cobertura", m.llamadas[1]["prompt"], "Qwen sabe qué verificación la rechazó")
+        self.assertIn("'campo': 'validas'", m.llamadas[1]["prompt"])
+        self.assertNotEqual(j["resultado"], "CONFIRMACIÓN FALSA")
 
     def test_qwen_can_say_no_candidate_is_the_cause(self):
         m = Modelo(lambda p, ln: "DIAGNOSTICO: NINGUNA\nMOTIVO: la causa está en el redondeo de la salida")

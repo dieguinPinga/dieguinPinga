@@ -1803,3 +1803,81 @@ demostración. Una reparación incorrecta pasa si es igual a la referencia en to
 **El siguiente paso para el coordinador** (pendiente de su decisión) es una verificación del reparto entre válidas e
 inválidas según la definición de la pregunta, que cerraría X05 y X09. Y quizás verificar con datos variados del
 propio coordinador, para no depender solo del juez frente a los valores copiados.
+
+## Ciclo v1.3.3: verificaciones del coordinador (2026-10-22, sin inferencias reales)
+
+**Dos problemas conocidos:**
+- **X05 y X09:** compensar un contador con otro pasaba S2 (`leidas = validas + invalidas`) y VF.
+- **X07:** fijar un contador en el total que midió VF pasaba toda la suite. El juez de v1.3.2 lo detectaba, pero
+  **el coordinador lo aceptaba**.
+
+### Qué cambió
+
+1. **`suite_ventanas.py`, un módulo reutilizable** con las verificaciones del coordinador para esta pregunta. Dependen
+   de la definición de la pregunta (qué lectura es válida, qué cuenta la cobertura), **nunca de un defecto**. Contiene:
+   - **VF**, sin cambios: total de filas y suma de cada ventana informada.
+   - **VC_cobertura**, nueva. Recuenta con **SQL propio**, independiente del código investigado:
+     - `leidas` y `filas_analizadas` = lecturas procesadas;
+     - `validas` = las que cumplen `0.5 < valor < 900`;
+     - `invalidas` = las restantes.
+   - **Límite efectivo de filas.** `limite_filas()` lo deduce del código sin ejecutarlo: el menor `max_filas` de sus
+     `consultar`, o 10000 si una llamada no lo indica.
+     - Si el instrumento recorta, VC espera `leidas = límite` y `validas + invalidas = límite`.
+     - En ese caso informa que el reparto no es verificable, porque las filas recortadas no tienen orden definido.
+     - Si `max_filas` no es un número literal, no se deduce y se espera el total.
+2. **Datos variados del coordinador** (`crear_datos_variados()`).
+   - Es una **tercera** base privada: propia del coordinador, con otro usuario (`lab_co2`) y reproducible
+     (`DATOS_VARIADOS = {semilla 4242, 11 días × 389}`).
+   - Es **distinta de la principal y de la del juez**, con otras transformaciones:
+     - **total:** otra escala, más ráfagas de 200 lecturas a las 16;
+     - **reparto:** 1 de cada 17 pasa a 950,25 y 1 de cada 29 a 0,25;
+     - **valores:** `× 0,83 + 11`;
+     - **tiempo:** 1 de cada 4 lecturas se corre 11 minutos;
+     - **bordes:** 0,5, 900, 0,502, 899,998, 0,498 y 900,002, en los minutos 1, 13, 16 y 44.
+   - **Qwen sabe qué verificación falló ahí y en qué campos, pero no ve los valores.**
+3. **La verificación acepta solo si** cada propuesta pasa **S1–S3, VF y VC_cobertura**, y conserva la forma de la
+   salida, con los dos juegos de parámetros del coordinador y **en las dos bases del coordinador**: la principal y la
+   variada. En la variada, la forma se compara con la de la misma reparación en la principal.
+4. **Qué rechazó y dónde.** Cada rechazo registra `rechazada_por = {datos: principales | variados, params,
+   verificaciones}`. El resumen cuenta los rechazos por verificación, y el historial le dice a Qwen cuál fue (por
+   ejemplo «VC_cobertura … 'campo': 'validas'»).
+
+**Decisión de diseño.** Las verificaciones nuevas se usan para **verificar**, no para **observar**: detectar,
+localizar y alimentar a las reglas congeladas sigue con S1–S3 + VF. Así la detección, las candidatas y las entradas de
+las reglas E0 quedan **idénticas** a v1.3.2. El ciclo sin modelo sobre los 12 defectos da lo mismo (4 aciertos, 3
+errores, 5 abstenciones; la causa fuera de las candidatas en X04, X09, X10, X11 y X12) y tarda 175 s.
+
+**Sin cambios:**
+- el juez independiente de v1.3.2, con sus datos, que no se comparten con el coordinador;
+- el protocolo de Qwen;
+- las reglas E0 (`ee46552429b3047e`);
+- las corridas históricas.
+
+### Resultados de las pruebas (modelos simulados, sin inferencias)
+
+| caso | v1.3.2 | v1.3.3: coordinador | rechazada por | juez |
+|---|---|---|---|---|
+| X05 `validas += 2; invalidas -= 1` | aceptada → **falsa** | **rechazada** | VC_cobertura, datos principales | incorrecta en las dos bases |
+| X09 filtrar el 0,5 en la acumulación | aceptada → **falsa** | **rechazada** | VC_cobertura, datos principales | incorrecta en las dos bases |
+| X07 contador fijo (`leidas = <medido>`) | aceptada → **falsa** | **rechazada** | VF/VC, **datos variados** | compartidos sí, independientes no |
+| X07 `leidas += 1` | verdadera | aceptada | — | **verdadera** |
+| X01 (respuesta real de Qwen) | verdadera | aceptada | — | **verdadera** |
+
+Además:
+- La retroalimentación de un rechazo con datos variados le llega a Qwen **sin sus valores**. Después, la reparación
+  correcta se confirma.
+- La referencia pasa todo con las dos bases del coordinador.
+- Un instrumento que recorta cumple VC si cuenta bien hasta su límite, y falla si no.
+
+### Lo que el coordinador todavía NO ve (y el juez sí)
+
+Hay una prueba que lo deja a la vista: una reparación de X01 que solo falla con `ancho_min ≥ 25`. Pasa todo lo del
+coordinador (15/3 y 20/4, en sus dos bases) y el juez la marca como **CONFIRMACIÓN FALSA** con los parámetros de
+reserva (30/5). Es decir: **un error que depende de parámetros que el coordinador no prueba**.
+
+**Otros límites:**
+- **Lo que no esté en ninguna de las dos bases del coordinador.**
+- **Lo que VC y VF no miden.** Por ejemplo, el orden entre ventanas empatadas, o las `limitaciones`.
+- **Un `max_filas` que no es literal.** VC espera el total.
+
+Y los límites del juez (v1.3.2) siguen valiendo.

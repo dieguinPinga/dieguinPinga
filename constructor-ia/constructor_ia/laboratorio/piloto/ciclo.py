@@ -40,12 +40,13 @@ from . import e0 as E0
 from . import eleccion as EL
 from . import localizador as L
 from . import parches as P
+from . import suite_ventanas as SV
 from . import traza as T
 from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.3.2"                   # v1.3.2: el juez evalúa también con datos independientes
+VERSION = "ciclo v1.3.3"                   # v1.3.3: verificación del recuento y datos variados del coordinador
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
 TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
@@ -91,26 +92,38 @@ def agregar_bordes(ent, *, semilla: int = 11) -> dict:
 # Observación (solo el coordinador) --------------------------------------------------------------------------------
 
 class Coordinador:
-    """Lo que el coordinador puede usar: el entorno, SU almacén, SUS verificadores y SUS parámetros."""
+    """Lo que el coordinador puede usar: el entorno, SU almacén, SUS verificadores y SUS parámetros. Desde v1.3.3,
+    también SUS datos variados (otra base privada propia, distinta de la principal y de la del juez) y la
+    verificación del recuento (suite_ventanas)."""
 
-    def __init__(self, ent):
-        self.ent = ent
+    def __init__(self, ent, ent_variado=None):
+        self.ent, self.ent_variado = ent, ent_variado
         self.alm = ent.almacen(f"ciclo_coordinador_{int(time.time() * 1000)}")
         self.vf = self.alm.save("verificador_fijo", EL.VERIFICADOR_FIJO, {"proposito": "verificador"},
                                 author="laboratorio")["id"]
         self.vc = self.alm.save("verificador_contraste", E0.VERIFICADOR_CONTRASTE, {"proposito": "verificador"},
                                 author="laboratorio")["id"]
+        self.suite_verificacion = SV.guardar(self.alm)
+        if ent_variado is not None:
+            self.alm_variado = ent_variado.almacen(f"ciclo_coordinador_variado_{int(time.time() * 1000)}")
+            self.suite_variada = SV.guardar(self.alm_variado)
         self.n = 0
 
-    def guardar(self, codigo: str) -> int | None:
+    def guardar(self, codigo: str, almacen=None) -> int | None:
         self.n += 1
         try:
-            return self.alm.save(f"ciclo_{self.n}", codigo, B.MANIFIESTO, author="laboratorio")["id"]
+            return (almacen or self.alm).save(f"ciclo_{self.n}", codigo, B.MANIFIESTO, author="laboratorio")["id"]
         except Exception:            # noqa: BLE001 - la revisión estática rechazó el código
             return None
 
     def suite(self, iid: int, params: dict) -> dict:
+        """La suite de OBSERVACIÓN (la de siempre: S1–S3 + VF), para detectar y localizar."""
         return V.evaluar(self.ent, self.alm, iid, params, [{"id": "VF", "instrumento_id": self.vf}])
+
+    def liberar(self):
+        self.ent.liberar(self.alm)
+        if self.ent_variado is not None:
+            self.ent_variado.liberar(self.alm_variado)
 
 
 def _texto_fallas(ev) -> str:
@@ -586,19 +599,24 @@ def semilla(defecto_id: str, i: int) -> int:
 # Verificación (solo el coordinador, solo en el sandbox) -----------------------------------------------------------
 
 def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
+    """Acepta solo si, en los DOS juegos de parámetros, sobre los datos principales Y sobre los datos variados del
+    coordinador, pasa toda la suite (S1–S3, VF y, desde v1.3.3, VC_cobertura) y conserva la forma de la salida.
+    `rechazada_por` dice qué verificación, con qué datos y con qué parámetros."""
     if nuevo == codigo:
         return {"aceptada": False, "motivo": "no cambia el código", "categoria": "sin_cambio", "juegos": []}
     iid = co.guardar(nuevo)
     if iid is None:
         return {"aceptada": False, "motivo": "la revisión estática lo rechazó", "categoria": "revision", "juegos": []}
+    suite = SV.con_limite(co.suite_verificacion, nuevo)
     res = []
     for j in obs["juegos"]:
-        ev = co.suite(iid, j["params"])
+        ev = V.evaluar(co.ent, co.alm, iid, j["params"], suite)
         fallas = [f["id"] for f in V.fallas(ev)] + [f"{x['id']}(inválido)" for x in ev["invalidos"]]
-        detalle = "; ".join(f"{f['id']}: {f['detalle'][:160]}" for f in V.fallas(ev))
+        detalle = "; ".join(f"{f['id']}: {f['detalle'][:200]}" for f in V.fallas(ev))
         if ev["run"]["status"] == "rechazado":            # la revisión estática corre al ejecutar
             return {"aceptada": False, "motivo": f"la revisión estática lo rechazó: {ev['run'].get('error')}",
-                    "categoria": "revision", "detalle": str(ev["run"].get("error") or "")[:300], "juegos": res}
+                    "categoria": "revision", "detalle": str(ev["run"].get("error") or "")[:300], "juegos": res,
+                    "rechazada_por": {"datos": "principales", "params": j["params"], "verificaciones": ["revisión"]}}
         if ev["salida"] is None:
             forma_ok = False
         elif j["forma"] is not None:
@@ -611,10 +629,31 @@ def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
                       f"con {j['params']} pasa, pero cambió la forma de la salida")
             det = (f"con los parámetros {j['params']}: " + (detalle if fallas else
                    "pasa las verificaciones, pero la salida cambió de forma (claves o cantidad de elementos)"))
-            return {"aceptada": False, "motivo": motivo, "categoria": "comportamiento", "detalle": det[:500],
-                    "juegos": res}
-    return {"aceptada": True, "motivo": "pasa toda la suite y conserva la forma en los dos juegos", "categoria": None,
-            "juegos": res}
+            return {"aceptada": False, "motivo": motivo, "categoria": "comportamiento", "detalle": det[:600],
+                    "juegos": res, "rechazada_por": {"datos": "principales", "params": j["params"],
+                                                     "verificaciones": fallas or ["forma"]}}
+    if co.ent_variado is not None:
+        iid_v = co.guardar(nuevo, co.alm_variado)
+        suite_v = SV.con_limite(co.suite_variada, nuevo)
+        for j, principal in zip(obs["juegos"], res):
+            ev = V.evaluar(co.ent_variado, co.alm_variado, iid_v, j["params"], suite_v)
+            fallas = [f["id"] for f in V.fallas(ev)] + [f"{x['id']}(inválido)" for x in ev["invalidos"]]
+            forma_ok = ev["salida"] is not None and E0.forma(ev["salida"]) == E0.forma(principal["salida"])
+            if fallas or not forma_ok:
+                campos = sorted({c for f in V.fallas(ev) for c in f["campos"]})
+                det = ("con los DATOS VARIADOS del coordinador (otra base propia; sus valores no se muestran) y los "
+                       f"parámetros {j['params']}: " + (f"fallan {', '.join(fallas)}"
+                                                        + (f" (campos: {', '.join(campos)})" if campos else "")
+                                                        if fallas else "la salida cambió de forma")
+                       + ". Una reparación que solo reproduce los resultados de los datos conocidos no pasa acá.")
+                return {"aceptada": False, "motivo": f"con los datos variados y {j['params']}: falla "
+                                                     f"{fallas or ['forma']}",
+                        "categoria": "comportamiento", "detalle": det, "juegos": res,
+                        "rechazada_por": {"datos": "variados", "params": j["params"],
+                                          "verificaciones": fallas or ["forma"]}}
+    return {"aceptada": True, "motivo": "pasa toda la suite y conserva la forma en los dos juegos"
+            + (", con los datos principales y con los variados" if co.ent_variado is not None else ""),
+            "categoria": None, "juegos": res}
 
 
 # Investigación de un defecto (v1.3) ------------------------------------------------------------------------------
@@ -860,6 +899,47 @@ def crear_datos_juez(ent, datos: dict = DATOS_JUEZ):
     return Entorno(ent.cfg, ent.executor, ent.servidor, ent.dir / "juez_independiente", info=info), resumen
 
 
+# Datos variados del COORDINADOR (v1.3.3): una tercera base privada, propia del coordinador, distinta de la
+# principal y de la del juez. Sirve para comprobar que una reparación CALCULA y no reproduce una constante de los
+# datos conocidos. Qwen sabe qué verificación falló ahí y en qué campos, pero no ve sus valores.
+
+DATOS_VARIADOS = {"semilla": 4242, "dias": 11, "por_dia": 389}       # principal: 7, 30 × 500 · juez: 20261023, 19 × 437
+
+
+def crear_datos_variados(ent, datos: dict = DATOS_VARIADOS):
+    import datetime as dt
+    from .. import sintetica as SI
+    from .entorno import Entorno
+    info = SI.generar(ent.servidor, f"{ent.info['base']}_variada", semilla=datos["semilla"], dias=datos["dias"],
+                      por_dia=datos["por_dia"], usuario="lab_co2")
+    rng = random.Random(datos["semilla"])
+    lid, filas = int(info["ultimo_id"]), []
+
+    def agregar(m, v):
+        nonlocal lid
+        lid += 1
+        filas.append((lid, 1 + lid % SI.ESTACIONES, m, v, m + dt.timedelta(minutes=3)))
+    for d in range(1, info["dias"], max(1, info["dias"] // 3)):            # ráfagas, a otra hora que las del juez
+        for _ in range(200):
+            agregar(SI.BASE + dt.timedelta(days=d, hours=16, seconds=rng.randrange(3600)), round(rng.uniform(5, 95), 3))
+    for k, v in enumerate((0.5, 900.0, 0.502, 899.998, 0.498, 900.002)):  # bordes, en otros minutos
+        for minuto in (1, 13, 16, 44):
+            agregar(SI.BASE + dt.timedelta(days=k % max(1, info["dias"]), hours=20 - k, minutes=minuto), v)
+    valores = ",".join(f"({i},{e},'{m:%Y-%m-%d %H:%M:%S}',{v:.3f},'{r:%Y-%m-%d %H:%M:%S}')" for i, e, m, v, r in filas)
+    ent.servidor.sql(
+        "UPDATE lecturas SET valor = ROUND(valor * 0.83 + 11, 3) WHERE valor > 0.5 AND valor < 900;\n"
+        "UPDATE lecturas SET valor = 950.25 WHERE MOD(id, 17) = 0;\n"
+        "UPDATE lecturas SET valor = 0.25 WHERE MOD(id, 29) = 0;\n"
+        "UPDATE lecturas SET momento = momento + INTERVAL 11 MINUTE WHERE MOD(id, 4) = 1;\n"
+        f"INSERT INTO lecturas (id, estacion_id, momento, valor, recibido) VALUES {valores};\n"
+        "ANALYZE TABLE lecturas;", database=info["base"])
+    info["ultimo_id"] = lid
+    r = ent.servidor.sql("SELECT COUNT(*), SUM(valor > 0.5 AND valor < 900) FROM lecturas;", database=info["base"])
+    total, validas = (int(float(x)) for x in r.stdout.split())
+    return (Entorno(ent.cfg, ent.executor, ent.servidor, ent.dir / "coordinador_variado", info=info),
+            {"lecturas": total, "validas": validas, "invalidas": total - validas})
+
+
 class Juez:
     """Compara con la referencia en los parámetros visibles y de reserva, sobre los datos compartidos con el
     coordinador Y sobre los datos independientes (si los hay). Correcta = igual en todos."""
@@ -923,6 +1003,7 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
              "diagnostico": (it.get("diagnostico") or {}).get("linea"),
              "diagnostico_en_objetivo": (it.get("diagnostico") or {}).get("linea") in obj,
              "rechazo": it.get("rechazo"), "ambiguedad": it.get("ambiguedad") or [],
+             "rechazada_por": (it.get("verificacion") or {}).get("rechazada_por"),
              "efecto_previo_compatible": (it.get("efecto_previo") or {}).get("compatible"),
              "fugas": auditar(it["partes"], defecto, getattr(juez, "reservado", None))}
         if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
@@ -964,7 +1045,8 @@ def _agregar(path: Path, obj: dict) -> None:
 
 
 def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, limite_llamadas: int | None = None,
-           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, datos_juez: dict = DATOS_JUEZ, log=print) -> dict:
+           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, datos_juez: dict = DATOS_JUEZ,
+           datos_variados: dict = DATOS_VARIADOS, log=print) -> dict:
     """defectos: los de defectos.cargar (con etiquetas). A la investigación solo pasan id y código.
     crear_modelo None: sin modelo (observación, reglas y juez; sirve como E0 v1 de punta a punta)."""
     if E0.huella_reglas() != HUELLA_REGLAS:
@@ -981,7 +1063,8 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
     vpath.write_text(json.dumps({"version": VERSION}))
     bordes = agregar_bordes(ent)            # la base privada es nueva en cada corrida: también al reanudar
     (salida / "bordes.json").write_text(json.dumps(bordes))
-    co = Coordinador(ent)
+    ent_variado, datos_variados_info = crear_datos_variados(ent, datos_variados)
+    co = Coordinador(ent, ent_variado)
     hechas = {x["clave"]: x for x in _jsonl(salida / "llamadas.jsonl")}
     terminados = {x["id"]: x for x in _jsonl(salida / "resultados.jsonl")}
     modelo = None
@@ -1053,10 +1136,12 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
               if d["id"] in observaciones]
     juez.liberar()
     ent_juez.cerrar()                                       # borra la base independiente
-    ent.liberar(co.alm)
+    co.liberar()
+    ent_variado.cerrar()                                    # borra la base variada del coordinador
     res = {"version": VERSION, "huella_reglas": E0.huella_reglas(), "python_sandbox": E0.version_python(cfg),
            "bordes": bordes, "params_coordinador": PARAMS_COORDINADOR, "corrida": estado["corrida"],
            "datos_independientes_del_juez": {**datos_juez, **datos},
+           "datos_variados_del_coordinador": {**datos_variados, **datos_variados_info},
            "llamadas_por_defecto": llamadas_por_defecto, "llamadas_nuevas": estado["nuevas"],
            "llamadas_totales": len(hechas),
            "interrupciones": estado["interrupciones"], "juicio": juicio, "resumen": resumir(juicio)}
@@ -1080,6 +1165,9 @@ def resumir(juicio: list[dict]) -> dict:
                                                               if j.get("falsa_solo_con_datos_independientes")],
             "incompletos": [j["id"] for j in juicio if "pendientes" in j],
             "rechazos": dict(Counter(x["rechazo"] for j in juicio for x in j.get("intentos", []) if x.get("rechazo"))),
+            "rechazos_por_verificacion": dict(Counter(
+                f"{x['rechazada_por']['datos']}:{v}" for j in juicio for x in j.get("intentos", [])
+                if x.get("rechazada_por") for v in x["rechazada_por"]["verificaciones"])),
             "efecto_declarado_contra_vf": dict(Counter(
                 {True: "coincide", False: "contradice"}[x["efecto_previo_compatible"]] for j in juicio
                 for x in j.get("intentos", []) if x.get("efecto_previo_compatible") is not None)),
@@ -1101,6 +1189,8 @@ def markdown(res: dict) -> str:
            f"- **Confirmaciones falsas (juez): {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']} · de "
            f"ellas, solo visibles con los datos independientes: {r['falsas_que_solo_ven_los_datos_independientes']}",
            f"- Datos independientes del juez (creados y borrados en el juicio): {res['datos_independientes_del_juez']}",
+           f"- Datos variados del coordinador: {res['datos_variados_del_coordinador']} · rechazos por verificación: "
+           f"{r['rechazos_por_verificacion']}",
            f"- Resultados: {r['resultados']}",
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
            f"- Rechazos por categoría: {r['rechazos']} · diagnósticos distintos de la sugerencia: "

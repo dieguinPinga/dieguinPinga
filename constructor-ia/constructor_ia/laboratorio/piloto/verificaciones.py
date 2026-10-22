@@ -66,7 +66,8 @@ def evaluar(ent, almacen, inst_id: int, params: dict, verificadores: list[dict])
             checks[cid] = {"autor": "modelo", "ok": False, "campos": [], "lugar": None,
                            "detalle": "no hay salida que verificar"}
             continue
-        vr = _run(ent, almacen, ver["instrumento_id"], {"parametros": params, "salida": salida})
+        vr = _run(ent, almacen, ver["instrumento_id"], {"parametros": params, "salida": salida,
+                                                         **(ver.get("extra") or {})})
         res = (vr.get("output") or {}).get("resultado") if vr["status"] == "ok" else None
         if not isinstance(res, dict) or not isinstance(res.get("ok"), bool):
             invalidos.append({"id": cid, "estado": vr["status"], "error": (vr.get("error") or "")[:300]})
