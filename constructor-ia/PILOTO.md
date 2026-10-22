@@ -851,3 +851,121 @@ bash $E forense <carpeta-etapa1> --salida ~/forense-eleccion.md --json ~/forense
 **Las repeticiones no aportaron información.** Con temperatura 0,2, las dos repeticiones de cada combinación
 eligieron lo mismo. En la práctica hay 24 celdas, no 48 pares independientes, y las discordantes son 4 celdas: 1 a
 favor y 3 en contra.
+
+## Próxima etapa, paso 1: instrumentación corregida y E0 sin modelo (2026-10-22)
+
+El experimento de elección terminado **no cambia**:
+- sus 96 resultados quedan preservados;
+- `eleccion.partes()` sigue reproduciendo los prompts guardados a partir de su `casos.json`.
+
+Una salvedad: si hoy se repitiera su Etapa 0, M050 tendría traza, porque se corrigió el runner, y su prompt de
+tratamiento cambiaría. Por eso la reproducción se hace siempre desde el `casos.json` guardado.
+
+### Correcciones de instrumentación
+
+- **La traza parcial llega aunque el instrumento se caiga.** La traza lleva `completa: false`.
+- Cada línea informa `interrumpida`: cuántas veces una excepción la cortó antes de terminar. En esas ejecuciones,
+  «después» no es lo que la línea habría dejado.
+- E0 guarda la **versión de Python del sandbox** y una **huella por caso y por parte**: código, salida, fallas y
+  traza.
+- Pendiente para el próximo experimento con modelo, sin tocar la plantilla v1:
+  - el verificador del coordinador se rotulará «coordinador», no «modelo»;
+  - una traza ausente dirá «sin traza», no «0 veces».
+
+### E0: ¿la evidencia del coordinador alcanza para que una regla fija elija la causa?
+
+Hay seis lecturas genéricas. Cada una tiene un criterio causal explícito y se abstiene si el criterio no da una única
+candidata. Se combinan en un orden fijo: primero las que usan evidencia ya mostrada a Qwen, después las nuevas.
+
+| lectura | criterio | evidencia |
+|---|---|---|
+| R1 lugar del error | la excepción ocurre en una candidata | ya mostrada |
+| R2 último escritor | escribe un valor que llega a la salida reemplazando otro, y el valor que otra candidata dejó en ese nombre se pierde | traza ya mostrada |
+| R3 acumulación sin efecto | una acumulación que se ejecutó y nunca cambió el valor | traza ya mostrada |
+| R4 contraste clave/valor | en una agregación `d[k] = …`, el verificador de contraste indica si lo erróneo es la **clave** (no alineada, o la suma informada pertenece a otra ventana) o el **valor** (por ejemplo, signo opuesto); se elige la candidata del camino estático correspondiente | nueva: verificador de contraste |
+| R5 omisión | si la instrucción no se ejecutara, pasarían todas las verificaciones | nueva: intervención |
+| R6 escala del efecto | un factor k ∈ {−1, ½, 2} sobre el efecto de una acumulación hace pasar todo | nueva: intervención |
+
+**Respuesta a la precaución sobre los errores de cálculo.** La regla del último escritor (R2) solo sirve para
+sobrescrituras, y en el banco solo responde en D2. Los errores de cálculo necesitan otra clase de evidencia:
+- **contraste clave/valor:** el verificador no solo dice «no coincide», sino *qué parte* del par no coincide;
+- **intervención sobre el efecto:** ¿cambiar cuánto suma esta instrucción explica la diferencia?
+- **acumulación inerte.**
+
+**Primer hallazgo de E0:**
+- Omitir la acumulación de sumas deja **0 ventanas**, y las verificaciones pasan porque no hay nada que verificar.
+- Por eso una intervención solo «repara» si la salida conserva su forma (mismas claves y mismos largos de listas).
+- En el banco hubo 6 intervenciones así; sin esta condición, R5 habría elegido mal en D1, M029 y M049.
+- La misma debilidad afecta a cualquier parche que «arregle» vaciando la salida.
+
+**Resultado en el entorno de desarrollo** (Python 3.13; 15 casos con la sembrada entre las candidatas; 124 versiones
+intervenidas; unos 200 s):
+
+| grupo | casos | R1 | R2 | R3 | R4 | R5 | R6 | combinada |
+|---|---|---|---|---|---|---|---|---|
+| total | 15 | 2/2 | 1/1 | 3/3 | 6/6 | 1/1 | 4/4 | 15/15 |
+| cálculo / mutante | 13 | 2/2 | 0/0 | 3/3 | 5/5 | 0/0 | 4/4 | 13/13 |
+| cálculo / observado (D1) | 1 | – | – | – | 1/1 | – | – | 1/1 |
+| sobrescritura / observado (D2) | 1 | – | 1/1 | – | – | 1/1 | – | 1/1 |
+
+Cada celda es «responde/acierta». Ninguna lectura eligió mal cuando respondió.
+
+**Cómo leerlo (importante):**
+- **Las reglas se escribieron mirando estos mismos 15 casos.** El 15/15 dice que la evidencia del coordinador
+  alcanza *en principio*. No dice que las reglas generalicen.
+- **Circularidad:**
+  - los mutantes son cambios de un punto: constante ±1 y operador;
+  - R6 con k = ½ deshace un `+= 2`, y con k = −1 deshace un `- v`; R3 detecta un `+= 0`;
+  - las únicas pruebas sin esa ventaja son D1 y D2, que vinieron de errores reales de Qwen.
+- **Evidencia ya mostrada a Qwen:** R1, R2 y R3 resuelven 6 de 15 casos. D1 y M029 no estaban entre ellos: la
+  evidencia que los resuelve (R4) **no se le mostró**.
+- **Propuesta:** que Diego y ChatGPT escriban entre 10 y 20 defectos nuevos sin ver las reglas, de cálculo y de
+  sobrescritura, y que las reglas se congelen antes de mirarlos. Así E0 deja de medir solo lo posible en principio.
+
+**En la VivoBook** (sin modelo; no detiene nada):
+
+```bash
+bash $E e0
+```
+
+Debería dar la misma tabla. La versión de Python solo cambia el subrayado de los tracebacks, que R1 no usa.
+
+### Propuesta de prueba corta y controlada (a aprobar antes de implementarla)
+
+- **Pregunta.** Con las mismas candidatas, ¿un contraste del verificador explicado ayuda a Qwen a elegir la causa
+  de un error de cálculo con clave?
+- **Hipótesis.** Viene del análisis forense, donde el campo `medido` desorientó a Qwen, y de E0, donde R4 resuelve
+  esos casos.
+- **Casos.** Los 5 de cálculo con agregación con clave en los que E0 indica que el contraste alcanza:
+  - D1, M029 y M049: camino de la clave;
+  - M030 y M045: camino del valor.
+  
+  Son 5 defectos distintos. M046 queda afuera porque es el gemelo de M045 (valor inicial −1 en vez de +1).
+- **Una sola diferencia.**
+  - **Control:** las fallas como en v1, pero con el rótulo «coordinador».
+  - **Tratamiento:** el mismo texto más una frase de contraste por ventana, por ejemplo: «el verificador recalculó
+    la suma de [03:45, 04:00): 63,327; el instrumento informa 403,121, que es la suma de la ventana que empieza a
+    las 04:00».
+  - Sin traza en ninguna de las dos condiciones.
+- **Contrabalanceo.**
+  - las 6 permutaciones de las candidatas;
+  - 1 repetición, porque las repeticiones dieron siempre lo mismo;
+  - temperatura 0,2;
+  - semilla por par;
+  - orden barajado.
+- **Costo.**
+  - 5 casos × 6 permutaciones × 2 condiciones = **60 llamadas**;
+  - con 117,8 s de media serían unas 2 horas;
+  - con el peor caso observado (313 s), hasta 5,2 horas.
+  
+  Se corre en tandas con `--limite` (por ejemplo 12 llamadas, unos 25 minutos) y se reanuda.
+- **Lectura preregistrada.**
+  - Por caso: acierto del tratamiento y del control sobre sus 6 permutaciones.
+  - **Pasa a E1 completo** si el tratamiento supera al control en al menos 4 de los 5 casos y en ninguno queda
+    por debajo.
+  - Con 5 casos no hay potencia para un valor p fino: es una prueba de **efecto grande**, y un resultado pequeño se
+    lee como «inconcluso».
+  - Además se informan:
+    - la posición elegida en el control;
+    - la coherencia entre motivo y elección;
+    - los términos que el motivo toma solo del verificador.

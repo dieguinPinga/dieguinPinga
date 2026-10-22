@@ -66,7 +66,8 @@ class Traza:
                                        "cuerpo": [int(cuerpo[0]), int(cuerpo[1])] if cuerpo else None}
             except (TypeError, ValueError, AttributeError, IndexError):
                 continue
-        self.datos = {l: {"veces": 0, "verdadera": 0, "muestras": [], "ultima": None} for l in self.lineas}
+        self.datos = {l: {"veces": 0, "verdadera": 0, "interrumpida": 0, "muestras": [], "ultima": None}
+                      for l in self.lineas}
         self.pendientes: dict = {}
         self.ultima_linea: dict = {}
         self.final: dict = {}
@@ -76,11 +77,14 @@ class Traza:
         return {n: corto(loc.get(n, _AUSENTE)) for n in nombres}
 
     def _cerrar(self, frame, pendiente, siguiente) -> None:
-        linea, antes, usa = pendiente
+        linea, antes, usa, interrumpida = pendiente
         spec, d = self.lineas[linea], self.datos[linea]
+        if interrumpida:      # una excepción la cortó: no terminó, y «después» no es lo que habría dejado
+            d["interrumpida"] += 1
         if spec["cuerpo"] and siguiente is not None and spec["cuerpo"][0] <= siguiente <= spec["cuerpo"][1]:
             d["verdadera"] += 1
-        muestra = {"usa": usa, "antes": antes, "despues": self._valores(frame, spec["define"])}
+        muestra = {"usa": usa, "antes": antes, "despues": self._valores(frame, spec["define"]),
+                   **({"interrumpida": True} if interrumpida else {})}
         if len(d["muestras"]) < 2:
             d["muestras"].append(muestra)
         d["ultima"] = muestra
@@ -103,7 +107,14 @@ class Traza:
         if spec is not None:
             self.datos[frame.f_lineno]["veces"] += 1
             self.pendientes[id(frame)] = (frame.f_lineno, self._valores(frame, spec["define"]),
-                                          self._valores(frame, spec["usa"]))
+                                          self._valores(frame, spec["usa"]), False)
+
+    def excepcion(self, frame) -> None:
+        if frame.f_code.co_name in self.INTERNOS:
+            return
+        pendiente = self.pendientes.get(id(frame))
+        if pendiente and pendiente[0] == frame.f_lineno:
+            self.pendientes[id(frame)] = pendiente[:3] + (True,)
 
     def retorno(self, frame) -> None:
         if frame.f_code.co_name in self.INTERNOS:
@@ -116,8 +127,8 @@ class Traza:
             nombres = {n for s in self.lineas.values() for n in s["define"]}
             self.final = self._valores(frame, sorted(nombres))
 
-    def report(self) -> dict:
-        return {"lineas": {str(l): d for l, d in self.datos.items()}, "final": self.final}
+    def report(self, completa: bool = True) -> dict:
+        return {"lineas": {str(l): d for l, d in self.datos.items()}, "final": self.final, "completa": completa}
 
 
 def _rel(filename: str) -> str:
@@ -158,6 +169,8 @@ class Excepciones:
                 self.traza.linea(frame)
             elif event == "return":
                 self.traza.retorno(frame)
+            elif event == "exception":
+                self.traza.excepcion(frame)
         if event == "exception":
             exc = arg[1]
             if id(exc) not in self.seen and len(self.keep) < 1000:
@@ -258,7 +271,8 @@ def main() -> None:
         if exc_log:
             exc_log.discard(e)
         send({"final": True, "ok": False, "exc": type(e).__name__, "msg": str(e)[:500], "tb": _trim_tb(e, (path,)),
-              "lugar": _ultimo_lugar(e, (path,)), "excepciones": exc_log.report() if exc_log else []})
+              "lugar": _ultimo_lugar(e, (path,)), "excepciones": exc_log.report() if exc_log else [],
+              "traza": exc_log.traza.report(completa=False) if exc_log and exc_log.traza else None})
         return
     send({"final": True, "ok": True, "valor": value, "excepciones": exc_log.report(),
           "traza": exc_log.traza.report() if exc_log.traza else None})

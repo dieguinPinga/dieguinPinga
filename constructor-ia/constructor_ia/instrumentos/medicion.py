@@ -73,7 +73,10 @@ def _traza(raw) -> dict | None:
         return {txt(k, 60): txt(v) for k, v in list(d.items())[:8]} if isinstance(d, dict) else {}
 
     def muestra(m):
-        return {k: valores((m or {}).get(k)) for k in ("usa", "antes", "despues")} if isinstance(m, dict) else None
+        if not isinstance(m, dict):
+            return None
+        return {**{k: valores(m.get(k)) for k in ("usa", "antes", "despues")},
+                **({"interrumpida": True} if m.get("interrumpida") is True else {})}
 
     lineas = {}
     for k, d in list((raw.get("lineas") or {}).items())[:8]:
@@ -81,11 +84,12 @@ def _traza(raw) -> dict | None:
             continue
         try:
             lineas[str(int(k))] = {"veces": int(d.get("veces") or 0), "verdadera": int(d.get("verdadera") or 0),
+                                   "interrumpida": int(d.get("interrumpida") or 0),
                                    "muestras": [muestra(m) for m in (d.get("muestras") or [])[:2]],
                                    "ultima": muestra(d.get("ultima"))}
         except (TypeError, ValueError):
             continue
-    return {"lineas": lineas, "final": valores(raw.get("final"))}
+    return {"lineas": lineas, "final": valores(raw.get("final")), "completa": raw.get("completa") is not False}
 
 
 def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, params: dict, schema: dict,
@@ -139,9 +143,11 @@ def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, par
     if not final.get("ok"):
         falla = {"tipo": str(final.get("exc") or "")[:80], "mensaje": str(final.get("msg") or "")[:500],
                  "lugar": _lugar(final.get("lugar"))}
+        verdict = {"falla": falla, "excepciones_capturadas": excepciones}
+        if traza is not None:          # la traza parcial también es evidencia: muestra qué alcanzó a ejecutarse
+            verdict["traza"] = _traza(final.get("traza"))
         return record("error", error=f"{final.get('exc')}: {final.get('msg')}\n{final.get('tb') or ''}".strip(),
-                      accounting=accounting, fingerprint=fingerprint, cost=cost,
-                      verdict={"falla": falla, "excepciones_capturadas": excepciones})
+                      accounting=accounting, fingerprint=fingerprint, cost=cost, verdict=verdict)
     output = final.get("valor")
     verdict = verify(output, accounting, canal.agg_numbers, budget.resultado_bytes, excepciones)
     if traza is not None:
