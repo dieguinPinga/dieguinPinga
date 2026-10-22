@@ -45,7 +45,7 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.2"                     # v1.2: retroalimentación entre intentos y revisión de hipótesis
+VERSION = "ciclo v1.3"                     # v1.3: diagnóstico estructurado y controles de coherencia
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
 TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
@@ -172,25 +172,40 @@ def observar(co: Coordinador, problema: dict) -> dict:
             "hipotesis": hipotesis[:MAX_HIPOTESIS], "traza_completa": (caso["traza"] or {}).get("completa")}
 
 
-# Pedido de reparación ---------------------------------------------------------------------------------------------
+# Pedido de reparación (v1.3: diagnóstico estructurado) ------------------------------------------------------------
 
-def partes(problema: dict, obs: dict, linea: int, historia=(), pendientes=(), compacto: bool = False
+FORMATO = ("Respondé EXACTAMENTE con este formato:\n"
+           "DIAGNOSTICO: <número de línea de UNA de las instrucciones candidatas>\n"
+           "CAMBIA: <la variable o clave que tu cambio modifica, por ejemplo total o datos[\"clave\"]>\n"
+           "EFECTO: <opcional: el valor que esperás en la salida después del cambio, por ejemplo campo = 10>\n"
+           "```python\n<el código que REEMPLAZA a la instrucción de la línea DIAGNOSTICO, SIN números de línea, "
+           "SIN «>>» y SIN «|»>\n```\n"
+           "MOTIVO: <una frase>\n"
+           "Si la corrección es borrar esa instrucción, en lugar del bloque escribí ELIMINAR.\n"
+           "Si creés que ninguna de las candidatas es la causa, respondé solo DIAGNOSTICO: NINGUNA y MOTIVO.")
+
+
+def partes(problema: dict, obs: dict, sugerida: int, historia=(), pendientes=(), compacto: bool = False
            ) -> list[tuple[str, str]]:
-    """historia: intentos anteriores de ESTA investigación (retroalimentación); pendientes: hipótesis sin probar."""
+    """sugerida: la hipótesis del coordinador (una SUGERENCIA: Qwen puede diagnosticar otra candidata).
+    historia: intentos anteriores de esta investigación (retroalimentación); pendientes: candidatas sin probar."""
     codigo = problema["codigo"]
-    u = P.unidad_en(codigo, linea)
-    autorizadas = ", ".join(str(x) for x in obs["candidatas"])
+    u = P.unidad_en(codigo, sugerida)
     evid = []
     for j in obs["juegos"]:
         if j["fallas"]:
             salida = json.dumps(j["salida"], ensure_ascii=False)[:900] if j["salida"] is not None else "(no terminó)"
             evid.append(f"Con los parámetros {j['params']}:\n  Salida: {salida}\n  Verificaciones que fallan:\n"
                         + "\n".join("  " + x for x in j["texto"].splitlines()))
-    rango = f"{u.lineno}" if u.end_lineno == u.lineno else f"{u.lineno}–{u.end_lineno}"
+    cands = []
+    for ln in obs["candidatas"]:
+        cu = P.unidad_en(codigo, ln)
+        marca = "  ← sugerida por el coordinador" if ln == sugerida else ""
+        cands.append(f"Línea {ln}{marca}:\n```python\n{instruccion(codigo, cu)}\n```")
     previo = []
     if historia:
         previo = historial(codigo, historia, compacto)
-        previo.append(("historial", "Hipótesis pendientes (sin probar): "
+        previo.append(("historial", "Candidatas que todavía no se probaron: "
                                     + (", ".join(f"línea {x}" for x in pendientes) or "ninguna") + ".\n"))
     return [("coordinador", f"Un instrumento de medición escrito en Python responde: {B.PREGUNTA}\n"),
             ("evidencia", "\n\n".join(evid) + "\n"),
@@ -198,55 +213,44 @@ def partes(problema: dict, obs: dict, linea: int, historia=(), pendientes=(), co
             *previo,
             ("coordinador", "Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son "
                             "parte del código:\n" + P.mostrar(codigo, u, contexto=200, completa=True) + "\n"),
-            ("coordinador", f"Instrucción de la hipótesis (línea {rango}), tal como está en el código:\n"
-                            f"```python\n{instruccion(codigo, u)}\n```\n"),
-            ("coordinador", f"Hipótesis del coordinador, TODAVÍA NO COMPROBADA: la causa de las fallas está en esa "
-                            f"instrucción (línea {rango}).\n"
-                            "Si es así, proponé el cambio MÍNIMO: escribí el código que REEMPLAZA a esa instrucción "
-                            "completa (puede tener más de una línea, por ejemplo para agregar junto a ella una "
-                            "instrucción que falta). Escribí solo código Python: SIN números de línea, SIN «>>» y SIN "
-                            "«|».\n"
-                            "Si la corrección es borrarla, respondé ELIMINAR.\n"
-                            "Si creés que la causa NO está en esa instrucción, respondé NO_ES_ESTA y, si creés que está "
-                            f"en otra, agregá PROPONGO_LINEA: <número>, usando SOLO una de estas líneas candidatas: "
-                            f"{autorizadas}. El coordinador decide si la prueba.\n"
-                            "Formato (una de las dos):\n```python\n<reemplazo>\n```\nMOTIVO: <una frase>\n"
-                            "o bien\nNO_ES_ESTA\nPROPONGO_LINEA: <número>\nMOTIVO: <una frase>")]
+            ("coordinador", "Instrucciones candidatas (solo se puede cambiar UNA de estas, completa):\n\n"
+                            + "\n\n".join(cands) + "\n"),
+            ("coordinador", f"El coordinador sugiere investigar la línea {sugerida}, pero es solo una sugerencia, TODAVÍA "
+                            "NO COMPROBADA: primero decidí cuál de las candidatas es la causa (DIAGNOSTICO) y qué "
+                            "variable o clave hay que cambiar (CAMBIA); después escribí el cambio MÍNIMO para ESA "
+                            "instrucción, que haga lo que dijiste.\n" + FORMATO)]
 
 
-CATEGORIAS = {"sintaxis": "el fragmento no compila", "ensamblado": "no se pudo ensamblar en el código",
+CATEGORIAS = {"formato": "la respuesta no tiene un diagnóstico válido", "incoherencia": "el código no corresponde "
+              "al diagnóstico", "sintaxis": "el fragmento no compila", "ensamblado": "no se pudo ensamblar en el código",
               "revision": "la revisión estática del sandbox lo rechazó", "sin_cambio": "no cambia el código",
-              "comportamiento": "se ejecutó y no pasó las verificaciones", "ilegible": "la respuesta no se entendió"}
+              "comportamiento": "se ejecutó y no pasó las verificaciones"}
 
 
 def historial(codigo: str, historia, compacto: bool) -> list[tuple[str, str]]:
-    """Retroalimentación: qué se probó, qué se propuso, qué falló y por qué. Lo que Qwen propuso va en partes
-    «propuesta_previa» (texto del propio modelo, no del coordinador: la auditoría de fugas no lo cuenta)."""
+    """Retroalimentación: qué se sugirió, qué diagnosticó Qwen, qué cambió, qué falló y por qué. El código que
+    propuso Qwen va en partes «propuesta_previa» (texto del propio modelo: la auditoría de fugas no lo cuenta)."""
     out = [("historial", "Intentos anteriores de esta investigación (ninguno se aceptó):\n")]
     for n, it in enumerate(historia, 1):
-        u = P.unidad_en(codigo, it["hipotesis"])
-        out.append(("historial", f"Intento {n}: hipótesis línea {it['hipotesis']}: `{instruccion(codigo, u)}`\n"))
-        prop = it["propuesta"]
-        if prop["tipo"] in ("reemplazar", "eliminar"):
-            if prop["tipo"] == "eliminar":
-                out.append(("propuesta_previa", "  Propusiste: ELIMINAR esa instrucción.\n"))
-            elif not compacto:
-                out.append(("propuesta_previa", "  Propusiste:\n```python\n"
-                            + (prop.get("fragmento_crudo") or "").strip()[:400] + "\n```\n"))
-            else:
-                out.append(("propuesta_previa", "  Propusiste un reemplazo de esa instrucción.\n"))
-        elif prop["tipo"] == "no_es_esta":
-            red = it.get("redireccion")
-            txt = "  Respondiste NO_ES_ESTA"
-            if red and red.get("pedida") is not None:
-                txt += (f" y propusiste la línea {red['pedida']}: "
-                        + ("el coordinador la tomó como próxima hipótesis." if red["valida"] else
-                           f"el coordinador NO la tomó ({red['motivo']})."))
-            out.append(("historial", txt + "\n"))
+        d = it["diagnostico"]
+        txt = f"Intento {n}: el coordinador sugirió la línea {it['sugerida']}"
+        txt += (f"; diagnosticaste la línea {d['linea']}" if d.get("linea") else "; no diste un diagnóstico válido")
+        txt += (f" y declaraste que cambiabas {d['cambia']}" if d.get("cambia") else "")
+        txt += (f", esperando {d['efecto']}" if d.get("efecto") else "") + ".\n"
+        out.append(("historial", txt))
+        frag = (it.get("propuesta") or {}).get("fragmento_crudo")
+        if it.get("propuesta", {}).get("tipo") == "eliminar":
+            out.append(("propuesta_previa", "  Propusiste: ELIMINAR esa instrucción.\n"))
+        elif frag and not compacto:
+            out.append(("propuesta_previa", "  Propusiste:\n```python\n" + frag.strip()[:400] + "\n```\n"))
+        elif frag:
+            out.append(("propuesta_previa", "  Propusiste un reemplazo.\n"))
         if it.get("rechazo"):
             det = it.get("rechazo_detalle") or ""
             out.append(("historial", f"  Resultado: rechazada: {CATEGORIAS[it['rechazo']]}"
-                                     + (f": {det[:300 if not compacto else 120]}" if det else "") + ".\n"))
+                                     + (f": {det[:400 if not compacto else 140]}" if det else "") + ".\n"))
+        for aviso in (it.get("efecto_observado") or {}).get("avisos", []):
+            out.append(("historial", f"  Efecto observado: {aviso}\n"))
     return out
 
 
@@ -256,19 +260,25 @@ def instruccion(codigo: str, u: P.Unidad) -> str:
 
 
 RE_BLOQUE = re.compile(r"```[a-zA-Z0-9]*\n(.*?)```", re.S)
+RE_CAMPO = {k: re.compile(rf"^[ \t]*\**{k}\**[ \t]*:[ \t]*(.+?)[ \t]*$", re.M | re.I)
+            for k in ("DIAGNOSTICO", "CAMBIA", "EFECTO", "MOTIVO")}
 
 
 def interpretar(texto: str | None) -> dict:
+    """Separa los campos de la respuesta, sin decidir nada todavía."""
     t = texto or ""
+    afuera = RE_BLOQUE.sub("", t)                 # los campos se leen FUERA del bloque de código
+    campos = {k: (m.group(1).strip() if (m := r.search(afuera)) else None) for k, r in RE_CAMPO.items()}
     m = RE_BLOQUE.search(t)
     if m and m.group(1).strip():
-        return {"tipo": "reemplazar", "fragmento": m.group(1)}
-    cabeza = t.strip().splitlines()[0].strip().upper() if t.strip() else ""
-    if cabeza.startswith("NO_ES_ESTA") or (not m and "NO_ES_ESTA" in t):
-        return {"tipo": "no_es_esta"}
-    if cabeza.startswith("ELIMINAR"):
-        return {"tipo": "eliminar"}
-    return {"tipo": "ilegible"}
+        tipo, frag = "reemplazar", m.group(1)
+    elif re.search(r"^[ \t]*ELIMINAR[ \t]*$", afuera, re.M):
+        tipo, frag = "eliminar", None
+    elif (campos["DIAGNOSTICO"] or "").upper().startswith("NINGUNA"):
+        tipo, frag = "ninguna", None
+    else:
+        tipo, frag = "sin_codigo", None
+    return {"tipo": tipo, "fragmento": frag, **{k.lower(): v for k, v in campos.items()}}
 
 
 # Prefijo de la vista numerada que muestra el prompt («>>  19 | código» o «    19 | código»).
@@ -288,7 +298,7 @@ def limpiar_numeracion(fragmento: str, desde: int) -> tuple[str | None, str]:
     """Quita el prefijo «N |» SOLO si se cumplen las cuatro condiciones (si no, devuelve None y el motivo):
     1. el fragmento NO compila tal como llegó;
     2. TODAS sus líneas no vacías tienen el prefijo de la vista numerada;
-    3. los números son consecutivos y empiezan en la línea de la instrucción marcada;
+    3. los números son consecutivos y empiezan en la línea de la instrucción diagnosticada;
     4. sin el prefijo, compila.
     No adivina: cualquier otra forma queda como fragmento inválido."""
     if _compila(fragmento) is None:
@@ -300,7 +310,7 @@ def limpiar_numeracion(fragmento: str, desde: int) -> tuple[str | None, str]:
         return None, "no todas las líneas tienen el prefijo «N |»: no se limpia"
     nums = [int(m.group(1)) for m in marcas]
     if nums != list(range(desde, desde + len(nums))):
-        return None, f"la numeración {nums} no es la de la instrucción marcada (desde {desde}): no se limpia"
+        return None, f"la numeración {nums} no es la de la instrucción diagnosticada (desde {desde}): no se limpia"
     limpio = "\n".join(RE_NUMERADA.match(ln).group(2) if ln.strip() else "" for ln in lineas) + "\n"
     error = _compila(limpio)
     if error:
@@ -308,20 +318,170 @@ def limpiar_numeracion(fragmento: str, desde: int) -> tuple[str | None, str]:
     return limpio, f"se quitó la numeración {nums[0]}–{nums[-1]}"
 
 
-def preparar(texto: str | None, codigo: str, u: P.Unidad) -> dict:
-    """Etapas separadas: propuesta → limpieza → fragmento válido o no → ensamblado (con motivo). La verificación la
-    hace después `verificar`, solo si el ensamblado salió."""
+# Coherencia entre diagnóstico, ubicación y modificación (genérica: árbol sintáctico, no contenido) --------------
+
+RE_OBJETIVO = re.compile(r"""^`?\s*([A-Za-z_]\w*)\s*(?:\[\s*(['"])(\w+)\2\s*\]|\.(\w+))?\s*`?$""")
+
+
+def objetivo_declarado(texto: str | None) -> tuple[str, str | None] | None:
+    """«total» → ("total", None); «datos["clave"]», «datos['clave']» o «datos.clave» → ("datos", "clave")."""
+    m = RE_OBJETIVO.match((texto or "").strip())
+    if not m:
+        return None
+    return m.group(1), m.group(3) or m.group(4)
+
+
+def escrituras(nodos) -> set[tuple[str, str | None]]:
+    """Lo que escriben unas instrucciones: (nombre, None) y, para d["clave"] = …, también (d, "clave")."""
+    out = set()
+
+    def objetivo(t):
+        if isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                objetivo(e)
+        elif isinstance(t, ast.Name):
+            out.add((t.id, None))
+        elif isinstance(t, ast.Subscript):
+            base = L._base(t)
+            if base:
+                out.add((base, None))
+                if isinstance(t.slice, ast.Constant) and isinstance(t.slice.value, str):
+                    out.add((base, t.slice.value))
+        elif isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name):
+            out.add((t.value.id, None))
+            out.add((t.value.id, t.attr))
+    for n in nodos:
+        for x in ast.walk(n):
+            if isinstance(x, ast.Assign):
+                for t in x.targets:
+                    objetivo(t)
+            elif isinstance(x, (ast.AugAssign, ast.AnnAssign)):
+                objetivo(x.target)
+            elif isinstance(x, (ast.For, ast.comprehension)):
+                objetivo(x.target)
+    return out
+
+
+def _nombre(obj) -> str:
+    return obj[0] if obj[1] is None else f'{obj[0]}["{obj[1]}"]'
+
+
+def _especificas(esc: set) -> set:
+    """La forma más precisa de cada escritura: la clave si la hay; si no, la variable."""
+    return {x for x in esc if x[1] is not None or not any(y[0] == x[0] and y[1] is not None for y in esc)}
+
+
+def coherencia(codigo: str, u: P.Unidad, tipo: str, fragmento: str | None, declarado) -> list[str]:
+    """Contradicciones entre lo que Qwen dijo (CAMBIA) y lo que su código hace en la instrucción que diagnosticó:
+    1. lo declarado tiene que existir en el programa;
+    2. el código tiene que ESCRIBIR lo declarado (si propone eliminar, la instrucción eliminada tiene que escribirlo);
+    3. el reemplazo no puede dejar de escribir, sin declararlo, algo que la instrucción original escribía.
+    Vacía = coherente. Solo puede RECHAZAR: la aceptación sigue siendo la verificación en el sandbox."""
+    original = escrituras(ast.parse(instruccion(codigo, u)).body)
+    nuevas = set() if tipo == "eliminar" else escrituras(ast.parse(P.limpiar_fragmento(fragmento)).body)
+    arbol = ast.parse(codigo)
+    if declarado not in escrituras(arbol.body) and declarado[0] not in L._nombres(arbol):
+        return [f"declaraste que cambiabas {_nombre(declarado)}, pero eso no existe en el programa"]
+    problemas = []
+    if tipo == "eliminar":
+        if declarado not in original:
+            problemas.append(f"declaraste que cambiabas {_nombre(declarado)}, pero la instrucción que proponés "
+                             f"eliminar (línea {u.lineno}) no lo escribe")
+    elif declarado not in nuevas:
+        problemas.append(f"declaraste que cambiabas {_nombre(declarado)}, pero tu código escribe "
+                         f"{', '.join(sorted(_nombre(x) for x in _especificas(nuevas))) or 'nada'}")
+    perdidas = {x for x in _especificas(original) - nuevas
+                if x != declarado and not (declarado[1] is None and x[0] == declarado[0])}
+    if perdidas and tipo != "eliminar":
+        problemas.append(f"tu reemplazo de la línea {u.lineno} deja de escribir "
+                         f"{', '.join(sorted(_nombre(x) for x in perdidas))}, que la instrucción original escribía y "
+                         "no declaraste cambiar")
+    return problemas
+
+
+def _hojas(x, ruta=""):
+    if isinstance(x, dict):
+        for k, v in x.items():
+            yield from _hojas(v, f"{ruta}.{k}" if ruta else str(k))
+    elif isinstance(x, list):
+        for i, v in enumerate(x[:5]):
+            yield from _hojas(v, f"{ruta}[{i}]")
+    else:
+        yield ruta, x
+
+
+def _clase(v) -> str:
+    return ("booleano" if isinstance(v, bool) else "número" if isinstance(v, (int, float)) else
+            "texto" if isinstance(v, str) else "vacío" if v is None else type(v).__name__)
+
+
+RE_EFECTO = re.compile(r"^\s*`?([\w.\[\]\"']+)`?\s*=\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def efecto(salida_antes, salida_despues, declarado: str | None) -> dict:
+    """Compara la salida reparada con la del defecto (mismos parámetros visibles): cambios de CLASE de valor
+    (número → booleano, por ejemplo) y, si Qwen declaró EFECTO «campo = número», si se cumplió. Solo informa."""
+    avisos = []
+    antes = dict(_hojas(salida_antes)) if salida_antes is not None else {}
+    despues = dict(_hojas(salida_despues)) if salida_despues is not None else {}
+    for ruta, v in antes.items():
+        if ruta in despues and _clase(v) != _clase(despues[ruta]):
+            avisos.append(f"{ruta} pasó de {_clase(v)} ({str(v)[:30]}) a {_clase(despues[ruta])} "
+                          f"({str(despues[ruta])[:30]})")
+    cumplido = None
+    m = RE_EFECTO.match(declarado or "")
+    if m and despues:
+        campo, valor = m.group(1).split(".")[-1].strip("\"'[]"), float(m.group(2))
+        rutas = [r for r in despues if r.split(".")[-1] == campo]
+        if rutas:
+            obtenido = despues[rutas[0]]
+            cumplido = isinstance(obtenido, (int, float)) and not isinstance(obtenido, bool) and \
+                abs(obtenido - valor) <= 1e-6 * max(1.0, abs(valor))
+            if not cumplido:
+                avisos.append(f"esperabas {campo} = {m.group(2)} y quedó {rutas[0]} = {str(obtenido)[:30]}")
+    return {"avisos": avisos[:6], "efecto_cumplido": cumplido}
+
+
+def preparar(texto: str | None, codigo: str, autorizadas: list[int], usados: dict) -> dict:
+    """Etapas: propuesta → diagnóstico (línea autorizada, CAMBIA) → limpieza → fragmento → COHERENCIA → ensamblado.
+    Sin un diagnóstico válido NO se aplica nada (ni a la línea sugerida)."""
     it = interpretar(texto)
     reg = {"propuesta": {"tipo": it["tipo"], "fragmento_crudo": it.get("fragmento")},
+           "diagnostico": {"texto": it["diagnostico"], "linea": None, "cambia": it["cambia"], "efecto": it["efecto"],
+                           "motivo": it["motivo"], "valido": False, "problema": None},
            "limpieza": {"aplicada": False, "detalle": "no corresponde"},
            "fragmento": {"valido": None, "error": None},
+           "coherencia": {"revisada": False, "problemas": []},
            "ensamblado": {"realizado": False, "ok": False, "atribucion": None, "detalle": "no corresponde"}}
-    if it["tipo"] not in ("reemplazar", "eliminar"):
-        motivo = {"no_es_esta": "Qwen respondió NO_ES_ESTA", "ilegible": "no hay un bloque de código ni una "
-                  "respuesta reconocible"}[it["tipo"]]
-        reg["ensamblado"]["detalle"] = motivo
+    d = reg["diagnostico"]
+
+    def invalido(problema):
+        d["problema"] = problema
+        reg["ensamblado"]["detalle"] = f"no se aplica nada: {problema}"
         return reg
-    fragmento = it.get("fragmento", "")
+    if it["tipo"] == "ninguna":
+        d["valido"] = True
+        reg["ensamblado"]["detalle"] = "Qwen diagnosticó que ninguna candidata es la causa"
+        return reg
+    if not it["diagnostico"]:
+        return invalido("falta DIAGNOSTICO")
+    num = re.match(r"(?:l[íi]nea\s*)?(\d+)\b", it["diagnostico"], re.I)
+    if not num:
+        return invalido(f"DIAGNOSTICO «{it['diagnostico'][:40]}» no es un número de línea")
+    n = int(num.group(1))
+    u = P.unidad_en(codigo, n) if 1 <= n <= len(codigo.splitlines()) else None
+    if u is None or u.lineno not in autorizadas:
+        return invalido(f"la línea {n} no es una de las candidatas autorizadas {autorizadas}")
+    if usados.get(u.lineno, 0) >= MAX_POR_LINEA:
+        return invalido(f"la línea {u.lineno} ya tuvo {MAX_POR_LINEA} intentos")
+    d["linea"] = u.lineno
+    if it["tipo"] == "sin_codigo":
+        return invalido("falta el bloque de código (o ELIMINAR)")
+    declarado = objetivo_declarado(it["cambia"])
+    if declarado is None:
+        return invalido("falta CAMBIA, o no es una variable o clave («total», «datos[\"clave\"]»)")
+    d["valido"] = True
+    fragmento = it.get("fragmento") or ""
     if it["tipo"] == "reemplazar":
         error = _compila(fragmento)
         if error:
@@ -333,6 +493,11 @@ def preparar(texto: str | None, codigo: str, u: P.Unidad) -> dict:
         if error:
             reg["ensamblado"]["detalle"] = f"no se ensambla: el fragmento no compila ({error})"
             return reg
+    problemas = coherencia(codigo, u, it["tipo"], fragmento, declarado)
+    reg["coherencia"] = {"revisada": True, "problemas": problemas}
+    if problemas:
+        reg["ensamblado"]["detalle"] = "no se ensambla: " + "; ".join(problemas)
+        return reg
     ens = P.aplicar(codigo, u, it["tipo"], fragmento, completa=True)
     reg["ensamblado"] = {"realizado": True, "ok": ens.codigo is not None, "atribucion": ens.atribucion,
                          "detalle": ens.detalle}
@@ -367,7 +532,7 @@ def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
             forma_ok = E0.forma(ev["salida"]) == j["forma"]
         else:                        # el defecto no terminaba con estos parámetros: al menos, nada vacío
             forma_ok = _listas_llenas((ev["salida"] or {}).get("resultado"))
-        res.append({"params": j["params"], "fallas": fallas, "forma_ok": forma_ok})
+        res.append({"params": j["params"], "fallas": fallas, "forma_ok": forma_ok, "salida": ev["salida"]})
         if fallas or not forma_ok:
             motivo = (f"con {j['params']} falla {fallas}" if fallas else
                       f"con {j['params']} pasa, pero cambió la forma de la salida")
@@ -379,30 +544,43 @@ def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
             "juegos": res}
 
 
-# Investigación de un defecto --------------------------------------------------------------------------------------
+# Investigación de un defecto (v1.3) ------------------------------------------------------------------------------
+
+MAX_SIN_DIAGNOSTICO = 2      # respuestas sin diagnóstico válido toleradas por investigación (después, se abstiene)
+
 
 def etapas(reg: dict) -> str:
-    """Una línea legible: propuesta → limpieza → fragmento → ensamblado → verificación."""
-    out = [f"propuesta {reg['propuesta']['tipo']}"]
+    """Una línea legible: sugerida → diagnóstico → limpieza → fragmento → coherencia → ensamblado → verificación →
+    efecto → siguiente."""
+    d = reg["diagnostico"]
+    out = [f"sugerida L{reg['sugerida']}"]
+    if reg["propuesta"]["tipo"] == "ninguna":
+        out.append("diagnóstico: NINGUNA de las candidatas")
+    elif d["valido"]:
+        out.append(f"diagnóstico L{d['linea']}, cambia {d['cambia']}" + (f", espera {d['efecto']}" if d["efecto"] else ""))
+    else:
+        out.append(f"diagnóstico inválido ({d['problema']})")
     if reg["limpieza"]["aplicada"]:
         out.append(f"limpieza: {reg['limpieza']['detalle']}")
     if reg["fragmento"]["valido"] is not None:
-        out.append("fragmento válido" if reg["fragmento"]["valido"] else
-                   f"fragmento inválido ({reg['fragmento']['error']}"
-                   + (f"; {reg['limpieza']['detalle']}" if not reg["limpieza"]["aplicada"]
-                      and reg["limpieza"]["detalle"] != "no corresponde" else "") + ")")
+        out.append("fragmento válido" if reg["fragmento"]["valido"] else f"fragmento inválido ({reg['fragmento']['error']})")
+    if reg["coherencia"]["revisada"]:
+        out.append("coherente" if not reg["coherencia"]["problemas"] else
+                   "INCOHERENTE: " + "; ".join(reg["coherencia"]["problemas"]))
     e = reg["ensamblado"]
     if e["realizado"]:
         out.append("ensamblado ok" if e["ok"] else f"ensamblado fallido ({e['atribucion']}: {e['detalle']})")
     v = reg.get("verificacion") or {}
-    out.append(("ACEPTADA" if v.get("aceptada") else f"rechazada: {v.get('motivo')}") if v.get("realizada")
-               else f"verificación no realizada: {v.get('motivo') or e['detalle']}")
-    red = reg.get("redireccion")
-    if red:
-        out.append(f"propuso la línea {red['pedida']}: " + ("tomada" if red["valida"] else f"NO tomada ({red['motivo']})"))
-    d = reg.get("decision")
-    if d:
-        out.append(f"siguiente: {('línea ' + str(d['siguiente'])) if d['siguiente'] else 'ninguna'} ({d['porque']})")
+    if v.get("realizada"):
+        out.append("ACEPTADA" if v.get("aceptada") else f"rechazada: {v.get('motivo')}")
+    elif reg["propuesta"]["tipo"] != "ninguna":
+        out.append("verificación no realizada")
+    for aviso in (reg.get("efecto_observado") or {}).get("avisos", []):
+        out.append(f"efecto: {aviso}")
+    dec = reg.get("decision")
+    if dec:
+        out.append(f"siguiente: {('sugerir L' + str(dec['siguiente'])) if dec['siguiente'] else 'ninguna'} "
+                   f"({dec['porque']})")
     return " → ".join(out)
 
 
@@ -410,66 +588,16 @@ class Detener(Exception):
     """El entorno obliga a parar la corrida (se reanuda después)."""
 
 
-RE_PROPONGO = re.compile(r"PROPONGO_LINEA\s*:\s*(\S+)")
-
-
-def redireccion(texto: str | None, codigo: str, autorizadas: list[int], actual: int, usados: dict) -> dict | None:
-    """Valida un PROPONGO_LINEA. El coordinador NO modifica cualquier línea que Qwen sugiera: solo la toma como
-    próxima hipótesis si existe, cae en una instrucción editable, esa instrucción es una de las candidatas
-    autorizadas (v1.2: las 3 originales), no es la hipótesis actual y no agotó sus intentos."""
-    m = RE_PROPONGO.search(texto or "")
-    if not m:
-        return None
-    pedida = m.group(1).rstrip(".,;")
-    if not pedida.isdigit():
-        return {"pedida": pedida, "valida": False, "motivo": "no es un número de línea"}
-    n = int(pedida)
-    if not 1 <= n <= len(codigo.splitlines()):
-        return {"pedida": n, "valida": False, "motivo": "esa línea no existe"}
-    u = P.unidad_en(codigo, n)
-    if u is None:
-        return {"pedida": n, "valida": False, "motivo": "no es una instrucción editable"}
-    if u.lineno not in autorizadas:
-        return {"pedida": n, "valida": False, "motivo": f"no es una de las candidatas autorizadas {autorizadas}"}
-    if u.lineno == actual:
-        return {"pedida": n, "valida": False, "motivo": "es la misma hipótesis que se acaba de probar"}
-    if usados.get(u.lineno, 0) >= MAX_POR_LINEA:
-        return {"pedida": n, "valida": False, "motivo": f"esa hipótesis ya tuvo {MAX_POR_LINEA} intentos"}
-    return {"pedida": n, "valida": True, "motivo": "aceptada como próxima hipótesis", "linea": u.lineno}
-
-
-def decidir(reg: dict, cola: list[int], usados: dict, fallas_iniciales: set) -> tuple[int | None, str]:
-    """La regla (fija) que usa el resultado de cada intento para elegir el siguiente:
-    1. una redirección de Qwen VALIDADA por el coordinador;
-    2. reintentar la misma hipótesis si no llegó a probarse (sintaxis, ensamblado, revisión, sin cambio, ilegible),
-       o si la reparación se ejecutó y REDUJO las verificaciones que fallan con los parámetros visibles;
-    3. la siguiente hipótesis pendiente de la cola (reglas congeladas + localizador);
-    4. nada: la investigación termina."""
-    red = reg.get("redireccion")
-    if red and red["valida"]:
-        return red["linea"], "redirección de Qwen validada por el coordinador"
-    L = reg["hipotesis"]
-    if usados.get(L, 0) < MAX_POR_LINEA:
-        if reg.get("rechazo") in ("sintaxis", "ensamblado", "revision", "sin_cambio", "ilegible"):
-            return L, f"reintento: la hipótesis no llegó a probarse ({CATEGORIAS[reg['rechazo']]})"
-        juegos = (reg.get("verificacion") or {}).get("juegos") or []
-        if reg.get("rechazo") == "comportamiento" and juegos:
-            ahora = set(juegos[0]["fallas"])
-            if ahora < fallas_iniciales:
-                return L, f"reintento: la reparación redujo las fallas ({sorted(fallas_iniciales)} → {sorted(ahora)})"
-    for x in cola:
-        if usados.get(x, 0) == 0:
-            return x, "siguiente hipótesis pendiente"
-    return None, "no quedan hipótesis por probar"
-
-
 def _rechazo(reg: dict) -> tuple[str | None, str]:
-    if reg["propuesta"]["tipo"] == "no_es_esta":
+    d = reg["diagnostico"]
+    if reg["propuesta"]["tipo"] == "ninguna":
         return None, ""
-    if reg["propuesta"]["tipo"] == "ilegible":
-        return "ilegible", ""
+    if not d["valido"]:
+        return "formato", d["problema"] or ""
     if reg["fragmento"]["valido"] is False:
         return "sintaxis", reg["fragmento"]["error"] or ""
+    if reg["coherencia"]["problemas"]:
+        return "incoherencia", "; ".join(reg["coherencia"]["problemas"])
     if reg["ensamblado"]["realizado"] and not reg["ensamblado"]["ok"]:
         return "ensamblado", reg["ensamblado"]["detalle"]
     v = reg.get("verificacion") or {}
@@ -478,57 +606,95 @@ def _rechazo(reg: dict) -> tuple[str | None, str]:
     return v.get("categoria") or "comportamiento", v.get("detalle") or v.get("motivo") or ""
 
 
+def decidir(reg: dict, cola: list[int], usados: dict, fallas_iniciales: set) -> tuple[int | None, str]:
+    """Qué SUGERIR en la llamada siguiente (Qwen puede diagnosticar otra candidata). Regla fija:
+    1. la línea que Qwen diagnosticó, si el intento no llegó a probarse (sintaxis, incoherencia, ensamblado,
+       revisión, sin cambio) o si se ejecutó y REDUJO las verificaciones que fallan, y le quedan intentos;
+    2. si la respuesta no tuvo diagnóstico válido, la misma sugerencia (reintento con la retroalimentación);
+    3. la siguiente candidata sin probar de la cola;
+    4. ninguna."""
+    d, rechazo = reg["diagnostico"], reg.get("rechazo")
+    if rechazo == "formato":
+        return reg["sugerida"], "reintento: la respuesta no tuvo un diagnóstico válido"
+    L = d.get("linea")
+    if L and usados.get(L, 0) < MAX_POR_LINEA:
+        if rechazo in ("sintaxis", "incoherencia", "ensamblado", "revision", "sin_cambio"):
+            return L, f"reintento sobre el diagnóstico: no llegó a probarse ({CATEGORIAS[rechazo]})"
+        juegos = (reg.get("verificacion") or {}).get("juegos") or []
+        if rechazo == "comportamiento" and juegos and set(juegos[0]["fallas"]) < fallas_iniciales:
+            return L, f"reintento sobre el diagnóstico: redujo las fallas ({sorted(fallas_iniciales)} → " \
+                      f"{sorted(juegos[0]['fallas'])})"
+    for x in cola:
+        if usados.get(x, 0) == 0:
+            return x, "siguiente candidata sin probar"
+    return None, "no quedan candidatas por probar"
+
+
 NO_CABE = object()
 
 
 def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, *,
                llamadas: int = MAX_HIPOTESIS, log=print) -> dict:
-    """Investigación con retroalimentación (v1.2). pedir(clave, partes, semilla) -> texto | None | NO_CABE.
-    None: el límite GLOBAL de llamadas cortó (incompleto). NO_CABE: el prompt no entra en el contexto.
+    """Investigación v1.3. pedir(clave, partes, semilla) -> texto | None | NO_CABE.
+    None: el límite GLOBAL cortó (incompleto). NO_CABE: no entra en el contexto.
     hechas: respuestas ya obtenidas (reanudación): el camino se reconstruye igual, sin pedir de nuevo."""
     codigo = problema["codigo"]
     llamadas = max(1, min(int(llamadas), TOPE_LLAMADAS))
-    cola = list(obs["hipotesis"])
+    cola, autorizadas = list(obs["hipotesis"]), list(obs["candidatas"])
     usados: dict = {}
+    sin_diagnostico = 0
     fallas_iniciales = {f["id"] for f in obs["juegos"][0]["fallas"]}
-    intentos, siguiente, porque = [], (cola[0] if cola else None), "primera hipótesis"
+    intentos, sugerida, porque = [], (cola[0] if cola else None), "primera sugerencia"
     for k in range(llamadas):
-        if siguiente is None:
+        if sugerida is None:
             return {"id": problema["id"], "estado": "se_abstiene", "motivo": porque, "intentos": intentos}
-        linea = siguiente
-        pendientes = [x for x in cola if usados.get(x, 0) == 0 and x != linea]
-        clave = f"{problema['id']}|c{k}|L{linea}"
-        ps = partes(problema, obs, linea, intentos, pendientes)
+        pendientes = [x for x in cola if usados.get(x, 0) == 0]
+        clave = f"{problema['id']}|c{k}|S{sugerida}"
+        ps = partes(problema, obs, sugerida, intentos, pendientes)
         if clave in hechas:
             resp, ps = hechas[clave]["respuesta"], hechas[clave].get("partes") or ps
         else:
             resp = pedir(clave, ps, semilla(problema["id"], k))
             if resp is NO_CABE:                        # se resume el historial y se intenta una vez más
-                ps = partes(problema, obs, linea, intentos, pendientes, compacto=True)
+                ps = partes(problema, obs, sugerida, intentos, pendientes, compacto=True)
                 resp = pedir(clave, ps, semilla(problema["id"], k))
             if resp is NO_CABE:
                 return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
                         "motivo": "el pedido no entra en el contexto ni con el historial resumido"}
             if resp is None:
-                return {"id": problema["id"], "estado": "incompleto", "intentos": intentos,
-                        "pendientes": [linea] + pendientes}
-        reg = {"clave": clave, "hipotesis": linea, "por_que_esta_hipotesis": porque, "respuesta": resp,
-               "partes": ps, **preparar(resp, codigo, P.unidad_en(codigo, linea))}
+                return {"id": problema["id"], "estado": "incompleto", "intentos": intentos, "pendientes": pendientes}
+        reg = {"clave": clave, "sugerida": sugerida, "por_que_esta_sugerencia": porque, "respuesta": resp,
+               "partes": ps, **preparar(resp, codigo, autorizadas, usados)}
+        reg["hipotesis"] = reg["diagnostico"]["linea"] or sugerida      # la instrucción efectivamente investigada
+        reg["linea_reparada"] = reg["diagnostico"]["linea"] if reg["ensamblado"]["ok"] else None
         reg["interpretacion"] = reg["propuesta"]["tipo"]
         if reg["ensamblado"]["ok"]:
             reg["verificacion"] = {"realizada": True, **verificar(co, obs, codigo, reg["codigo_propuesto"])}
+            j0 = (reg["verificacion"].get("juegos") or [{}])[0]
+            reg["efecto_observado"] = efecto(obs["juegos"][0]["salida"], j0.get("salida"),
+                                             reg["diagnostico"]["efecto"])
         else:
             reg["verificacion"] = {"realizada": False, "aceptada": None, "motivo": reg["ensamblado"]["detalle"]}
-        usados[linea] = usados.get(linea, 0) + 1
-        if reg["propuesta"]["tipo"] == "no_es_esta":
-            reg["redireccion"] = redireccion(resp, codigo, obs["candidatas"], linea, usados)
+        if reg["diagnostico"]["linea"]:
+            usados[reg["diagnostico"]["linea"]] = usados.get(reg["diagnostico"]["linea"], 0) + 1
         reg["rechazo"], reg["rechazo_detalle"] = _rechazo(reg)
         intentos.append(reg)
         if reg["verificacion"].get("aceptada"):
             log(f"    {clave}: {etapas(reg)}")
-            return {"id": problema["id"], "estado": "confirmada", "linea": linea, "intentos": intentos}
-        siguiente, porque = decidir(reg, cola, usados, fallas_iniciales)
-        reg["decision"] = {"siguiente": siguiente, "porque": porque}
+            return {"id": problema["id"], "estado": "confirmada", "linea": reg["linea_reparada"], "intentos": intentos}
+        if reg["propuesta"]["tipo"] == "ninguna":
+            log(f"    {clave}: {etapas(reg)}")
+            return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
+                    "motivo": "Qwen diagnosticó que ninguna candidata es la causa"}
+        if reg["rechazo"] == "formato":
+            sin_diagnostico += 1
+            if sin_diagnostico >= MAX_SIN_DIAGNOSTICO:
+                reg["decision"] = {"siguiente": None, "porque": f"{MAX_SIN_DIAGNOSTICO} respuestas sin diagnóstico válido"}
+                log(f"    {clave}: {etapas(reg)}")
+                return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
+                        "motivo": f"{MAX_SIN_DIAGNOSTICO} respuestas sin diagnóstico válido"}
+        sugerida, porque = decidir(reg, cola, usados, fallas_iniciales)
+        reg["decision"] = {"siguiente": sugerida, "porque": porque}
         log(f"    {clave}: {etapas(reg)}")
     return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
             "motivo": f"se agotó el presupuesto del defecto ({llamadas} llamadas)"}
@@ -597,7 +763,10 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
         j = {"clave": it["clave"], "hipotesis_en_objetivo": it["hipotesis"] in obj,
              "interpretacion": it["interpretacion"], "etapas": etapas(it),
              "verificacion_realizada": bool((it.get("verificacion") or {}).get("realizada")),
-             "aceptada": (it.get("verificacion") or {}).get("aceptada"), "redireccion": it.get("redireccion"),
+             "aceptada": (it.get("verificacion") or {}).get("aceptada"), "sugerida": it.get("sugerida"),
+             "diagnostico": (it.get("diagnostico") or {}).get("linea"),
+             "diagnostico_en_objetivo": (it.get("diagnostico") or {}).get("linea") in obj,
+             "rechazo": it.get("rechazo"),
              "fugas": auditar(it["partes"], defecto)}
         if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
             j["correcta_segun_juez"] = juez.correcto(it["codigo_propuesto"])
@@ -737,8 +906,11 @@ def resumir(juicio: list[dict]) -> dict:
             "resultados": dict(Counter(j["resultado"] for j in juicio if j.get("resultado"))),
             "confirmaciones_falsas": [j["id"] for j in juicio if j.get("resultado") == "CONFIRMACIÓN FALSA"],
             "incompletos": [j["id"] for j in juicio if "pendientes" in j],
-            "redirecciones": dict(Counter("tomada" if x["redireccion"]["valida"] else "no tomada"
-                                          for j in juicio for x in j.get("intentos", []) if x.get("redireccion"))),
+            "rechazos": dict(Counter(x["rechazo"] for j in juicio for x in j.get("intentos", []) if x.get("rechazo"))),
+            "diagnostico_distinto_de_la_sugerencia": sum(1 for j in juicio for x in j.get("intentos", [])
+                                                         if x.get("diagnostico") and x["diagnostico"] != x["sugerida"]),
+            "diagnosticos_en_el_objetivo": sum(1 for j in juicio for x in j.get("intentos", [])
+                                               if x.get("diagnostico_en_objetivo")),
             "fugas": sum(len(x["fugas"]) for j in juicio for x in j.get("intentos", []))}
 
 
@@ -751,7 +923,9 @@ def markdown(res: dict) -> str:
            f"- **Confirmaciones falsas: {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']}",
            f"- Resultados: {r['resultados']}",
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
-           f"- Redirecciones propuestas por Qwen: {r['redirecciones']}",
+           f"- Rechazos por categoría: {r['rechazos']} · diagnósticos distintos de la sugerencia: "
+           f"{r['diagnostico_distinto_de_la_sugerencia']} · diagnósticos que dan con la causa (según el juez): "
+           f"{r['diagnosticos_en_el_objetivo']}",
            f"- Reglas v1 de punta a punta (sin filtro): {r['reglas_v1_punta_a_punta']}",
            f"- Equivalentes según el juez: {r['equivalentes']} · no detectados: {r['no_detectados']} · causa fuera "
            f"de las candidatas: {r['causa_fuera_de_las_candidatas']} · fugas: {r['fugas']}", "", "## Por defecto", ""]

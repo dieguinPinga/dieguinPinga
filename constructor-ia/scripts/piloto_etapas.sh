@@ -10,7 +10,7 @@
 #   eleccion [minutos] [opciones] — Etapa 1, protegida como el ensayo (detiene y SIEMPRE restaura constructor-ia).
 #   e0 [--defectos dir]    — E0 (SIN modelo; no detiene nada; varios minutos); con --defectos, evaluación a ciegas.
 #   ciclo0 --defectos dir [--ids X01,…] — Ciclo v1 SIN modelo (observación, reglas, juez); no detiene nada.
-#   ciclo [minutos] --defectos dir --ids … --limite-llamadas N — Ciclo con Qwen (v1.2), protegido como el ensayo.
+#   ciclo [minutos] --defectos dir --ids … --limite-llamadas N — Ciclo con Qwen (v1.3), protegido como el ensayo.
 #   forense carpeta [--salida f.md] — SOLO LECTURA: análisis forense de una Etapa 1 terminada (sin modelo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.

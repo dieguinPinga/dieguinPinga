@@ -67,6 +67,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   `laboratorio-ciclo` (`--sin-modelo`, `--limite-llamadas N` o `--completo`). Métrica principal: confirmaciones falsas.
   v1.2: Qwen puede cuestionar la hipótesis (PROPONGO_LINEA, validada por el coordinador) y recibe la
   retroalimentación de cada intento; presupuesto por defecto explícito (`--llamadas-por-defecto`, tope 6).
+  v1.3: diagnóstico estructurado (DIAGNOSTICO/CAMBIA/EFECTO; la línea del coordinador es solo una sugerencia) y
+  controles de coherencia entre lo declarado y el código, antes del sandbox; la verificación sigue siendo lo único que acepta.
 
 ## Proyectos que evolucionan (v0.4.0)
 

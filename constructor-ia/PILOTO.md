@@ -1469,3 +1469,128 @@ bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo -
 **Qué mirar en `resumen.md`:**
 - la línea de cada intento: hipótesis, propuesta, etapas, redirección y decisión;
 - en `llamadas.jsonl`, el prompt de cada llamada, para ver el historial que recibió Qwen.
+
+## Ciclo v1.3: diagnóstico estructurado y controles de coherencia (2026-10-22, sin inferencias reales)
+
+### Por qué
+
+En X07 con v1.2 (`b954b2f`, 3 llamadas, abstención, 0 confirmaciones falsas, historial recibido) Qwen diagnosticó
+bien en palabras las tres veces: «`cobertura["leidas"] = 1` debe acumular». Pero:
+- en la 17 y en la 15 escribió código **para la línea marcada**, que no era la que él mismo señalaba;
+- en la 12 escribió un booleano (`r.filas[0][0] is not None and len(r.filas) > 0`) donde había un contador.
+
+**El diagnóstico y la acción estaban mezclados**, y nada comprobaba que el código hiciera lo que el motivo decía.
+
+### Qué cambió exactamente (`ciclo.py`, versión `ciclo v1.3`)
+
+1. **Formato estructurado: primero el diagnóstico, después el código.**
+   ```
+   DIAGNOSTICO: <línea de UNA de las candidatas>
+   CAMBIA: <variable o clave que se modifica: total, datos["clave"], datos.clave>
+   EFECTO: <opcional: campo = valor esperado en la salida>
+   ```python
+   <reemplazo de ESA instrucción>
+   ```
+   MOTIVO: <una frase>
+   ```
+   Si la corrección es borrar la instrucción, va `ELIMINAR` en lugar del bloque. Si ninguna candidata es la causa, va
+   `DIAGNOSTICO: NINGUNA`, y la investigación termina en abstención.
+2. **La línea del coordinador es una sugerencia, no una obligación.**
+   - El pedido muestra las **3 candidatas** en código limpio, con la sugerida marcada.
+   - Qwen elige cuál reparar. El reemplazo se aplica **a la instrucción declarada en DIAGNOSTICO**, que tiene que ser
+     una candidata autorizada y no haber agotado sus 2 intentos.
+3. **Sin diagnóstico válido no se aplica nada.** El coordinador registra el problema (falta DIAGNOSTICO, no es un
+   número, la línea no está autorizada, falta el bloque, falta o es inválido CAMBIA) y **no** parchea la línea
+   sugerida.
+   - Reintenta con esa retroalimentación, como máximo `MAX_SIN_DIAGNOSTICO = 2` veces por investigación; después se
+     abstiene con el motivo.
+   - La limpieza estricta de la numeración se mide ahora desde la línea **diagnosticada**.
+4. **Coherencia antes del sandbox** (`coherencia()`, genérica, sobre el árbol sintáctico):
+   1. lo declarado en CAMBIA existe en el programa;
+   2. el código **escribe** lo declarado (si propone ELIMINAR, la instrucción eliminada tiene que escribirlo);
+   3. el reemplazo **no deja de escribir, sin declararlo**, algo que la instrucción original escribía.
+   
+   Si hay una contradicción, se rechaza **sin ejecutar**, con un aviso preciso: «declaraste que cambiabas
+   cobertura["leidas"], pero tu código escribe cobertura["validas"]». Si es coherente, se ejecuta.
+5. **Efecto, después de la verificación** (`efecto()`, solo informa).
+   - Compara la salida reparada con la del defecto, con los parámetros visibles.
+   - Señala **cambios de clase de valor**, por ejemplo «cobertura.leidas pasó de número (1) a booleano (True)», y si
+     se cumplió el `EFECTO` declarado.
+   - Esos avisos van en el historial del intento siguiente.
+6. **Regla de decisión, ahora sobre lo que se SUGIERE:**
+   1. sin diagnóstico: la misma sugerencia;
+   2. si el intento no llegó a probarse (sintaxis, incoherencia, ensamblado, revisión, sin cambio) o redujo las
+      fallas: la línea que Qwen diagnosticó, si le quedan intentos;
+   3. si no, la siguiente candidata sin probar;
+   4. si no queda ninguna, terminar.
+7. **Registro y resumen.** Cada intento guarda: sugerida, diagnóstico, cambia, efecto esperado, limpieza, fragmento,
+   coherencia, ensamblado, verificación, efecto observado y decisión. El resumen cuenta:
+   - los rechazos por categoría;
+   - los diagnósticos distintos de la sugerencia;
+   - los diagnósticos que dan con la causa, según el juez.
+8. **Las carpetas de v1, v1.1 y v1.2 no se reanudan con v1.3.**
+
+**Sin cambios:**
+- las reglas E0 (`ee46552429b3047e`);
+- la verificación (dos juegos de parámetros y la forma de la salida), que **sigue siendo lo único que acepta**: la
+  coherencia y el efecto solo pueden rechazar o informar;
+- el juez separado y la auditoría de fugas;
+- el contexto de 4096 tokens, la guardia de memoria y `keep_alive` 0s;
+- los datos de borde, el presupuesto y la protección del servicio.
+
+### Lo que v1.3 NO resuelve
+
+- **El agujero de X05 y X09 sigue abierto.** Una compensación coherente con lo declarado (filtrar el 0,5 en la
+  acumulación) pasa la suite. La coherencia compara el código con lo que **Qwen dijo**, no con la causa verdadera.
+  Hay una prueba que lo deja caracterizado.
+- **Las respuestas viejas de X07 no predicen** cómo responderá Qwen con el formato nuevo. Solo reproducen los fallos
+  anteriores, y lo único que puede medirlo es la prueba real.
+- **El archivo real `llamadas-X07-v12.jsonl` no llegó.**
+  - Las regresiones usan la línea 12 textual (la que citaron) y una **reconstrucción** de la 17 y la 15.
+  - Al copiar el archivo en `tests/datos/`, se activa una prueba con las respuestas exactas.
+
+### Pruebas
+
+`tests/test_ciclo.py`: 35, una de ellas omitida mientras falte el archivo real.
+- **Formato y diagnóstico:**
+  - los campos se leen fuera del bloque de código;
+  - CAMBIA acepta `x`, `d["k"]`, `d['k']` y `d.k`;
+  - sin diagnóstico válido, en sus seis variantes, no se aplica nada, tampoco a la línea sugerida.
+- **Ubicación:** el reemplazo va a la instrucción declarada y el resto del código no cambia.
+- **Coherencia:**
+  - **X07 v1.2:** las respuestas de la 17 y la 15, con el diagnóstico «leidas» que Qwen dio en palabras, se rechazan
+    por incoherencia **antes del sandbox**. La de la 12 es coherente y le toca a la verificación.
+  - **Incoherencias de ubicación:** escribir lo declarado en la instrucción equivocada (deja de escribir `validas`),
+    declarar algo inexistente o eliminar algo que no escribe lo declarado.
+  - **Reparaciones coherentes de otras formas** no se rechazan: un `if` completo con `continue`, o ELIMINAR.
+- **Efecto:** el cambio de número a booleano y la expectativa no cumplida.
+- **Regla de decisión e historial:** el historial nombra la contradicción, y la auditoría no cuenta como fuga lo que
+  escribió Qwen.
+- **De punta a punta en el sandbox:**
+  - **X01:** la respuesta estructurada se confirma.
+  - **Formato viejo:** la respuesta v1.1 sin diagnóstico recibe retroalimentación y un reintento acotado, y termina
+    en abstención.
+  - **X07, el diagnóstico gana a la sugerencia:**
+    1. se sugiere la 17; Qwen diagnostica la 12 y escribe un booleano;
+    2. el coordinador lo ejecuta, lo rechaza y le informa el cambio de tipo;
+    3. Qwen corrige y se confirma.
+  - **X07 incoherente:** se rechaza sin sandbox.
+  - **X04:** las compensaciones se rechazan.
+  - **X05:** sigue siendo una confirmación falsa conocida.
+  - **X09:** el agujero caracterizado.
+  - **DIAGNOSTICO: NINGUNA** termina la investigación.
+  - **Presupuesto y tope, contexto, límite y reanudación, cortes de Ollama, sin modelo.**
+- **La restauración del servicio** la sigue cubriendo `StagesScriptTests`.
+
+### Prueba propuesta en la VivoBook: X07, como máximo 3 llamadas, en una carpeta nueva
+
+```bash
+bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X07 \
+     --llamadas-por-defecto 3 --limite-llamadas 3
+```
+
+**Qué mirar:**
+- si Qwen respeta el formato;
+- si diagnostica la 12 aunque se le sugiera otra línea;
+- si lo que declara en CAMBIA coincide con su código;
+- si el aviso de efecto (cambio de tipo) le sirve en el intento siguiente.
