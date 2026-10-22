@@ -8,7 +8,10 @@ Los escribe otra persona, sin conocer las reglas, en una carpeta con un `manifie
 * cada archivo es el instrumento COMPLETO con el defecto (una variante de la referencia del banco: misma pregunta y
   mismo contrato, medir(db, p));
 * `lineas` son las líneas del defecto EN ESE ARCHIVO (solo se usan para puntuar);
-* `clase` la declara quien lo escribe (cálculo, sobrescritura, condición, omisión u otra) y solo se usa para informar.
+* `clase` la declara quien lo escribe (cálculo, sobrescritura, condición, omisión u otra) y solo se usa para informar;
+* OMISIONES: no hay una línea existente que sea «la causa», sino un PUNTO DE INSERCIÓN. Se declara con
+  `"insercion": {"despues_de": N, "sangria": K}`: la instrucción que falta iría después de la línea N, con K espacios
+  de sangría. `objetivo()` deriva de ahí las instrucciones aceptables (convención en PILOTO.md, «Ciclo v1»).
 
 La carga valida forma y sintaxis; no mira el contenido para decidir nada.
 """
@@ -60,6 +63,53 @@ def cargar(carpeta) -> tuple[list[dict], list[str]]:
             problemas.append(f"{did}: «lineas» debe ser [desde, hasta] dentro del archivo (1..{n})")
             continue
         clase = d.get("clase") if d.get("clase") in CLASES else "otra"
+        ins = d.get("insercion")
+        if ins is not None and not (isinstance(ins, dict) and isinstance(ins.get("despues_de"), int)
+                                    and isinstance(ins.get("sangria"), int) and 0 <= ins["despues_de"] <= n
+                                    and 0 <= ins["sangria"] <= 80):
+            problemas.append(f"{did}: «insercion» debe ser {{\"despues_de\": 0..{n}, \"sangria\": columnas}}")
+            continue
         out.append({"id": did, "descripcion": str(d.get("descripcion") or "")[:200], "clase": clase,
-                    "codigo": codigo if codigo.endswith("\n") else codigo + "\n", "lineas": lineas})
+                    "codigo": codigo if codigo.endswith("\n") else codigo + "\n", "lineas": lineas,
+                    "insercion": ins})
     return out, problemas
+
+
+def _bloques(arbol):
+    """(dueño, lista de instrucciones) de cada bloque del programa."""
+    for nodo in ast.walk(arbol):
+        for campo in ("body", "orelse", "finalbody"):
+            lista = getattr(nodo, campo, None)
+            if isinstance(lista, list) and lista and all(isinstance(x, ast.stmt) for x in lista):
+                yield nodo, lista
+
+
+def objetivo(defecto: dict) -> set[int]:
+    """Líneas de inicio de las instrucciones que cuentan como «la causa» al puntuar una localización.
+
+    * Defecto con líneas: las instrucciones cuya región editable (el encabezado, si es compuesta) toca esas líneas.
+    * Omisión con punto de inserción (convención fijada ANTES de evaluar): la instrucción inmediatamente anterior y
+      la inmediatamente posterior al hueco, dentro del mismo bloque; si falta una de las dos (el hueco está al
+      principio o al final del bloque), también el encabezado del dueño del bloque (un if, un for…).
+    """
+    from . import parches as P
+    codigo = defecto["codigo"]
+    ins = defecto.get("insercion")
+    if not ins:
+        a, b = defecto["lineas"]
+        return {u.lineno for u in P.instrucciones(codigo) if u.lineno <= b and a <= u.edit_end}
+    n, k = ins["despues_de"], ins["sangria"]
+    for dueno, lista in _bloques(ast.parse(codigo)):
+        if lista[0].col_offset != k:
+            continue
+        inicio = lista[0].lineno
+        fin = lista[-1].end_lineno
+        if not (inicio - 1 <= n <= fin):
+            continue
+        antes = [s for s in lista if s.end_lineno <= n]
+        despues = [s for s in lista if s.lineno > n]
+        out = ({antes[-1].lineno} if antes else set()) | ({despues[0].lineno} if despues else set())
+        if (not antes or not despues) and not isinstance(dueno, (ast.FunctionDef, ast.Module)):
+            out.add(dueno.lineno)
+        return out
+    return set()

@@ -9,6 +9,8 @@
 #   eleccion0              — experimento de elección, Etapa 0 (SIN modelo; no detiene nada).
 #   eleccion [minutos] [opciones] — Etapa 1, protegida como el ensayo (detiene y SIEMPRE restaura constructor-ia).
 #   e0 [--defectos dir]    — E0 (SIN modelo; no detiene nada; varios minutos); con --defectos, evaluación a ciegas.
+#   ciclo0 --defectos dir [--ids X01,…] — Ciclo v1 SIN modelo (observación, reglas, juez); no detiene nada.
+#   ciclo [minutos] --defectos dir --ids … --limite-llamadas N — Ciclo v1 con Qwen, protegido como el ensayo.
 #   forense carpeta [--salida f.md] — SOLO LECTURA: análisis forense de una Etapa 1 terminada (sin modelo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
@@ -101,6 +103,12 @@ cmd_eleccion() {
   local limite="${1:-60}"
   shift || true   # p. ej. --casos <ruta>/casos.json --limite 4, o --reanudar <carpeta> --completo
   ejecutar_guardado "$limite" laboratorio-eleccion --yes "$@"
+}
+
+cmd_ciclo() {
+  local limite="${1:-60}"
+  shift || true   # p. ej. --defectos <banco> --ids X01,X04,X07,X11 --limite-llamadas 12
+  ejecutar_guardado "$limite" laboratorio-ciclo --yes "$@"
 }
 
 ejecutar_guardado() {
@@ -204,8 +212,10 @@ case "${1:-}" in
   eleccion0) bash "$PILOTO_SH" laboratorio-eleccion-etapa0 --yes ;;
   eleccion) shift; cmd_eleccion "$@" ;;
   e0) shift; bash "$PILOTO_SH" laboratorio-eleccion-e0 --yes "$@" ;;
+  ciclo0) shift; bash "$PILOTO_SH" laboratorio-ciclo --yes --sin-modelo "$@" ;;
+  ciclo) shift; cmd_ciclo "$@" ;;
   forense) shift; bash "$PILOTO_SH" laboratorio-eleccion-forense "$@" ;;
   revisar) shift; cmd_revisar "$@" ;;
   comparar) cmd_comparar ;;
-  *) sed -n '2,18p' "$0"; exit 2 ;;
+  *) sed -n '2,20p' "$0"; exit 2 ;;
 esac

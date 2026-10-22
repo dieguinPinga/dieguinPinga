@@ -62,6 +62,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   Experimento de elección (PILOTO.md, «Etapas 0 y 1»): ¿la evidencia de ejecución, genérica y calculada sin el juez,
   ayuda a Qwen a elegir la instrucción causante? Pares control/tratamiento con una única diferencia, McNemar exacto;
   `laboratorio-eleccion-etapa0` (sin modelo) y `laboratorio-eleccion` (exige `--limite` o `--completo`).
+  Ciclo de investigación v1 (PILOTO.md, «Ciclo v1»): hipótesis de las reglas congeladas → reparación propuesta por
+  Qwen → verificación del coordinador en el sandbox con dos juegos de parámetros propios → juez separado;
+  `laboratorio-ciclo` (`--sin-modelo`, `--limite-llamadas N` o `--completo`). Métrica principal: confirmaciones falsas.
 
 ## Proyectos que evolucionan (v0.4.0)
 

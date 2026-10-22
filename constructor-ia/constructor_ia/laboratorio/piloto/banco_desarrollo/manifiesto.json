@@ -1,0 +1,144 @@
+[
+ {
+  "id": "X01",
+  "archivo": "X01.py",
+  "clase": "cálculo",
+  "nombre": "Ancho desplazado",
+  "descripcion": "La agrupación usa un ancho un minuto mayor que el solicitado.",
+  "lineas": [
+   19,
+   19
+  ]
+ },
+ {
+  "id": "X02",
+  "archivo": "X02.py",
+  "clase": "cálculo",
+  "nombre": "División en lugar de resto",
+  "descripcion": "La alineación temporal usa el cociente entero en lugar del resto.",
+  "lineas": [
+   19,
+   19
+  ]
+ },
+ {
+  "id": "X03",
+  "archivo": "X03.py",
+  "clase": "cálculo",
+  "nombre": "Ajuste indebido de valor",
+  "descripcion": "A cada lectura válida se le resta una unidad antes de acumularla.",
+  "lineas": [
+   20,
+   20
+  ]
+ },
+ {
+  "id": "X04",
+  "archivo": "X04.py",
+  "clase": "cálculo",
+  "nombre": "Redondeo prematuro",
+  "descripcion": "La suma de cada ventana se presenta con una cifra decimal en lugar de tres.",
+  "lineas": [
+   22,
+   22
+  ]
+ },
+ {
+  "id": "X05",
+  "archivo": "X05.py",
+  "clase": "sobrescritura",
+  "nombre": "Contador de válidas reiniciado",
+  "descripcion": "Cada lectura válida reemplaza el total de válidas por uno.",
+  "lineas": [
+   17,
+   17
+  ]
+ },
+ {
+  "id": "X06",
+  "archivo": "X06.py",
+  "clase": "sobrescritura",
+  "nombre": "Acumulado reemplazado",
+  "descripcion": "Una lectura reemplaza la suma anterior de su ventana.",
+  "lineas": [
+   20,
+   20
+  ]
+ },
+ {
+  "id": "X07",
+  "archivo": "X07.py",
+  "clase": "sobrescritura",
+  "nombre": "Contador de leídas reiniciado",
+  "descripcion": "Cada fila reemplaza el acumulado de filas leídas por uno.",
+  "lineas": [
+   12,
+   12
+  ]
+ },
+ {
+  "id": "X08",
+  "archivo": "X08.py",
+  "clase": "sobrescritura",
+  "nombre": "Contador de inválidas reiniciado",
+  "descripcion": "Cada lectura inválida reemplaza el total de inválidas por uno.",
+  "lineas": [
+   15,
+   15
+  ]
+ },
+ {
+  "id": "X09",
+  "archivo": "X09.py",
+  "clase": "condición",
+  "nombre": "Límite inferior inclusivo",
+  "descripcion": "Se admite incorrectamente el valor límite 0.5 como válido.",
+  "lineas": [
+   14,
+   14
+  ]
+ },
+ {
+  "id": "X10",
+  "archivo": "X10.py",
+  "clase": "condición",
+  "nombre": "Límite superior inclusivo",
+  "descripcion": "Se admite incorrectamente el valor límite 900 como válido.",
+  "lineas": [
+   14,
+   14
+  ]
+ },
+ {
+  "id": "X11",
+  "archivo": "X11.py",
+  "clase": "omisión",
+  "nombre": "Falta descartar inválidos",
+  "descripcion": "Se omite el salto que impedía agregar lecturas inválidas a las ventanas.",
+  "lineas": [
+   16,
+   16
+  ],
+  "insercion": {
+   "despues_de": 15,
+   "sangria": 12
+  },
+  "nota_auditoria": "Falta «continue» dentro del if de la línea 14, después de la línea 15. La etiqueta original (16) apuntaba a la línea siguiente."
+ },
+ {
+  "id": "X12",
+  "archivo": "X12.py",
+  "clase": "omisión",
+  "nombre": "Falta contabilizar válidas",
+  "descripcion": "Se omite la actualización del contador de lecturas válidas.",
+  "lineas": [
+   17,
+   17
+  ],
+  "insercion": {
+   "despues_de": 16,
+   "sangria": 8
+  },
+  "nota_auditoria": "Falta «cobertura[\"validas\"] += 1» en el cuerpo del for, después del if (que termina en la 16). La etiqueta original (17) apuntaba a la línea siguiente."
+ }
+]

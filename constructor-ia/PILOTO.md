@@ -1148,3 +1148,141 @@ esas candidatas. R4 se abstuvo solo porque la localización dejó afuera la l.19
 2. **Etiquetar las omisiones por punto de inserción:** bloque y posición, con una regla de puntuación fijada antes.
 3. **Las condiciones de borde necesitan datos de borde.** Introducir filas de prueba en la base privada (por
    ejemplo, valores exactos de 0,5 y 900) es en sí una intervención que el coordinador podría diseñar.
+
+## Ciclo v1: hipótesis → reparación → verificación (preregistro, 2026-10-22, antes de cualquier llamada)
+
+**Objetivo:** la primera versión de un ciclo de investigación del coordinador, no otro experimento de elección. El
+hallazgo de X04 lo motiva: **identificar una línea sospechosa no es demostrar una causa.**
+
+### Correcciones del método de evaluación (valen desde ahora; las evaluaciones anteriores no cambian)
+
+1. **De punta a punta.** Se evalúan todos los defectos detectados, sin filtrar por «causa entre las candidatas».
+2. **Omisiones por punto de inserción.**
+   - El manifiesto declara `"insercion": {"despues_de": N, "sangria": K}`.
+   - Una localización acierta si señala la instrucción inmediatamente anterior o la inmediatamente posterior al
+     hueco dentro del mismo bloque.
+   - Si el hueco está al principio o al final del bloque, también vale el encabezado del dueño del bloque (un `if`, un
+     `for`…).
+   - Implementado en `defectos.objetivo()`. En el banco de desarrollo: X11 → {14, 15} y X12 → {14, 17}.
+3. **Datos de borde.** La base privada recibe lecturas exactamente en los límites de validez de la pregunta: una de
+   0,5 cada 30 minutos (1440 a escala completa) y 6 de 900. Con ellas, X09 y X10 dejan de ser equivalentes y se
+   detectan.
+
+### Reglas y bancos
+
+- **Las seis reglas de E0 siguen congeladas** (`ee46552429b3047e`). El ciclo se niega a correr con otras: cualquier
+  cambio de reglas será otra versión del ciclo.
+- **Los 12 defectos son ahora el banco de desarrollo** (`constructor_ia/laboratorio/piloto/banco_desarrollo/`):
+  - los programas están como llegaron;
+  - el manifiesto agrega el punto de inserción en X11 y X12;
+  - no miden generalización. Para eso hace falta otro banco independiente.
+
+### El ciclo (`constructor_ia/laboratorio/piloto/ciclo.py`)
+
+1. **Observa.**
+   - Ejecuta el instrumento con su suite (S1–S3 y VF) en **dos juegos de parámetros propios**: los visibles
+     `{ancho_min: 15, top: 3}` y `{ancho_min: 20, top: 4}`.
+   - El segundo juego **no** es el de reserva del juez (`{30, 5}`), y el código lo afirma.
+   - Si nada falla, no hay nada que investigar.
+2. **Formula hipótesis.**
+   - Localiza 3 candidatas y consulta las reglas congeladas.
+   - Si una regla da una única candidata, esa va primero; después siguen las demás, en el orden del localizador.
+   - Como máximo **3 hipótesis por defecto**.
+3. **Pide una reparación.** Por cada hipótesis hace una llamada corta a Qwen: «hipótesis TODAVÍA NO COMPROBADA: la
+   causa está en la instrucción marcada; proponé el reemplazo mínimo». Qwen puede responder ELIMINAR o NO_ES_ESTA.
+   - **Qwen ve:** la pregunta; la salida y las fallas de los juegos que fallan; un glosario fijo de las verificaciones
+     (que ahora se rotulan como del coordinador); el código numerado con la hipótesis marcada.
+   - **Qwen no ve:** la referencia, los parámetros de reserva, la descripción ni las líneas del defecto.
+   - Cada hipótesis es una llamada independiente, sin historial. Semilla por (defecto, hipótesis), temperatura 0,2,
+     `keep_alive` 0s, contexto de 4096 y guardia de memoria.
+4. **Verifica: solo el coordinador, solo en el sandbox.** Acepta la reparación únicamente si:
+   - cambia el código;
+   - pasa la revisión estática;
+   - en **los dos juegos** pasa toda la suite;
+   - en los dos conserva la **forma** de la salida. Si el defecto no terminaba con un juego, se exige que ninguna
+     lista quede vacía.
+   
+   La primera reparación aceptada termina la investigación («confirmada»). Si ninguna se acepta, el ciclo **se
+   abstiene**. Qwen propone; nunca aprueba.
+5. **Juez, después y por separado.**
+   - **Aislamiento.** `investigar()` recibe solo `{"id", "codigo"}`; una prueba lo verifica con un espía. El juez se
+     crea recién cuando la investigación terminó.
+   - **Qué compara.** Cada propuesta contra la referencia, en los parámetros visibles y en los de reserva, con los
+     datos de borde.
+   - **Auditoría de fugas** en cada prompt: líneas de la referencia, la descripción del defecto y los parámetros de
+     reserva.
+
+### Métricas preregistradas
+
+- **Principal: confirmaciones falsas.** Son reparaciones aceptadas que el juez rechaza. Importa más no aceptar una
+  reparación incorrecta que abstenerse.
+- **Secundarias:**
+  - confirmaciones verdaderas;
+  - abstenciones;
+  - «abstención con una reparación correcta rechazada», que mide si la verificación es demasiado estricta;
+  - llamadas usadas;
+  - reglas v1 de punta a punta;
+  - causa fuera de las candidatas;
+  - fugas.
+- **Lectura.** Una sola confirmación falsa es un hallazgo que se analiza antes de seguir; no se promedia con los
+  aciertos.
+
+**El riesgo ya está a la vista.** La prueba `test_true_and_false_confirmations…` usa una reparación simulada de X05
+(`validas += 2; invalidas -= 1`). Esa reparación:
+- pasa S1, S2, S3 y VF en los dos juegos;
+- es incorrecta.
+
+El ciclo la acepta y el juez la marca como **CONFIRMACIÓN FALSA**. Es decir, la suite del coordinador **no controla
+cómo se reparten las lecturas entre válidas e inválidas**, y una reparación de Qwen podría aprovechar ese hueco.
+
+### Ciclo sin modelo sobre el banco de desarrollo (entorno de desarrollo, Python 3.12, 0 llamadas, 188 s)
+
+- Con datos de borde se detectan los 12 defectos; ninguno queda equivalente.
+- **Reglas v1 de punta a punta: 4 aciertos, 3 errores y 5 abstenciones** (precisión de 4 de 7).
+  - Los errores son X04 (redondeo) y X09 y X10 (límites inclusivos).
+  - En los tres, R4 dice «camino del valor» y elige la acumulación.
+- En **5 de 12** defectos la causa queda fuera de las 3 candidatas: X04, X09, X10, X11 y X12. En esos casos ninguna
+  hipótesis apunta a la causa, así que **la conducta correcta del ciclo es abstenerse**.
+- **El peligro concreto en esos 5 casos:** que Qwen proponga, en otra línea, una compensación que la suite no ve. En
+  X09 y X10, por ejemplo, filtrar el valor de borde en la acumulación sin corregir la condición.
+
+### Prueba pequeña en la VivoBook (la deciden ustedes; nada es automático)
+
+```bash
+# 0) Sin modelo (no detiene nada; unos 15–20 minutos en la VivoBook): reglas v1 de punta a punta y juez
+bash $E ciclo0 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo
+
+# 1) Prueba pequeña: 4 defectos, como máximo 12 llamadas, protegida (detiene y SIEMPRE restaura constructor-ia)
+bash $E ciclo 90 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X01,X07,X09,X04 \
+     --limite-llamadas 12
+# si se corta: bash $E ciclo 90 --reanudar <carpeta> --limite-llamadas N
+```
+
+**Por qué estos 4 defectos:**
+
+| defecto | regla | causa | qué pone a prueba |
+|---|---|---|---|
+| X01 | acierta | entre las candidatas | confirmación esperable con la primera hipótesis |
+| X07 | se abstiene | tercera hipótesis | Qwen tiene que decir NO_ES_ESTA o fallar en las dos primeras |
+| X09 | se equivoca | fuera de las candidatas | riesgo de compensación |
+| X04 | se equivoca | fuera de las candidatas | el caso que motivó todo |
+
+**Tiempo estimado:**
+- 12 llamadas × 118 s de media son unos 24 minutos, más la observación y las verificaciones en el sandbox;
+- con el peor caso visto (313 s por llamada) serían unos 63 minutos;
+- límite propuesto: 90 minutos.
+
+**Qué revisar después:**
+- `resumen.md` y `juez.json`;
+- `llamadas.jsonl`: prompts por partes, respuestas crudas, segundos, memoria;
+- `interrupciones.jsonl`;
+- que no haya fugas.
+
+### Qué todavía NO hace el ciclo v1 (a propósito)
+
+- No usa el historial entre hipótesis: un rechazo no se le explica a Qwen.
+- No le pide a Qwen hipótesis nuevas fuera de las 3 candidatas.
+- No aprende de corridas anteriores.
+- No diseña verificaciones nuevas (por ejemplo, una que controle el reparto entre válidas e inválidas).
+
+Son los pasos siguientes de la arquitectura, y cada uno será otra versión.

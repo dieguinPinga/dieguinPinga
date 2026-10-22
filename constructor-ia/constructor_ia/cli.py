@@ -883,6 +883,80 @@ def cmd_lab_choice(args) -> int:
     return 0 if res["estado"] in ("completo", "limite") else 3
 
 
+def cmd_lab_cycle(args) -> int:
+    """Ciclo de investigación v1: hipótesis → reparación (Qwen propone) → verificación (el coordinador, en el sandbox)
+    → juez (después y por separado). Exige --sin-modelo, --limite-llamadas N o --completo."""
+    from .laboratorio import privado
+    from .laboratorio.piloto import ciclo as CI
+    from .laboratorio.piloto import defectos as DF
+    from .laboratorio.piloto import v2 as PV2
+    from .laboratorio.piloto.entorno import Entorno
+    from .laboratorio.protocolo import Modelo
+    from .ollama import OllamaClient, OllamaError
+
+    modos = [args.sin_modelo, args.limite_llamadas is not None, args.completo]
+    if sum(modos) != 1:
+        print("Elija UNA: --sin-modelo (observación, reglas y juez; 0 llamadas), --limite-llamadas N o --completo.",
+              file=sys.stderr)
+        return 2
+    salida = Path(args.reanudar) if args.reanudar else None
+    plan = json.loads((salida / "plan.json").read_text()) if salida and (salida / "plan.json").exists() else {}
+    carpeta = args.defectos or plan.get("defectos")
+    if not carpeta:
+        print("Falta --defectos <carpeta con manifiesto.json>.", file=sys.stderr)
+        return 2
+    defectos, problemas = DF.cargar(carpeta)
+    for p in problemas:
+        print(f"  defecto descartado: {p}", file=sys.stderr)
+    ids = [x for x in (args.ids or "").split(",") if x] or plan.get("ids") or [d["id"] for d in defectos]
+    if plan and ids != plan.get("ids"):
+        print(f"La corrida a reanudar es de {plan.get('ids')}: no se mezclan defectos.", file=sys.stderr)
+        return 2
+    faltan = [i for i in ids if i not in {d["id"] for d in defectos}]
+    if faltan:
+        print(f"Estos ids no están en el manifiesto: {faltan}", file=sys.stderr)
+        return 2
+    defectos = [d for d in defectos if d["id"] in ids]
+    cfg, ex = _piloto_preparar(args, necesita_modelo=not args.sin_modelo, exigir_servicio_detenido=not args.sin_modelo)
+    salida = salida or cfg.data_dir / "laboratorio" / ("ciclo-" + time.strftime("%Y%m%d-%H%M%S"))
+    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (salida / "plan.json").write_text(json.dumps({"defectos": str(Path(carpeta).resolve()), "ids": ids}))
+    crear_modelo = guardia = None
+    if not args.sin_modelo:
+        ollama = OllamaClient(cfg.ollama_url)
+        try:
+            if args.modelo not in ollama.tags():
+                print(f"El modelo {args.modelo} no está instalado en {cfg.ollama_url} (no se descarga).",
+                      file=sys.stderr)
+                return 2
+        except OllamaError as e:
+            print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+            return 1
+        guardia = PV2.Guardia(ollama, minimo_mb=args.memoria_minima_mb)
+        base = cfg.explorer_model
+
+        def crear_modelo():
+            return Modelo(ollama, base, args.modelo, num_ctx=args.num_ctx, temperatura=0.2, timeout_s=900,
+                          num_predict_codigo=2048, num_predict_json=768, keep_alive=args.keep_alive)
+    print(f"Ciclo v1: {len(defectos)} defectos {ids}; hasta {CI.MAX_HIPOTESIS} llamadas por defecto; "
+          + ("SIN modelo." if args.sin_modelo else f"límite {args.limite_llamadas or 'ninguno'} llamadas nuevas; "
+             f"num_ctx={args.num_ctx}, keep_alive={args.keep_alive}, memoria mínima {args.memoria_minima_mb} MiB."),
+          flush=True)
+    servidor = privado.ServidorPrivado(salida / "mariadb")
+    try:
+        ent = Entorno(cfg, ex, servidor, salida / "entorno")
+        res = CI.correr(cfg, ent, defectos=defectos, salida=salida, crear_modelo=crear_modelo,
+                        limite_llamadas=args.limite_llamadas, guardia=guardia,
+                        log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+        ent.cerrar()
+    finally:
+        servidor.detener()
+    print((salida / "resumen.md").read_text())
+    print(f"Resultados en {salida}. Para seguir: laboratorio-ciclo --yes --reanudar {salida} "
+          "(--limite-llamadas N o --completo)")
+    return 0 if res["corrida"] in ("completa", "limite") else 3
+
+
 def cmd_lab_pilot_review(args) -> int:
     from .laboratorio.piloto import informe as PI
 
@@ -1107,6 +1181,21 @@ def main(argv=None) -> int:
     a.add_argument("--defectos", help="carpeta con manifiesto.json de defectos externos (evaluación a ciegas)")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_choice_e0)
+    a = sub.add_parser("laboratorio-ciclo",
+                       help="Ciclo v1: hipótesis → reparación (Qwen) → verificación (coordinador) → juez separado")
+    a.add_argument("--defectos", help="carpeta con manifiesto.json (p. ej. el banco de desarrollo)")
+    a.add_argument("--ids", help="solo estos defectos, separados por comas (prueba pequeña)")
+    a.add_argument("--reanudar", help="carpeta de un ciclo empezado")
+    a.add_argument("--sin-modelo", dest="sin_modelo", action="store_true",
+                   help="observación, reglas v1 de punta a punta y juez; 0 llamadas")
+    a.add_argument("--limite-llamadas", dest="limite_llamadas", type=int, help="como máximo N llamadas NUEVAS")
+    a.add_argument("--completo", action="store_true", help="todas las llamadas que falten (hasta 3 por defecto)")
+    a.add_argument("--modelo", default="qwen3:4b-instruct")
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, default=4096)
+    a.add_argument("--keep-alive", dest="keep_alive", default="0s")
+    a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_cycle)
     a = sub.add_parser("laboratorio-eleccion-forense",
                        help="Análisis forense de SOLO LECTURA de una Etapa 1 terminada (sin modelo)")
     a.add_argument("carpeta")

@@ -415,3 +415,15 @@ class StagesScriptTests(unittest.TestCase):
         self.assertIn("piloto laboratorio-eleccion-etapa0 --yes servicio=active", log)
         self.assertNotIn("stop constructor-ia.service", log)
         self.assertNotIn("systemd-run", log)
+
+    def test_cycle_with_model_is_guarded_and_without_model_stops_nothing(self):
+        rc, estado, log, out = self.correr("cuelga", senal="SIGINT", orden=("ciclo",), limite="20",
+                                           extra=("--defectos", "b", "--ids", "X01,X07", "--limite-llamadas", "6"))
+        self.assertEqual(estado, "active", (out, log))
+        self.assertIn("piloto laboratorio-ciclo --yes --defectos b --ids X01,X07 --limite-llamadas 6 "
+                      "servicio=inactive", log)
+        self.assertIn("piloto: limpieza", log)
+        rc, estado, log, out = self.correr("ok", orden=("ciclo0",), limite=None, extra=("--defectos", "b"))
+        self.assertEqual((rc, estado), (0, "active"))
+        self.assertIn("piloto laboratorio-ciclo --yes --sin-modelo --defectos b servicio=active", log)
+        self.assertNotIn("systemd-run", log)
