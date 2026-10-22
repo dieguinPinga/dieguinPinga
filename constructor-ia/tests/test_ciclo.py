@@ -167,7 +167,7 @@ class UnitTests(unittest.TestCase):
         self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
                          "la corrida original no se toca")
         self.assertFalse((d / "version.json").exists())
-        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3"):
+        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3", "ciclo v1.3.1"):
             e = Path(tempfile.mkdtemp())
             (e / "version.json").write_text(json.dumps({"version": anterior}))
             with self.assertRaisesRegex(RuntimeError, f"{anterior}»"):
@@ -496,9 +496,34 @@ class CycleTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.ent.cerrar()
 
+    DATOS_JUEZ = {"semilla": 20261023, "dias": 4, "por_dia": 257}    # chico, para que las pruebas sean rápidas
+
     def correr(self, nombre, defectos, modelo=None, **kw):
+        kw.setdefault("datos_juez", self.DATOS_JUEZ)
         return C.correr(self.cfg, self.ent, defectos=defectos, salida=self.dir / nombre,
                         crear_modelo=(lambda: modelo) if modelo else None, log=lambda *_: None, **kw)
+
+    def test_judges_independent_data_differ_explicitly_and_are_out_of_the_coordinators_reach(self):
+        ent_j, datos = C.crear_datos_juez(self.ent, self.DATOS_JUEZ)
+        try:
+            base_j = ent_j.info["base"]
+            r = self.ent.servidor.sql("SELECT COUNT(*), SUM(NOT (valor > 0.5 AND valor < 900)) FROM lecturas;",
+                                      database=self.ent.info["base"])
+            total_co, inv_co = (int(float(x)) for x in r.stdout.split())
+            self.assertNotEqual(datos["lecturas"], total_co)
+            self.assertNotAlmostEqual(datos["invalidas"] / datos["lecturas"], inv_co / total_co, places=2,
+                                      msg="el reparto válidas/inválidas también cambia")
+            self.assertGreater(datos["valores_de_borde_exactos"], 0)
+            self.assertNotEqual(ent_j.info["usuario"], self.ent.info["usuario"])
+            co = C.Coordinador(self.ent)
+            espia = co.guardar("def medir(db, p):\n    r = db.consultar(\"SELECT COUNT(*) FROM `" + base_j +
+                               "`.lecturas\")\n    return {'resultado': {'n': r.filas[0][0]}, "
+                               "'cobertura': {'filas_analizadas': 1}, 'limitaciones': []}\n")
+            run = C.V._run(self.ent, co.alm, espia, {}) if espia else {"status": "rechazado", "output": None}
+            self.assertIsNone(run.get("output"), "el coordinador no puede leer la base del juez")
+        finally:
+            ent_j.cerrar()
+        self.assertNotIn(base_j, self.ent.servidor.sql("SHOW DATABASES;").stdout, "se borra al terminar")
 
     def test_boundary_data_make_an_inclusive_limit_detectable(self):
         res = self.correr("bordes", banco("X10"))
@@ -609,6 +634,55 @@ class CycleTests(unittest.TestCase):
         self.assertFalse(j["intentos"][0]["verificacion_realizada"], "la ambigua no se ejecutó")
         self.assertEqual(j["resultado"], "abstención")
         self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
+
+    def test_a_fixed_counter_copied_from_the_evidence_is_now_a_false_confirmation(self):
+        """El problema de v1.3.1: fijar leidas en el total que midió VF pasaba la suite del coordinador Y al juez,
+        porque todos los parámetros usaban los mismos datos. Con los datos independientes, el juez lo ve."""
+        def responder(prompt, linea):
+            medido = re.search(r"'medido': (\d+)", prompt).group(1)
+            return responde(12, 'cobertura["leidas"]', f'cobertura["leidas"] = {medido}', f"leidas = {medido}")
+        m = Modelo(responder)
+        res = self.correr("contador_fijo", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertTrue(j["intentos"][0]["aceptada"], "el coordinador la acepta: pasa su suite")
+        self.assertEqual(j["intentos"][0]["correcta_por_datos"], {"compartidos": True, "independientes": False},
+                         "con los datos compartidos (el juez de v1.3.1) parecía correcta")
+        self.assertEqual(j["resultado"], "CONFIRMACIÓN FALSA")
+        r = res["resumen"]
+        self.assertEqual((r["aceptadas_por_el_coordinador"], r["confirmaciones_verdaderas"],
+                          r["confirmaciones_falsas"], r["falsas_que_solo_ven_los_datos_independientes"]),
+                         (["X07"], [], ["X07"], ["X07"]))
+        self.assertEqual(r["fugas"], 0)
+        texto = "\n".join(x["prompt"] for x in m.llamadas)
+        self.assertNotIn(res["datos_independientes_del_juez"]["semilla"].__str__(), texto)
+        self.assertNotIn("_juez", texto, "el nombre de la base del juez no aparece en ningún pedido")
+
+    def test_correct_repairs_stay_correct_on_independent_data(self):
+        m = Modelo(lambda p, ln: QWEN_X01_V13 if "inicio = m - datetime.timedelta(minutes=m.minute % (ancho + 1))" in p
+                   else UNICA_X07)
+        res = self.correr("correctas", banco("X01", "X07"), m)
+        por = {j["id"]: j for j in res["juicio"]}
+        for d in ("X01", "X07"):
+            self.assertEqual(por[d]["resultado"], "confirmación verdadera", d)
+            aceptada = next(it for it in por[d]["intentos"] if it["aceptada"])
+            self.assertEqual(aceptada["correcta_por_datos"], {"compartidos": True, "independientes": True})
+        self.assertEqual(res["resumen"]["confirmaciones_verdaderas"], ["X01", "X07"])
+
+    def test_known_compensations_x05_x09_with_independent_data(self):
+        """Comprobado, no supuesto: las dos compensaciones conocidas ya eran visibles para el juez con los datos
+        compartidos, y lo siguen siendo con los independientes. El coordinador las sigue ACEPTANDO."""
+        def responder(prompt, linea):
+            if 'cobertura["validas"] = 1' in prompt:                                       # X05
+                return responde(17, 'cobertura["validas"]', 'cobertura["validas"] += 2\ncobertura["invalidas"] -= 1')
+            return responde(20, "sumas", "sumas[inicio] = sumas.get(inicio, 0.0) + (v if v > 0.5 else 0.0)")  # X09
+        res = self.correr("compensaciones", banco("X05", "X09"), Modelo(responder))
+        por = {j["id"]: j for j in res["juicio"]}
+        for d in ("X05", "X09"):
+            aceptada = next(it for it in por[d]["intentos"] if it["aceptada"])
+            self.assertEqual(aceptada["correcta_por_datos"], {"compartidos": False, "independientes": False}, d)
+            self.assertEqual(por[d]["resultado"], "CONFIRMACIÓN FALSA")
+            self.assertFalse(por[d]["falsa_solo_con_datos_independientes"])
+        self.assertEqual(res["resumen"]["aceptadas_por_el_coordinador"], ["X05", "X09"])
 
     def test_x07_incoherent_answers_are_rejected_before_the_sandbox(self):
         respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17),

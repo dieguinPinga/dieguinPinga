@@ -1729,3 +1729,77 @@ descarta: es lo acordado, no elegir ninguna.
    una sola frase de verdad.
 3. **`__len__` otra vez.** Ya había aparecido con v1.2. La revisión estática lo rechaza y el historial lo explica, pero
    no hubo un cuarto intento para comprobar si Qwen aprende de ese aviso.
+
+## Ciclo v1.3.2: el juez evalúa también con datos independientes (2026-10-22, sin inferencias reales)
+
+**Problema (v1.3.1).** Fijar un contador en el total que midió VF (`cobertura["leidas"] = <medido>`) pasaba la suite
+del coordinador **y también al juez**. Los juegos de parámetros del coordinador y los de reserva del juez cambian
+`ancho_min` y `top`, pero todos usan **los mismos datos**, y los conteos no dependen de esos parámetros.
+
+**Qué cambió** (solo el juez; el protocolo de diagnóstico y reparación de Qwen es el mismo):
+1. **Base independiente del juez** (`crear_datos_juez()`, `variar_datos_juez()`).
+   - Es una segunda base sintética **en el mismo MariaDB privado**, con otro nombre (`<base>_juez`) y **otro
+     usuario de solo lectura** (`lab_juez`).
+   - Es reproducible: `DATOS_JUEZ = {semilla 20261023, 19 días × 437}`, frente a 7, 30 × 500 del coordinador.
+   - **Se crea recién cuando la investigación terminó y se borra al terminar el juicio.**
+   - **No alcanza con otra semilla.** Varía explícitamente:
+     - **total de lecturas:** otra escala, más ráfagas de 150 lecturas en una hora;
+     - **válidas e inválidas:** 1 de cada 23 pasa a −3,25 y 1 de cada 41 a 1234,5;
+     - **valores y distribución:** las válidas menores que 600 se transforman con `valor × 1,37 + 2,5`;
+     - **distribución temporal:** 1 de cada 3 lecturas se corre 7 minutos, y se agregan las ráfagas;
+     - **bordes:** 0,5, 900, 0,501, 899,999, 0,499 y 900,001, en los minutos 0, 14, 15, 29, 30 y 59.
+2. **El juez ejecuta la referencia y cada propuesta en las dos bases**, con los parámetros visibles y de reserva.
+   Una propuesta es correcta solo si es igual a la referencia **en todo**. Se guarda el detalle por base
+   (`correcta_por_datos: {compartidos, independientes}`).
+3. **Aislamiento.**
+   - La base del juez no existe mientras el coordinador investiga y Qwen responde.
+   - **MariaDB le niega el acceso al usuario del coordinador** (error 1142, `SELECT command denied to user
+     'lab_ro'`). Una prueba lo comprueba.
+   - La auditoría de fugas busca además, en cada pedido, el nombre y los totales de la base del juez.
+4. **Registro por separado.** El resumen informa:
+   - las aceptadas por el coordinador;
+   - las confirmaciones verdaderas y las falsas, según el juez;
+   - las falsas **que solo ven los datos independientes**.
+
+**Sin cambios:**
+- la base del coordinador y sus verificaciones;
+- el pedido a Qwen, la coherencia, la ambigüedad y la verificación en el sandbox;
+- las reglas E0 (`ee46552429b3047e`);
+- las corridas históricas, que no se reanudan con v1.3.2.
+
+### Resultados de las pruebas (modelos simulados, sin inferencias)
+
+| caso | coordinador | juez: datos compartidos | juez: datos independientes | resultado |
+|---|---|---|---|---|
+| contador fijo (`leidas = <medido>`) en X07 | **acepta** | igual (el juez de v1.3.1 lo daba por correcto) | **distinto** | **CONFIRMACIÓN FALSA**, visible solo con los datos independientes |
+| X01 (respuesta real de Qwen, estructurada) | acepta | igual | igual | confirmación verdadera |
+| X07 (`leidas += 1`) | acepta | igual | igual | confirmación verdadera |
+| X05 (`validas += 2; invalidas -= 1`) | **acepta** | distinto | distinto | CONFIRMACIÓN FALSA (ya visible antes) |
+| X09 (filtrar el 0,5 en la acumulación) | **acepta** | distinto | distinto | CONFIRMACIÓN FALSA (ya visible antes) |
+
+**X05 y X09: comprobado, no supuesto.** Los datos independientes **no cambian nada** en esos dos casos. El juez ya los
+marcaba como falsos y lo sigue haciendo, pero **el coordinador los sigue aceptando**: el problema de esos casos está en
+su suite (no controla cómo se reparten las lecturas entre válidas e inválidas), no en el juez.
+
+### Qué confirmaciones falsas el juez todavía NO puede detectar
+
+El juez compara salidas con la referencia sobre un conjunto finito de casos. Es una prueba **observacional**, no una
+demostración. Una reparación incorrecta pasa si es igual a la referencia en todo lo que el juez prueba:
+1. **Parámetros no probados.** Solo se prueban `ancho_min` 15 y 30 con `top` 3 y 5: siempre divisores de 60, y `top`
+   menor que la cantidad de ventanas. Una reparación que falla con `ancho_min = 7`, o con `top` mayor que la cantidad
+   de ventanas, no se ve.
+2. **Situaciones ausentes en ambas bases:**
+   - una tabla vacía;
+   - `valor` NULL;
+   - más de 50 000 filas, donde `max_filas` recorta y una reparación que ignore el recorte no se distingue;
+   - empates exactos en las sumas, que cambian el orden;
+   - cambios de horario.
+3. **Diferencias menores que la tolerancia** de la comparación (1e-3 por hoja).
+4. **Lo que no se compara:** `limitaciones` (texto), el tiempo y el consumo de recursos. El determinismo lo cubre S3,
+   del coordinador.
+5. **Constantes que coinciden por casualidad en las dos bases.** Las variaciones explícitas lo hacen improbable para
+   los totales, pero no imposible para valores chicos, como `top`.
+
+**El siguiente paso para el coordinador** (pendiente de su decisión) es una verificación del reparto entre válidas e
+inválidas según la definición de la pregunta, que cerraría X05 y X09. Y quizás verificar con datos variados del
+propio coordinador, para no depender solo del juez frente a los valores copiados.

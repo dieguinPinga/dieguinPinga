@@ -69,6 +69,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   retroalimentación de cada intento; presupuesto por defecto explícito (`--llamadas-por-defecto`, tope 6).
   v1.3: diagnóstico estructurado (DIAGNOSTICO/CAMBIA/EFECTO; la línea del coordinador es solo una sugerencia) y
   controles de coherencia entre lo declarado y el código, antes del sandbox; la verificación sigue siendo lo único que acepta.
+  v1.3.2: el juez compara también con una base sintética independiente (otros totales, reparto, valores, tiempos y
+  bordes), que existe solo durante el juicio y a la que el coordinador no tiene acceso.
 
 ## Proyectos que evolucionan (v0.4.0)
 

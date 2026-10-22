@@ -45,7 +45,7 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.3.1"                   # v1.3.1: respuestas ambiguas (varias propuestas incompatibles)
+VERSION = "ciclo v1.3.2"                   # v1.3.2: el juez evalúa también con datos independientes
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
 TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
@@ -788,7 +788,8 @@ def _referencia_solo(defecto: dict) -> set[str]:
             - {x.strip() for x in defecto["codigo"].splitlines() if x.strip()})
 
 
-def auditar(prompt_partes, defecto: dict) -> list[str]:
+def auditar(prompt_partes, defecto: dict, reservado: dict | None = None) -> list[str]:
+    """reservado: lo que solo sabe el juez (nombre y totales de su base independiente)."""
     fugas = []
     # «propuesta_previa» es texto que escribió el propio modelo en un intento anterior: no es una fuga del juez.
     texto = "\n".join(t for o, t in prompt_partes if o != "propuesta_previa")
@@ -801,35 +802,110 @@ def auditar(prompt_partes, defecto: dict) -> list[str]:
     for k, v in B.PARAMS_RESERVA.items():
         if f"'{k}': {v}" in texto or f'"{k}": {v}' in texto:
             fugas.append(f"parámetro de reserva {k}={v}")
+    for nombre, valor in (reservado or {}).items():
+        if re.search(rf"(?<![\w.]){re.escape(str(valor))}(?![\w.])", texto):
+            fugas.append(f"dato reservado del juez: {nombre}")
     return fugas
 
 
+# Datos independientes del juez (v1.3.2) ---------------------------------------------------------------------------
+# Una segunda base privada, reproducible, que existe SOLO durante el juicio: el coordinador y Qwen nunca la ven (se
+# crea cuando la investigación terminó, con otro usuario de solo lectura, y se borra al juzgar). No alcanza con otra
+# semilla: cambian explícitamente el total de lecturas, el reparto válidas/inválidas, los valores y su distribución,
+# la distribución temporal y los casos de borde.
+
+DATOS_JUEZ = {"semilla": 20261023, "dias": 19, "por_dia": 437}       # el coordinador: semilla 7, 30 días × 500
+
+
+def variar_datos_juez(servidor, info: dict, semilla: int) -> dict:
+    """Variaciones explícitas sobre la base generada (como root en el servidor PRIVADO)."""
+    import datetime as dt
+    from .. import sintetica as SI
+    rng = random.Random(semilla)
+    lid, filas = int(info["ultimo_id"]), []
+
+    def agregar(m, v):
+        nonlocal lid
+        lid += 1
+        filas.append((lid, 1 + lid % SI.ESTACIONES, m, v, m + dt.timedelta(minutes=2)))
+    for d in range(2, info["dias"], max(1, info["dias"] // 3)):            # ráfagas: muchas lecturas en una hora
+        for _ in range(150):
+            agregar(SI.BASE + dt.timedelta(days=d, hours=10, seconds=rng.randrange(3600)), round(rng.uniform(30, 70), 3))
+    for k, v in enumerate((0.5, 900.0, 0.501, 899.999, 0.499, 900.001)):  # bordes, en bordes de ventana
+        for minuto in (0, 14, 15, 29, 30, 59):
+            agregar(SI.BASE + dt.timedelta(days=1 + k, hours=3 + k, minutes=minuto), v)
+    valores = ",".join(f"({i},{e},'{m:%Y-%m-%d %H:%M:%S}',{v:.3f},'{r:%Y-%m-%d %H:%M:%S}')" for i, e, m, v, r in filas)
+    servidor.sql(
+        "UPDATE lecturas SET valor = ROUND(valor * 1.37 + 2.5, 3) WHERE valor > 0.5 AND valor < 600;\n"  # valores
+        "UPDATE lecturas SET valor = -3.25 WHERE MOD(id, 23) = 0;\n"                     # más inválidas (bajas)
+        "UPDATE lecturas SET valor = 1234.5 WHERE MOD(id, 41) = 0;\n"                    # más inválidas (altas)
+        "UPDATE lecturas SET momento = momento + INTERVAL 7 MINUTE WHERE MOD(id, 3) = 0;\n"   # tiempo
+        f"INSERT INTO lecturas (id, estacion_id, momento, valor, recibido) VALUES {valores};\n"
+        "ANALYZE TABLE lecturas;", database=info["base"])
+    info["ultimo_id"] = lid
+    r = servidor.sql("SELECT COUNT(*), SUM(valor > 0.5 AND valor < 900), SUM(NOT (valor > 0.5 AND valor < 900)), "
+                     "SUM(valor IN (0.5, 900)) FROM lecturas;", database=info["base"])
+    total, validas, invalidas, bordes = (int(float(x)) for x in r.stdout.split())
+    return {"lecturas": total, "validas": validas, "invalidas": invalidas, "valores_de_borde_exactos": bordes,
+            "agregadas": len(filas)}
+
+
+def crear_datos_juez(ent, datos: dict = DATOS_JUEZ):
+    """La base independiente del juez, en el MISMO servidor privado, con otro nombre y otro usuario."""
+    from .. import sintetica as SI
+    from .entorno import Entorno
+    info = SI.generar(ent.servidor, f"{ent.info['base']}_juez", semilla=datos["semilla"], dias=datos["dias"],
+                      por_dia=datos["por_dia"], usuario="lab_juez")
+    resumen = variar_datos_juez(ent.servidor, info, datos["semilla"])
+    return Entorno(ent.cfg, ent.executor, ent.servidor, ent.dir / "juez_independiente", info=info), resumen
+
+
 class Juez:
-    def __init__(self, ent):
-        self.ent = ent
-        self.alm = ent.almacen(f"ciclo_juez_{int(time.time() * 1000)}")
-        rid = self.alm.save("referencia", B.REFERENCIA, B.MANIFIESTO, author="banco")["id"]
-        self.ref = {k: V._run(ent, self.alm, rid, p).get("output") for k, p in self._juegos()}
+    """Compara con la referencia en los parámetros visibles y de reserva, sobre los datos compartidos con el
+    coordinador Y sobre los datos independientes (si los hay). Correcta = igual en todos."""
+
+    def __init__(self, ent, ent_independiente=None):
+        self.bases = {"compartidos": ent}
+        if ent_independiente is not None:
+            self.bases["independientes"] = ent_independiente
+        self.alm = {k: e.almacen(f"ciclo_juez_{k}_{int(time.time() * 1000)}") for k, e in self.bases.items()}
+        self.ref = {}
+        for k, e in self.bases.items():
+            rid = self.alm[k].save("referencia", B.REFERENCIA, B.MANIFIESTO, author="banco")["id"]
+            self.ref[k] = {n: V._run(e, self.alm[k], rid, p).get("output") for n, p in self._juegos()}
         self.n = 0
 
     @staticmethod
     def _juegos():
         return (("visible", B.PARAMS_VISIBLES), ("reserva", B.PARAMS_RESERVA))
 
-    def correcto(self, codigo: str) -> bool:
+    def evaluar(self, codigo: str) -> dict:
+        """{"compartidos": bool, "independientes": bool} (sin la segunda clave si no hay datos independientes)."""
         self.n += 1
-        try:
-            iid = self.alm.save(f"j_{self.n}", codigo, B.MANIFIESTO, author="juez")["id"]
-        except Exception:            # noqa: BLE001
-            return False
-        return all(B.comparar(V._run(self.ent, self.alm, iid, p).get("output"), self.ref[k])["igual"]
-                   for k, p in self._juegos())
+        out = {}
+        for k, e in self.bases.items():
+            try:
+                iid = self.alm[k].save(f"j_{self.n}", codigo, B.MANIFIESTO, author="juez")["id"]
+            except Exception:            # noqa: BLE001
+                out[k] = False
+                continue
+            out[k] = all(B.comparar(V._run(e, self.alm[k], iid, p).get("output"), self.ref[k][n])["igual"]
+                         for n, p in self._juegos())
+        return out
+
+    def correcto(self, codigo: str) -> bool:
+        return all(self.evaluar(codigo).values())
+
+    def liberar(self):
+        for k, e in self.bases.items():
+            e.liberar(self.alm[k])
 
 
 def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
     obj = DF.objetivo(defecto)
+    eq = juez.evaluar(defecto["codigo"])
     out = {"id": defecto["id"], "clase": defecto["clase"], "objetivo": sorted(obj),
-           "equivalente": juez.correcto(defecto["codigo"]), "estado": (res or obs)["estado"]}
+           "equivalente": all(eq.values()), "equivalente_por_datos": eq, "estado": (res or obs)["estado"]}
     if obs.get("estado") != "investigable":
         return out
     regla = obs["reglas_v1"]["respuesta"]
@@ -848,9 +924,11 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
              "diagnostico_en_objetivo": (it.get("diagnostico") or {}).get("linea") in obj,
              "rechazo": it.get("rechazo"), "ambiguedad": it.get("ambiguedad") or [],
              "efecto_previo_compatible": (it.get("efecto_previo") or {}).get("compatible"),
-             "fugas": auditar(it["partes"], defecto)}
+             "fugas": auditar(it["partes"], defecto, getattr(juez, "reservado", None))}
         if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
-            j["correcta_segun_juez"] = juez.correcto(it["codigo_propuesto"])
+            por = juez.evaluar(it["codigo_propuesto"])
+            j["correcta_por_datos"] = por
+            j["correcta_segun_juez"] = all(por.values())
         intentos.append(j)
     out["intentos"] = intentos
     if res and res.get("motivo"):
@@ -861,6 +939,11 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
                                  f"{res['pendientes']}); no se juzga ni cuenta como abstención"})
         return out
     acept = next((j for j in intentos if j["aceptada"]), None)
+    if acept is not None:
+        out["aceptada_por_el_coordinador"] = True
+        por = acept.get("correcta_por_datos") or {}
+        out["falsa_solo_con_datos_independientes"] = (por.get("compartidos") is True
+                                                     and por.get("independientes") is False)
     out["resultado"] = ("confirmación verdadera" if acept and acept.get("correcta_segun_juez") else
                         "CONFIRMACIÓN FALSA" if acept else
                         "abstención con una reparación correcta rechazada" if any(j.get("correcta_segun_juez")
@@ -881,7 +964,7 @@ def _agregar(path: Path, obj: dict) -> None:
 
 
 def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, limite_llamadas: int | None = None,
-           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, log=print) -> dict:
+           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, datos_juez: dict = DATOS_JUEZ, log=print) -> dict:
     """defectos: los de defectos.cargar (con etiquetas). A la investigación solo pasan id y código.
     crear_modelo None: sin modelo (observación, reglas y juez; sirve como E0 v1 de punta a punta)."""
     if E0.huella_reglas() != HUELLA_REGLAS:
@@ -958,17 +1041,22 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
     except Detener as ex:
         estado["corrida"] = f"detenido_por_entorno: {ex}"
     (salida / "observaciones.json").write_text(json.dumps(observaciones, ensure_ascii=False, indent=1, default=str))
-    # El juez entra recién ahora, con la investigación terminada.
-    juez = Juez(ent)
+    # El juez entra recién ahora, con la investigación terminada. Sus datos independientes se crean recién ahora.
+    ent_juez, datos = crear_datos_juez(ent, datos_juez)
+    juez = Juez(ent, ent_juez)
+    juez.reservado = {"base del juez": ent_juez.info["base"], "lecturas del juez": datos["lecturas"],
+                      "válidas del juez": datos["validas"], "inválidas del juez": datos["invalidas"]}
     for v in resultados.values():                                      # los intentos con sus prompts (para auditar)
         for it in v["intentos"]:
             it.setdefault("partes", (hechas.get(it["clave"]) or {}).get("partes", []))
     juicio = [juzgar(juez, d, observaciones[d["id"]], resultados.get(d["id"])) for d in defectos
               if d["id"] in observaciones]
-    ent.liberar(juez.alm)
+    juez.liberar()
+    ent_juez.cerrar()                                       # borra la base independiente
     ent.liberar(co.alm)
     res = {"version": VERSION, "huella_reglas": E0.huella_reglas(), "python_sandbox": E0.version_python(cfg),
            "bordes": bordes, "params_coordinador": PARAMS_COORDINADOR, "corrida": estado["corrida"],
+           "datos_independientes_del_juez": {**datos_juez, **datos},
            "llamadas_por_defecto": llamadas_por_defecto, "llamadas_nuevas": estado["nuevas"],
            "llamadas_totales": len(hechas),
            "interrupciones": estado["interrupciones"], "juicio": juicio, "resumen": resumir(juicio)}
@@ -985,7 +1073,11 @@ def resumir(juicio: list[dict]) -> dict:
             "causa_fuera_de_las_candidatas": [j["id"] for j in inv if not j["causa_entre_candidatas"]],
             "reglas_v1_punta_a_punta": dict(Counter(j["reglas_v1_punta_a_punta"] for j in inv)),
             "resultados": dict(Counter(j["resultado"] for j in juicio if j.get("resultado"))),
+            "aceptadas_por_el_coordinador": [j["id"] for j in juicio if j.get("aceptada_por_el_coordinador")],
+            "confirmaciones_verdaderas": [j["id"] for j in juicio if j.get("resultado") == "confirmación verdadera"],
             "confirmaciones_falsas": [j["id"] for j in juicio if j.get("resultado") == "CONFIRMACIÓN FALSA"],
+            "falsas_que_solo_ven_los_datos_independientes": [j["id"] for j in juicio
+                                                              if j.get("falsa_solo_con_datos_independientes")],
             "incompletos": [j["id"] for j in juicio if "pendientes" in j],
             "rechazos": dict(Counter(x["rechazo"] for j in juicio for x in j.get("intentos", []) if x.get("rechazo"))),
             "efecto_declarado_contra_vf": dict(Counter(
@@ -1004,7 +1096,11 @@ def markdown(res: dict) -> str:
            f"Reglas E0 `{res['huella_reglas']}` · Python del sandbox {res['python_sandbox']} · corrida: "
            f"**{res['corrida']}** · llamadas nuevas {res['llamadas_nuevas']} (total {res['llamadas_totales']}) · "
            f"datos de borde: {res['bordes']}", "",
-           f"- **Confirmaciones falsas: {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']}",
+           f"- Aceptadas por el coordinador: {r['aceptadas_por_el_coordinador']} · confirmaciones verdaderas (juez): "
+           f"{r['confirmaciones_verdaderas']}",
+           f"- **Confirmaciones falsas (juez): {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']} · de "
+           f"ellas, solo visibles con los datos independientes: {r['falsas_que_solo_ven_los_datos_independientes']}",
+           f"- Datos independientes del juez (creados y borrados en el juicio): {res['datos_independientes_del_juez']}",
            f"- Resultados: {r['resultados']}",
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
            f"- Rechazos por categoría: {r['rechazos']} · diagnósticos distintos de la sugerencia: "
@@ -1022,8 +1118,8 @@ def markdown(res: dict) -> str:
             linea += f" · {j['motivo']}"
         for it in j.get("intentos", []):
             linea += (f"\n  - {it['clave']}: {it['etapas']}"
-                      + (f" · juez: {'correcta' if it['correcta_segun_juez'] else 'incorrecta'}"
-                         if "correcta_segun_juez" in it else "")
+                      + (f" · juez: {'correcta' if it['correcta_segun_juez'] else 'incorrecta'} "
+                         f"{it['correcta_por_datos']}" if "correcta_segun_juez" in it else "")
                       + (f" · FUGAS {it['fugas']}" if it["fugas"] else ""))
         for ln in j.get("pendientes", []):
             linea += f"\n  - hipótesis L{ln}: pendiente (no se pidió: límite de llamadas)"
