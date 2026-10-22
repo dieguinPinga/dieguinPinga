@@ -899,6 +899,9 @@ def cmd_lab_cycle(args) -> int:
         print("Elija UNA: --sin-modelo (observación, reglas y juez; 0 llamadas), --limite-llamadas N o --completo.",
               file=sys.stderr)
         return 2
+    if not 1 <= args.llamadas_por_defecto <= CI.TOPE_LLAMADAS:
+        print(f"--llamadas-por-defecto debe estar entre 1 y {CI.TOPE_LLAMADAS}.", file=sys.stderr)
+        return 2
     salida = Path(args.reanudar) if args.reanudar else None
     plan = json.loads((salida / "plan.json").read_text()) if salida and (salida / "plan.json").exists() else {}
     carpeta = args.defectos or plan.get("defectos")
@@ -920,7 +923,12 @@ def cmd_lab_cycle(args) -> int:
     cfg, ex = _piloto_preparar(args, necesita_modelo=not args.sin_modelo, exigir_servicio_detenido=not args.sin_modelo)
     salida = salida or cfg.data_dir / "laboratorio" / ("ciclo-" + time.strftime("%Y%m%d-%H%M%S"))
     salida.mkdir(parents=True, exist_ok=True, mode=0o700)
-    (salida / "plan.json").write_text(json.dumps({"defectos": str(Path(carpeta).resolve()), "ids": ids}))
+    if plan.get("llamadas_por_defecto", args.llamadas_por_defecto) != args.llamadas_por_defecto:
+        print(f"La corrida a reanudar usa {plan['llamadas_por_defecto']} llamadas por defecto: no se cambia a mitad.",
+              file=sys.stderr)
+        return 2
+    (salida / "plan.json").write_text(json.dumps({"defectos": str(Path(carpeta).resolve()), "ids": ids,
+                                                  "llamadas_por_defecto": args.llamadas_por_defecto}))
     crear_modelo = guardia = None
     if not args.sin_modelo:
         ollama = OllamaClient(cfg.ollama_url)
@@ -938,7 +946,7 @@ def cmd_lab_cycle(args) -> int:
         def crear_modelo():
             return Modelo(ollama, base, args.modelo, num_ctx=args.num_ctx, temperatura=0.2, timeout_s=900,
                           num_predict_codigo=2048, num_predict_json=768, keep_alive=args.keep_alive)
-    print(f"Ciclo v1: {len(defectos)} defectos {ids}; hasta {CI.MAX_HIPOTESIS} llamadas por defecto; "
+    print(f"{CI.VERSION}: {len(defectos)} defectos {ids}; hasta {args.llamadas_por_defecto} llamadas por defecto; "
           + ("SIN modelo." if args.sin_modelo else f"límite {args.limite_llamadas or 'ninguno'} llamadas nuevas; "
              f"num_ctx={args.num_ctx}, keep_alive={args.keep_alive}, memoria mínima {args.memoria_minima_mb} MiB."),
           flush=True)
@@ -946,7 +954,8 @@ def cmd_lab_cycle(args) -> int:
     try:
         ent = Entorno(cfg, ex, servidor, salida / "entorno")
         res = CI.correr(cfg, ent, defectos=defectos, salida=salida, crear_modelo=crear_modelo,
-                        limite_llamadas=args.limite_llamadas, guardia=guardia,
+                        limite_llamadas=args.limite_llamadas, llamadas_por_defecto=args.llamadas_por_defecto,
+                        guardia=guardia,
                         log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
         ent.cerrar()
     finally:
@@ -1182,14 +1191,16 @@ def main(argv=None) -> int:
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_choice_e0)
     a = sub.add_parser("laboratorio-ciclo",
-                       help="Ciclo v1: hipótesis → reparación (Qwen) → verificación (coordinador) → juez separado")
+                       help="Ciclo v1.2: hipótesis → reparación (Qwen) → verificación (coordinador) con retroalimentación → juez separado")
     a.add_argument("--defectos", help="carpeta con manifiesto.json (p. ej. el banco de desarrollo)")
     a.add_argument("--ids", help="solo estos defectos, separados por comas (prueba pequeña)")
     a.add_argument("--reanudar", help="carpeta de un ciclo empezado")
     a.add_argument("--sin-modelo", dest="sin_modelo", action="store_true",
                    help="observación, reglas v1 de punta a punta y juez; 0 llamadas")
     a.add_argument("--limite-llamadas", dest="limite_llamadas", type=int, help="como máximo N llamadas NUEVAS")
-    a.add_argument("--completo", action="store_true", help="todas las llamadas que falten (hasta 3 por defecto)")
+    a.add_argument("--completo", action="store_true", help="todas las llamadas que falten")
+    a.add_argument("--llamadas-por-defecto", dest="llamadas_por_defecto", type=int, default=3,
+                   help="presupuesto de llamadas de cada investigación (1 a 6)")
     a.add_argument("--modelo", default="qwen3:4b-instruct")
     a.add_argument("--num-ctx", dest="num_ctx", type=int, default=4096)
     a.add_argument("--keep-alive", dest="keep_alive", default="0s")

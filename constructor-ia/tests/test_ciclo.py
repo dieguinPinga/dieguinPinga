@@ -103,7 +103,8 @@ class UnitTests(unittest.TestCase):
 
     def test_prompt_shows_hypothesis_not_judge_information(self):
         x04 = banco("X04")[0]
-        obs = {"juegos": [{"params": p, "salida": {"resultado": {}}, "fallas": [{"id": "VF"}],
+        obs = {"candidatas": [21, 19, 20],
+               "juegos": [{"params": p, "salida": {"resultado": {}}, "fallas": [{"id": "VF"}],
                            "texto": "- VF: algo (campos: suma)"} for p in C.PARAMS_COORDINADOR]}
         ps = C.partes({"id": "X04", "codigo": x04["codigo"]}, obs, 20)
         texto = "\n".join(t for _, t in ps)
@@ -191,6 +192,74 @@ class NumberedFragmentTests(unittest.TestCase):
         self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
                          "la corrida original no se toca")
         self.assertFalse((d / "version.json").exists())
+        e = Path(tempfile.mkdtemp())
+        (e / "version.json").write_text('{"version": "ciclo v1.1"}')
+        with self.assertRaisesRegex(RuntimeError, "ciclo v1.1»"):
+            C.correr(None, None, defectos=[], salida=e)
+
+    def test_cli_rejects_an_unbounded_budget_before_doing_anything(self):
+        from constructor_ia import cli
+        ns = types.SimpleNamespace(sin_modelo=False, limite_llamadas=3, completo=False, llamadas_por_defecto=7,
+                                   reanudar=None, defectos=str(BANCO), ids="X07", yes=True)
+        self.assertEqual(cli.cmd_lab_cycle(ns), 2)
+
+
+class RedirectionAndFeedbackTests(unittest.TestCase):
+    """v1.2: Qwen puede cuestionar la hipótesis; el coordinador valida y decide; cada intento informa al siguiente."""
+
+    def setUp(self):
+        self.x07 = banco("X07")[0]["codigo"]          # candidatas [17, 15, 12]
+        self.aut = [17, 15, 12]
+
+    def test_redirection_is_validated_not_obeyed(self):
+        r = lambda t, usados=None: C.redireccion(t, self.x07, self.aut, 17, usados or {})   # noqa: E731
+        self.assertEqual(r("NO_ES_ESTA\nPROPONGO_LINEA: 12\nMOTIVO: se reinicia el contador")["linea"], 12)
+        casos = {"PROPONGO_LINEA: doce": "no es un número", "PROPONGO_LINEA: 999": "no existe",
+                 "PROPONGO_LINEA: 2": "no es una instrucción editable",
+                 "PROPONGO_LINEA: 19": "no es una de las candidatas autorizadas",
+                 "PROPONGO_LINEA: 17": "es la misma hipótesis"}
+        for texto, motivo in casos.items():
+            with self.subTest(texto):
+                red = r(texto)
+                self.assertFalse(red["valida"])
+                self.assertIn(motivo, red["motivo"])
+        self.assertIn("ya tuvo 2 intentos", r("PROPONGO_LINEA: 12", {12: 2})["motivo"])
+        self.assertIsNone(r("NO_ES_ESTA\nMOTIVO: no sé"))
+
+    def test_decision_rule_uses_the_result_of_each_attempt(self):
+        cola, ini = [17, 15, 12], {"S2_cobertura", "VF"}
+        base = {"hipotesis": 17, "rechazo": None}
+        red = {**base, "redireccion": {"valida": True, "linea": 12}}
+        self.assertEqual(C.decidir(red, cola, {17: 1}, ini)[0], 12)
+        rev = {**base, "rechazo": "revision"}
+        self.assertEqual(C.decidir(rev, cola, {17: 1}, ini), (17, "reintento: la hipótesis no llegó a probarse "
+                                                                "(la revisión estática del sandbox lo rechazó)"))
+        self.assertEqual(C.decidir(rev, cola, {17: 2}, ini)[0], 15, "una hipótesis no se reintenta sin fin")
+        menos = {**base, "rechazo": "comportamiento", "verificacion": {"juegos": [{"fallas": ["VF"]}]}}
+        self.assertEqual(C.decidir(menos, cola, {17: 1}, ini)[0], 17, "redujo las fallas: vale reintentar")
+        igual = {**base, "rechazo": "comportamiento", "verificacion": {"juegos": [{"fallas": ["S2_cobertura", "VF"]}]}}
+        self.assertEqual(C.decidir(igual, cola, {17: 1}, ini)[0], 15)
+        self.assertEqual(C.decidir(igual, cola, {17: 1, 15: 1, 12: 1}, ini), (None, "no quedan hipótesis por probar"))
+
+    def test_feedback_says_what_was_tried_proposed_and_why_it_failed(self):
+        ref = 'cobertura["leidas"] += 1'
+        intento = {"hipotesis": 12, "propuesta": {"tipo": "reemplazar", "fragmento_crudo": ref},
+                   "rechazo": "comportamiento", "rechazo_detalle": "con los parámetros {'ancho_min': 20, 'top': 4}: "
+                   "S2_cobertura: aritmética"}
+        obs = {"candidatas": self.aut, "juegos": []}
+        ps = C.partes({"id": "X07", "codigo": self.x07}, obs, 15, [intento], [17])
+        texto = "\n".join(t for _, t in ps)
+        self.assertIn('Intento 1: hipótesis línea 12: `cobertura["leidas"] = 1`', texto)
+        self.assertIn("rechazada: se ejecutó y no pasó las verificaciones: con los parámetros", texto)
+        self.assertIn("Hipótesis pendientes (sin probar): línea 17.", texto)
+        self.assertIn("PROPONGO_LINEA: <número>, usando SOLO una de estas líneas candidatas: 17, 15, 12", texto)
+        self.assertIn(("propuesta_previa", f"  Propusiste:\n```python\n{ref}\n```\n"), ps)
+        self.assertEqual(C.auditar(ps, banco("X07")[0]), [],
+                         "la línea de la referencia vino de Qwen, no del juez: no es una fuga")
+        corto = "\n".join(t for _, t in C.partes({"id": "X07", "codigo": self.x07}, obs, 15, [intento], [17],
+                                                  compacto=True))
+        self.assertNotIn(ref, corto)
+        self.assertIn("Propusiste un reemplazo", corto)
 
 
 @unittest.skipUnless(bwrap_works() and mariadb_fixture.available(), "bubblewrap o MariaDB no disponibles")
@@ -275,6 +344,89 @@ class CycleTests(unittest.TestCase):
         self.assertIn("limpieza: se quitó la numeración 19–19 → fragmento válido → ensamblado ok → ACEPTADA",
                       j["intentos"][0]["etapas"])
         self.assertEqual(j["resultado"], "confirmación verdadera")
+
+    def test_x07_redirect_feedback_and_repair(self):
+        """El caso real: Qwen sabía que era la línea 12. Ahora lo dice, el coordinador lo valida, la primera
+        reparación falla en la revisión y la segunda, con esa retroalimentación, se confirma."""
+        def responder(prompt, linea):
+            if linea == 17:
+                return "NO_ES_ESTA\nPROPONGO_LINEA: 12\nMOTIVO: se reinicia el contador de lecturas"
+            if linea == 12 and "acceso a atributo interno" not in prompt:
+                return bloque('cobertura["leidas"] = r.filas.__len__()')
+            if linea == 12:
+                return bloque('cobertura["leidas"] += 1')
+            return "NO_ES_ESTA"
+        m = Modelo(responder)
+        res = self.correr("x07_v12", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertEqual([hipotesis_del_prompt(x["prompt"]) for x in m.llamadas], [17, 12, 12])
+        self.assertEqual(j["resultado"], "confirmación verdadera")
+        self.assertIn("propuso la línea 12: tomada", j["intentos"][0]["etapas"])
+        self.assertIn("siguiente: línea 12 (redirección de Qwen validada por el coordinador)", j["intentos"][0]["etapas"])
+        self.assertIn("revisión estática", j["intentos"][1]["etapas"])
+        self.assertIn("siguiente: línea 12 (reintento: la hipótesis no llegó a probarse", j["intentos"][1]["etapas"])
+        p2, p3 = m.llamadas[1]["prompt"], m.llamadas[2]["prompt"]
+        self.assertIn("propusiste la línea 12: el coordinador la tomó como próxima hipótesis", p2)
+        self.assertIn('cobertura["leidas"] = r.filas.__len__()', p3, "ve lo que propuso")
+        self.assertIn("la revisión estática del sandbox lo rechazó", p3, "y por qué falló")
+        self.assertIn("Hipótesis pendientes (sin probar): línea 15.", p3)
+        self.assertEqual(res["resumen"]["redirecciones"], {"tomada": 1})
+        self.assertEqual(res["resumen"]["fugas"], 0)
+
+    def test_invalid_redirects_fall_back_to_the_coordinators_queue(self):
+        def responder(prompt, linea):
+            return {17: "NO_ES_ESTA\nPROPONGO_LINEA: 19", 15: "NO_ES_ESTA\nPROPONGO_LINEA: 15"}.get(linea, "NO_ES_ESTA")
+        m = Modelo(responder)
+        res = self.correr("redir_invalida", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertEqual([hipotesis_del_prompt(x["prompt"]) for x in m.llamadas], [17, 15, 12],
+                         "una línea no autorizada o repetida no se prueba")
+        self.assertIn("NO tomada (no es una de las candidatas autorizadas", j["intentos"][0]["etapas"])
+        self.assertIn("NO tomada (es la misma hipótesis", j["intentos"][1]["etapas"])
+        self.assertEqual(res["resumen"]["redirecciones"], {"no tomada": 2})
+        self.assertEqual(j["resultado"], "abstención")
+
+    def test_per_defect_budget_is_explicit_and_bounded(self):
+        m = Modelo(lambda p, ln: "NO_ES_ESTA")
+        res = self.correr("presupuesto", banco("X07"), m, llamadas_por_defecto=2)
+        (j,) = res["juicio"]
+        self.assertEqual(len(m.llamadas), 2)
+        self.assertEqual(j["motivo"], "se agotó el presupuesto del defecto (2 llamadas)")
+        self.assertEqual(j["resultado"], "abstención", "agotar SU presupuesto termina la investigación")
+        m = Modelo(lambda p, ln: "NO_ES_ESTA\nPROPONGO_LINEA: 12" if ln != 12 else bloque("x = (1"))
+        res = self.correr("tope", banco("X07"), m, llamadas_por_defecto=99)
+        self.assertLessEqual(len(m.llamadas), C.TOPE_LLAMADAS)
+        self.assertLessEqual(sum(1 for x in m.llamadas if hipotesis_del_prompt(x["prompt"]) == 12), C.MAX_POR_LINEA)
+
+    def test_prompt_that_does_not_fit_is_not_sent(self):
+        m = Modelo(lambda p, ln: "NO_ES_ESTA")
+        m.base.num_ctx = 900
+        res = self.correr("contexto", banco("X07"), m)
+        self.assertEqual(len(m.llamadas), 0)
+        self.assertIn("no entra en el contexto", res["juicio"][0]["motivo"])
+
+    def test_x04_compensations_in_wrong_lines_are_not_accepted(self):
+        compensa = {20: "sumas[inicio] = round(sumas.get(inicio, 0.0) + v, 1)",
+                    21: "mejores = sorted(sumas.items(), key=lambda x: -round(x[1], 1))[:top]",
+                    19: "inicio = m - datetime.timedelta(minutes=m.minute % ancho)"}
+        m = Modelo(lambda p, ln: bloque(compensa.get(ln, "x = 1")))
+        res = self.correr("x04_comp", banco("X04"), m)
+        (j,) = res["juicio"]
+        self.assertTrue(all(it["verificacion_realizada"] and not it["aceptada"] for it in j["intentos"]))
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
+        self.assertIn("se ejecutó y no pasó las verificaciones", m.llamadas[1]["prompt"])
+
+    def test_known_hole_x09_compensation_passes_the_suite_and_only_the_judge_sees_it(self):
+        """Caracterización, no deseo: filtrar el 0,5 en la acumulación (línea 20) pasa S1–S3 y VF en los dos
+        juegos, aunque la causa es la condición de la línea 14. La suite no controla el reparto válidas/inválidas
+        (como en X05). El coordinador la acepta por SU verificación, no porque Qwen lo diga; el juez la marca."""
+        m = Modelo(lambda p, ln: bloque("sumas[inicio] = sumas.get(inicio, 0.0) + (v if v > 0.5 else 0.0)")
+                   if ln == 20 else "NO_ES_ESTA")
+        res = self.correr("x09_hueco", banco("X09"), m)
+        (j,) = res["juicio"]
+        self.assertTrue(j["intentos"][0]["verificacion_realizada"])
+        self.assertEqual(j["resultado"], "CONFIRMACIÓN FALSA")
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], ["X09"])
 
     def test_call_limit_and_resume_without_repeating_calls(self):
         nunca = lambda prompt, linea: "NO_ES_ESTA"                          # noqa: E731

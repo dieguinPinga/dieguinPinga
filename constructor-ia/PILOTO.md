@@ -1359,3 +1359,113 @@ En `tests/test_ciclo.py`:
 bash $E ciclo 90 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X01,X07,X09,X04 \
      --limite-llamadas 12
 ```
+
+## Ciclo v1.2: retroalimentación y revisión de hipótesis (2026-10-22, sin inferencias reales)
+
+### Por qué
+
+En la prueba de X07 con Qwen real (`96eeb81`, 3 llamadas, abstención, 0 confirmaciones falsas):
+- Qwen identificó la causa verdadera **desde la primera respuesta**: `cobertura["leidas"] = 1` debía acumular.
+- El protocolo v1.1 le exigía reemplazar la línea marcada, así que tocó líneas inocentes (la 17 y la 15).
+- Cuando llegó a la 12, propuso `r.filas.__len__()`. La revisión del sandbox rechaza el acceso a atributos internos
+  al ejecutar, así que S1 falló. **Qwen nunca supo por qué fallaban sus intentos.**
+
+### Qué cambió exactamente (`ciclo.py`, versión `ciclo v1.2`)
+
+1. **Qwen puede cuestionar la hipótesis.** Responde `NO_ES_ESTA`, `PROPONGO_LINEA: <n>` y un `MOTIVO`.
+   - El coordinador **valida** la línea propuesta (`redireccion()`) y solo la toma como próxima hipótesis si:
+     - existe;
+     - cae en una instrucción editable;
+     - es una de las **3 candidatas originales** (en v1.2 no se autoriza ninguna otra);
+     - no es la hipótesis actual;
+     - no agotó sus intentos.
+   - **Nunca modifica una línea solo porque Qwen la sugiera.** La línea sugerida es una hipótesis más: se pide la
+     reparación y se verifica como cualquier otra.
+2. **Retroalimentación entre intentos.** Cada pedido trae el historial de la investigación:
+   - qué hipótesis se probó y cuál es su instrucción;
+   - qué propuso Qwen (texto suyo, en partes `propuesta_previa`);
+   - si dijo NO_ES_ESTA y qué hizo el coordinador con su redirección;
+   - **por qué se rechazó**: sintaxis, ensamblado, revisión estática, sin cambio, ilegible o comportamiento, con las
+     verificaciones que fallaron y en qué juego de parámetros;
+   - qué hipótesis quedan pendientes.
+   
+   Si el pedido no entra en el contexto de 4096 tokens, se resume el historial (sin el código propuesto). Si tampoco
+   entra, **no se llama** y la investigación termina por contexto.
+3. **El rechazo de la revisión estática se reconoce.** Ahora se distingue de un fallo de comportamiento, y Qwen
+   recibe el motivo («acceso a atributo interno «__len__»»).
+4. **Una regla fija decide el siguiente paso** (`decidir()`):
+   1. la redirección de Qwen, si el coordinador la validó;
+   2. reintentar la misma hipótesis si no llegó a probarse (sintaxis, ensamblado, revisión, sin cambio o ilegible), o
+      si la reparación se ejecutó y **redujo** las verificaciones que fallan con los parámetros visibles;
+   3. la siguiente hipótesis pendiente de la cola (reglas congeladas + localizador);
+   4. nada: la investigación termina.
+   
+   Cada intento registra **por qué** se eligió su hipótesis y **qué** se decidió después.
+5. **Presupuesto explícito, sin bucles.**
+   - `--llamadas-por-defecto` vale 3 por omisión, con un tope de 6 que la CLI hace cumplir antes de hacer nada.
+   - Cada instrucción admite como máximo **2 intentos**.
+   - Agotar el presupuesto del defecto termina la investigación con una **abstención**, con su motivo.
+   - El límite **global** (`--limite-llamadas`) la deja **incompleta**, sin juez, como en v1.1.
+   - El presupuesto queda en `plan.json` y no se puede cambiar al reanudar.
+6. **Las versiones no se mezclan.** Las carpetas de v1 y v1.1 no se reanudan con v1.2.
+
+**Sin cambios:**
+- las reglas E0 (`ee46552429b3047e`);
+- el juez separado y oculto, y la auditoría de fugas (que ahora excluye solo el texto que escribió el propio Qwen);
+- la verificación en el sandbox con los dos juegos de parámetros y la forma de la salida;
+- el contexto de 4096 tokens, la guardia de memoria y `keep_alive` 0s;
+- los datos de borde;
+- `piloto_etapas.sh`, que detiene y siempre restaura el servicio.
+
+### Un agujero conocido, que v1.2 no cierra
+
+**X09.** Filtrar el 0,5 en la acumulación (línea 20) en vez de corregir la condición (línea 14):
+- **pasa toda la suite del coordinador** en los dos juegos de parámetros;
+- el juez la marca como **CONFIRMACIÓN FALSA**.
+
+Es el mismo agujero que X05: **ninguna verificación del coordinador controla cómo se reparten las lecturas entre
+válidas e inválidas.** Hay una prueba que lo deja caracterizado. El coordinador la acepta por su propia verificación,
+no porque Qwen lo diga.
+
+**Cerrarlo es cambiar la suite**, por ejemplo con un verificador del coordinador que cuente las lecturas válidas según
+la definición de la pregunta (0,5 < valor < 900). Eso sería otra versión (v1.3), separada de la retroalimentación,
+para no mezclar dos cambios.
+
+**Implicación para las pruebas reales:** en X09 y X05, una confirmación de Qwen hoy **puede ser falsa**. El juez la
+detecta, pero el coordinador no.
+
+### Pruebas
+
+`tests/test_ciclo.py`, 30 en total. Las nuevas de v1.2 cubren:
+- **Validación de redirecciones:** un número válido, texto, una línea inexistente, una línea no editable, una no
+  autorizada, la misma hipótesis y una hipótesis agotada.
+- **Regla de decisión:** redirección, reintento tras la revisión, reintento solo si las fallas se redujeron, tope por
+  línea y fin de la cola.
+- **Historial:** qué se probó, qué se propuso, por qué falló y qué queda pendiente. La versión resumida no incluye el
+  código. Una línea de la referencia que propuso el propio Qwen no se cuenta como fuga.
+- **X07 de punta a punta** con el modelo simulado:
+  1. en la 17, Qwen responde NO_ES_ESTA y propone la 12;
+  2. en la 12, propone `__len__`, que la revisión rechaza;
+  3. reintento en la 12 con esa retroalimentación: `+= 1`.
+  
+  Resultado: **confirmación verdadera** en 3 llamadas.
+- **Redirecciones inválidas:** vuelven a la cola del coordinador.
+- **Presupuesto del defecto:** se agota con una abstención con motivo; un presupuesto de 99 queda acotado a 6 llamadas
+  y a 2 intentos por línea.
+- **Contexto:** un pedido que no entra no se envía.
+- **X04:** las compensaciones en líneas equivocadas se verifican y se rechazan, y la retroalimentación lo explica.
+- **X09:** el agujero conocido, caracterizado.
+- **Se conservan** X01 (respuesta real de Qwen, confirmada) y X05 (confirmación falsa conocida), el límite global con
+  reanudación, los cortes de Ollama y el aislamiento.
+- **La restauración del servicio** la cubre `StagesScriptTests` (`ciclo` protegido; `ciclo0` no detiene nada).
+
+### Prueba propuesta en la VivoBook: solo X07, como máximo 3 llamadas, en una carpeta nueva
+
+```bash
+bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X07 \
+     --llamadas-por-defecto 3 --limite-llamadas 3
+```
+
+**Qué mirar en `resumen.md`:**
+- la línea de cada intento: hipótesis, propuesta, etapas, redirección y decisión;
+- en `llamadas.jsonl`, el prompt de cada llamada, para ver el historial que recibió Qwen.

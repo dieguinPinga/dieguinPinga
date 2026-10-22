@@ -45,9 +45,11 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.1"                     # v1.1: interfaz de reparación (código sin numeración, etapas, límite)
+VERSION = "ciclo v1.2"                     # v1.2: retroalimentación entre intentos y revisión de hipótesis
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
-MAX_HIPOTESIS = 3                          # llamadas por defecto, como máximo
+MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
+TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
+MAX_POR_LINEA = 2                          # intentos sobre una misma instrucción (el inicial y un reintento)
 PARAMS_COORDINADOR = (B.PARAMS_VISIBLES, {"ancho_min": 20, "top": 4})
 assert all(p != B.PARAMS_RESERVA for p in PARAMS_COORDINADOR), "el segundo juego del coordinador no es el del juez"
 
@@ -172,9 +174,12 @@ def observar(co: Coordinador, problema: dict) -> dict:
 
 # Pedido de reparación ---------------------------------------------------------------------------------------------
 
-def partes(problema: dict, obs: dict, linea: int) -> list[tuple[str, str]]:
+def partes(problema: dict, obs: dict, linea: int, historia=(), pendientes=(), compacto: bool = False
+           ) -> list[tuple[str, str]]:
+    """historia: intentos anteriores de ESTA investigación (retroalimentación); pendientes: hipótesis sin probar."""
     codigo = problema["codigo"]
     u = P.unidad_en(codigo, linea)
+    autorizadas = ", ".join(str(x) for x in obs["candidatas"])
     evid = []
     for j in obs["juegos"]:
         if j["fallas"]:
@@ -182,9 +187,15 @@ def partes(problema: dict, obs: dict, linea: int) -> list[tuple[str, str]]:
             evid.append(f"Con los parámetros {j['params']}:\n  Salida: {salida}\n  Verificaciones que fallan:\n"
                         + "\n".join("  " + x for x in j["texto"].splitlines()))
     rango = f"{u.lineno}" if u.end_lineno == u.lineno else f"{u.lineno}–{u.end_lineno}"
+    previo = []
+    if historia:
+        previo = historial(codigo, historia, compacto)
+        previo.append(("historial", "Hipótesis pendientes (sin probar): "
+                                    + (", ".join(f"línea {x}" for x in pendientes) or "ninguna") + ".\n"))
     return [("coordinador", f"Un instrumento de medición escrito en Python responde: {B.PREGUNTA}\n"),
             ("evidencia", "\n\n".join(evid) + "\n"),
             ("coordinador", GLOSARIO + "\n"),
+            *previo,
             ("coordinador", "Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son "
                             "parte del código:\n" + P.mostrar(codigo, u, contexto=200, completa=True) + "\n"),
             ("coordinador", f"Instrucción de la hipótesis (línea {rango}), tal como está en el código:\n"
@@ -195,9 +206,48 @@ def partes(problema: dict, obs: dict, linea: int) -> list[tuple[str, str]]:
                             "completa (puede tener más de una línea, por ejemplo para agregar junto a ella una "
                             "instrucción que falta). Escribí solo código Python: SIN números de línea, SIN «>>» y SIN "
                             "«|».\n"
-                            "Si la corrección es borrarla, respondé ELIMINAR. Si creés que la causa NO está en esa "
-                            "instrucción, respondé NO_ES_ESTA.\n"
-                            "Formato:\n```python\n<reemplazo>\n```\nMOTIVO: <una frase>")]
+                            "Si la corrección es borrarla, respondé ELIMINAR.\n"
+                            "Si creés que la causa NO está en esa instrucción, respondé NO_ES_ESTA y, si creés que está "
+                            f"en otra, agregá PROPONGO_LINEA: <número>, usando SOLO una de estas líneas candidatas: "
+                            f"{autorizadas}. El coordinador decide si la prueba.\n"
+                            "Formato (una de las dos):\n```python\n<reemplazo>\n```\nMOTIVO: <una frase>\n"
+                            "o bien\nNO_ES_ESTA\nPROPONGO_LINEA: <número>\nMOTIVO: <una frase>")]
+
+
+CATEGORIAS = {"sintaxis": "el fragmento no compila", "ensamblado": "no se pudo ensamblar en el código",
+              "revision": "la revisión estática del sandbox lo rechazó", "sin_cambio": "no cambia el código",
+              "comportamiento": "se ejecutó y no pasó las verificaciones", "ilegible": "la respuesta no se entendió"}
+
+
+def historial(codigo: str, historia, compacto: bool) -> list[tuple[str, str]]:
+    """Retroalimentación: qué se probó, qué se propuso, qué falló y por qué. Lo que Qwen propuso va en partes
+    «propuesta_previa» (texto del propio modelo, no del coordinador: la auditoría de fugas no lo cuenta)."""
+    out = [("historial", "Intentos anteriores de esta investigación (ninguno se aceptó):\n")]
+    for n, it in enumerate(historia, 1):
+        u = P.unidad_en(codigo, it["hipotesis"])
+        out.append(("historial", f"Intento {n}: hipótesis línea {it['hipotesis']}: `{instruccion(codigo, u)}`\n"))
+        prop = it["propuesta"]
+        if prop["tipo"] in ("reemplazar", "eliminar"):
+            if prop["tipo"] == "eliminar":
+                out.append(("propuesta_previa", "  Propusiste: ELIMINAR esa instrucción.\n"))
+            elif not compacto:
+                out.append(("propuesta_previa", "  Propusiste:\n```python\n"
+                            + (prop.get("fragmento_crudo") or "").strip()[:400] + "\n```\n"))
+            else:
+                out.append(("propuesta_previa", "  Propusiste un reemplazo de esa instrucción.\n"))
+        elif prop["tipo"] == "no_es_esta":
+            red = it.get("redireccion")
+            txt = "  Respondiste NO_ES_ESTA"
+            if red and red.get("pedida") is not None:
+                txt += (f" y propusiste la línea {red['pedida']}: "
+                        + ("el coordinador la tomó como próxima hipótesis." if red["valida"] else
+                           f"el coordinador NO la tomó ({red['motivo']})."))
+            out.append(("historial", txt + "\n"))
+        if it.get("rechazo"):
+            det = it.get("rechazo_detalle") or ""
+            out.append(("historial", f"  Resultado: rechazada: {CATEGORIAS[it['rechazo']]}"
+                                     + (f": {det[:300 if not compacto else 120]}" if det else "") + ".\n"))
+    return out
 
 
 def instruccion(codigo: str, u: P.Unidad) -> str:
@@ -299,14 +349,18 @@ def semilla(defecto_id: str, i: int) -> int:
 
 def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
     if nuevo == codigo:
-        return {"aceptada": False, "motivo": "no cambia el código", "juegos": []}
+        return {"aceptada": False, "motivo": "no cambia el código", "categoria": "sin_cambio", "juegos": []}
     iid = co.guardar(nuevo)
     if iid is None:
-        return {"aceptada": False, "motivo": "la revisión estática lo rechazó", "juegos": []}
+        return {"aceptada": False, "motivo": "la revisión estática lo rechazó", "categoria": "revision", "juegos": []}
     res = []
     for j in obs["juegos"]:
         ev = co.suite(iid, j["params"])
         fallas = [f["id"] for f in V.fallas(ev)] + [f"{x['id']}(inválido)" for x in ev["invalidos"]]
+        detalle = "; ".join(f"{f['id']}: {f['detalle'][:160]}" for f in V.fallas(ev))
+        if ev["run"]["status"] == "rechazado":            # la revisión estática corre al ejecutar
+            return {"aceptada": False, "motivo": f"la revisión estática lo rechazó: {ev['run'].get('error')}",
+                    "categoria": "revision", "detalle": str(ev["run"].get("error") or "")[:300], "juegos": res}
         if ev["salida"] is None:
             forma_ok = False
         elif j["forma"] is not None:
@@ -317,8 +371,12 @@ def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
         if fallas or not forma_ok:
             motivo = (f"con {j['params']} falla {fallas}" if fallas else
                       f"con {j['params']} pasa, pero cambió la forma de la salida")
-            return {"aceptada": False, "motivo": motivo, "juegos": res}
-    return {"aceptada": True, "motivo": "pasa toda la suite y conserva la forma en los dos juegos", "juegos": res}
+            det = (f"con los parámetros {j['params']}: " + (detalle if fallas else
+                   "pasa las verificaciones, pero la salida cambió de forma (claves o cantidad de elementos)"))
+            return {"aceptada": False, "motivo": motivo, "categoria": "comportamiento", "detalle": det[:500],
+                    "juegos": res}
+    return {"aceptada": True, "motivo": "pasa toda la suite y conserva la forma en los dos juegos", "categoria": None,
+            "juegos": res}
 
 
 # Investigación de un defecto --------------------------------------------------------------------------------------
@@ -339,6 +397,12 @@ def etapas(reg: dict) -> str:
     v = reg.get("verificacion") or {}
     out.append(("ACEPTADA" if v.get("aceptada") else f"rechazada: {v.get('motivo')}") if v.get("realizada")
                else f"verificación no realizada: {v.get('motivo') or e['detalle']}")
+    red = reg.get("redireccion")
+    if red:
+        out.append(f"propuso la línea {red['pedida']}: " + ("tomada" if red["valida"] else f"NO tomada ({red['motivo']})"))
+    d = reg.get("decision")
+    if d:
+        out.append(f"siguiente: {('línea ' + str(d['siguiente'])) if d['siguiente'] else 'ninguna'} ({d['porque']})")
     return " → ".join(out)
 
 
@@ -346,34 +410,128 @@ class Detener(Exception):
     """El entorno obliga a parar la corrida (se reanuda después)."""
 
 
-def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, log=print) -> dict:
-    """pedir(clave, partes, semilla) -> texto | None (None: el límite de llamadas impide pedir).
-    hechas: respuestas ya obtenidas (reanudación): se reinterpretan y se vuelven a verificar, sin pedir de nuevo."""
+RE_PROPONGO = re.compile(r"PROPONGO_LINEA\s*:\s*(\S+)")
+
+
+def redireccion(texto: str | None, codigo: str, autorizadas: list[int], actual: int, usados: dict) -> dict | None:
+    """Valida un PROPONGO_LINEA. El coordinador NO modifica cualquier línea que Qwen sugiera: solo la toma como
+    próxima hipótesis si existe, cae en una instrucción editable, esa instrucción es una de las candidatas
+    autorizadas (v1.2: las 3 originales), no es la hipótesis actual y no agotó sus intentos."""
+    m = RE_PROPONGO.search(texto or "")
+    if not m:
+        return None
+    pedida = m.group(1).rstrip(".,;")
+    if not pedida.isdigit():
+        return {"pedida": pedida, "valida": False, "motivo": "no es un número de línea"}
+    n = int(pedida)
+    if not 1 <= n <= len(codigo.splitlines()):
+        return {"pedida": n, "valida": False, "motivo": "esa línea no existe"}
+    u = P.unidad_en(codigo, n)
+    if u is None:
+        return {"pedida": n, "valida": False, "motivo": "no es una instrucción editable"}
+    if u.lineno not in autorizadas:
+        return {"pedida": n, "valida": False, "motivo": f"no es una de las candidatas autorizadas {autorizadas}"}
+    if u.lineno == actual:
+        return {"pedida": n, "valida": False, "motivo": "es la misma hipótesis que se acaba de probar"}
+    if usados.get(u.lineno, 0) >= MAX_POR_LINEA:
+        return {"pedida": n, "valida": False, "motivo": f"esa hipótesis ya tuvo {MAX_POR_LINEA} intentos"}
+    return {"pedida": n, "valida": True, "motivo": "aceptada como próxima hipótesis", "linea": u.lineno}
+
+
+def decidir(reg: dict, cola: list[int], usados: dict, fallas_iniciales: set) -> tuple[int | None, str]:
+    """La regla (fija) que usa el resultado de cada intento para elegir el siguiente:
+    1. una redirección de Qwen VALIDADA por el coordinador;
+    2. reintentar la misma hipótesis si no llegó a probarse (sintaxis, ensamblado, revisión, sin cambio, ilegible),
+       o si la reparación se ejecutó y REDUJO las verificaciones que fallan con los parámetros visibles;
+    3. la siguiente hipótesis pendiente de la cola (reglas congeladas + localizador);
+    4. nada: la investigación termina."""
+    red = reg.get("redireccion")
+    if red and red["valida"]:
+        return red["linea"], "redirección de Qwen validada por el coordinador"
+    L = reg["hipotesis"]
+    if usados.get(L, 0) < MAX_POR_LINEA:
+        if reg.get("rechazo") in ("sintaxis", "ensamblado", "revision", "sin_cambio", "ilegible"):
+            return L, f"reintento: la hipótesis no llegó a probarse ({CATEGORIAS[reg['rechazo']]})"
+        juegos = (reg.get("verificacion") or {}).get("juegos") or []
+        if reg.get("rechazo") == "comportamiento" and juegos:
+            ahora = set(juegos[0]["fallas"])
+            if ahora < fallas_iniciales:
+                return L, f"reintento: la reparación redujo las fallas ({sorted(fallas_iniciales)} → {sorted(ahora)})"
+    for x in cola:
+        if usados.get(x, 0) == 0:
+            return x, "siguiente hipótesis pendiente"
+    return None, "no quedan hipótesis por probar"
+
+
+def _rechazo(reg: dict) -> tuple[str | None, str]:
+    if reg["propuesta"]["tipo"] == "no_es_esta":
+        return None, ""
+    if reg["propuesta"]["tipo"] == "ilegible":
+        return "ilegible", ""
+    if reg["fragmento"]["valido"] is False:
+        return "sintaxis", reg["fragmento"]["error"] or ""
+    if reg["ensamblado"]["realizado"] and not reg["ensamblado"]["ok"]:
+        return "ensamblado", reg["ensamblado"]["detalle"]
+    v = reg.get("verificacion") or {}
+    if v.get("aceptada"):
+        return None, ""
+    return v.get("categoria") or "comportamiento", v.get("detalle") or v.get("motivo") or ""
+
+
+NO_CABE = object()
+
+
+def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, *,
+               llamadas: int = MAX_HIPOTESIS, log=print) -> dict:
+    """Investigación con retroalimentación (v1.2). pedir(clave, partes, semilla) -> texto | None | NO_CABE.
+    None: el límite GLOBAL de llamadas cortó (incompleto). NO_CABE: el prompt no entra en el contexto.
+    hechas: respuestas ya obtenidas (reanudación): el camino se reconstruye igual, sin pedir de nuevo."""
     codigo = problema["codigo"]
-    intentos = []
-    for i, linea in enumerate(obs["hipotesis"]):
-        clave = f"{problema['id']}|h{i}|L{linea}"
-        ps = partes(problema, obs, linea)
+    llamadas = max(1, min(int(llamadas), TOPE_LLAMADAS))
+    cola = list(obs["hipotesis"])
+    usados: dict = {}
+    fallas_iniciales = {f["id"] for f in obs["juegos"][0]["fallas"]}
+    intentos, siguiente, porque = [], (cola[0] if cola else None), "primera hipótesis"
+    for k in range(llamadas):
+        if siguiente is None:
+            return {"id": problema["id"], "estado": "se_abstiene", "motivo": porque, "intentos": intentos}
+        linea = siguiente
+        pendientes = [x for x in cola if usados.get(x, 0) == 0 and x != linea]
+        clave = f"{problema['id']}|c{k}|L{linea}"
+        ps = partes(problema, obs, linea, intentos, pendientes)
         if clave in hechas:
-            resp = hechas[clave]["respuesta"]
+            resp, ps = hechas[clave]["respuesta"], hechas[clave].get("partes") or ps
         else:
-            resp = pedir(clave, ps, semilla(problema["id"], i))
-            if resp is None:                 # el límite de llamadas cortó la investigación: NO es una abstención
+            resp = pedir(clave, ps, semilla(problema["id"], k))
+            if resp is NO_CABE:                        # se resume el historial y se intenta una vez más
+                ps = partes(problema, obs, linea, intentos, pendientes, compacto=True)
+                resp = pedir(clave, ps, semilla(problema["id"], k))
+            if resp is NO_CABE:
+                return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
+                        "motivo": "el pedido no entra en el contexto ni con el historial resumido"}
+            if resp is None:
                 return {"id": problema["id"], "estado": "incompleto", "intentos": intentos,
-                        "pendientes": obs["hipotesis"][i:]}
-        reg = {"clave": clave, "hipotesis": linea, "respuesta": resp, "partes": ps,
-               **preparar(resp, codigo, P.unidad_en(codigo, linea))}
+                        "pendientes": [linea] + pendientes}
+        reg = {"clave": clave, "hipotesis": linea, "por_que_esta_hipotesis": porque, "respuesta": resp,
+               "partes": ps, **preparar(resp, codigo, P.unidad_en(codigo, linea))}
         reg["interpretacion"] = reg["propuesta"]["tipo"]
         if reg["ensamblado"]["ok"]:
             reg["verificacion"] = {"realizada": True, **verificar(co, obs, codigo, reg["codigo_propuesto"])}
         else:
             reg["verificacion"] = {"realizada": False, "aceptada": None, "motivo": reg["ensamblado"]["detalle"]}
+        usados[linea] = usados.get(linea, 0) + 1
+        if reg["propuesta"]["tipo"] == "no_es_esta":
+            reg["redireccion"] = redireccion(resp, codigo, obs["candidatas"], linea, usados)
+        reg["rechazo"], reg["rechazo_detalle"] = _rechazo(reg)
         intentos.append(reg)
-        acept = reg["verificacion"]["aceptada"]
-        log(f"    {clave}: {etapas(reg)}")
-        if acept:
+        if reg["verificacion"].get("aceptada"):
+            log(f"    {clave}: {etapas(reg)}")
             return {"id": problema["id"], "estado": "confirmada", "linea": linea, "intentos": intentos}
-    return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos}
+        siguiente, porque = decidir(reg, cola, usados, fallas_iniciales)
+        reg["decision"] = {"siguiente": siguiente, "porque": porque}
+        log(f"    {clave}: {etapas(reg)}")
+    return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
+            "motivo": f"se agotó el presupuesto del defecto ({llamadas} llamadas)"}
 
 
 # Juez (después, por separado) -------------------------------------------------------------------------------------
@@ -386,7 +544,8 @@ def _referencia_solo(defecto: dict) -> set[str]:
 
 def auditar(prompt_partes, defecto: dict) -> list[str]:
     fugas = []
-    texto = "\n".join(t for _, t in prompt_partes)
+    # «propuesta_previa» es texto que escribió el propio modelo en un intento anterior: no es una fuga del juez.
+    texto = "\n".join(t for o, t in prompt_partes if o != "propuesta_previa")
     lineas = {x.strip() for x in texto.splitlines()}
     for ref in _referencia_solo(defecto):
         if ref in lineas or (len(ref) >= 12 and ref in texto):
@@ -438,11 +597,14 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
         j = {"clave": it["clave"], "hipotesis_en_objetivo": it["hipotesis"] in obj,
              "interpretacion": it["interpretacion"], "etapas": etapas(it),
              "verificacion_realizada": bool((it.get("verificacion") or {}).get("realizada")),
-             "aceptada": (it.get("verificacion") or {}).get("aceptada"), "fugas": auditar(it["partes"], defecto)}
+             "aceptada": (it.get("verificacion") or {}).get("aceptada"), "redireccion": it.get("redireccion"),
+             "fugas": auditar(it["partes"], defecto)}
         if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
             j["correcta_segun_juez"] = juez.correcto(it["codigo_propuesto"])
         intentos.append(j)
     out["intentos"] = intentos
+    if res and res.get("motivo"):
+        out["motivo"] = res["motivo"]
     if incompleto:
         out.update({"pendientes": res["pendientes"],
                     "resultado": f"incompleto: el límite de llamadas cortó la investigación (hipótesis pendientes "
@@ -469,7 +631,7 @@ def _agregar(path: Path, obj: dict) -> None:
 
 
 def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, limite_llamadas: int | None = None,
-           guardia=None, log=print) -> dict:
+           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, log=print) -> dict:
     """defectos: los de defectos.cargar (con etiquetas). A la investigación solo pasan id y código.
     crear_modelo None: sin modelo (observación, reglas y juez; sirve como E0 v1 de punta a punta)."""
     if E0.huella_reglas() != HUELLA_REGLAS:
@@ -502,6 +664,8 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
             estado["corrida"] = "limite"
             return None
         texto = "".join(t for _, t in ps)
+        if not modelo.cabe(texto, True):
+            return NO_CABE
         for reintento in (0, 1):
             try:
                 resp, call = modelo.con_partes(ps).pedir("reparacion", texto, json_out=False, corto=True, seed=sem)
@@ -535,7 +699,7 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
                                                    if obs["estado"] == "investigable" else ""))
             if d["id"] in terminados or obs["estado"] != "investigable" or modelo is None:
                 continue
-            r = investigar(co, problema, obs, pedir, hechas, log=log)
+            r = investigar(co, problema, obs, pedir, hechas, llamadas=llamadas_por_defecto, log=log)
             resultados[d["id"]] = r
             if r["estado"] == "incompleto":
                 break
@@ -555,7 +719,8 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
     ent.liberar(co.alm)
     res = {"version": VERSION, "huella_reglas": E0.huella_reglas(), "python_sandbox": E0.version_python(cfg),
            "bordes": bordes, "params_coordinador": PARAMS_COORDINADOR, "corrida": estado["corrida"],
-           "llamadas_nuevas": estado["nuevas"], "llamadas_totales": len(hechas),
+           "llamadas_por_defecto": llamadas_por_defecto, "llamadas_nuevas": estado["nuevas"],
+           "llamadas_totales": len(hechas),
            "interrupciones": estado["interrupciones"], "juicio": juicio, "resumen": resumir(juicio)}
     (salida / "juez.json").write_text(json.dumps(res, ensure_ascii=False, indent=1, default=str))
     (salida / "resumen.md").write_text(markdown(res))
@@ -572,6 +737,8 @@ def resumir(juicio: list[dict]) -> dict:
             "resultados": dict(Counter(j["resultado"] for j in juicio if j.get("resultado"))),
             "confirmaciones_falsas": [j["id"] for j in juicio if j.get("resultado") == "CONFIRMACIÓN FALSA"],
             "incompletos": [j["id"] for j in juicio if "pendientes" in j],
+            "redirecciones": dict(Counter("tomada" if x["redireccion"]["valida"] else "no tomada"
+                                          for j in juicio for x in j.get("intentos", []) if x.get("redireccion"))),
             "fugas": sum(len(x["fugas"]) for j in juicio for x in j.get("intentos", []))}
 
 
@@ -584,6 +751,7 @@ def markdown(res: dict) -> str:
            f"- **Confirmaciones falsas: {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']}",
            f"- Resultados: {r['resultados']}",
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
+           f"- Redirecciones propuestas por Qwen: {r['redirecciones']}",
            f"- Reglas v1 de punta a punta (sin filtro): {r['reglas_v1_punta_a_punta']}",
            f"- Equivalentes según el juez: {r['equivalentes']} · no detectados: {r['no_detectados']} · causa fuera "
            f"de las candidatas: {r['causa_fuera_de_las_candidatas']} · fugas: {r['fugas']}", "", "## Por defecto", ""]
@@ -591,6 +759,8 @@ def markdown(res: dict) -> str:
         linea = f"- **{j['id']}** ({j['clase']}; objetivo {j['objetivo']}): {j.get('resultado') or j['estado']}"
         if "regla_v1" in j:
             linea += f" · regla v1: {j['reglas_v1_punta_a_punta']}"
+        if j.get("motivo"):
+            linea += f" · {j['motivo']}"
         for it in j.get("intentos", []):
             linea += (f"\n  - {it['clave']}: {it['etapas']}"
                       + (f" · juez: {'correcta' if it['correcta_segun_juez'] else 'incorrecta'}"

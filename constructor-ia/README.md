@@ -65,6 +65,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   Ciclo de investigación v1 (PILOTO.md, «Ciclo v1»): hipótesis de las reglas congeladas → reparación propuesta por
   Qwen → verificación del coordinador en el sandbox con dos juegos de parámetros propios → juez separado;
   `laboratorio-ciclo` (`--sin-modelo`, `--limite-llamadas N` o `--completo`). Métrica principal: confirmaciones falsas.
+  v1.2: Qwen puede cuestionar la hipótesis (PROPONGO_LINEA, validada por el coordinador) y recibe la
+  retroalimentación de cada intento; presupuesto por defecto explícito (`--llamadas-por-defecto`, tope 6).
 
 ## Proyectos que evolucionan (v0.4.0)
 
