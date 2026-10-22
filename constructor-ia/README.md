@@ -56,6 +56,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   (A = 0.6.1, B, B*, C, D), juez aislado con auditoría de fugas, `laboratorio-mutantes` (sin modelo) y
   `laboratorio-piloto` (reanudable, con `--ensayo` técnico excluido del análisis). Se corre SIN instalar la rama, con
   `scripts/piloto.sh` desde un checkout aparte (PILOTO.md, Anexo 2).
+  Protocolo v2 (Enmienda 3, tras el ensayo técnico v1 con Qwen3 4B real): contrato sin ambigüedad, rechazos que
+  enseñan, disputa de verificadores con falsas alarmas medidas por el juez, entorno separado del modelo, guardia de
+  memoria con `keep_alive` por pedido y contexto de 4096 controlado.
 
 ## Proyectos que evolucionan (v0.4.0)
 

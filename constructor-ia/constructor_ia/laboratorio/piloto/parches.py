@@ -63,10 +63,12 @@ def unidad_en(codigo: str, linea: int) -> Unidad | None:
     return min(cands, key=lambda u: u.end_lineno - u.lineno) if cands else None
 
 
-def mostrar(codigo: str, u: Unidad, contexto: int = 2) -> str:
+def mostrar(codigo: str, u: Unidad, contexto: int = 2, completa: bool = False) -> str:
+    """Muestra la región editable marcada con «>>». En el protocolo v2 una compuesta se edita COMPLETA."""
     lines = codigo.splitlines()
-    a, b = max(1, u.lineno - contexto), min(len(lines), u.edit_end + contexto)
-    return "\n".join(f"{'>>' if u.lineno <= i <= u.edit_end else '  '} {i:3d} | {lines[i - 1]}" for i in range(a, b + 1))
+    fin = u.end_lineno if completa else u.edit_end
+    a, b = max(1, u.lineno - contexto), min(len(lines), fin + contexto)
+    return "\n".join(f"{'>>' if u.lineno <= i <= fin else '  '} {i:3d} | {lines[i - 1]}" for i in range(a, b + 1))
 
 
 def limpiar_fragmento(texto: str) -> str:
@@ -85,9 +87,12 @@ class Ensamblado:
     detalle: str
 
 
-def aplicar(codigo: str, u: Unidad, accion: str, fragmento: str = "") -> Ensamblado:
+def aplicar(codigo: str, u: Unidad, accion: str, fragmento: str = "", completa: bool = False) -> Ensamblado:
+    """completa=False (protocolo v1): de una compuesta se reemplaza solo el encabezado. completa=True (v2): se
+    reemplaza la instrucción entera, encabezado y cuerpo, por un fragmento que debe compilar solo."""
     lines = codigo.splitlines()
-    pre, post = lines[:u.lineno - 1], lines[(u.end_lineno if accion == "eliminar" else u.edit_end):]
+    hasta = u.end_lineno if (accion == "eliminar" or completa) else u.edit_end
+    pre, post = lines[:u.lineno - 1], lines[hasta:]
     sangria = " " * u.col
     if accion == "eliminar":
         nuevo = [sangria + "pass"] if u.unica_en_bloque else []
@@ -95,10 +100,11 @@ def aplicar(codigo: str, u: Unidad, accion: str, fragmento: str = "") -> Ensambl
         frag = limpiar_fragmento(fragmento)
         if not frag.strip():
             return Ensamblado(None, "modelo", "el fragmento está vacío")
-        if u.compuesta and not frag.rstrip().endswith(":"):
+        encabezado = u.compuesta and not completa
+        if encabezado and not frag.rstrip().endswith(":"):
             return Ensamblado(None, "modelo", "el encabezado de una instrucción compuesta debe terminar en «:» "
                                               "(para quitar todo el bloque, la acción es «eliminar»)")
-        prueba = frag + ("\n    pass" if u.compuesta else "")
+        prueba = frag + ("\n    pass" if encabezado else "")
         try:
             ast.parse(prueba)
         except SyntaxError as e:

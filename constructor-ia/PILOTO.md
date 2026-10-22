@@ -430,7 +430,7 @@ Si existe `tmux`, conviene abrir una sesión antes (`tmux new -s piloto`): así 
 `tmux`, una caída lo interrumpe, el servicio vuelve solo y el ensayo se puede reanudar.
 
 ```bash
-bash $E ensayo 90
+bash $E ensayo 90                      # protocolo v2 (Enmienda 3); «bash $E ensayo 90 --protocolo v1» reproduce el v1
 ```
 
 - **Lo que hace:**
@@ -475,3 +475,111 @@ se revisa, no se corrige a ciegas.
 
 **Deshacer todo** (ver el Anexo 2): `git -C ~/src/dieguinPinga worktree remove ~/src/cia-piloto` y borrar
 `~/constructor-ia-piloto` después de guardar los resultados que quieran conservar.
+
+---
+
+## Enmienda 3 (2026-10-22): protocolo v2, después del ensayo técnico v1 y antes de la corrida preregistrada
+
+El ensayo técnico v1 (Qwen3 4B real en la VivoBook, excluido del análisis) cumplió su propósito: mostró fallas del
+coordinador, del contrato y del entorno antes de la corrida que cuenta. **Sus resultados se conservan tal como
+corrieron** y quedan identificados como protocolo v1. El código de v1 (`piloto/brazos.py`) no cambió y se puede
+reproducir con `--protocolo v1`. La corrida preregistrada todavía no se hizo y usará el **protocolo v2**
+(`piloto/v2.py`).
+
+### Lo que mostró el ensayo, clasificado
+
+| Evidencia del ensayo v1 | Clase | Verificación hecha |
+|---|---|---|
+| B\*: Qwen respondió «CANDIDATO: 21» dos veces y v1 lo rechazó por formato | **contrato** (índice frente a línea) | La respuesta era interpretable: era la línea de la única candidata. |
+| El mismo parche de B\*, interpretado | **modelo** | Contrafáctico sin inferencia, con el juez real: en las dos lecturas posibles (la compuesta completa o solo el encabezado) la cobertura sigue en 0. Qwen agregó `or …` a una condición **siempre verdadera** en vez de quitarla. |
+| B repitió el parche rechazado | **retroalimentación** (coordinador) | Reproducido: los tres prompts después de los rechazos eran idénticos byte a byte. El motivo del rechazo nunca llegaba al modelo. El brazo A (0.6.1) sí recibe su historial: era una desigualdad entre brazos. |
+| D: corregido según el juez y, aun así, `V1` seguía fallando | **verificación** (falsa alarma probable) | La medición de falsas alarmas del preregistro no estaba implementada: ahora sí. |
+| D: conexión cortada por el OOM de Ollama, registrada como falla del modelo | **entorno** (mal atribuido) | Confirmado: el cliente convertía el corte en «sin respuesta» y el ensamblado se lo atribuía al modelo. |
+| B a D y la detección recibían `{resultado_kb}` sin completar en el prompt de sistema | coordinador (menor) | Corregido en v2 para todos. |
+
+### Qué cambia en v2 (igual para B, B\*, C y D; A conserva el ciclo de 0.6.1)
+
+1. **Contrato:**
+   - las candidatas se nombran con letras (A, B, C);
+   - un número que coincide con la línea de **una** candidata se acepta y queda registrado como interpretación;
+   - si la respuesta es ilegible, se pide una reparación de formato con autoría «contrato»; solo la segunda falla es
+     del modelo;
+   - las instrucciones compuestas se reemplazan **completas**, encabezado y cuerpo, que es lo que Qwen hizo de forma
+     natural.
+2. **Retroalimentación:**
+   - cada prompt incluye los intentos anteriores: el último con su diff y las verificaciones posteriores, y los
+     anteriores en una línea, con su resultado y su motivo;
+   - un parche idéntico a uno ya rechazado no se ejecuta («repetido») y se le avisa al modelo;
+   - todo sale de la suite y de las respuestas del propio modelo, **nunca del juez**: la auditoría de fugas sigue
+     igual.
+3. **Disputa de verificadores:**
+   - si solo fallan verificadores del modelo y las verificaciones del sistema pasan, el modelo decide **una vez por
+     verificador** si el error está en el instrumento o en el verificador;
+   - un verificador impugnado deja de bloquear el episodio;
+   - el juez evalúa esa decisión **después**: la falsa alarma se mide corriendo el verificador sobre la referencia.
+4. **Entorno no es modelo:**
+   - un corte de conexión, un tiempo agotado o un contexto rechazado por Ollama interrumpen el episodio sin contarlo
+     como llamada ni como falla del modelo;
+   - el episodio se reintenta una vez;
+   - dos interrupciones seguidas, o memoria insuficiente, **detienen la corrida**, que después se reanuda;
+   - todo queda en `interrupciones.jsonl`.
+5. **Memoria** (sin tocar la configuración de Ollama, que es un servicio instalado):
+   - `keep_alive: "0s"` **por pedido**: el modelo se descarga después de cada llamada y no convive con el sandbox.
+     El cliente no lo enviaba, así que regía el valor del servidor, 5 minutos por defecto;
+   - **guardia**: antes de cada llamada exige `MemAvailable` ≥ 3.900 MiB si el modelo no está cargado; espera hasta
+     3 minutos y, si no alcanza, aborta limpio;
+   - antes de cada ejecución en el sandbox espera a que el modelo se haya descargado.
+6. **Contexto: 4.096 tokens** (antes 6.144):
+   - antes de cada llamada se estima el prompt (factor 0,8 sobre el estimador del proyecto; el ensayo midió 0,73)
+     con una reserva de salida de 1.700 tokens para código (máximo observado 1.377, más un 23 %) y 768 para
+     respuestas cortas;
+   - si no entra, se recorta el historial; si aun así no entra, **no se llama** y el episodio es inválido por culpa
+     del coordinador.
+
+### Margen de contexto, medido con prompts v2 reales (peor caso: rechazos sucesivos)
+
+- El caso más grande es la reescritura completa de D1 en su tercer intento: ≈ 2.385 tokens estimados de entrada
+  más 1.700 de reserva, unos 4.085 de 4.096. Con el factor real del ensayo (0,73) quedan unos 220 tokens libres.
+- Con dos intentos detallados, los brazos de reescritura completa perdían historial antes que las microtareas.
+  Eso rompía la condición «misma información» de B\* frente a C. Por eso la política quedó en **un intento
+  detallado para todos**.
+- Aun así, en ese peor caso, el tercer intento de D en D1 se queda solo con los resúmenes. El informe marca cada
+  recorte («Historial recortado por contexto»), para que no pase desapercibido en las comparaciones.
+
+### Memoria: lo que sabemos y lo que no
+
+**Medido en desarrollo:**
+- el MariaDB privado ocupa ≈ 100 MiB (bajar su buffer de 64 a 16 MiB casi no cambia nada);
+- el proceso del piloto, ≈ 23 MiB;
+- cada ejecución en el sandbox, hasta 256 MiB (límite del cgroup).
+
+**Informado por Diego:**
+- `llama-server` tenía ≈ 4,1 GiB residentes con 6.144 tokens de contexto y 864 MiB de caché KV (≈ 144 KiB por
+  token);
+- con 4.096 tokens la caché pasa a ≈ 576 MiB (288 MiB menos), así que el modelo quedaría en ≈ 3,8 GiB;
+- había ≈ 4 GiB disponibles sin el modelo.
+
+**El margen es chico: unos 200 MiB.** La guardia evita **lanzar** una llamada sin memoria y `keep_alive` evita la
+convivencia con el sandbox, pero **ninguna de las dos puede impedir un OOM si otro proceso crece durante una
+generación**.
+
+Para afinar el umbral de 3.900 MiB serviría la línea completa del OOM del kernel (`anon-rss` y `file-rss`). Si los
+pesos están mapeados desde el archivo, una parte de esos 4,1 GiB es caché recuperable.
+
+Otras palancas, que son decisión de ustedes y no cambié: otra cuantización, un modelo más chico o swap.
+
+### Pruebas (casos de regresión del ensayo)
+
+`tests/test_piloto_v2.py`, con sandbox y MariaDB reales y modelos simulados:
+
+- la respuesta exacta de Qwen en B\*: v2 la interpreta, la ensambla, el umbral la rechaza (no corrige) y su
+  repetición no se ejecuta; con `--protocolo v1` se reproduce el rechazo original por formato;
+- el prompt cambia después de un rechazo e incluye el intento, el motivo y las verificaciones posteriores;
+- la falsa alarma de D: después de una corrección aceptada solo falla V1; el modelo lo impugna y el episodio
+  termina. El juez confirma la falsa alarma y la decisión correcta; si el modelo defiende al verificador
+  equivocado, queda «en contra»;
+- los cortes de Ollama: se reintentan sin culpar al modelo, dos seguidos detienen la corrida y se reanuda;
+- la guardia de memoria: detiene la corrida sin llamar al modelo;
+- el contexto insuficiente: episodio inválido por culpa del coordinador, sin llamadas;
+- `keep_alive` solo se envía cuando se pide;
+- carpetas de v1 y v2 que no se mezclan al reanudar.

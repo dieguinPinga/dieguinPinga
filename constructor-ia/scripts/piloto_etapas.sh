@@ -4,7 +4,7 @@
 #   huellas antes|despues  — SOLO LECTURA de la instalación: huellas de app y config, servicios en marcha, puertos.
 #                            Escribe únicamente en la carpeta del piloto.
 #   entorno                — comprueba que el piloto usa su propia configuración, datos y MariaDB privado.
-#   ensayo [minutos]       — el ÚNICO paso que detiene algo: detiene constructor-ia, corre el ensayo técnico con
+#   ensayo [minutos] [opciones] — el ÚNICO paso que detiene algo: detiene constructor-ia, corre el ensayo técnico con
 #                            un límite de tiempo y SIEMPRE lo vuelve a arrancar (trampa + temporizador de respaldo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
@@ -89,6 +89,7 @@ PID_ENSAYO=""
 
 cmd_ensayo() {
   local limite="${1:-90}" rc=0
+  shift || true   # el resto se pasa al ensayo (p. ej. --protocolo v1 para reproducir el ensayo original)
   [[ "$limite" =~ ^[0-9]+$ ]] && [ "$limite" -ge 10 ] && [ "$limite" -le 180 ] || die "límite en minutos: 10 a 180"
   mkdir -p "$BASE"
   exec 9>"$BASE/.ensayo.lock"
@@ -140,7 +141,7 @@ cmd_ensayo() {
   else
     echo "[piloto] $SERVICIO no estaba activo: no se detiene ni se arranca nada"
   fi
-  timeout --signal=INT --kill-after=120 "${limite}$UNIDAD" bash "$PILOTO_SH" laboratorio-piloto --yes --ensayo &
+  timeout --signal=INT --kill-after=120 "${limite}$UNIDAD" bash "$PILOTO_SH" laboratorio-piloto --yes --ensayo "$@" &
   PID_ENSAYO=$!
   wait "$PID_ENSAYO" || rc=$?
   PID_ENSAYO=""

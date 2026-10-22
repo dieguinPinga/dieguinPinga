@@ -690,19 +690,28 @@ def cmd_lab_pilot(args) -> int:
     except OllamaError as e:
         print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
         return 1
-    prefijo = "ensayo-" if args.ensayo else "piloto-"
+    v2 = args.protocolo == "v2"
+    prefijo = ("ensayo-" if args.ensayo else "piloto-") + ("v2-" if v2 else "")
     salida = Path(args.reanudar) if args.reanudar else cfg.data_dir / "laboratorio" / (prefijo + time.strftime(
         "%Y%m%d-%H%M%S"))
     try:
-        piloto.preparar_salida(salida, args.ensayo)
+        piloto.preparar_salida(salida, args.ensayo, args.protocolo)
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
     base = cfg.explorer_model
+    # v1: como el ensayo original. v2 (Enmienda 3): contexto 4096, modelo descargado tras cada llamada y guardia.
+    num_ctx = args.num_ctx or (4096 if v2 else 6144)
+    keep_alive = args.keep_alive if args.keep_alive is not None else ("0s" if v2 else None)
+    minimo_mb = args.memoria_minima_mb if args.memoria_minima_mb is not None else (3900 if v2 else 0)
+    from .laboratorio.piloto import v2 as PV2
+    guardia = PV2.Guardia(ollama, minimo_mb=minimo_mb)
+    print(f"Protocolo {args.protocolo}: num_ctx={num_ctx}, keep_alive={keep_alive}, memoria mínima "
+          f"{minimo_mb} MiB por llamada.", flush=True)
 
-    def crear_modelo():  # mismas opciones en todos los brazos (PILOTO.md, presupuestos y Enmienda 2)
-        return Modelo(ollama, base, args.modelo, num_ctx=6144, temperatura=0.2, timeout_s=piloto.TIMEOUT_S,
-                      num_predict_codigo=2048, num_predict_json=768)
+    def crear_modelo():  # mismas opciones en todos los brazos (PILOTO.md, presupuestos y Enmiendas 2 y 3)
+        return Modelo(ollama, base, args.modelo, num_ctx=num_ctx, temperatura=0.2, timeout_s=piloto.TIMEOUT_S,
+                      num_predict_codigo=2048, num_predict_json=768, keep_alive=keep_alive)
 
     if args.ensayo:
         defectos, repeticiones, pres = ("D2",), 1, piloto.Presupuesto(**piloto.PRESUPUESTO_ENSAYO)
@@ -720,13 +729,18 @@ def cmd_lab_pilot(args) -> int:
         mut = None if args.sin_mutantes else mutantes.estudiar(ent, log=lambda m: None)
         res = piloto.correr(cfg, ent=ent, crear_modelo=crear_modelo, defectos=defectos, repeticiones=repeticiones,
                             brazos=tuple(args.brazos.split(",")), salida=salida, presupuesto=pres,
-                            ensayo=args.ensayo, log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+                            ensayo=args.ensayo, protocolo=args.protocolo, guardia=guardia,
+                            log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
         ent.cerrar()
     finally:
         servidor.detener()
     print(PI.escribir(salida, res, mut).read_text())
     print(f"Resultados en {salida} (episodios.jsonl, prompts.jsonl, piloto.json, resumen.md). "
-          f"Para reanudar: laboratorio-piloto --yes{' --ensayo' if args.ensayo else ''} --reanudar {salida}")
+          f"Para reanudar: laboratorio-piloto --yes --protocolo {args.protocolo}{' --ensayo' if args.ensayo else ''} "
+          f"--reanudar {salida}")
+    if res.get("estado") != "completo":
+        print("La corrida se DETUVO por el entorno (ver interrupciones.jsonl); se puede reanudar.", file=sys.stderr)
+        return 3
     return 0
 
 
@@ -919,6 +933,12 @@ def main(argv=None) -> int:
     a.add_argument("--brazos", default="A,B,B*,C,D")
     a.add_argument("--reanudar", help="carpeta de un piloto interrumpido: se saltan los episodios ya hechos")
     a.add_argument("--sin-mutantes", dest="sin_mutantes", action="store_true")
+    a.add_argument("--protocolo", choices=["v1", "v2"], default="v2",
+                   help="v2 (Enmienda 3) por defecto; v1 reproduce el ensayo original")
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, help="contexto (v2: 4096; v1: 6144)")
+    a.add_argument("--keep-alive", dest="keep_alive", help="por pedido a Ollama (v2: 0s = descargar tras cada llamada)")
+    a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int,
+                   help="memoria disponible exigida antes de cada llamada (v2: 3900; 0 desactiva)")
     a.add_argument("--ensayo", action="store_true",
                    help="ensayo técnico pequeño (D2, 1 repetición, 2 llamadas por episodio), EXCLUIDO del análisis")
     a.add_argument("--yes", action="store_true")

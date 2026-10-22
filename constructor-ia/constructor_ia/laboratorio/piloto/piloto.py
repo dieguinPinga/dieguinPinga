@@ -13,26 +13,37 @@ from pathlib import Path
 from ... import VERSION, codeextract
 from . import banco as B
 from . import brazos as BR
+from . import v2 as V2
 from . import verificaciones as V
 
 
 TIMEOUT_S = 900   # Enmienda 2: igual para todos los brazos; 300 s cortaría las reescrituras completas
 MARCA_ENSAYO = "ENSAYO_TECNICO"
+MARCA_PROTOCOLO = "PROTOCOLO"
+PROTOCOLOS = ("v1", "v2")
+MAX_INTERRUPCIONES_SEGUIDAS = 2
 PRESUPUESTO_ENSAYO = {"llamadas": 2, "segundos": 1800.0, "deteccion": 1}
 
 
-def preparar_salida(salida: Path, ensayo: bool) -> Path:
-    """Una carpeta es de ensayo técnico o de la corrida preregistrada, nunca de las dos: la marca lo impide al
-    reanudar."""
+def preparar_salida(salida: Path, ensayo: bool, protocolo: str = "v1") -> Path:
+    """Una carpeta es de ensayo técnico o de la corrida preregistrada, y de UN protocolo: las marcas impiden
+    mezclarlos al reanudar (una carpeta sin marca de protocolo es v1, como el ensayo original)."""
+    if protocolo not in PROTOCOLOS:
+        raise ValueError(f"protocolo desconocido: {protocolo}")
     salida = Path(salida)
     if salida.exists() and any(p.name != "mariadb" for p in salida.iterdir()):
         es_ensayo = (salida / MARCA_ENSAYO).exists()
         if es_ensayo != ensayo:
             raise ValueError(f"{salida} es de {'un ensayo técnico' if es_ensayo else 'la corrida preregistrada'}: "
                              "no se mezclan")
+        marca = salida / MARCA_PROTOCOLO
+        previo = marca.read_text().strip() if marca.exists() else "v1"
+        if previo != protocolo:
+            raise ValueError(f"{salida} es del protocolo {previo}: no se reanuda con {protocolo}")
     salida.mkdir(parents=True, exist_ok=True, mode=0o700)
     if ensayo:
         (salida / MARCA_ENSAYO).write_text("Ensayo técnico: EXCLUIDO del análisis preregistrado (PILOTO.md).\n")
+    (salida / MARCA_PROTOCOLO).write_text(protocolo + "\n")
     return salida
 
 
@@ -73,10 +84,13 @@ de la salida (no la repitas: comprobala), y devolver:
 {extra}Respondé solo con un bloque ```python```."""
 
 
-def _deteccion(ent, crear_modelo, defecto, pres: Presupuesto, log) -> dict:
+def _deteccion(ent, crear_modelo, defecto, pres: Presupuesto, log, envolver=None) -> dict:
     """Etapa compartida: el modelo escribe verificadores SIN ver el código; se validan mecánicamente."""
     alm = ent.almacen(f"deteccion_{defecto.id}_{int(time.time() * 1000)}")
-    modelo = BR.ModeloConPresupuesto(crear_modelo(), pres.deteccion, 10 ** 9)
+    modelo = envolver(crear_modelo(), pres.deteccion, 10 ** 9) if envolver else \
+        BR.ModeloConPresupuesto(crear_modelo(), pres.deteccion, 10 ** 9)
+    if hasattr(modelo, "guardia"):
+        modelo.guardia.antes_de_sandbox()
     inst = alm.save("ventanas", defecto.codigo, B.MANIFIESTO, author="banco")
     ev = V.evaluar(ent, alm, inst["id"], B.PARAMS_VISIBLES, [])
     salida = json.dumps(ev["salida"], ensure_ascii=False)[:2500] if ev["salida"] is not None else "null"
@@ -95,6 +109,8 @@ def _deteccion(ent, crear_modelo, defecto, pres: Presupuesto, log) -> dict:
             extra = "Tu respuesta anterior no tenía un bloque ```python```.\n"
             continue
         vid = alm.save(f"verif_{n}", code, {"proposito": "verificador"}, author="modelo")["id"]
+        if hasattr(modelo, "guardia"):
+            modelo.guardia.antes_de_sandbox()
         prueba = V.evaluar(ent, alm, inst["id"], B.PARAMS_VISIBLES, [{"id": f"V{n}", "instrumento_id": vid}])
         valido = f"V{n}" in prueba["checks"]
         verificadores.append({"id": f"V{n}", "codigo": code, "valido": valido,
@@ -155,10 +171,44 @@ def auditar(llamadas: list[dict], brazo: str, defecto: B.Defecto) -> list[str]:
     return fugas
 
 
+def _falsas_alarmas(ent, detecciones: dict, ref: dict) -> dict:
+    """DESPUÉS de los episodios (nunca alimenta a un brazo): cada verificador válido se corre sobre la salida de la
+    REFERENCIA. Si la declara mal, es una falsa alarma. Mide la calidad de la detección del modelo."""
+    alm = ent.almacen(f"juez_falsas_alarmas_{int(time.time() * 1000)}")
+    out = {}
+    for clave, d in detecciones.items():
+        for v in d.get("verificadores", []):
+            if not v.get("valido"):
+                continue
+            vid = alm.save(f"fa_{clave}_{v['id']}", v["codigo"], {"proposito": "verificador"}, author="modelo")["id"]
+            run = V._run(ent, alm, vid, {"parametros": B.PARAMS_VISIBLES, "salida": ref["visible"]})
+            res = (run.get("output") or {}).get("resultado") if run["status"] == "ok" else None
+            ok = res.get("ok") if isinstance(res, dict) else None
+            out.setdefault(clave, {})[v["id"]] = {
+                "falsa_alarma": ok is False, "no_evaluable": ok is None,
+                "campos": (res or {}).get("campos") if isinstance(res, dict) else None}
+    ent.liberar(alm)
+    return out
+
+
 def correr(cfg, *, ent, crear_modelo, defectos=("D1", "D2"), repeticiones: int = 2, brazos=BR.BRAZOS,
-           salida: Path, presupuesto: Presupuesto | None = None, ensayo: bool = False, log=print) -> dict:
-    salida = preparar_salida(salida, ensayo)
+           salida: Path, presupuesto: Presupuesto | None = None, ensayo: bool = False, protocolo: str = "v1",
+           guardia=None, log=print) -> dict:
+    salida = preparar_salida(salida, ensayo, protocolo)
     pres = presupuesto or Presupuesto()
+    v2 = protocolo == "v2"
+    guardia = guardia or V2.Guardia(minimo_mb=0)
+
+    def crear():
+        m = crear_modelo()
+        if v2:   # v1 dejaba «{resultado_kb}» sin completar en el prompt de sistema de B–D y la detección
+            from ..protocolo import SYSTEM
+            m.system = SYSTEM.replace("{resultado_kb}", str(cfg.instrumentos_resultado_kb))
+        return m
+
+    def envolver(m, llamadas, segundos):
+        return V2.ModeloV2(m, llamadas, segundos, guardia) if v2 else BR.ModeloConPresupuesto(m, llamadas, segundos)
+
     archivo = salida / "episodios.jsonl"
     hechos = {}
     if archivo.exists():
@@ -171,55 +221,113 @@ def correr(cfg, *, ent, crear_modelo, defectos=("D1", "D2"), repeticiones: int =
     ref_id = juez_alm.save("referencia", B.REFERENCIA, B.MANIFIESTO, author="banco")["id"]
     ref = {k: V._run(ent, juez_alm, ref_id, p).get("output") for k, p in
            (("visible", B.PARAMS_VISIBLES), ("reserva", B.PARAMS_RESERVA))}
+    interrupciones, seguidas, estado = [], 0, "completo"
+
+    def interrumpido(tipo, d_id, rep, brazo, e, modelo=None):
+        reg = {"ts": time.time(), "tipo": tipo, "defecto": d_id, "repeticion": rep, "brazo": brazo,
+               "detalle": str(e)[:500], "llamadas_hechas": len(modelo.llamadas) if modelo else None,
+               "memoria": guardia.registro[-3:]}
+        interrupciones.append(reg)
+        with (salida / "interrupciones.jsonl").open("a") as f:
+            f.write(json.dumps(reg, ensure_ascii=False) + "\n")
+        log(f"   INTERRUPCIÓN ({tipo}): {str(e)[:200]}")
+
     for d_id in defectos:
+        if estado != "completo":
+            break
         defecto = B.DEFECTOS[d_id]
         lineas = B.lineas_de(defecto.codigo, defecto.sembrada)
         for rep in range(1, repeticiones + 1):
+            if estado != "completo":
+                break
             clave_det = f"{d_id}_r{rep}"
             pendientes = [b for b in brazos if (d_id, rep, b) not in hechos]
             if not pendientes:
                 continue
             if clave_det not in detecciones and any(b != "A" for b in pendientes):
                 log(f"== {d_id} — repetición {rep}: detección compartida")
-                detecciones[clave_det] = _deteccion(ent, crear_modelo, defecto, pres, log)
+                try:
+                    detecciones[clave_det] = _deteccion(ent, crear, defecto, pres, log, envolver)
+                except (V2.EntornoInterrumpido, V2.MemoriaInsuficiente, V2.ContextoInsuficiente) as e:
+                    interrumpido(type(e).__name__, d_id, rep, "deteccion", e)
+                    estado = "detenido_por_entorno"
+                    break
                 deteccion_arch.write_text(json.dumps(detecciones, ensure_ascii=False, indent=1))
             det = detecciones.get(clave_det, {"verificadores": []})
             for brazo in pendientes:
-                log(f"== {d_id} — repetición {rep} — brazo {brazo}")
-                alm = ent.almacen(f"ep_{d_id}_r{rep}_{brazo.replace('*', 'x')}")
-                modelo = BR.ModeloConPresupuesto(crear_modelo(), pres.llamadas, pres.segundos)
-                ctx = Ctx(ent=ent, almacen=alm, modelo=modelo)
-                t0 = time.monotonic()
-                if brazo == "A":
-                    r = BR.correr_a(ctx, defecto)
-                else:
-                    vers = [{"id": v["id"], "instrumento_id": alm.save(f"verif_{v['id']}", v["codigo"],
-                                                                       {"proposito": "verificador"},
-                                                                       author="modelo")["id"]}
-                            for v in det["verificadores"] if v["valido"]]
-                    r = BR.correr_suite(ctx, brazo, defecto, vers, lineas if brazo in BR.ORACULO else None)
-                ent.liberar(alm)
-                juez = _juez(ent, ref, r["vigente"]["codigo"], defecto.codigo)
-                fugas = auditar(modelo.llamadas, brazo, defecto)
-                ep = {"defecto": d_id, "repeticion": rep, "brazo": brazo, "juez": juez, "fugas": fugas,
-                      "valido": not fugas, "motivo_fin": r["motivo_fin"], "pasos": r["pasos"],
-                      "llamadas": _llamadas(modelo), "segundos_modelo": round(modelo.segundos, 1),
-                      "segundos_reloj": round(time.monotonic() - t0, 1),
-                      "presupuesto_respetado": len(modelo.llamadas) <= pres.llamadas,
-                      "codigo_final": r["vigente"]["codigo"]}
-                with (salida / "prompts.jsonl").open("a") as f:
-                    for i, c in enumerate(modelo.llamadas, 1):
-                        f.write(json.dumps({"defecto": d_id, "repeticion": rep, "brazo": brazo, "n": i,
-                                            "tipo": c.get("tipo"), "partes": c["partes"],
-                                            "respuesta": c.get("respuesta")}, ensure_ascii=False) + "\n")
-                with archivo.open("a") as f:
-                    f.write(json.dumps(ep, ensure_ascii=False) + "\n")
-                hechos[(d_id, rep, brazo)] = ep
-                log(f"   {brazo}: {'CORREGIDO' if juez['corregido'] else 'no corregido'} "
-                    f"({r['motivo_fin']}, {len(modelo.llamadas)} llamadas)" + (f" FUGAS: {fugas}" if fugas else ""))
+                if estado != "completo":
+                    break
+                intento_ep = 0
+                while True:
+                    intento_ep += 1
+                    log(f"== {d_id} — repetición {rep} — brazo {brazo}"
+                        + (" (reintento tras una interrupción del entorno)" if intento_ep > 1 else ""))
+                    alm = ent.almacen(f"ep_{d_id}_r{rep}_{brazo.replace('*', 'x')}_{intento_ep}")
+                    modelo = envolver(crear(), pres.llamadas, pres.segundos)
+                    ctx = Ctx(ent=ent, almacen=alm, modelo=modelo)
+                    t0 = time.monotonic()
+                    r, motivo_invalido = None, None
+                    try:
+                        if brazo == "A":
+                            r = BR.correr_a(ctx, defecto)
+                        else:
+                            validos = [v for v in det["verificadores"] if v["valido"]]
+                            vers = [{"id": v["id"], "instrumento_id": alm.save(
+                                f"verif_{v['id']}", v["codigo"], {"proposito": "verificador"}, author="modelo")["id"]}
+                                for v in validos]
+                            if v2:
+                                r = V2.correr_suite(ctx, brazo, defecto, vers,
+                                                    lineas if brazo in BR.ORACULO else None,
+                                                    {v["id"]: v["codigo"] for v in validos})
+                            else:
+                                r = BR.correr_suite(ctx, brazo, defecto, vers, lineas if brazo in BR.ORACULO else None)
+                    except V2.ContextoInsuficiente as e:
+                        motivo_invalido = f"coordinador: {e}"
+                    except (V2.EntornoInterrumpido, V2.MemoriaInsuficiente) as e:
+                        ent.liberar(alm)
+                        interrumpido(type(e).__name__, d_id, rep, brazo, e, modelo)
+                        seguidas += 1
+                        if isinstance(e, V2.MemoriaInsuficiente) or seguidas >= MAX_INTERRUPCIONES_SEGUIDAS \
+                                or intento_ep >= 2:
+                            estado = "detenido_por_entorno"
+                            break
+                        continue
+                    seguidas = 0
+                    ent.liberar(alm)
+                    codigo_final = r["vigente"]["codigo"] if r else defecto.codigo
+                    guardia.antes_de_sandbox()
+                    juez = _juez(ent, ref, codigo_final, defecto.codigo)
+                    fugas = auditar(modelo.llamadas, brazo, defecto)
+                    ep = {"defecto": d_id, "repeticion": rep, "brazo": brazo, "protocolo": protocolo, "juez": juez,
+                          "fugas": fugas, "valido": not fugas and motivo_invalido is None,
+                          "motivo_invalido": motivo_invalido,
+                          "motivo_fin": r["motivo_fin"] if r else "invalido", "pasos": r["pasos"] if r else [],
+                          "disputas": (r or {}).get("disputas", []), "impugnados": (r or {}).get("impugnados", []),
+                          "fallas_finales": (r or {}).get("fallas_finales"),
+                          "llamadas": _llamadas(modelo), "segundos_modelo": round(modelo.segundos, 1),
+                          "segundos_reloj": round(time.monotonic() - t0, 1),
+                          "presupuesto_respetado": len(modelo.llamadas) <= pres.llamadas,
+                          "reintento_por_entorno": intento_ep > 1, "codigo_final": codigo_final}
+                    with (salida / "prompts.jsonl").open("a") as f:
+                        for i, c in enumerate(modelo.llamadas, 1):
+                            f.write(json.dumps({"defecto": d_id, "repeticion": rep, "brazo": brazo, "n": i,
+                                                "tipo": c.get("tipo"), "partes": c["partes"],
+                                                "respuesta": c.get("respuesta")}, ensure_ascii=False) + "\n")
+                    with archivo.open("a") as f:
+                        f.write(json.dumps(ep, ensure_ascii=False) + "\n")
+                    hechos[(d_id, rep, brazo)] = ep
+                    log(f"   {brazo}: {'CORREGIDO' if juez['corregido'] else 'no corregido'} "
+                        f"({ep['motivo_fin']}, {len(modelo.llamadas)} llamadas)"
+                        + (f" FUGAS: {fugas}" if fugas else "") + (f" INVÁLIDO: {motivo_invalido}"
+                                                                   if motivo_invalido else ""))
+                    break
     episodios = [hechos[k] for k in sorted(hechos)]
-    res = {"version": VERSION, "preregistro": "PILOTO.md", "ensayo": ensayo, "presupuesto": pres.as_dict(), "defectos": list(defectos),
-           "repeticiones": repeticiones, "brazos": list(brazos), "detecciones": detecciones, "episodios": episodios}
+    res = {"version": VERSION, "preregistro": "PILOTO.md", "protocolo": protocolo, "ensayo": ensayo,
+           "estado": estado, "presupuesto": pres.as_dict(), "defectos": list(defectos), "repeticiones": repeticiones,
+           "brazos": list(brazos), "detecciones": detecciones, "episodios": episodios,
+           "interrupciones": interrupciones, "guardia_memoria": guardia.registro[-200:]}
+    guardia.antes_de_sandbox()
+    res["falsas_alarmas"] = _falsas_alarmas(ent, detecciones, ref)
     res["lectura"] = leer(res)
     return res
 
@@ -288,7 +396,44 @@ def leer(res: dict) -> dict:
                   "presupuesto_excedido": sum(1 for e in res["episodios"] if not e["presupuesto_respetado"]),
                   "atribucion_coordinador": sum(1 for e in eps for p in e["pasos"]
                                                 if isinstance(p, dict) and p.get("atribucion") == "coordinador")}
+    integridad["interrupciones_entorno"] = len(res.get("interrupciones", []))
+    integridad["historial_recortado"] = [
+        f"{e['defecto']} r{e['repeticion']} {e['brazo']} paso {i}" for e in res["episodios"]
+        for i, p in enumerate(e["pasos"], 1) if isinstance(p, dict) and p.get("historial_incluido") is not None
+        and p.get("historial_incluido") < V2.HISTORIAL_COMPLETO and i > 1]
+    integridad["estado"] = res.get("estado", "completo")
     integridad["apto_para_experimento_completo"] = integridad["fugas"] == 0 and \
-        integridad["presupuesto_excedido"] == 0 and integridad["episodios_invalidos"] == 0
+        integridad["presupuesto_excedido"] == 0 and integridad["episodios_invalidos"] == 0 and \
+        integridad["estado"] == "completo"
+    autoria: dict = {}
+    for e in res["episodios"]:
+        for p in e["pasos"]:
+            if not isinstance(p, dict) or "candidatas" not in p:
+                continue
+            if p.get("contrato"):
+                autoria["contrato (formato reparado)"] = autoria.get("contrato (formato reparado)", 0) + 1
+            clave = p.get("atribucion") or ("sin falla" if p.get("resultado") == "aceptado" else "rechazo del umbral")
+            autoria[clave] = autoria.get(clave, 0) + 1
+        if e.get("motivo_invalido"):
+            autoria["coordinador (episodio inválido)"] = autoria.get("coordinador (episodio inválido)", 0) + 1
+    autoria["entorno (interrupciones)"] = len(res.get("interrupciones", []))
+    fa = res.get("falsas_alarmas") or {}
+    disputas = []
+    for e in eps:
+        for d in e.get("disputas") or []:
+            info = (fa.get(f"{e['defecto']}_r{e['repeticion']}") or {}).get(d["verificador"]) or {}
+            falsa = info.get("falsa_alarma")
+            disputas.append({"episodio": f"{e['defecto']} r{e['repeticion']} {e['brazo']}", **d,
+                             "falsa_alarma_segun_juez": falsa,
+                             "decision_correcta": None if falsa is None else (d["decision"] == "verificador") == falsa})
+            if falsa is not None and (d["decision"] == "verificador") != falsa:
+                contra.append(f"{e['brazo']} {e['defecto']} r{e['repeticion']}: el modelo decidió que estaba mal el "
+                              f"{d['decision']} en la disputa de {d['verificador']}, y el juez dice lo contrario")
+    for clave, vs in fa.items():
+        for vid, info in vs.items():
+            if info.get("falsa_alarma"):
+                contra.append(f"{clave} {vid}: el verificador del modelo declara mal la salida de la REFERENCIA "
+                              "(falsa alarma)")
     return {"contra_la_hipotesis": contra, "comparaciones": comparaciones, "senales": senales,
-            "localizacion_primer_paso": {"aciertos": sum(loc), "total": len(loc)}, "integridad": integridad}
+            "localizacion_primer_paso": {"aciertos": sum(loc), "total": len(loc)}, "integridad": integridad,
+            "autoria": autoria, "disputas": disputas, "falsas_alarmas": fa}

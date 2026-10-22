@@ -61,10 +61,12 @@ def arreglar(codigo: str) -> str:
 class Guion:
     """Modelo simulado sin HTTP: responde según el tipo de pedido."""
 
-    def __init__(self, responder, nombre="guion"):
+    def __init__(self, responder, nombre="guion", num_ctx=4096):
+        import types
         self.responder, self.nombre, self.system, self.pedidos = responder, nombre, "", []
+        self.base = types.SimpleNamespace(num_ctx=num_ctx)
 
-    def pedir(self, tipo, prompt, *, json_out, cancel=None):
+    def pedir(self, tipo, prompt, *, json_out, cancel=None, corto=False):
         self.pedidos.append((tipo, prompt))
         text = self.responder(tipo, prompt)
         return text, {"tipo": tipo, "resultado": "completa", "tokens_prompt": len(prompt) // 4,

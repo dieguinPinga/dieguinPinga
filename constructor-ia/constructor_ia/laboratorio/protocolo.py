@@ -218,20 +218,23 @@ class Modelo:
     """Un modelo con opciones FIJAS para todo el laboratorio (las mismas para cada modelo comparado)."""
 
     def __init__(self, ollama, base_model, nombre: str, *, num_ctx: int, temperatura: float, timeout_s: int,
-                 num_predict_codigo: int = 2048, num_predict_json: int = 768):
+                 num_predict_codigo: int = 2048, num_predict_json: int = 768, keep_alive: str | None = None):
         self.ollama, self.nombre = ollama, nombre
         self.base = dataclasses.replace(base_model, name=nombre, num_ctx=num_ctx, temperature=temperatura,
-                                        timeout_s=timeout_s)
+                                        timeout_s=timeout_s, keep_alive=keep_alive)
         self.np_code, self.np_json = num_predict_codigo, num_predict_json
         self.system = SYSTEM
 
     def opciones(self) -> dict:
         return {"modelo": self.nombre, "num_ctx": self.base.num_ctx, "temperatura": self.base.temperature,
                 "timeout_s": self.base.timeout_s, "num_predict_codigo": self.np_code,
-                "num_predict_json": self.np_json, "think": self.base.think}
+                "num_predict_json": self.np_json, "think": self.base.think, "keep_alive": self.base.keep_alive}
 
-    def pedir(self, tipo: str, user: str, *, json_out: bool, cancel=None) -> tuple[str | None, dict]:
-        model = dataclasses.replace(self.base, num_predict=self.np_json if json_out else self.np_code)
+    def pedir(self, tipo: str, user: str, *, json_out: bool, cancel=None,
+              corto: bool = False) -> tuple[str | None, dict]:
+        """corto=True: respuesta breve SIN formato JSON (decisiones y microtareas del piloto v2), con el tope de
+        tokens de las respuestas JSON."""
+        model = dataclasses.replace(self.base, num_predict=self.np_json if (json_out or corto) else self.np_code)
         msgs = [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
         call = {"tipo": tipo, "ts": time.time()}
         try:

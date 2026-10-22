@@ -30,6 +30,7 @@ class ModelConfig:
     temperature: float = 0.2
     timeout_s: int = 300
     think: bool = False
+    keep_alive: str | None = None   # por pedido; None = no se envía (vale el valor del servidor)
 
 
 @dataclass
