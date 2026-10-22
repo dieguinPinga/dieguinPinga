@@ -826,3 +826,28 @@ bash $E forense <carpeta-etapa1> --salida ~/forense-eleccion.md --json ~/forense
   - si la regla no puede, no tiene sentido pedírselo a Qwen.
 - **Más casos de sobrescritura:** hoy hay 1 solo. Además, un análisis que trate al caso como unidad (por ejemplo,
   una prueba de permutación por caso), porque los pares de un mismo caso están correlacionados.
+
+### Auditoría de la VivoBook y dos hallazgos de validez (2026-10-22)
+
+**Los prompts coinciden.**
+- La VivoBook comparó los 96 prompts guardados con los reconstruidos con `eleccion.partes()`: huella
+  `950ecc054f484387` en los dos casos y 0 diferencias. Las 96 respuestas conservaron su huella.
+- La reconstrucción de Claude había dado `516ccd69c023b98d`. **Causa:** la versión de Python del sandbox.
+  - El caso M050 se cae con `IndexError`, y su traceback entra en «Verificaciones que fallan».
+  - Python 3.13 subraya la expresión con `~~~~~~^^^^` y 3.12 con `^^^^^^`.
+  - Repitiendo la Etapa 0 con el sandbox en Python 3.12 se obtiene `950ecc054f484387`. El único campo distinto es
+    `texto_fallas` de M050.
+- **Lección:** la Etapa 0 tiene que guardar la versión de Python del sandbox y una huella por caso y por parte.
+
+**La traza se pierde cuando el instrumento se cae.**
+- `instrument_runner` no incluye la traza en el mensaje final de error.
+- Por eso el tratamiento de M050 afirmó «se ejecutó 0 veces» para las tres candidatas. Es **falso**: la línea 19 se
+  ejecutó y es donde se cae.
+- M050 no tiene pares discordantes, así que **no cambia el resultado**. Aun así, son 6 prompts de tratamiento con
+  evidencia incorrecta.
+- No se corrige en este experimento: queda como condición previa del próximo. Hay que enviar la traza parcial
+  también cuando hay error y decir «sin traza» en vez de «0 veces».
+
+**Las repeticiones no aportaron información.** Con temperatura 0,2, las dos repeticiones de cada combinación
+eligieron lo mismo. En la práctica hay 24 celdas, no 48 pares independientes, y las discordantes son 4 celdas: 1 a
+favor y 3 en contra.
