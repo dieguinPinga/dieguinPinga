@@ -59,6 +59,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   Protocolo v2 (Enmienda 3, tras el ensayo técnico v1 con Qwen3 4B real): contrato sin ambigüedad, rechazos que
   enseñan, disputa de verificadores con falsas alarmas medidas por el juez, entorno separado del modelo, guardia de
   memoria con `keep_alive` por pedido y contexto de 4096 controlado.
+  Experimento de elección (PILOTO.md, «Etapas 0 y 1»): ¿la evidencia de ejecución, genérica y calculada sin el juez,
+  ayuda a Qwen a elegir la instrucción causante? Pares control/tratamiento con una única diferencia, McNemar exacto;
+  `laboratorio-eleccion-etapa0` (sin modelo) y `laboratorio-eleccion` (exige `--limite` o `--completo`).
 
 ## Proyectos que evolucionan (v0.4.0)
 

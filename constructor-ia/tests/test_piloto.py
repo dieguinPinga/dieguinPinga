@@ -349,7 +349,7 @@ class StagesScriptTests(unittest.TestCase):
         for f in ("bin/systemctl", "bin/systemd-run", "piloto.sh"):
             (self.w / f).chmod(0o755)
 
-    def correr(self, modo, *, senal=None, inicial="active", limite="20", run_rc="0"):
+    def correr(self, modo, *, senal=None, inicial="active", limite="20", run_rc="0", orden=("ensayo",), extra=()):
         import os
         import signal
         import subprocess
@@ -361,7 +361,7 @@ class StagesScriptTests(unittest.TestCase):
                    CIA_PILOTO_DIR=str(self.w / "base"), PILOTO_UNIDAD="s", FAKE_LOG=str(log), FAKE_STATE=str(state),
                    FAKE_MODO=modo, FAKE_RUN_RC=run_rc)
         script = Path(__file__).resolve().parent.parent / "scripts" / "piloto_etapas.sh"
-        p = subprocess.Popen(["bash", str(script), "ensayo", limite], env=env, stdout=subprocess.PIPE,
+        p = subprocess.Popen(["bash", str(script), *orden, *((limite,) if limite else ()), *extra], env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True)
         if senal:
             for _ in range(100):
@@ -402,3 +402,16 @@ class StagesScriptTests(unittest.TestCase):
         self.assertEqual(estado, "active")
         self.assertNotIn("stop constructor-ia.service", log)
         self.assertNotIn("piloto laboratorio", log, "el ensayo no corre si no hay respaldo")
+
+    def test_choice_stage1_is_guarded_and_stage0_stops_nothing(self):
+        rc, estado, log, out = self.correr("cuelga", senal="SIGINT", orden=("eleccion",), limite="20",
+                                           extra=("--casos", "c.json", "--limite", "4"))
+        self.assertEqual(estado, "active", (out, log))
+        self.assertIn("piloto laboratorio-eleccion --yes --casos c.json --limite 4 servicio=inactive", log)
+        self.assertIn("piloto: limpieza", log)
+        self.assertIn("start constructor-ia.service", log)
+        rc, estado, log, out = self.correr("ok", orden=("eleccion0",), limite=None)
+        self.assertEqual((rc, estado), (0, "active"))
+        self.assertIn("piloto laboratorio-eleccion-etapa0 --yes servicio=active", log)
+        self.assertNotIn("stop constructor-ia.service", log)
+        self.assertNotIn("systemd-run", log)

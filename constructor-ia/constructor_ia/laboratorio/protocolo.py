@@ -231,10 +231,12 @@ class Modelo:
                 "num_predict_json": self.np_json, "think": self.base.think, "keep_alive": self.base.keep_alive}
 
     def pedir(self, tipo: str, user: str, *, json_out: bool, cancel=None,
-              corto: bool = False) -> tuple[str | None, dict]:
+              corto: bool = False, seed: int | None = None) -> tuple[str | None, dict]:
         """corto=True: respuesta breve SIN formato JSON (decisiones y microtareas del piloto v2), con el tope de
-        tokens de las respuestas JSON."""
-        model = dataclasses.replace(self.base, num_predict=self.np_json if (json_out or corto) else self.np_code)
+        tokens de las respuestas JSON. seed: semilla de muestreo de Ollama para este pedido (experimentos
+        pareados)."""
+        model = dataclasses.replace(self.base, num_predict=self.np_json if (json_out or corto) else self.np_code,
+                                    seed=seed if seed is not None else self.base.seed)
         msgs = [{"role": "system", "content": self.system}, {"role": "user", "content": user}]
         call = {"tipo": tipo, "ts": time.time()}
         try:

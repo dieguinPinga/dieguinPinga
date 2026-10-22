@@ -8,6 +8,7 @@ Bibliotecas: los instrumentos anteriores que el anfitrión monte en /work/code/b
 módulo (reutilización de instrumentos); además se puede importar «investiga», con las primitivas del canal.
 """
 import importlib.util
+import itertools
 import json
 import linecache
 import os
@@ -20,6 +21,103 @@ BIB = "/work/code/bib"
 
 
 MAX_EXC = 8
+MAX_LINEAS_TRAZA = 8
+_AUSENTE = object()
+
+
+def corto(v, n: int = 90, profundidad: int = 0) -> str:
+    """Representación ACOTADA de un valor: nunca recorre ni ordena una colección entera (costo casi constante,
+    aunque el diccionario tenga miles de claves)."""
+    if v is _AUSENTE:
+        return "(sin definir)"
+    try:
+        if isinstance(v, dict):
+            if profundidad:
+                return f"{{…{len(v)} claves}}"
+            items = [f"{corto(k, 30, 1)}: {corto(x, 40, 1)}" for k, x in itertools.islice(v.items(), 4)]
+            s = "{" + ", ".join(items) + (f", …+{len(v) - 4}" if len(v) > 4 else "") + "}"
+        elif isinstance(v, (list, tuple, set, frozenset)):
+            if profundidad:
+                return f"[…{len(v)} elementos]"
+            items = [corto(x, 40, 1) for x in itertools.islice(iter(v), 4)]
+            s = "[" + ", ".join(items) + (f", …+{len(v) - 4}" if len(v) > 4 else "") + "]"
+        elif isinstance(v, str):
+            s = repr(v[:n])
+        else:
+            s = repr(v)
+    except Exception:  # noqa: BLE001 — una representación que falla no rompe la medición
+        s = f"<{type(v).__name__}>"
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+
+class Traza:
+    """Evidencia de ejecución por línea candidata (pedida por el anfitrión, sin saber cuál es la causa): cuántas
+    veces se ejecutó, qué valores tenían antes y después los nombres que define, qué valores usó (dos primeras
+    ejecuciones y la última), cuántas veces fue verdadera la condición de una instrucción compuesta y, al terminar
+    medir, el valor final de cada nombre. Solo observa el código del instrumento."""
+
+    def __init__(self, spec: dict):
+        self.lineas = {}
+        for k, v in list((spec or {}).items())[:MAX_LINEAS_TRAZA]:
+            try:
+                cuerpo = v.get("cuerpo")
+                self.lineas[int(k)] = {"define": [str(x) for x in (v.get("define") or [])][:4],
+                                       "usa": [str(x) for x in (v.get("usa") or [])][:6],
+                                       "cuerpo": [int(cuerpo[0]), int(cuerpo[1])] if cuerpo else None}
+            except (TypeError, ValueError, AttributeError, IndexError):
+                continue
+        self.datos = {l: {"veces": 0, "verdadera": 0, "muestras": [], "ultima": None} for l in self.lineas}
+        self.pendientes: dict = {}
+        self.ultima_linea: dict = {}
+        self.final: dict = {}
+
+    def _valores(self, frame, nombres) -> dict:
+        loc = frame.f_locals
+        return {n: corto(loc.get(n, _AUSENTE)) for n in nombres}
+
+    def _cerrar(self, frame, pendiente, siguiente) -> None:
+        linea, antes, usa = pendiente
+        spec, d = self.lineas[linea], self.datos[linea]
+        if spec["cuerpo"] and siguiente is not None and spec["cuerpo"][0] <= siguiente <= spec["cuerpo"][1]:
+            d["verdadera"] += 1
+        muestra = {"usa": usa, "antes": antes, "despues": self._valores(frame, spec["define"])}
+        if len(d["muestras"]) < 2:
+            d["muestras"].append(muestra)
+        d["ultima"] = muestra
+
+    INTERNOS = ("<lambda>", "<listcomp>", "<dictcomp>", "<setcomp>", "<genexpr>")
+
+    def linea(self, frame) -> None:
+        # Una ejecución = el INICIO de una instrucción en su propio marco. Las comprensiones (en línea desde
+        # Python 3.12) y las lambdas repiten eventos sobre la misma línea: no son ejecuciones nuevas.
+        if frame.f_code.co_name in self.INTERNOS:
+            return
+        fid = id(frame)
+        if self.ultima_linea.get(fid) == frame.f_lineno:
+            return
+        self.ultima_linea[fid] = frame.f_lineno
+        pendiente = self.pendientes.pop(fid, None)
+        if pendiente:
+            self._cerrar(frame, pendiente, frame.f_lineno)
+        spec = self.lineas.get(frame.f_lineno)
+        if spec is not None:
+            self.datos[frame.f_lineno]["veces"] += 1
+            self.pendientes[id(frame)] = (frame.f_lineno, self._valores(frame, spec["define"]),
+                                          self._valores(frame, spec["usa"]))
+
+    def retorno(self, frame) -> None:
+        if frame.f_code.co_name in self.INTERNOS:
+            return
+        self.ultima_linea.pop(id(frame), None)
+        pendiente = self.pendientes.pop(id(frame), None)
+        if pendiente:
+            self._cerrar(frame, pendiente, None)
+        if frame.f_code.co_name == "medir":
+            nombres = {n for s in self.lineas.values() for n in s["define"]}
+            self.final = self._valores(frame, sorted(nombres))
+
+    def report(self) -> dict:
+        return {"lineas": {str(l): d for l, d in self.datos.items()}, "final": self.final}
 
 
 def _rel(filename: str) -> str:
@@ -37,8 +135,9 @@ class Excepciones:
     midió nada; este registro permite distinguirlo. Es un diagnóstico, no una barrera de seguridad: sólo observa
     marcos del instrumento y apaga los eventos por línea (costo bajo)."""
 
-    def __init__(self, paths):
+    def __init__(self, paths, traza: "Traza | None" = None):
         self.paths = tuple(paths)
+        self.traza = traza
         self.seen: dict = {}      # id(excepción) → clave (una excepción que atraviesa varios marcos se cuenta una vez)
         self.keep: list = []      # referencias para que id() no se reutilice mientras se registra
         self.items: dict = {}     # clave (tipo, mensaje, archivo, línea) → registro con conteo
@@ -49,10 +148,16 @@ class Excepciones:
     def global_trace(self, frame, event, arg):
         if event != "call" or not self._mine(frame.f_code):
             return None
-        frame.f_trace_lines = False
+        # Eventos por línea solo si se pidió una traza y en el archivo del instrumento (costo acotado).
+        frame.f_trace_lines = bool(self.traza) and frame.f_code.co_filename in self.paths
         return self.local_trace
 
     def local_trace(self, frame, event, arg):
+        if self.traza is not None and frame.f_code.co_filename in self.paths:
+            if event == "line":
+                self.traza.linea(frame)
+            elif event == "return":
+                self.traza.retorno(frame)
         if event == "exception":
             exc = arg[1]
             if id(exc) not in self.seen and len(self.keep) < 1000:
@@ -140,7 +245,8 @@ def main() -> None:
         if not callable(fn):
             send({"final": True, "ok": False, "exc": "AttributeError", "msg": "El instrumento no define medir(db, p)"})
             return
-        exc_log = Excepciones((path,))
+        traza = Traza(init["traza"]) if isinstance(init.get("traza"), dict) else None
+        exc_log = Excepciones((path,), traza)
         sys.settrace(exc_log.global_trace)
         try:
             value = fn(inv, params)
@@ -154,7 +260,8 @@ def main() -> None:
         send({"final": True, "ok": False, "exc": type(e).__name__, "msg": str(e)[:500], "tb": _trim_tb(e, (path,)),
               "lugar": _ultimo_lugar(e, (path,)), "excepciones": exc_log.report() if exc_log else []})
         return
-    send({"final": True, "ok": True, "valor": value, "excepciones": exc_log.report()})
+    send({"final": True, "ok": True, "valor": value, "excepciones": exc_log.report(),
+          "traza": exc_log.traza.report() if exc_log.traza else None})
 
 
 if __name__ == "__main__":

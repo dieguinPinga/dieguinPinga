@@ -621,21 +621,25 @@ def cmd_lab_instruments(args) -> int:
     return 0 if res["estado"] == "completa" else 1
 
 
-def _piloto_preparar(args, necesita_modelo: bool):
-    """Comprobaciones comunes del piloto: servicio detenido, MariaDB privado posible, aislamiento operativo."""
+def _servicio_activo() -> bool:
     import subprocess
 
+    try:
+        return subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
+                              timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _piloto_preparar(args, necesita_modelo: bool, exigir_servicio_detenido: bool = True):
+    """Comprobaciones comunes del piloto: servicio detenido (si usa Ollama), MariaDB privado posible y aislamiento
+    operativo."""
     cfg = _cfg(args)
     if not args.yes:
         print("Agregue --yes: crea un MariaDB privado y desechable (sin red, no toca el MariaDB instalado)"
               + (" y usa Ollama CPU durante horas." if necesita_modelo else "."), file=sys.stderr)
         raise SystemExit(2)
-    try:
-        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", "constructor-ia.service"],
-                                timeout=10).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        active = False
-    if active:
+    if exigir_servicio_detenido and _servicio_activo():
         print("El servicio constructor-ia está activo: deténgalo para no competir por CPU y Ollama.", file=sys.stderr)
         raise SystemExit(2)
     from .laboratorio import privado
@@ -742,6 +746,83 @@ def cmd_lab_pilot(args) -> int:
         print("La corrida se DETUVO por el entorno (ver interrupciones.jsonl); se puede reanudar.", file=sys.stderr)
         return 3
     return 0
+
+
+def cmd_lab_choice_stage0(args) -> int:
+    """Experimento de elección, Etapa 0 (SIN modelo): construye los casos y mide si la traza distingue a la
+    candidata sembrada. No usa Ollama: puede correr con el servicio activo."""
+    from .laboratorio import privado
+    from .laboratorio.piloto import eleccion as EL
+    from .laboratorio.piloto.entorno import Entorno
+
+    cfg, ex = _piloto_preparar(args, necesita_modelo=False, exigir_servicio_detenido=False)
+    salida = Path(args.salida) if args.salida else cfg.data_dir / "laboratorio" / ("eleccion-etapa0-" + time.strftime(
+        "%Y%m%d-%H%M%S"))
+    servidor = privado.ServidorPrivado(salida / "mariadb")
+    try:
+        ent = Entorno(cfg, ex, servidor, salida)
+        info = EL.construir_casos(ent, log=lambda m: print(m, flush=True))
+        ent.cerrar()
+    finally:
+        servidor.detener()
+    (salida / "casos.json").write_text(json.dumps(info, ensure_ascii=False, indent=1, default=str))
+    e0 = info["etapa0"]
+    print(json.dumps(e0, ensure_ascii=False, indent=1))
+    print(f"Casos para la Etapa 1: {', '.join(info['seleccion'])}\nArchivo de casos: {salida / 'casos.json'}")
+    return 0
+
+
+def cmd_lab_choice(args) -> int:
+    """Experimento de elección, Etapa 1 (con modelo). No ejecuta código: arma prompts con los casos de la Etapa 0.
+    Exige --limite N (prueba de rendimiento) o --completo: nunca lanza las 96 llamadas por omisión."""
+    from .laboratorio.piloto import eleccion as EL
+    from .laboratorio.piloto import v2 as PV2
+    from .laboratorio.protocolo import Modelo
+    from .ollama import OllamaClient, OllamaError
+
+    cfg = _cfg(args)
+    if not args.yes:
+        print("Agregue --yes: usa Ollama CPU (llamadas cortas).", file=sys.stderr)
+        return 2
+    if (args.limite is None) == (not args.completo):
+        print("Elija UNA: --limite N (prueba de rendimiento) o --completo (todos los ensayos planificados).",
+              file=sys.stderr)
+        return 2
+    if _servicio_activo():
+        print("El servicio constructor-ia está activo: deténgalo para no competir por Ollama CPU.", file=sys.stderr)
+        return 2
+    salida = Path(args.reanudar) if args.reanudar else cfg.data_dir / "laboratorio" / ("eleccion-" + time.strftime(
+        "%Y%m%d-%H%M%S"))
+    origen = salida / "casos.json" if args.reanudar else (Path(args.casos) if args.casos else None)
+    if origen is None or not origen.exists():
+        print("Falta el archivo de casos de la Etapa 0 (--casos <ruta>/casos.json).", file=sys.stderr)
+        return 2
+    casos_info = json.loads(origen.read_text())
+    ollama = OllamaClient(cfg.ollama_url)
+    try:
+        if args.modelo not in ollama.tags():
+            print(f"El modelo {args.modelo} no está instalado en {cfg.ollama_url} (no se descarga).", file=sys.stderr)
+            return 2
+    except OllamaError as e:
+        print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+        return 1
+    base = cfg.explorer_model
+    guardia = PV2.Guardia(ollama, minimo_mb=args.memoria_minima_mb)
+    print(f"Elección: {len(casos_info['seleccion'])} casos × {EL.ROTACIONES} rotaciones × {args.repeticiones} "
+          f"repeticiones × 2 condiciones; num_ctx={args.num_ctx}, keep_alive={args.keep_alive}, temperatura 0.2, "
+          f"semilla por par; memoria mínima {args.memoria_minima_mb} MiB.", flush=True)
+
+    def crear_modelo():
+        return Modelo(ollama, base, args.modelo, num_ctx=args.num_ctx, temperatura=0.2, timeout_s=900,
+                      num_predict_codigo=2048, num_predict_json=768, keep_alive=args.keep_alive)
+
+    res = EL.correr(cfg, crear_modelo=crear_modelo, salida=salida, casos_info=casos_info,
+                    repeticiones=args.repeticiones, limite=args.limite, guardia=guardia,
+                    log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+    print((salida / "resumen.md").read_text())
+    print(f"Resultados en {salida}. Para seguir: laboratorio-eleccion --yes --reanudar {salida} "
+          "(--limite N o --completo)")
+    return 0 if res["estado"] in ("completo", "limite") else 3
 
 
 def cmd_lab_pilot_review(args) -> int:
@@ -943,6 +1024,25 @@ def main(argv=None) -> int:
                    help="ensayo técnico pequeño (D2, 1 repetición, 2 llamadas por episodio), EXCLUIDO del análisis")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_pilot)
+    a = sub.add_parser("laboratorio-eleccion-etapa0",
+                       help="Experimento de elección, Etapa 0 (sin modelo): casos y calidad de la traza")
+    a.add_argument("--salida")
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_choice_stage0)
+    a = sub.add_parser("laboratorio-eleccion",
+                       help="Experimento de elección, Etapa 1: ¿la traza ayuda a elegir la causa? (exige --limite o "
+                            "--completo)")
+    a.add_argument("--casos", help="casos.json de la Etapa 0")
+    a.add_argument("--reanudar", help="carpeta de una Etapa 1 empezada")
+    a.add_argument("--limite", type=int, help="correr como máximo N ensayos nuevos (prueba de rendimiento)")
+    a.add_argument("--completo", action="store_true", help="correr todos los ensayos planificados que falten")
+    a.add_argument("--modelo", default="qwen3:4b-instruct")
+    a.add_argument("--repeticiones", type=int, default=2)
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, default=4096)
+    a.add_argument("--keep-alive", dest="keep_alive", default="0s")
+    a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_choice)
     a = sub.add_parser("laboratorio-piloto-revisar",
                        help="Revisión de solo lectura de un piloto o ensayo: llamadas, prompts, respuestas y autoría")
     a.add_argument("carpeta")

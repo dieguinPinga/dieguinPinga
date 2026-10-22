@@ -583,3 +583,157 @@ Otras palancas, que son decisión de ustedes y no cambié: otra cuantización, u
 - el contexto insuficiente: episodio inválido por culpa del coordinador, sin llamadas;
 - `keep_alive` solo se envía cuando se pide;
 - carpetas de v1 y v2 que no se mezclan al reanudar.
+
+## Experimento de elección: Etapas 0 y 1 (preregistro, 2026-10-22, antes de cualquier llamada al modelo)
+
+Este experimento es aparte de la corrida preregistrada de los brazos y no la modifica. **No** se implementan
+todavía los cambios de devolución ni de alcance: primero se aísla el efecto de mostrar la evidencia.
+
+**Pregunta.** Con las mismas candidatas, ¿mostrarle a Qwen la evidencia de ejecución de cada una lo ayuda a elegir
+la instrucción que causa las fallas?
+
+### La evidencia de ejecución (genérica, no específica de D1 ni de D2)
+
+- **Qué candidatas se observan.** El anfitrión deriva del árbol sintáctico qué nombres define y usa cada candidata.
+  Solo cuentan los nombres propios del programa: parámetros y asignaciones, sin funciones ni módulos.
+- **Cómo se observa.** El sandbox ejecuta el instrumento **una vez** con los parámetros visibles y observa esas
+  líneas con `sys.settrace`:
+  - solo en el archivo del instrumento y solo si se pidió la traza;
+  - no observa comprensiones ni lambdas, y una línea que se repite seguida cuenta una vez;
+  - los valores salen con una representación acotada, que nunca recorre una colección entera.
+- **Qué hechos muestra.** Los mismos campos para todas las candidatas, con la misma plantilla:
+  - cuántas veces se ejecutó;
+  - en un `if`/`while`, en cuántas evaluaciones la condición fue verdadera;
+  - los valores antes y después de su última ejecución;
+  - si, al terminar `medir`, cada nombre que define conserva el valor que dejó esa línea o si otra instrucción lo
+    cambió después;
+  - si asigna una constante que reemplazó un valor distinto;
+  - hasta dos muestras de «usa → deja».
+- **Qué no hace.** Nunca dice cuál es la causa. La traza se calcula **solo** con el instrumento defectuoso, los
+  datos y las candidatas. No usa la referencia, el juez ni la instrucción sembrada.
+- **Cuánto cuesta.** Se mide en desarrollo: ≈ 0,3 s más por ejecución, y un bucle de 200.000 vueltas sigue acotado.
+
+### Etapa 0 (sin modelo; no detiene nada)
+
+**Construcción de los casos.** Se usan D1, D2 y los mutantes de un punto (Anexo 1):
+
+1. El almacén del juez se usa solo para descartar mutantes equivalentes.
+2. Las fallas salen de una **verificación fija**, `VERIFICADOR_FIJO`, igual en las dos condiciones. Vuelve a medir
+   el total y las sumas por ventana.
+3. Las tres candidatas salen del localizador estático.
+4. La traza se calcula con el instrumento defectuoso.
+
+**Uso de la identidad de la instrucción sembrada.** Solo para dos cosas:
+- (a) decidir qué casos entran: la sembrada tiene que estar entre las tres candidatas;
+- (b) puntuar.
+
+**Métricas.**
+- Casos detectados y casos con la sembrada entre las candidatas.
+- En cuántos la traza **distingue** a la sembrada: algún rasgo estructural la separa de las otras dos.
+- En cuántos hay una señal anómala exclusiva de la sembrada: se pierde, o una constante reemplazó un valor.
+- Todo por clase: **cálculo** (como D1) y **sobrescritura** (como D2).
+
+**Selección (fijada antes de mirar respuestas).** Como máximo 8 casos:
+1. D1 y D2, si su sembrada está entre las candidatas.
+2. Después, mutantes por id, prefiriendo líneas sembradas **distintas**, para no repetir gemelos.
+3. Después, se completa con el resto.
+
+**Resultado real en el entorno de desarrollo:**
+- 51 mutantes más D1 y D2;
+- 41 no equivalentes y 38 detectados;
+- 15 con la sembrada entre las 3 candidatas: 14 de cálculo y 1 de sobrescritura;
+- la traza distingue a la sembrada en 2 de 15 (D2 y M027). La señal exclusiva aparece solo en D2;
+- selección: D1, D2, M022, M027, M029, M030, M039, M050. La sembrada queda en la posición original 1, 2 o 3 en 3,
+  3 y 2 casos.
+
+El banco y la base sintética son deterministas (semilla 7), así que en la VivoBook la Etapa 0 debería dar lo mismo.
+Si da otra cosa, **no se pasa a la Etapa 1** sin revisarlo antes.
+
+**Predicción, escrita antes de correr el modelo:**
+- efecto claro en la sobrescritura;
+- débil en los errores de cálculo, donde la traza solo aporta muestras de valores;
+- con un solo caso de sobrescritura, el veredicto global **«inconcluso» es plausible y aceptable**.
+
+### Etapa 1: diseño
+
+- **Una única diferencia.** El control y el tratamiento reciben exactamente las mismas partes:
+  - pregunta y parámetros;
+  - salida actual y verificaciones que fallan;
+  - candidatas con código limpio (sin marcas) y contexto numerado.
+  
+  El tratamiento agrega **solo** la parte «traza». El código lo comprueba en cada ensayo: las partes del
+  tratamiento sin la traza deben ser idénticas a las del control, o la corrida se aborta.
+- **Llamada.** Una llamada corta, sin parches ni historial: `CANDIDATO: <letra>` / `MOTIVO: <una frase>`.
+- **Contrabalanceo.**
+  - 3 rotaciones del orden de las candidatas, de modo que cada candidata pasa por cada posición;
+  - 2 repeticiones;
+  - en total, 8 casos × 3 × 2 = 48 pares, es decir 96 llamadas.
+- **Aleatoriedad.**
+  - temperatura 0,2;
+  - **semilla de Ollama por par**: `sha256(caso|rotación|repetición)`, la misma en control y tratamiento;
+  - el orden de ejecución de los 96 ensayos se baraja con `SEMILLA_ORDEN = 20261022`, para que el estado de la
+    máquina no se confunda con la condición.
+- **Modelo y recursos.**
+  - `qwen3:4b-instruct`, contexto de 4096 y `keep_alive: 0s`;
+  - guardia de memoria de 3900 MiB;
+  - tiempo máximo de 900 s por llamada.
+  
+  Durante la Etapa 1 no corre código: ni sandbox ni MariaDB.
+- **Entorno no es modelo.** Las interrupciones se manejan como en la Enmienda 3:
+  - un corte, un tiempo agotado o falta de memoria o de contexto quedan en `interrupciones.jsonl` y no se puntúan;
+  - dos cortes seguidos, o falta de memoria o de contexto, detienen la corrida, que después se reanuda.
+
+### Cómo se puntúa (fijado antes de correr)
+
+- **Correcto:** la instrucción elegida, por letra o por el número de línea de una única candidata, se superpone con
+  las líneas sembradas.
+- Una respuesta **ilegible cuenta como incorrecta**. También se informa aparte, por condición.
+- **Unidad de análisis:** el par (caso, rotación, repetición). Solo cuentan los pares completos.
+- **Contraste:** acierto del tratamiento menos acierto del control, con la **prueba exacta de McNemar** bilateral
+  sobre los pares discordantes. b = solo acierta el tratamiento; c = solo acierta el control.
+- **Veredicto preregistrado:**
+  - **«ayuda»** si la diferencia es ≥ 20 puntos y p < 0,05;
+  - **«perjudica»** en el caso simétrico;
+  - **«inconcluso»** en cualquier otro caso.
+  
+  Con 48 pares, por ejemplo, b = 10 y c = 0 da 21 puntos y p ≈ 0,002, y alcanza. b = 12 y c = 4 da 17 puntos y
+  no alcanza.
+- **Se informa siempre, aunque no decide el veredicto:**
+  - acierto por clase (cálculo y sobrescritura);
+  - posición elegida por condición, para el sesgo de posición;
+  - acierto por rotación;
+  - largo medio de la evidencia de la sembrada frente a la de las otras: si la sembrada recibe sistemáticamente
+    más texto, el largo podría explicar el efecto;
+  - auditoría de fugas: ninguna línea de la referencia puede aparecer en una parte del coordinador ni en la
+    traza;
+  - segundos por llamada.
+- Las muestras de entrada y salida (prompt completo por partes y respuesta cruda) quedan en `ensayos.jsonl`.
+
+### Cómo se corre en la VivoBook (por etapas; nada automático)
+
+Desde el checkout aparte (Anexo 2), con `E=scripts/piloto_etapas.sh`:
+
+```bash
+# Etapa 0: sin modelo, no detiene el servicio. Escribe casos.json (la carpeta se imprime al final).
+bash $E eleccion0
+# Revisar casos.json y la selección ANTES de seguir.
+
+# Prueba de rendimiento: 4 ensayos (4 llamadas), protegida como el ensayo técnico
+# (detiene constructor-ia y SIEMPRE lo restaura; límite de 30 minutos).
+bash $E eleccion 30 --casos <carpeta-etapa0>/casos.json --limite 4
+# Mirar resumen.md: segundos por llamada, memoria e interrupciones. Con eso se decide si sigue y con qué límite.
+
+# Recién después, y si ustedes lo deciden: completar lo que falta en la MISMA carpeta (no repite lo hecho).
+bash $E eleccion <minutos> --reanudar <carpeta-etapa1> --completo
+```
+
+- `laboratorio-eleccion` exige `--limite N` o `--completo`: **nunca lanza las 96 llamadas por defecto**.
+- No suponemos que la corrida completa dure una hora: el límite se fija con lo que mida la prueba.
+- Si el tiempo se agota, el ensayo en curso se interrumpe limpio y la corrida se retoma con `--reanudar`.
+- Los ensayos de la prueba de rendimiento siguen el plan barajado y cuentan en el análisis, porque el protocolo
+  es el mismo. Si después de la prueba cambia algo (modelo, contexto, plantilla), se empieza en una carpeta nueva.
+
+**Pruebas:**
+- `tests/test_eleccion.py`, con sandbox y MariaDB reales y un modelo simulado;
+- `tests/test_piloto.py::StagesScriptTests`, que prueba que `eleccion` restaura el servicio y que `eleccion0` no
+  detiene nada.

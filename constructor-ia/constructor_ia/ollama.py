@@ -203,6 +203,8 @@ class OllamaClient:
             payload["think"] = model.think
         if model.keep_alive is not None:
             payload["keep_alive"] = model.keep_alive
+        if model.seed is not None:
+            payload["options"]["seed"] = model.seed
         if fmt is not None:
             payload["format"] = fmt
         start = time.monotonic()

@@ -31,6 +31,7 @@ class ModelConfig:
     timeout_s: int = 300
     think: bool = False
     keep_alive: str | None = None   # por pedido; None = no se envía (vale el valor del servidor)
+    seed: int | None = None         # por pedido; None = no se envía (muestreo no reproducible)
 
 
 @dataclass

@@ -873,7 +873,7 @@ def run_instrument(req, nonce, stdin):
             return False
 
     to_child((json.dumps({"parametros": req.get("parametros") or {}, "esquema": req.get("esquema") or {},
-                          "presupuesto": budget}) + "\n").encode())
+                          "presupuesto": budget, "traza": req.get("traza")}) + "\n").encode())
     try:
         while True:
             while b"\n" not in buf:

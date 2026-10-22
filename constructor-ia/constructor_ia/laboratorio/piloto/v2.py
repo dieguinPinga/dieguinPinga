@@ -127,7 +127,7 @@ class ModeloV2(BR.ModeloConPresupuesto):
     def cabe(self, prompt: str, corto: bool) -> bool:
         return self.tokens_estimados(prompt) + (RESERVA_CORTA if corto else RESERVA_CODIGO) <= self.inner.base.num_ctx
 
-    def pedir(self, tipo, prompt, *, json_out, cancel=None, corto: bool = False):
+    def pedir(self, tipo, prompt, *, json_out, cancel=None, corto: bool = False, seed: int | None = None):
         if len(self.llamadas) >= self.max_llamadas or self.segundos >= self.max_segundos:
             raise BR.Agotado(f"presupuesto agotado ({len(self.llamadas)} llamadas, {self.segundos:.0f} s)")
         if not self.cabe(prompt, corto or json_out):
@@ -135,7 +135,8 @@ class ModeloV2(BR.ModeloConPresupuesto):
                                        f"num_ctx={self.inner.base.num_ctx} con la reserva de salida")
         mem = self.guardia.antes_de_llamada()
         t0 = time.monotonic()
-        text, call = self.inner.pedir(tipo, prompt, json_out=json_out, cancel=cancel, corto=corto)
+        extra = {"seed": seed} if seed is not None else {}
+        text, call = self.inner.pedir(tipo, prompt, json_out=json_out, cancel=cancel, corto=corto, **extra)
         if call.get("resultado") in ("error", "contexto_excedido"):
             self.interrupciones.append({"tipo": tipo, **{k: v for k, v in call.items() if k != "ts"}})
             if call["resultado"] == "contexto_excedido":

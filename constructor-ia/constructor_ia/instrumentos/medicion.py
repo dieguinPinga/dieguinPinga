@@ -61,8 +61,38 @@ def _excepciones(raw) -> list[dict]:
     return out
 
 
+def _traza(raw) -> dict | None:
+    """La traza la informa el proceso NO confiable: se acotan tipos y tamaños antes de guardarla."""
+    if not isinstance(raw, dict):
+        return None
+
+    def txt(v, n=200):
+        return str(v)[:n]
+
+    def valores(d):
+        return {txt(k, 60): txt(v) for k, v in list(d.items())[:8]} if isinstance(d, dict) else {}
+
+    def muestra(m):
+        return {k: valores((m or {}).get(k)) for k in ("usa", "antes", "despues")} if isinstance(m, dict) else None
+
+    lineas = {}
+    for k, d in list((raw.get("lineas") or {}).items())[:8]:
+        if not isinstance(d, dict):
+            continue
+        try:
+            lineas[str(int(k))] = {"veces": int(d.get("veces") or 0), "verdadera": int(d.get("verdadera") or 0),
+                                   "muestras": [muestra(m) for m in (d.get("muestras") or [])[:2]],
+                                   "ultima": muestra(d.get("ultima"))}
+        except (TypeError, ValueError):
+            continue
+    return {"lineas": lineas, "final": valores(raw.get("final"))}
+
+
 def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, params: dict, schema: dict,
-             mission_id: str | None = None, budget: Presupuesto | None = None, cancel=None) -> dict:
+             mission_id: str | None = None, budget: Presupuesto | None = None, cancel=None,
+             traza: dict | None = None) -> dict:
+    """traza (opcional): {línea: {"define": [...], "usa": [...], "cuerpo": [desde, hasta] | None}}. El instrumento
+    se ejecuta igual; además se observa qué hicieron esas líneas (ver instrument_runner.Traza)."""
     inst = almacen.get(instrument_id)
     if inst is None:
         raise ValueError(f"instrumento inexistente: {instrument_id}")
@@ -89,7 +119,7 @@ def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, par
     wall = budget.segundos + budget.consultas * (cfg.explorer_query_timeout_s + 3) + 15
     res = executor.run_instrument({"instrumento.py": inst["code"], **libs},
                                   {"parametros": params or {}, "esquema": compact_schema(schema),
-                                   "presupuesto": budget.as_dict()}, canal, wall, cancel)
+                                   "presupuesto": budget.as_dict(), "traza": traza}, canal, wall, cancel)
     accounting = canal.accounting()
     tables = Almacen.tables_in([q["sql"] for q in accounting["consultas"]], set((schema.get("tablas") or {})))
     fingerprint = Almacen.fingerprint(broker, tables, mission_id) if tables else {}
@@ -114,6 +144,8 @@ def ejecutar(*, executor, broker, almacen: Almacen, cfg, instrument_id: int, par
                       verdict={"falla": falla, "excepciones_capturadas": excepciones})
     output = final.get("valor")
     verdict = verify(output, accounting, canal.agg_numbers, budget.resultado_bytes, excepciones)
+    if traza is not None:
+        verdict["traza"] = _traza(final.get("traza"))
     kept = output if verdict["bytes"] <= budget.resultado_bytes else {"_descartada": "salida demasiado grande"}
     return record("ok" if verdict["contrato"] else "contrato_incumplido", output=kept, accounting=accounting,
                   verdict=verdict, fingerprint=fingerprint, cost=cost,

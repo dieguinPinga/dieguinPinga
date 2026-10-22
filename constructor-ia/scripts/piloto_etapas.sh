@@ -6,6 +6,8 @@
 #   entorno                — comprueba que el piloto usa su propia configuración, datos y MariaDB privado.
 #   ensayo [minutos] [opciones] — el ÚNICO paso que detiene algo: detiene constructor-ia, corre el ensayo técnico con
 #                            un límite de tiempo y SIEMPRE lo vuelve a arrancar (trampa + temporizador de respaldo).
+#   eleccion0              — experimento de elección, Etapa 0 (SIN modelo; no detiene nada).
+#   eleccion [minutos] [opciones] — Etapa 1, protegida como el ensayo (detiene y SIEMPRE restaura constructor-ia).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
 #
@@ -88,8 +90,20 @@ DB_ANTES=""
 PID_ENSAYO=""
 
 cmd_ensayo() {
-  local limite="${1:-90}" rc=0
+  local limite="${1:-90}"
   shift || true   # el resto se pasa al ensayo (p. ej. --protocolo v1 para reproducir el ensayo original)
+  ejecutar_guardado "$limite" laboratorio-piloto --yes --ensayo "$@"
+}
+
+cmd_eleccion() {
+  local limite="${1:-60}"
+  shift || true   # p. ej. --casos <ruta>/casos.json --limite 4, o --reanudar <carpeta> --completo
+  ejecutar_guardado "$limite" laboratorio-eleccion --yes "$@"
+}
+
+ejecutar_guardado() {
+  local limite="${1:-90}" rc=0
+  shift
   [[ "$limite" =~ ^[0-9]+$ ]] && [ "$limite" -ge 10 ] && [ "$limite" -le 180 ] || die "límite en minutos: 10 a 180"
   mkdir -p "$BASE"
   exec 9>"$BASE/.ensayo.lock"
@@ -141,13 +155,13 @@ cmd_ensayo() {
   else
     echo "[piloto] $SERVICIO no estaba activo: no se detiene ni se arranca nada"
   fi
-  timeout --signal=INT --kill-after=120 "${limite}$UNIDAD" bash "$PILOTO_SH" laboratorio-piloto --yes --ensayo "$@" &
+  timeout --signal=INT --kill-after=120 "${limite}$UNIDAD" bash "$PILOTO_SH" "$@" &
   PID_ENSAYO=$!
   wait "$PID_ENSAYO" || rc=$?
   PID_ENSAYO=""
   case "$rc" in
     0) echo "[piloto] ensayo terminado" ;;
-    124) echo "[piloto] el ensayo alcanzó el límite de $limite min y se interrumpió (es reanudable)" ;;
+    124) echo "[piloto] se alcanzó el límite de $limite min y se interrumpió (es reanudable)" ;;
     *) echo "[piloto] el ensayo terminó con código $rc" ;;
   esac
   return "$rc"
@@ -185,7 +199,9 @@ case "${1:-}" in
   huellas) shift; cmd_huellas "$@" ;;
   entorno) cmd_entorno ;;
   ensayo) shift; cmd_ensayo "$@" ;;
+  eleccion0) bash "$PILOTO_SH" laboratorio-eleccion-etapa0 --yes ;;
+  eleccion) shift; cmd_eleccion "$@" ;;
   revisar) shift; cmd_revisar "$@" ;;
   comparar) cmd_comparar ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
