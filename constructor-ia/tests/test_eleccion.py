@@ -246,5 +246,77 @@ class TraceAndChoiceTests(unittest.TestCase):
         self.assertEqual(res["estado"], "detenido_por_entorno", "dos cortes seguidos detienen")
 
 
+class ForensicTests(unittest.TestCase):
+    """forense.py: análisis de SOLO LECTURA de una Etapa 1 guardada (sin modelo), genérico y sin D1/D2."""
+
+    CODIGO = "def medir(db, p):\n    a = 1\n    b = a + 1\n    b = 0\n    return {'resultado': {'b': b}}\n"
+
+    def _partes(self, orden, cond):
+        ps = [("coordinador", "Un instrumento responde algo.\n"),
+              ("evidencia", 'Salida actual: {"resultado": {"b": 0}}\n'),
+              ("evidencia", "Verificaciones que fallan:\n- [modelo] VF: [{'b': 0, 'recontado': 2}] (campos: b)\n"),
+              ("coordinador", "Instrucciones candidatas:\n" + "\n".join(f"{l}) instrucción de la línea {n}"
+                                                                         for l, n in zip("ABC", orden)))]
+        bloques = {2: "se ejecutó 1 vez.\n   Al terminar medir, a conserva el valor que dejó esta línea.",
+                   3: "se ejecutó 1 vez.\n   Al terminar medir, b ya no tiene el valor que dejó esta línea "
+                      "(cambió después).",
+                   4: "se ejecutó 1 vez.\n   Al terminar medir, b conserva el valor que dejó esta línea.\n"
+                      "   Asigna un valor constante y reemplazó un valor distinto."}
+        if cond == "tratamiento":
+            ps.append(("traza", "Evidencia de ejecución:\n" + "\n".join(f"{l}) línea {n}: {bloques[n]}"
+                                                                        for l, n in zip("ABC", orden)) + "\n"))
+        return ps + [("coordinador", "¿Cuál? CANDIDATO: <letra>")]
+
+    def _carpeta(self):
+        d = Path(tempfile.mkdtemp(prefix="cia-forense-"))
+        caso = {"id": "X1", "codigo": self.CODIGO, "sembrada": [4, 4], "candidatas": [4, 3, 2]}
+        (d / "casos.json").write_text(json.dumps({"casos": [caso], "seleccion": ["X1"]}))
+        filas = []
+        for rot, orden in enumerate(([4, 3, 2], [3, 2, 4])):
+            for cond, linea, resp in (
+                    ("control", 4, "CANDIDATO: {L}\nMOTIVO: la línea 4 pone b en cero."),
+                    ("tratamiento", 3, "CANDIDATO: {L}\nMOTIVO: la línea 4 reinicia b, así que la línea 3 se pierde."
+                     if rot == 0 else "CANDIDATO: {L}\nMOTIVO: falta el campo recontado en el resultado.")):
+                pos = orden.index(linea)
+                filas.append({"clave": f"X1|{rot}|1|{cond}", "caso": "X1", "rotacion": rot, "repeticion": 1,
+                              "condicion": cond, "orden": orden, "respuesta": resp.replace("{L}", "ABC"[pos]),
+                              "posicion_elegida": pos, "linea_elegida": linea, "correcto": linea == 4,
+                              "ilegible": False, "partes": self._partes(orden, cond)})
+        (d / "ensayos.jsonl").write_text("\n".join(json.dumps(f, ensure_ascii=False) for f in filas) + "\n")
+        return d
+
+    def test_coherence_sources_and_trace_labels(self):
+        from constructor_ia.laboratorio.piloto import forense as F
+        d = self._carpeta()
+        res = F.analizar_carpeta(d)
+        self.assertEqual([x["efecto"] for x in res["discordantes"]], ["perjudicó", "perjudicó"])
+        t0, t1 = (res["discordantes"][i]["tratamiento"] for i in (0, 1))
+        # el motivo explica el mecanismo con la sembrada (4) y elige la víctima (3)
+        self.assertEqual((t0["nombradas"], t0["coherencia"], t0["nombra_sembrada"]),
+                         ([4, 3], "nombra varias, incluida la elegida", True))
+        self.assertEqual(t0["etiqueta_elegida"], ["se pierde"])
+        self.assertEqual(t0["etiqueta_sembrada"], [["conserva", "constante que reemplaza"]])
+        # la explicación sale de un término que solo está en la verificación
+        self.assertEqual((t1["coherencia"], t1["terminos_solo_verificacion"]), ("sin referencia", ["recontado"]))
+        self.assertTrue(t1["elegida_bloque_ultimo"] is False and t0["elegida_bloque_ultimo"] is False)
+        r = res["por_condicion"]["tratamiento"]
+        self.assertEqual((r["incorrectas"], r["incorrectas_que_nombran_la_sembrada"]), (2, 1))
+        self.assertEqual(res["traza"]["etiqueta_de_la_elegida_si_incorrecta"], {"se pierde": 2})
+        self.assertIn("la traza perjudicó", F.markdown(res))
+
+    def test_cli_is_read_only(self):
+        import hashlib
+        from constructor_ia import cli
+        d = self._carpeta()
+        antes = {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in d.iterdir()}
+        ns = types.SimpleNamespace(carpeta=str(d), salida=str(d / "forense.md"), json=None)
+        self.assertEqual(cli.cmd_lab_choice_forensic(ns), 2, "no escribe dentro de la carpeta del experimento")
+        fuera = Path(tempfile.mkdtemp(prefix="cia-forense-out-"))
+        ns = types.SimpleNamespace(carpeta=str(d), salida=str(fuera / "f.md"), json=str(fuera / "f.json"))
+        self.assertEqual(cli.cmd_lab_choice_forensic(ns), 0)
+        self.assertTrue((fuera / "f.md").exists() and (fuera / "f.json").exists())
+        self.assertEqual(antes, {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in d.iterdir()})
+
+
 if __name__ == "__main__":
     unittest.main()

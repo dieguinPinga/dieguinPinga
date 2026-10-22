@@ -748,6 +748,30 @@ def cmd_lab_pilot(args) -> int:
     return 0
 
 
+def cmd_lab_choice_forensic(args) -> int:
+    """Análisis forense de SOLO LECTURA de una Etapa 1 terminada: no llama al modelo y no escribe en la carpeta."""
+    from .laboratorio.piloto import forense as FO
+
+    carpeta = Path(args.carpeta).resolve()
+    if not (carpeta / "ensayos.jsonl").exists() or not (carpeta / "casos.json").exists():
+        print(f"{carpeta} no tiene ensayos.jsonl y casos.json de una Etapa 1.", file=sys.stderr)
+        return 2
+    destinos = [Path(x).resolve() for x in (args.salida, args.json) if x]
+    if any(carpeta == d or carpeta in d.parents for d in destinos):
+        print("El análisis no escribe dentro de la carpeta del experimento: elija otra ruta.", file=sys.stderr)
+        return 2
+    res = FO.analizar_carpeta(carpeta)
+    texto = FO.markdown(res)
+    if args.salida:
+        Path(args.salida).write_text(texto)
+        print(f"Análisis forense: {args.salida}")
+    else:
+        print(texto)
+    if args.json:
+        Path(args.json).write_text(json.dumps(res, ensure_ascii=False, indent=1, default=str))
+    return 0
+
+
 def cmd_lab_choice_stage0(args) -> int:
     """Experimento de elección, Etapa 0 (SIN modelo): construye los casos y mide si la traza distingue a la
     candidata sembrada. No usa Ollama: puede correr con el servicio activo."""
@@ -1043,6 +1067,12 @@ def main(argv=None) -> int:
     a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_choice)
+    a = sub.add_parser("laboratorio-eleccion-forense",
+                       help="Análisis forense de SOLO LECTURA de una Etapa 1 terminada (sin modelo)")
+    a.add_argument("carpeta")
+    a.add_argument("--salida", help="archivo .md (fuera de la carpeta del experimento); por omisión, pantalla")
+    a.add_argument("--json", help="además, todos los rasgos por respuesta en JSON (fuera de la carpeta)")
+    a.set_defaults(fn=cmd_lab_choice_forensic)
     a = sub.add_parser("laboratorio-piloto-revisar",
                        help="Revisión de solo lectura de un piloto o ensayo: llamadas, prompts, respuestas y autoría")
     a.add_argument("carpeta")

@@ -737,3 +737,92 @@ bash $E eleccion <minutos> --reanudar <carpeta-etapa1> --completo
 - `tests/test_eleccion.py`, con sandbox y MariaDB reales y un modelo simulado;
 - `tests/test_piloto.py::StagesScriptTests`, que prueba que `eleccion` restaura el servicio y que `eleccion0` no
   detiene nada.
+
+## Análisis forense de la Etapa 1 (posterior a los resultados; no modifica el preregistro ni el veredicto)
+
+**Resultado informado por Diego y ChatGPT:**
+- acierto del control 75 %, del tratamiento 66,7 %;
+- diferencia −8,3 puntos y p = 0,2891 (2 pares en que solo acierta el tratamiento, 6 en que solo acierta el
+  control);
+- **veredicto preregistrado: inconcluso. Queda así.**
+
+Todo lo que sigue es **posterior a los resultados** y se apoya en 8 pares discordantes. Además, los 6 pares de un
+mismo caso no son independientes. Por eso son **hipótesis para un experimento nuevo**, no conclusiones.
+
+### Los prompts, reconstruidos
+
+Los prompts se reconstruyeron exactamente con el commit `9fce3f1`: la Etapa 0 es determinista y la selección dio la
+misma. La huella de los 96 textos es `516ccd69c023b98d`, y `laboratorio-eleccion-forense` la calcula sobre los
+prompts guardados para comprobarlo.
+
+**1. Separación entre la salida y el verificador: el campo `medido`.**
+- El contraejemplo del verificador fijo se muestra como `{'inicio': …, 'suma': …, 'medido': …}`. Tiene la misma forma
+  que una ventana de la salida, más una clave que **nadie explica**: es la suma que el verificador recalculó para la
+  ventana [inicio, inicio + 15 min).
+- Marca a la vez los campos `inicio` y `suma`.
+- En el tratamiento, la traza de la candidata que arma `mejores` agrega «deja
+  mejores=[[…2 elementos], […2 elementos], …]». Leída junto al contraejemplo, sugiere «a cada ventana le falta un
+  tercer campo».
+- Lo que sí distinguiría el defecto de D1 no se muestra en ningún lado: la suma 403,121 es exactamente la de la
+  ventana siguiente (04:00).
+- En D2, `{'salida': 0, 'medido': 15000}` no dice de qué campo es cada número.
+- Además, el verificador fijo aparece como `[modelo] VF`, pero lo escribió el coordinador. No confunde las
+  condiciones, porque es igual en las dos, pero es ruido.
+
+**2. Claridad temporal y redacción: el patrón de D2 según la rotación.**
+- A la instrucción causante (22) le toca el bloque **más corto** (388 caracteres). Dice «cobertura **conserva** el
+  valor que dejó esta línea», que suena sano.
+- A las víctimas (17 y 15) les tocan bloques más largos (686 y 704), con tres muestras de contadores. Dicen «**ya no
+  tiene** el valor que dejó esta línea (cambió después)», que suena a defecto.
+- La traza nunca dice **quién** cambió el valor después: lo cambió la línea 22.
+- En las líneas que están dentro de un bucle, «antes/después» muestra el valor de la vuelta anterior. Como los dicts
+  se recortan, a veces se ven idénticos: en D1, la línea 20 muestra «antes sumas={…}; después sumas={…}» con el
+  mismo texto, y la línea 19 dice «antes 23:30; después 23:30», que parece «no cambió nada».
+
+**3. Orden y letras.**
+- Rotación 0: la 22 es A, el primer bloque.
+- Rotación 2: la 22 es B, y la 17 es C, el bloque más largo y el último antes de la pregunta.
+- Rotación 1: la 22 es C. Si el tratamiento no cambió nada en la rotación 1, la recencia sola no lo explica; la
+  combinación de largo, etiqueta y posición sí podría.
+
+**4. Motivo frente a candidato (pendiente de las respuestas).** Hay dos explicaciones posibles:
+- **(a) Se elige a la víctima:** el motivo nombra la 22 y la 17, y la elección cae en la que la traza marca con «ya
+  no tiene el valor».
+- **(b) Error de letra:** el motivo nombra solo la 22, pero la letra corresponde a la 17.
+
+La herramienta separa los dos casos: (a) aparece como «nombra varias, incluida la elegida» y (b) como «incoherente».
+
+### Herramienta: `laboratorio-eleccion-forense` (solo lectura, sin modelo)
+
+```bash
+bash $E forense <carpeta-etapa1> --salida ~/forense-eleccion.md --json ~/forense-eleccion.json
+```
+
+- No escribe dentro de la carpeta del experimento y se niega si se le pide hacerlo. No llama a Ollama ni ejecuta
+  código.
+- Es genérica. Por cada respuesta informa:
+  - qué candidatas nombra el motivo y si es coherente con la letra;
+  - los términos que el motivo tomó **solo** de las verificaciones, **solo** de la traza o **solo** de la salida;
+  - la etiqueta que la traza le dio a la elegida y a la sembrada;
+  - si la elegida tenía el bloque más largo o el último;
+  - una matriz de elecciones por caso, rotación y condición;
+  - los 8 pares discordantes, con los dos motivos y la traza mostrada.
+
+### Ideas para el próximo experimento (a discutir; nada implementado)
+
+- **Factores separados con los mismos casos**, de a uno, con el mismo largo de texto por candidata:
+  - **(i)** un contraste del verificador explicado («el verificador recalculó la suma de la ventana [03:45, 04:00):
+    63,327; el instrumento informa 403,121»), frente al actual;
+  - **(ii)** una redacción **de flujo**, atribuida al que escribe: «esta línea reemplazó el valor que venían
+    acumulando las líneas 15 y 17; ese valor es el que llega a la salida», frente al actual «conserva / ya no
+    tiene»;
+  - **(iii)** solo los hechos conectados con los campos que fallan, frente a todo;
+  - **(iv)** las 6 permutaciones en vez de 3 rotaciones, para separar primacía de recencia.
+- **Un coordinador que selecciona, no que agrega.** Desde los campos que fallan, seguir hacia atrás en la traza
+  quién escribió por última vez el valor que llega a esa salida. Es un corte dinámico y genérico. Se muestra solo esa
+  cadena, con un presupuesto de caracteres igual en todas las condiciones.
+- **Una lectura sin modelo antes del modelo:**
+  - una regla fija que elige usando solo la evidencia presentada mide si esa evidencia **alcanza en principio**;
+  - si la regla no puede, no tiene sentido pedírselo a Qwen.
+- **Más casos de sobrescritura:** hoy hay 1 solo. Además, un análisis que trate al caso como unidad (por ejemplo,
+  una prueba de permutación por caso), porque los pares de un mismo caso están correlacionados.
