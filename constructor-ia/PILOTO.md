@@ -1286,3 +1286,76 @@ bash $E ciclo 90 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo -
 - No diseña verificaciones nuevas (por ejemplo, una que controle el reparto entre válidas e inválidas).
 
 Son los pasos siguientes de la arquitectura, y cada uno será otra versión.
+
+## Ciclo v1.1: corrección de la interfaz de reparación (2026-10-22, sin nuevas inferencias)
+
+### Qué pasó en la primera llamada real
+
+- Corrida en la VivoBook, commit `49a7e25`, defecto X01, una llamada. La corrida terminó por el límite de llamadas.
+- La hipótesis era la correcta (línea 19), y Qwen explicó bien la causa: `ancho + 1`.
+- El bloque de código que devolvió empezaba con `19 |`: lo copió de la vista numerada del prompt.
+- El fragmento no compiló (`cannot assign to expression here`) y se descartó **antes** de la verificación.
+
+**Fue una falla de la interfaz del coordinador, no del razonamiento del modelo.** El prompt mostraba el código solo
+en formato numerado y no pedía explícitamente código sin numeración.
+
+### Correcciones
+
+1. **El pedido.**
+   - La vista numerada se presenta como «SOLO para ubicarte; no es parte del código».
+   - La instrucción de la hipótesis se muestra además **limpia**, en un bloque de Python sin números.
+   - Se pide el reemplazo «SIN números de línea, SIN «>>» y SIN «|»».
+2. **Limpieza estricta.** El prefijo `N |` se quita **solo** si se cumplen las cuatro condiciones:
+   1. el fragmento no compila tal como llegó;
+   2. todas sus líneas no vacías tienen el prefijo;
+   3. los números son consecutivos y empiezan en la línea de la instrucción marcada;
+   4. sin el prefijo, compila.
+   
+   Cualquier otra forma queda como **fragmento inválido**, con su motivo; no se adivina. Python válido que «parece»
+   numerado, como `19 | 2`, no se toca.
+3. **Etapas separadas en cada intento**, en `llamadas.jsonl`, `resultados.jsonl` y `resumen.md`:
+   1. **propuesta recibida:** tipo y fragmento crudo, tal como llegó;
+   2. **limpieza:** si se aplicó y por qué;
+   3. **fragmento** válido o inválido, con el error;
+   4. **ensamblado** realizado o no, exitoso o fallido, con atribución y motivo;
+   5. **verificación** realizada o no; si no, por qué;
+   6. **juez**, solo cuando corresponde.
+4. **Intentos incompletos por el límite.**
+   - Un defecto cuya investigación cortó el límite queda como «incompleto», con sus hipótesis **pendientes**.
+   - **No se juzga** y no cuenta como abstención ni como confirmación.
+   - Se lista aparte en el resumen.
+5. **Versiones que no se mezclan.**
+   - El ciclo ahora se llama `ciclo v1.1` y escribe `version.json` en la carpeta.
+   - No reanuda una carpeta de otra versión. Una carpeta con `llamadas.jsonl` y sin `version.json` es de v1.
+   - **La corrida original de la VivoBook no se puede reanudar con este código y no se modifica.** La próxima prueba
+     va en una carpeta nueva.
+
+**Lo que no cambió:**
+- las reglas E0 (`ee46552429b3047e`);
+- la verificación (dos juegos de parámetros y la forma de la salida);
+- el juez y el aislamiento.
+
+### Regresiones
+
+En `tests/test_ciclo.py`:
+- La **respuesta real de Qwen**: el bloque textual, con un MOTIVO resumido.
+  - La propuesta se guarda tal como llegó.
+  - La limpieza quita «19–19», el fragmento es válido, el ensamblado cambia solo la línea 19 y la verificación la
+    **acepta**.
+  - En el entorno de desarrollo, el juez la da por **correcta**: `strptime(minuto)` recalcula el mismo `m` de la
+    línea 18.
+- **Limpieza estricta:** otra numeración, prefijo en solo algunas líneas, numeración no consecutiva o código que
+  tampoco compila sin el prefijo quedan inválidos, sin ensamblar.
+- **Python válido parecido a una numeración** no se toca.
+- **Un reemplazo numerado de varias líneas** conserva la sangría relativa. Se prueba con el `if` de X11 y su
+  `continue`.
+- **NO_ES_ESTA o una respuesta ilegible** quedan registradas con «verificación no realizada».
+- **El límite:** «incompleto», con las hipótesis pendientes, sin juez y sin abstención.
+- **Una carpeta de v1** no se reanuda y queda intacta.
+
+**Para retomar la prueba pequeña con v1.1 (carpeta nueva):**
+
+```bash
+bash $E ciclo 90 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X01,X07,X09,X04 \
+     --limite-llamadas 12
+```

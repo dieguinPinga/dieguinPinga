@@ -24,10 +24,12 @@ terminó; la auditoría de fugas revisa después cada prompt.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import random
 import re
+import textwrap
 import time
 from pathlib import Path
 
@@ -43,6 +45,7 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
+VERSION = "ciclo v1.1"                     # v1.1: interfaz de reparación (código sin numeración, etapas, límite)
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, como máximo
 PARAMS_COORDINADOR = (B.PARAMS_VISIBLES, {"ancho_min": 20, "top": 4})
@@ -182,16 +185,24 @@ def partes(problema: dict, obs: dict, linea: int) -> list[tuple[str, str]]:
     return [("coordinador", f"Un instrumento de medición escrito en Python responde: {B.PREGUNTA}\n"),
             ("evidencia", "\n\n".join(evid) + "\n"),
             ("coordinador", GLOSARIO + "\n"),
-            ("coordinador", "Código actual (la instrucción marcada con >> es la hipótesis):\n"
-                            + P.mostrar(codigo, u, contexto=200, completa=True) + "\n"),
-            ("coordinador", f"Hipótesis del coordinador, TODAVÍA NO COMPROBADA: la causa de las fallas está en la "
-                            f"instrucción marcada (línea {rango}).\n"
-                            "Si es así, proponé el cambio MÍNIMO: escribí el código que REEMPLAZA a toda la "
-                            "instrucción marcada (puede tener más de una línea, por ejemplo para agregar junto a ella "
-                            "una instrucción que falta).\n"
+            ("coordinador", "Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son "
+                            "parte del código:\n" + P.mostrar(codigo, u, contexto=200, completa=True) + "\n"),
+            ("coordinador", f"Instrucción de la hipótesis (línea {rango}), tal como está en el código:\n"
+                            f"```python\n{instruccion(codigo, u)}\n```\n"),
+            ("coordinador", f"Hipótesis del coordinador, TODAVÍA NO COMPROBADA: la causa de las fallas está en esa "
+                            f"instrucción (línea {rango}).\n"
+                            "Si es así, proponé el cambio MÍNIMO: escribí el código que REEMPLAZA a esa instrucción "
+                            "completa (puede tener más de una línea, por ejemplo para agregar junto a ella una "
+                            "instrucción que falta). Escribí solo código Python: SIN números de línea, SIN «>>» y SIN "
+                            "«|».\n"
                             "Si la corrección es borrarla, respondé ELIMINAR. Si creés que la causa NO está en esa "
                             "instrucción, respondé NO_ES_ESTA.\n"
                             "Formato:\n```python\n<reemplazo>\n```\nMOTIVO: <una frase>")]
+
+
+def instruccion(codigo: str, u: P.Unidad) -> str:
+    """La instrucción completa, sin numeración ni marcas y sin la sangría del bloque."""
+    return textwrap.dedent("\n".join(codigo.splitlines()[u.lineno - 1:u.end_lineno]))
 
 
 RE_BLOQUE = re.compile(r"```[a-zA-Z0-9]*\n(.*?)```", re.S)
@@ -208,6 +219,76 @@ def interpretar(texto: str | None) -> dict:
     if cabeza.startswith("ELIMINAR"):
         return {"tipo": "eliminar"}
     return {"tipo": "ilegible"}
+
+
+# Prefijo de la vista numerada que muestra el prompt («>>  19 | código» o «    19 | código»).
+RE_NUMERADA = re.compile(r"^(?:>>)?[ \t]*(\d{1,4})[ \t]?\|[ \t]?(.*)$")
+
+
+def _compila(fragmento: str) -> str | None:
+    """None si el fragmento compila solo; si no, el error."""
+    try:
+        ast.parse(P.limpiar_fragmento(fragmento))
+        return None
+    except SyntaxError as e:
+        return f"{e.msg} (línea {e.lineno})"
+
+
+def limpiar_numeracion(fragmento: str, desde: int) -> tuple[str | None, str]:
+    """Quita el prefijo «N |» SOLO si se cumplen las cuatro condiciones (si no, devuelve None y el motivo):
+    1. el fragmento NO compila tal como llegó;
+    2. TODAS sus líneas no vacías tienen el prefijo de la vista numerada;
+    3. los números son consecutivos y empiezan en la línea de la instrucción marcada;
+    4. sin el prefijo, compila.
+    No adivina: cualquier otra forma queda como fragmento inválido."""
+    if _compila(fragmento) is None:
+        return None, "compila tal como llegó: no se limpia"
+    lineas = fragmento.splitlines()
+    llenas = [ln for ln in lineas if ln.strip()]
+    marcas = [RE_NUMERADA.match(ln) for ln in llenas]
+    if not llenas or not all(marcas):
+        return None, "no todas las líneas tienen el prefijo «N |»: no se limpia"
+    nums = [int(m.group(1)) for m in marcas]
+    if nums != list(range(desde, desde + len(nums))):
+        return None, f"la numeración {nums} no es la de la instrucción marcada (desde {desde}): no se limpia"
+    limpio = "\n".join(RE_NUMERADA.match(ln).group(2) if ln.strip() else "" for ln in lineas) + "\n"
+    error = _compila(limpio)
+    if error:
+        return None, f"sin la numeración tampoco compila: {error}"
+    return limpio, f"se quitó la numeración {nums[0]}–{nums[-1]}"
+
+
+def preparar(texto: str | None, codigo: str, u: P.Unidad) -> dict:
+    """Etapas separadas: propuesta → limpieza → fragmento válido o no → ensamblado (con motivo). La verificación la
+    hace después `verificar`, solo si el ensamblado salió."""
+    it = interpretar(texto)
+    reg = {"propuesta": {"tipo": it["tipo"], "fragmento_crudo": it.get("fragmento")},
+           "limpieza": {"aplicada": False, "detalle": "no corresponde"},
+           "fragmento": {"valido": None, "error": None},
+           "ensamblado": {"realizado": False, "ok": False, "atribucion": None, "detalle": "no corresponde"}}
+    if it["tipo"] not in ("reemplazar", "eliminar"):
+        motivo = {"no_es_esta": "Qwen respondió NO_ES_ESTA", "ilegible": "no hay un bloque de código ni una "
+                  "respuesta reconocible"}[it["tipo"]]
+        reg["ensamblado"]["detalle"] = motivo
+        return reg
+    fragmento = it.get("fragmento", "")
+    if it["tipo"] == "reemplazar":
+        error = _compila(fragmento)
+        if error:
+            limpio, detalle = limpiar_numeracion(fragmento, u.lineno)
+            reg["limpieza"] = {"aplicada": limpio is not None, "detalle": detalle}
+            if limpio is not None:
+                fragmento, error = limpio, None
+        reg["fragmento"] = {"valido": error is None, "error": error}
+        if error:
+            reg["ensamblado"]["detalle"] = f"no se ensambla: el fragmento no compila ({error})"
+            return reg
+    ens = P.aplicar(codigo, u, it["tipo"], fragmento, completa=True)
+    reg["ensamblado"] = {"realizado": True, "ok": ens.codigo is not None, "atribucion": ens.atribucion,
+                         "detalle": ens.detalle}
+    if ens.codigo is not None:
+        reg["codigo_propuesto"] = ens.codigo
+    return reg
 
 
 def semilla(defecto_id: str, i: int) -> int:
@@ -242,6 +323,25 @@ def verificar(co: Coordinador, obs: dict, codigo: str, nuevo: str) -> dict:
 
 # Investigación de un defecto --------------------------------------------------------------------------------------
 
+def etapas(reg: dict) -> str:
+    """Una línea legible: propuesta → limpieza → fragmento → ensamblado → verificación."""
+    out = [f"propuesta {reg['propuesta']['tipo']}"]
+    if reg["limpieza"]["aplicada"]:
+        out.append(f"limpieza: {reg['limpieza']['detalle']}")
+    if reg["fragmento"]["valido"] is not None:
+        out.append("fragmento válido" if reg["fragmento"]["valido"] else
+                   f"fragmento inválido ({reg['fragmento']['error']}"
+                   + (f"; {reg['limpieza']['detalle']}" if not reg["limpieza"]["aplicada"]
+                      and reg["limpieza"]["detalle"] != "no corresponde" else "") + ")")
+    e = reg["ensamblado"]
+    if e["realizado"]:
+        out.append("ensamblado ok" if e["ok"] else f"ensamblado fallido ({e['atribucion']}: {e['detalle']})")
+    v = reg.get("verificacion") or {}
+    out.append(("ACEPTADA" if v.get("aceptada") else f"rechazada: {v.get('motivo')}") if v.get("realizada")
+               else f"verificación no realizada: {v.get('motivo') or e['detalle']}")
+    return " → ".join(out)
+
+
 class Detener(Exception):
     """El entorno obliga a parar la corrida (se reanuda después)."""
 
@@ -258,21 +358,19 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
             resp = hechas[clave]["respuesta"]
         else:
             resp = pedir(clave, ps, semilla(problema["id"], i))
-            if resp is None:
-                return {"id": problema["id"], "estado": "incompleto", "intentos": intentos}
-        it = interpretar(resp)
-        u = P.unidad_en(codigo, linea)
-        reg = {"clave": clave, "hipotesis": linea, "interpretacion": it["tipo"], "respuesta": resp, "partes": ps}
-        if it["tipo"] in ("reemplazar", "eliminar"):
-            ens = P.aplicar(codigo, u, it["tipo"], it.get("fragmento", ""), completa=True)
-            reg["ensamblado"] = {"atribucion": ens.atribucion, "detalle": ens.detalle}
-            if ens.codigo is not None:
-                reg["codigo_propuesto"] = ens.codigo
-                reg["verificacion"] = verificar(co, obs, codigo, ens.codigo)
+            if resp is None:                 # el límite de llamadas cortó la investigación: NO es una abstención
+                return {"id": problema["id"], "estado": "incompleto", "intentos": intentos,
+                        "pendientes": obs["hipotesis"][i:]}
+        reg = {"clave": clave, "hipotesis": linea, "respuesta": resp, "partes": ps,
+               **preparar(resp, codigo, P.unidad_en(codigo, linea))}
+        reg["interpretacion"] = reg["propuesta"]["tipo"]
+        if reg["ensamblado"]["ok"]:
+            reg["verificacion"] = {"realizada": True, **verificar(co, obs, codigo, reg["codigo_propuesto"])}
+        else:
+            reg["verificacion"] = {"realizada": False, "aceptada": None, "motivo": reg["ensamblado"]["detalle"]}
         intentos.append(reg)
-        acept = (reg.get("verificacion") or {}).get("aceptada")
-        log(f"    {clave}: {it['tipo']}" + (f" → {'ACEPTADA' if acept else 'rechazada: ' + reg['verificacion']['motivo']}"
-                                         if "verificacion" in reg else ""))
+        acept = reg["verificacion"]["aceptada"]
+        log(f"    {clave}: {etapas(reg)}")
         if acept:
             return {"id": problema["id"], "estado": "confirmada", "linea": linea, "intentos": intentos}
     return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos}
@@ -334,15 +432,22 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
                 "reglas_v1_punta_a_punta": "se abstiene" if not regla else
                 ("acierta" if regla["eleccion"] in obj else "se equivoca"),
                 "regla_v1": regla})
+    incompleto = bool(res) and res["estado"] == "incompleto"
     intentos = []
     for it in (res or {}).get("intentos", []):
         j = {"clave": it["clave"], "hipotesis_en_objetivo": it["hipotesis"] in obj,
-             "interpretacion": it["interpretacion"], "aceptada": (it.get("verificacion") or {}).get("aceptada"),
-             "fugas": auditar(it["partes"], defecto)}
-        if "codigo_propuesto" in it:
+             "interpretacion": it["interpretacion"], "etapas": etapas(it),
+             "verificacion_realizada": bool((it.get("verificacion") or {}).get("realizada")),
+             "aceptada": (it.get("verificacion") or {}).get("aceptada"), "fugas": auditar(it["partes"], defecto)}
+        if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
             j["correcta_segun_juez"] = juez.correcto(it["codigo_propuesto"])
         intentos.append(j)
     out["intentos"] = intentos
+    if incompleto:
+        out.update({"pendientes": res["pendientes"],
+                    "resultado": f"incompleto: el límite de llamadas cortó la investigación (hipótesis pendientes "
+                                 f"{res['pendientes']}); no se juzga ni cuenta como abstención"})
+        return out
     acept = next((j for j in intentos if j["aceptada"]), None)
     out["resultado"] = ("confirmación verdadera" if acept and acept.get("correcta_segun_juez") else
                         "CONFIRMACIÓN FALSA" if acept else
@@ -372,6 +477,13 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
                            "las congeladas; otra versión de reglas es otra versión del ciclo")
     salida = Path(salida)
     salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+    vpath = salida / "version.json"
+    previa = json.loads(vpath.read_text()).get("version") if vpath.exists() else (
+        "ciclo v1" if (salida / "llamadas.jsonl").exists() else None)
+    if previa not in (None, VERSION):
+        raise RuntimeError(f"la carpeta es de «{previa}» y este código es «{VERSION}»: no se reanuda (los resultados "
+                           "de otra versión no se mezclan ni se modifican); usar una carpeta nueva")
+    vpath.write_text(json.dumps({"version": VERSION}))
     bordes = agregar_bordes(ent)            # la base privada es nueva en cada corrida: también al reanudar
     (salida / "bordes.json").write_text(json.dumps(bordes))
     co = Coordinador(ent)
@@ -434,15 +546,14 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
     (salida / "observaciones.json").write_text(json.dumps(observaciones, ensure_ascii=False, indent=1, default=str))
     # El juez entra recién ahora, con la investigación terminada.
     juez = Juez(ent)
-    completos = {k: v for k, v in resultados.items() if v["estado"] != "incompleto"}
-    for k, v in completos.items():                                     # los intentos con sus prompts (para auditar)
+    for v in resultados.values():                                      # los intentos con sus prompts (para auditar)
         for it in v["intentos"]:
             it.setdefault("partes", (hechas.get(it["clave"]) or {}).get("partes", []))
-    juicio = [juzgar(juez, d, observaciones[d["id"]], completos.get(d["id"])) for d in defectos
+    juicio = [juzgar(juez, d, observaciones[d["id"]], resultados.get(d["id"])) for d in defectos
               if d["id"] in observaciones]
     ent.liberar(juez.alm)
     ent.liberar(co.alm)
-    res = {"version": "ciclo v1", "huella_reglas": E0.huella_reglas(), "python_sandbox": E0.version_python(cfg),
+    res = {"version": VERSION, "huella_reglas": E0.huella_reglas(), "python_sandbox": E0.version_python(cfg),
            "bordes": bordes, "params_coordinador": PARAMS_COORDINADOR, "corrida": estado["corrida"],
            "llamadas_nuevas": estado["nuevas"], "llamadas_totales": len(hechas),
            "interrupciones": estado["interrupciones"], "juicio": juicio, "resumen": resumir(juicio)}
@@ -460,17 +571,19 @@ def resumir(juicio: list[dict]) -> dict:
             "reglas_v1_punta_a_punta": dict(Counter(j["reglas_v1_punta_a_punta"] for j in inv)),
             "resultados": dict(Counter(j["resultado"] for j in juicio if j.get("resultado"))),
             "confirmaciones_falsas": [j["id"] for j in juicio if j.get("resultado") == "CONFIRMACIÓN FALSA"],
+            "incompletos": [j["id"] for j in juicio if "pendientes" in j],
             "fugas": sum(len(x["fugas"]) for j in juicio for x in j.get("intentos", []))}
 
 
 def markdown(res: dict) -> str:
     r = res["resumen"]
-    out = [f"# Ciclo v1: hipótesis → reparación → verificación", "",
+    out = [f"# {res['version']}: hipótesis → reparación → verificación", "",
            f"Reglas E0 `{res['huella_reglas']}` · Python del sandbox {res['python_sandbox']} · corrida: "
            f"**{res['corrida']}** · llamadas nuevas {res['llamadas_nuevas']} (total {res['llamadas_totales']}) · "
            f"datos de borde: {res['bordes']}", "",
            f"- **Confirmaciones falsas: {len(r['confirmaciones_falsas'])}** {r['confirmaciones_falsas']}",
            f"- Resultados: {r['resultados']}",
+           f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
            f"- Reglas v1 de punta a punta (sin filtro): {r['reglas_v1_punta_a_punta']}",
            f"- Equivalentes según el juez: {r['equivalentes']} · no detectados: {r['no_detectados']} · causa fuera "
            f"de las candidatas: {r['causa_fuera_de_las_candidatas']} · fugas: {r['fugas']}", "", "## Por defecto", ""]
@@ -479,9 +592,11 @@ def markdown(res: dict) -> str:
         if "regla_v1" in j:
             linea += f" · regla v1: {j['reglas_v1_punta_a_punta']}"
         for it in j.get("intentos", []):
-            linea += (f"\n  - {it['clave']}: {it['interpretacion']}"
-                      + (f", aceptada={it['aceptada']}" if it["aceptada"] is not None else "")
-                      + (f", correcta según el juez={it['correcta_segun_juez']}" if "correcta_segun_juez" in it else "")
-                      + (f", FUGAS {it['fugas']}" if it["fugas"] else ""))
+            linea += (f"\n  - {it['clave']}: {it['etapas']}"
+                      + (f" · juez: {'correcta' if it['correcta_segun_juez'] else 'incorrecta'}"
+                         if "correcta_segun_juez" in it else "")
+                      + (f" · FUGAS {it['fugas']}" if it["fugas"] else ""))
+        for ln in j.get("pendientes", []):
+            linea += f"\n  - hipótesis L{ln}: pendiente (no se pidió: límite de llamadas)"
         out.append(linea)
     return "\n".join(out) + "\n"

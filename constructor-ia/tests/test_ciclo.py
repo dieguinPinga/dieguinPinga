@@ -32,7 +32,7 @@ def banco(*ids):
 
 
 def hipotesis_del_prompt(prompt: str) -> int:
-    return int(re.search(r"instrucción marcada \(línea (\d+)", prompt).group(1))
+    return int(re.search(r"Instrucción de la hipótesis \(línea (\d+)", prompt).group(1))
 
 
 class Modelo:
@@ -53,6 +53,13 @@ class Modelo:
 
 def bloque(codigo):
     return f"```python\n{codigo}\n```\nMOTIVO: simulado"
+
+
+# Respuesta REAL de Qwen en la VivoBook (commit 49a7e25, X01, hipótesis 19): copió el prefijo «19 |» de la vista
+# numerada. El bloque es textual; el MOTIVO es un resumen del que dio Qwen.
+QWEN_X01 = ('```python\n19 |         inicio = datetime.datetime.strptime(minuto, "%Y-%m-%d %H:%M") - '
+            'datetime.timedelta(minutes=m.minute % ancho)\n```\n'
+            'MOTIVO: el error es usar ancho + 1 en lugar de ancho.')
 
 
 class UnitTests(unittest.TestCase):
@@ -105,6 +112,85 @@ class UnitTests(unittest.TestCase):
         self.assertIn(str(C.PARAMS_COORDINADOR[1]), texto)
         self.assertNotIn("[modelo]", texto)
         self.assertEqual(C.auditar(ps, x04), [])
+        self.assertIn("SIN números de línea", texto)
+        self.assertIn("```python\nsumas[inicio] = sumas.get(inicio, 0.0) + v\n```", texto,
+                      "la instrucción de la hipótesis también se muestra limpia, sin numeración")
+
+
+class NumberedFragmentTests(unittest.TestCase):
+    """Regresiones de la interfaz: el prefijo «N |» se quita SOLO en el caso estricto y verificable."""
+
+    def setUp(self):
+        self.x01 = banco("X01")[0]
+        self.u = C.P.unidad_en(self.x01["codigo"], 19)
+
+    def preparar(self, texto, u=None):
+        return C.preparar(texto, self.x01["codigo"], u or self.u)
+
+    def test_qwens_real_answer_is_cleaned_and_assembled(self):
+        r = self.preparar(QWEN_X01)
+        self.assertEqual(r["propuesta"]["tipo"], "reemplazar")
+        self.assertTrue(r["propuesta"]["fragmento_crudo"].startswith("19 |"), "la propuesta queda tal como llegó")
+        self.assertEqual(r["limpieza"], {"aplicada": True, "detalle": "se quitó la numeración 19–19"})
+        self.assertTrue(r["fragmento"]["valido"])
+        self.assertTrue(r["ensamblado"]["ok"])
+        self.assertEqual(r["codigo_propuesto"].splitlines()[18].strip(),
+                         'inicio = datetime.datetime.strptime(minuto, "%Y-%m-%d %H:%M") - '
+                         'datetime.timedelta(minutes=m.minute % ancho)')
+        antes = r["codigo_propuesto"].splitlines()
+        self.assertEqual(antes[:18] + antes[19:], self.x01["codigo"].splitlines()[:18]
+                         + self.x01["codigo"].splitlines()[19:], "solo cambia la línea 19")
+
+    def test_cleaning_is_strict(self):
+        casos = {
+            "otra numeración": "```python\n20 |         inicio = m\n```",
+            "prefijo en algunas líneas": "```python\n19 |   inicio = m\nx = 1\n```",
+            "no compila ni sin prefijo": "```python\n19 | inicio = (\n```",
+            "numeración no consecutiva": "```python\n19 | inicio = m\n21 | x = 1\n```",
+        }
+        for nombre, texto in casos.items():
+            with self.subTest(nombre):
+                r = self.preparar(texto)
+                self.assertFalse(r["limpieza"]["aplicada"])
+                self.assertIn("no se limpia" if nombre != "no compila ni sin prefijo" else "tampoco compila",
+                              r["limpieza"]["detalle"])
+                self.assertFalse(r["fragmento"]["valido"])
+                self.assertFalse(r["ensamblado"]["realizado"], "un fragmento inválido no se ensambla")
+                self.assertNotIn("codigo_propuesto", r)
+
+    def test_valid_python_that_looks_numbered_is_left_alone(self):
+        r = self.preparar("```python\ninicio = 19 | 2\n```")
+        self.assertFalse(r["limpieza"]["aplicada"])
+        self.assertTrue(r["fragmento"]["valido"])
+        r = self.preparar("```python\n19 | 2\n```")          # una expresión válida (OR de bits): no se toca
+        self.assertEqual((r["limpieza"]["aplicada"], r["fragmento"]["valido"]), (False, True))
+
+    def test_numbered_multiline_keeps_relative_indentation(self):
+        x11 = banco("X11")[0]
+        u = C.P.unidad_en(x11["codigo"], 14)                       # el if (completo: encabezado y cuerpo)
+        texto = ("```python\n14 |         if not 0.5 < v < 900:\n15 |             cobertura[\"invalidas\"] += 1\n"
+                 "16 |             continue\n```")
+        r = C.preparar(texto, x11["codigo"], u)
+        self.assertTrue(r["limpieza"]["aplicada"])
+        self.assertTrue(r["ensamblado"]["ok"])
+        self.assertIn("            continue", r["codigo_propuesto"])
+
+    def test_every_stage_is_recorded_when_nothing_is_proposed(self):
+        for texto, tipo in (("NO_ES_ESTA\nMOTIVO: no", "no_es_esta"), ("no sé", "ilegible")):
+            r = self.preparar(texto)
+            self.assertEqual(r["propuesta"]["tipo"], tipo)
+            self.assertFalse(r["ensamblado"]["realizado"])
+            r["verificacion"] = {"realizada": False, "aceptada": None, "motivo": r["ensamblado"]["detalle"]}
+            self.assertIn("verificación no realizada", C.etapas(r))
+
+    def test_a_folder_from_another_version_is_not_resumed(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "llamadas.jsonl").write_text('{"clave": "X01|h0|L19", "respuesta": "x"}\n')
+        with self.assertRaisesRegex(RuntimeError, "ciclo v1»"):
+            C.correr(None, None, defectos=[], salida=d)
+        self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
+                         "la corrida original no se toca")
+        self.assertFalse((d / "version.json").exists())
 
 
 @unittest.skipUnless(bwrap_works() and mariadb_fixture.available(), "bubblewrap o MariaDB no disponibles")
@@ -181,11 +267,27 @@ class CycleTests(unittest.TestCase):
             self.assertNotIn("Cada fila reemplaza", texto, "la descripción del defecto no llega al modelo")
         self.assertIn("CONFIRMACIÓN FALSA", (self.dir / "confirmaciones" / "resumen.md").read_text())
 
+    def test_qwens_real_answer_now_reaches_verification_and_the_judge(self):
+        m = Modelo(lambda prompt, linea: QWEN_X01 if linea == 19 else "NO_ES_ESTA")
+        res = self.correr("qwen_x01", banco("X01"), m)
+        (j,) = res["juicio"]
+        self.assertEqual(len(m.llamadas), 1, "R4 pone la línea 19 primero")
+        self.assertIn("limpieza: se quitó la numeración 19–19 → fragmento válido → ensamblado ok → ACEPTADA",
+                      j["intentos"][0]["etapas"])
+        self.assertEqual(j["resultado"], "confirmación verdadera")
+
     def test_call_limit_and_resume_without_repeating_calls(self):
         nunca = lambda prompt, linea: "NO_ES_ESTA"                          # noqa: E731
         m1 = Modelo(nunca)
         r1 = self.correr("reanudar", banco("X07"), m1, limite_llamadas=2)
         self.assertEqual((r1["corrida"], len(m1.llamadas)), ("limite", 2))
+        (j1,) = r1["juicio"]
+        self.assertTrue(j1["resultado"].startswith("incompleto"), "el límite NO es una abstención")
+        self.assertEqual(j1["pendientes"], [12])
+        self.assertTrue(all("correcta_segun_juez" not in it for it in j1["intentos"]), "no se juzga a medias")
+        self.assertEqual(r1["resumen"]["incompletos"], ["X07"])
+        self.assertNotIn("abstención", r1["resumen"]["resultados"])
+        self.assertIn("pendiente (no se pidió: límite de llamadas)", (self.dir / "reanudar" / "resumen.md").read_text())
         m2 = Modelo(nunca)
         r2 = self.correr("reanudar", banco("X07"), m2)
         self.assertEqual(len(m2.llamadas), 1, "solo la hipótesis que faltaba")
