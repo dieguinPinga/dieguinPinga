@@ -95,16 +95,22 @@ def _anomalo(r: dict) -> bool:
 
 # Etapa 0: casos y calidad de la evidencia ---------------------------------------------------------------------
 
-def construir_casos(ent, *, incluir_mutantes: bool = True, log=print) -> dict:
+def construir_casos(ent, *, incluir_mutantes: bool = True, externos: list[tuple] | None = None, solo_externos: bool = False,
+                    log=print) -> dict:
+    """externos: [(id, descripcion, codigo, (desde, hasta))] escritos por otros (evaluación a ciegas de E0); con
+    solo_externos no se agregan D1, D2 ni los mutantes del banco."""
     juez = ent.almacen(f"eleccion_juez_{int(time.time() * 1000)}")
     trabajo = ent.almacen(f"eleccion_casos_{int(time.time() * 1000)}")
     ref = {k: V._run(ent, juez, juez.save("referencia", B.REFERENCIA, B.MANIFIESTO, author="banco")["id"], p)
            .get("output") for k, p in (("visible", B.PARAMS_VISIBLES), ("reserva", B.PARAMS_RESERVA))}
     fuentes = [(d.id, f"{d.id} {d.titulo}", d.codigo, B.lineas_de(d.codigo, d.sembrada), B.REFERENCIA)
                for d in B.DEFECTOS.values()]
-    if incluir_mutantes:
+    if incluir_mutantes and not solo_externos:
         ref_unparse = ast.unparse(ast.parse(B.REFERENCIA)) + "\n"
         fuentes += [(m.id, m.descripcion, m.codigo, m.lineas, ref_unparse) for m in B.mutantes()]
+    if solo_externos:
+        fuentes = []
+    fuentes += [(i, d, c, tuple(l), B.REFERENCIA) for i, d, c, l in (externos or [])]
     vid = trabajo.save("verificador_fijo", VERIFICADOR_FIJO, {"proposito": "verificador"}, author="laboratorio")["id"]
     casos = []
     for cid, desc, codigo, sembrada, referencia in fuentes:

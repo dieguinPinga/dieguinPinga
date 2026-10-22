@@ -8,7 +8,7 @@
 #                            un límite de tiempo y SIEMPRE lo vuelve a arrancar (trampa + temporizador de respaldo).
 #   eleccion0              — experimento de elección, Etapa 0 (SIN modelo; no detiene nada).
 #   eleccion [minutos] [opciones] — Etapa 1, protegida como el ensayo (detiene y SIEMPRE restaura constructor-ia).
-#   e0                     — E0 del próximo experimento (SIN modelo; no detiene nada; varios minutos).
+#   e0 [--defectos dir]    — E0 (SIN modelo; no detiene nada; varios minutos); con --defectos, evaluación a ciegas.
 #   forense carpeta [--salida f.md] — SOLO LECTURA: análisis forense de una Etapa 1 terminada (sin modelo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
@@ -203,7 +203,7 @@ case "${1:-}" in
   ensayo) shift; cmd_ensayo "$@" ;;
   eleccion0) bash "$PILOTO_SH" laboratorio-eleccion-etapa0 --yes ;;
   eleccion) shift; cmd_eleccion "$@" ;;
-  e0) bash "$PILOTO_SH" laboratorio-eleccion-e0 --yes ;;
+  e0) shift; bash "$PILOTO_SH" laboratorio-eleccion-e0 --yes "$@" ;;
   forense) shift; bash "$PILOTO_SH" laboratorio-eleccion-forense "$@" ;;
   revisar) shift; cmd_revisar "$@" ;;
   comparar) cmd_comparar ;;

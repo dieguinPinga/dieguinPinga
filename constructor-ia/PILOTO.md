@@ -969,3 +969,85 @@ Debería dar la misma tabla. La versión de Python solo cambia el subrayado de l
     - la posición elegida en el control;
     - la coherencia entre motivo y elección;
     - los términos que el motivo toma solo del verificador.
+
+## Las respuestas reales: qué hipótesis quedan respaldadas (2026-10-22)
+
+Fuente: `forense-eleccion.md` de la VivoBook (huella de los prompts `950ecc054f484387`). Las repeticiones fueron
+idénticas, así que la unidad es la **celda** (caso × rotación × condición): 24 por condición.
+
+| hipótesis | estado | evidencia |
+|---|---|---|
+| F1 verificador sin explicar (`medido`) | **respaldada**, y peor de lo previsto | En los 4 perjuicios de D1 y M029, Qwen escribe «el modelo espera un campo "medido" que no está presente». Leyó el rótulo `[modelo] VF` como «el modelo esperado». «medido» aparece en 6 motivos con traza y en 1 sin ella. |
+| F1b relación de S2 no enunciada | plausible | Errores comunes a ambas condiciones en M027 y M039: Qwen elige el contador de `leidas` (línea 10). «Aritmética de la cobertura» nunca dice `leidas = validas + invalidas`. |
+| F2 `[…2 elementos]` | **no respaldada** | Ningún motivo lo menciona. Lo que sí aparece es «la línea que construye el resultado». |
+| F3 hechos sin atribución | **respaldada en D2** | Con traza, Qwen ve la contradicción («leidas llega a 15000… filas_analizadas es 0») e incluso escribe «la línea 22 reinicia el contador», pero busca la línea que «cuenta» y elige la 17. Nunca une la contradicción con la 22, porque la traza no dice quién cambió el valor. |
+| F4 largo del bloque | débil | La elegida tenía el bloque más largo en 20 de 48 (el azar da 16). |
+| F5 recencia | **no respaldada** | La elegida era el último bloque en 16 de 48: exactamente el azar. |
+| F5b sesgo hacia la posición B | **respaldada** (el control) | El control elige B en **13 de 24 celdas** (el azar da 8). **5 de sus 6 celdas erradas son una B.** En D2 elige B en las tres rotaciones. |
+| F6 antes/después ambiguo | sin evidencia | Casi ningún motivo usa «antes» ni «después». |
+
+**Por qué la traza perjudica en D1 y M029.**
+- Solo pasa en la rotación 0, donde la línea que arma `mejores` es la A, el primer bloque de la traza. En las otras
+  rotaciones el tratamiento elige lo mismo que el control.
+- El control razonaba bien («desplaza las ventanas, no quedan alineadas al reloj»).
+- Con la traza delante, Qwen pasa a explicar la falla como un problema de **estructura de la salida**: falta
+  `medido`. Atribuye ese problema a la línea que construye el resultado.
+- **Causa principal:** el verificador mal presentado (F1). La traza no aporta información falsa: le da a Qwen un
+  objeto concreto («deja mejores=…», ubicado primero) donde anclar esa lectura equivocada.
+- La parte de la posición es una hipótesis plausible, no probada.
+
+**Por qué D2 cambia tanto según el orden.**
+- **El control nunca entendió D2.** Elige B en las tres rotaciones y acierta solo cuando la B es la 22 (rotación 2).
+- El «perjuicio» de la rotación 2 es la pérdida de un acierto que venía de la posición, no del contenido.
+- Con traza, el tratamiento abandona la B: acierta cuando la 22 está primera y, cuando no, elige una víctima
+  («se pierde», o la línea que «cuenta»).
+- **Balance:** 1 de 3 rotaciones en ambas condiciones. La traza cambió el mecanismo del error (de la posición a la
+  víctima), no la comprensión.
+
+**Lo que este experimento dice, en limpio.**
+- El resultado está dominado por:
+  - la presentación de las verificaciones (F1, F1b);
+  - las heurísticas de posición cuando la evidencia no resuelve (F5b);
+  - una traza que muestra hechos sin atribuir causas (F3).
+- Los casos en que el contraste apunta directo siempre se aciertan en ambas condiciones: M050 (excepción), M030
+  (sumas negativas) y M022 (`leidas` 30000 contra 15000).
+- **Qwen acierta cuando la evidencia ya contiene la atribución, y adivina cuando tiene que construirla.** Esto
+  coincide con E0: la evidencia que resuelve D1 y M029 (R4) no se le mostró.
+
+## Evaluación a ciegas de E0 (preregistro, antes de ver ningún defecto nuevo)
+
+**Reglas congeladas:** `constructor_ia/laboratorio/piloto/e0.py` con huella **`ee46552429b3047e`** (sha256 del
+archivo). Cada corrida imprime la huella, y un resultado con otra huella no cuenta para esta evaluación.
+
+**Cómo se hace:**
+
+```bash
+bash $E e0 --defectos <carpeta>
+```
+
+La carpeta lleva `manifiesto.json` y un archivo por defecto. El formato está en
+`constructor_ia/laboratorio/piloto/defectos.py`.
+
+Solo se evalúan esos defectos. **Claude no los ve** antes del resultado, y ninguna regla se ajusta después: un
+cambio de regla es otra versión con otra huella, evaluada sobre defectos nuevos.
+
+**Defectos:**
+- Entre 10 y 20, escritos por Diego y ChatGPT.
+- Al menos 4 de cálculo, 4 de sobrescritura y algunos de condición y de omisión.
+- Mejor si se parecen a errores que comete un modelo (como D1 y D2) y no solo a cambios de un carácter. Pueden ocupar
+  varias líneas.
+- **Blindaje parcial:** ustedes ya leyeron la descripción de las reglas. Para reducir ese sesgo, que los escriba
+  ChatGPT en una conversación nueva, sin este historial, con la consigna «errores realistas que un programador o un
+  modelo cometería en este instrumento».
+
+**Lectura preregistrada (por defecto):**
+- Resultados posibles: equivalente / no detectado / la causa fuera de las 3 candidatas / acierta / se equivoca / se
+  abstiene.
+- **Lo primero que importa es la precisión cuando responde.** Un coordinador que responde poco pero no se equivoca
+  sabe cuándo consultar. Uno que se equivoca con confianza no sirve.
+- **Un error de R5 o R6**, que son intervenciones que «confirman», es el hallazgo más grave: significaría que la
+  confirmación por intervención no es confiable.
+- **Las abstenciones** marcan dónde haría falta Qwen u otra investigación. Se informan por clase.
+- **Los defectos con la causa fuera de las candidatas** miden al localizador, no a las reglas.
+- **R4 tiene un límite conocido:** su verificador de contraste es específico de este instrumento de ventanas.
+  Generalizarlo a instrumentos desconocidos es un problema de la arquitectura, no de esta evaluación.

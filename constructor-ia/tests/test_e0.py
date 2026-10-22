@@ -10,6 +10,10 @@ import unittest
 from pathlib import Path
 
 from constructor_ia.instrumentos.medicion import ejecutar
+import json
+
+from constructor_ia.laboratorio.piloto import banco as B
+from constructor_ia.laboratorio.piloto import defectos as DF
 from constructor_ia.laboratorio.piloto import e0 as E0
 from constructor_ia.laboratorio.piloto import parches as P
 from constructor_ia.laboratorio.piloto import traza as T
@@ -53,7 +57,41 @@ def linea(codigo, texto):
     return next(i for i, t in enumerate(codigo.splitlines(), 1) if t.strip() == texto)
 
 
+def carpeta_defectos(items):
+    d = Path(tempfile.mkdtemp(prefix="cia-defectos-"))
+    manifiesto = []
+    for did, codigo, lineas, clase in items:
+        (d / f"{did}.py").write_text(codigo)
+        manifiesto.append({"id": did, "archivo": f"{did}.py", "lineas": lineas, "clase": clase,
+                           "descripcion": f"defecto {did}"})
+    (d / "manifiesto.json").write_text(json.dumps(manifiesto))
+    return d
+
+
+def sobrescribe_sumas():
+    """Un defecto que ninguna regla conoce de antemano: borra las sumas después del bucle."""
+    lineas = B.REFERENCIA.splitlines()
+    i = next(n for n, t in enumerate(lineas) if t.strip().startswith("mejores ="))
+    codigo = "\n".join(lineas[:i] + ["    sumas = {k: 0.0 for k in sumas}"] + lineas[i:]) + "\n"
+    return codigo, [i + 1, i + 1]
+
+
 class UnitTests(unittest.TestCase):
+    def test_external_defects_are_validated_not_interpreted(self):
+        codigo, lineas = sobrescribe_sumas()
+        d = carpeta_defectos([("X01", codigo, lineas, "sobrescritura"), ("M01", codigo, lineas, "cálculo"),
+                              ("X02", "def otra():\n    pass\n", [1, 1], "cálculo"),
+                              ("X03", codigo, [0, 2], "cálculo"), ("X04", codigo, lineas, "inventada")])
+        ok, problemas = DF.cargar(d)
+        self.assertEqual([x["id"] for x in ok], ["X01", "X04"])
+        self.assertEqual(ok[1]["clase"], "otra", "una clase desconocida se informa como «otra»")
+        self.assertEqual(len(problemas), 3)
+        self.assertTrue(any("M01" in p for p in problemas), "no se aceptan ids del banco")
+
+    def test_rules_fingerprint_is_stable(self):
+        self.assertRegex(E0.huella_reglas(), r"^[0-9a-f]{16}$")
+        self.assertEqual(E0.huella_reglas(), E0.huella_reglas())
+
     def test_interventions_are_generic_ast_transforms(self):
         ln = linea(AGREGA, "conteo[clave] = conteo.get(clave, 0) + x")
         self.assertIn("conteo[clave] = conteo.get(clave, 0) + 0.5 * x", E0.escalar(AGREGA, ln, 0.5))
@@ -157,6 +195,22 @@ class SandboxTests(unittest.TestCase):
         self.assertTrue(res["python_sandbox"][0].isdigit())
         self.assertEqual(set(d1["huellas"]), {"codigo", "salida", "texto_fallas", "traza"})
         self.assertIn("| total |", E0.markdown(res))
+
+    def test_blind_evaluation_reports_coverage_and_origin(self):
+        codigo, lineas = sobrescribe_sumas()
+        equivalente = B.REFERENCIA.replace("mejores", "elegidas")
+        externos, problemas = DF.cargar(carpeta_defectos([("X01", codigo, lineas, "sobrescritura"),
+                                                          ("X02", equivalente, [1, 1], "otra")]))
+        self.assertEqual(problemas, [])
+        res = E0.correr(self.ent, externos=externos, log=lambda *_: None)
+        self.assertEqual(res["cobertura"]["casos"], 2, "solo los externos: ni D1, D2 ni mutantes")
+        self.assertEqual(res["cobertura"]["equivalentes"], ["X02"])
+        self.assertEqual(res["huella_reglas"], E0.huella_reglas())
+        for f in res["casos"]:
+            self.assertEqual((f["origen"], f["clase"]), ("externo", "sobrescritura"))
+        md = E0.markdown(res)
+        self.assertIn("Huella de las reglas", md)
+        self.assertIn("NO quedó entre las 3 candidatas", md)
 
 
 if __name__ == "__main__":

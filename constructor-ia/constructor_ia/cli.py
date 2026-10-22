@@ -800,16 +800,26 @@ def cmd_lab_choice_e0(args) -> int:
     """E0 del próximo experimento de elección (SIN modelo): ¿la evidencia del coordinador alcanza para que una
     regla fija elija la causa? Ejecuta versiones intervenidas en el sandbox; no usa Ollama."""
     from .laboratorio import privado
+    from .laboratorio.piloto import defectos as DF
     from .laboratorio.piloto import e0 as E0
     from .laboratorio.piloto.entorno import Entorno
 
+    externos = None
+    if args.defectos:
+        externos, problemas = DF.cargar(args.defectos)
+        for p in problemas:
+            print(f"  defecto descartado: {p}", file=sys.stderr)
+        if not externos:
+            print("No hay defectos válidos para evaluar.", file=sys.stderr)
+            return 2
+        print(f"Evaluación a ciegas: {len(externos)} defectos externos; reglas {E0.huella_reglas()}.", flush=True)
     cfg, ex = _piloto_preparar(args, necesita_modelo=False, exigir_servicio_detenido=False)
     salida = Path(args.salida) if args.salida else cfg.data_dir / "laboratorio" / ("eleccion-e0-" + time.strftime(
         "%Y%m%d-%H%M%S"))
     servidor = privado.ServidorPrivado(salida / "mariadb")
     try:
         ent = Entorno(cfg, ex, servidor, salida)
-        res = E0.correr(ent, log=lambda m: print(m, flush=True))
+        res = E0.correr(ent, externos=externos, log=lambda m: print(m, flush=True))
         ent.cerrar()
     finally:
         servidor.detener()
@@ -1094,6 +1104,7 @@ def main(argv=None) -> int:
     a = sub.add_parser("laboratorio-eleccion-e0",
                        help="E0 (sin modelo): ¿una regla fija elige la causa con la evidencia del coordinador?")
     a.add_argument("--salida")
+    a.add_argument("--defectos", help="carpeta con manifiesto.json de defectos externos (evaluación a ciegas)")
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_choice_e0)
     a = sub.add_parser("laboratorio-eleccion-forense",

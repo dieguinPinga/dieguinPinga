@@ -290,6 +290,12 @@ def r6_escala(caso, iv: Intervenciones) -> tuple[list[int], dict]:
 
 # Corrida ----------------------------------------------------------------------------------------------------------
 
+def huella_reglas() -> str:
+    """sha256 de este archivo: las reglas quedan congeladas antes de ver defectos nuevos (PILOTO.md)."""
+    from pathlib import Path
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+
+
 def version_python(cfg) -> str:
     try:
         return subprocess.run([cfg.sandbox_python, "-c", "import sys; print(sys.version.split()[0])"],
@@ -304,9 +310,21 @@ def huellas(caso) -> dict:
     return {k: h(caso.get(k)) for k in ("codigo", "salida", "texto_fallas", "traza")}
 
 
-def correr(ent, *, incluir_mutantes: bool = True, log=print) -> dict:
+def correr(ent, *, incluir_mutantes: bool = True, externos: list[dict] | None = None, log=print) -> dict:
+    """externos: defectos escritos por otros (defectos.cargar); si se pasan, se evalúan SOLO ellos."""
     t0 = time.time()
-    info = E.construir_casos(ent, incluir_mutantes=incluir_mutantes, log=lambda *_: None)
+    clase_ext = {d["id"]: d["clase"] for d in externos or []}
+    info = E.construir_casos(ent, incluir_mutantes=incluir_mutantes, solo_externos=bool(externos),
+                             externos=[(d["id"], d["descripcion"], d["codigo"], d["lineas"]) for d in externos or []],
+                             log=lambda *_: None)
+    for c in info["casos"]:
+        if c["id"] in clase_ext:
+            c["clase"] = clase_ext[c["id"]]
+    cobertura = {"casos": len(info["casos"]),
+                 "equivalentes": [c["id"] for c in info["casos"] if c["equivalente"]],
+                 "no_detectados": [c["id"] for c in info["casos"] if not c["equivalente"] and not c.get("detectado")],
+                 "sembrada_fuera_de_las_candidatas": [c["id"] for c in info["casos"] if c.get("detectado")
+                                                      and not c.get("sembrada_en")]}
     casos = [c for c in info["casos"] if c.get("sembrada_en")]
     alm = ent.almacen(f"e0_{int(time.time() * 1000)}")
     vf = alm.save("verificador_fijo", E.VERIFICADOR_FIJO, {"proposito": "verificador"}, author="laboratorio")["id"]
@@ -332,7 +350,8 @@ def correr(ent, *, incluir_mutantes: bool = True, log=print) -> dict:
         combinada = next((dict(lectura=k, **lect[k]) for k in ORDEN if lect[k]["eleccion"] is not None),
                          {"lectura": None, "eleccion": None, "acierta": None})
         filas.append({"id": caso["id"], "descripcion": caso["descripcion"], "clase": caso["clase"],
-                      "origen": "mutante" if caso["id"].startswith("M") else "observado",
+                      "origen": "externo" if caso["id"] in clase_ext else
+                      "mutante" if caso["id"].startswith("M") else "observado",
                       "candidatas": caso["candidatas"], "sembrada": sembrada, "lecturas": lect,
                       "combinada": combinada, "camino_contraste": camino, "factor_escala": factores,
                       "contraste": contraste, "traza_completa": (caso.get("traza") or {}).get("completa"),
@@ -341,7 +360,9 @@ def correr(ent, *, incluir_mutantes: bool = True, log=print) -> dict:
             f"{k.split('_')[0]}={'·' if v['eleccion'] is None else ('✓' if v['acierta'] else '✗')}"
             for k, v in lect.items()) + f" → combinada {combinada['lectura'] or 'se abstiene'}")
     ent.liberar(alm)
-    return {"python_sandbox": version_python(ent.cfg), "casos": filas, "resumen": resumir(filas),
+    return {"python_sandbox": version_python(ent.cfg), "huella_reglas": huella_reglas(), "cobertura": cobertura,
+            "casos": filas,
+            "resumen": resumir(filas),
             "ejecuciones_intervenidas": iv.n, "rechazadas_por_forma": iv.vacias, "segundos": round(time.time() - t0)}
 
 
@@ -359,11 +380,15 @@ def resumir(filas: list[dict]) -> dict:
 
 
 def markdown(res: dict) -> str:
-    Lm = ["# E0 del experimento de elección (sin modelo)", "",
+    Lm = ["# E0 del experimento de elección (sin modelo)", "", f"Huella de las reglas: `{res['huella_reglas']}`", "",
           f"Python del sandbox: {res['python_sandbox']} · {len(res['casos'])} casos con la sembrada entre las "
           f"candidatas · {res['ejecuciones_intervenidas']} versiones intervenidas ({res['rechazadas_por_forma']} pasaban "
           f"las verificaciones solo porque cambiaba la forma de la salida) · {res['segundos']} s", "",
-          "Celda = responde / acierta (una lectura responde solo si su criterio da UNA candidata).", "",
+          f"Cobertura: {res['cobertura']['casos']} defectos · equivalentes {res['cobertura']['equivalentes']} · no "
+          f"detectados {res['cobertura']['no_detectados']} · la causa NO quedó entre las 3 candidatas (ninguna "
+          f"lectura puede acertar) {res['cobertura']['sembrada_fuera_de_las_candidatas']}", "",
+          "Celda = responde / acierta (una lectura responde solo si su criterio da UNA candidata). «Se abstiene» es "
+          "donde el coordinador tendría que consultar a Qwen o seguir investigando.", "",
           "| grupo | casos | " + " | ".join(k + (" (ya mostrada)" if PRESENTADA[k] else "") for k in ORDEN)
           + " | combinada |", "|" + "---|" * (len(ORDEN) + 3)]
     for g, r in res["resumen"].items():
