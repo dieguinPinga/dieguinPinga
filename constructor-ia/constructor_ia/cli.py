@@ -966,6 +966,69 @@ def cmd_lab_cycle(args) -> int:
     return 0 if res["corrida"] in ("completa", "limite") else 3
 
 
+def cmd_lab_suggestions(args) -> int:
+    """Experimento de sugerencias: «localizador» contra «evidencia» en la primera llamada, con plan fijo por tanda
+    (1: X05 y X08; 2: X11 y X12; control: X07 con la sugerencia 17). Con --solo-prompts no llama al modelo ni
+    detiene nada: compara los prompts de cada pareja."""
+    from .laboratorio import privado
+    from .laboratorio.piloto import sugerencias as SG
+    from .laboratorio.piloto import v2 as PV2
+    from .laboratorio.piloto.entorno import Entorno
+    from .laboratorio.protocolo import Modelo
+    from .ollama import OllamaClient, OllamaError
+
+    cfg, ex = _piloto_preparar(args, necesita_modelo=not args.solo_prompts,
+                               exigir_servicio_detenido=not args.solo_prompts)
+    carpeta = Path(args.carpeta) if args.carpeta else cfg.data_dir / "laboratorio" / "sugerencias-v1"
+    salida = carpeta / (f"tanda-{args.tanda}" + ("-solo-prompts" if args.solo_prompts else ""))
+    crear_modelo = guardia = None
+    if not args.solo_prompts:
+        ollama = OllamaClient(cfg.ollama_url)
+        try:
+            if args.modelo not in ollama.tags():
+                print(f"El modelo {args.modelo} no está instalado en {cfg.ollama_url} (no se descarga).",
+                      file=sys.stderr)
+                return 2
+        except OllamaError as e:
+            print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+            return 1
+        guardia = PV2.Guardia(ollama, minimo_mb=args.memoria_minima_mb)
+        base = cfg.explorer_model
+
+        def crear_modelo():          # los mismos ajustes que laboratorio-ciclo
+            return Modelo(ollama, base, args.modelo, num_ctx=args.num_ctx, temperatura=0.2, timeout_s=900,
+                          num_predict_codigo=2048, num_predict_json=768, keep_alive=args.keep_alive)
+    plan = SG.TANDAS[args.tanda]
+    print(f"{SG.VERSION}: tanda {args.tanda} {plan}; {SG.LLAMADAS_POR_CONDICION} llamada por defecto y condición; "
+          + ("SOLO PROMPTS (sin modelo)." if args.solo_prompts else
+             f"como máximo {len(plan)} llamadas; num_ctx={args.num_ctx}, keep_alive={args.keep_alive}, "
+             f"memoria mínima {args.memoria_minima_mb} MiB."), flush=True)
+    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+    servidor = privado.ServidorPrivado(salida / "mariadb")
+    try:
+        ent = Entorno(cfg, ex, servidor, salida / "entorno")
+        try:
+            res = SG.correr_tanda(cfg, ent, tanda=args.tanda, salida=salida, crear_modelo=crear_modelo,
+                                  guardia=guardia, log=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
+        except SG.PlanInvalido as e:
+            print(f"Plan inválido, no se llamó al modelo: {e}", file=sys.stderr)
+            return 2
+        finally:
+            ent.cerrar()
+    finally:
+        servidor.detener()
+    if args.solo_prompts:
+        print((salida / "parejas.json").read_text())
+    else:
+        print((salida / "resumen.md").read_text())
+        general = SG.resumen_general(carpeta)
+        if general:
+            (carpeta / "resumen.md").write_text(general)
+            print(f"Resumen de todas las tandas terminadas: {carpeta / 'resumen.md'}")
+    print(f"Resultados en {salida}. Si se cortó, el mismo comando reanuda sin repetir llamadas.")
+    return 0 if res["corrida"] in ("completa", "solo_prompts") else 3
+
+
 def cmd_lab_pilot_review(args) -> int:
     from .laboratorio.piloto import informe as PI
 
@@ -1207,6 +1270,19 @@ def main(argv=None) -> int:
     a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_cycle)
+    a = sub.add_parser("laboratorio-sugerencias",
+                       help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
+    a.add_argument("--tanda", required=True, choices=["1", "2", "control"],
+                   help="1: X05 y X08 · 2: X11 y X12 · control: X07 con la sugerencia 17")
+    a.add_argument("--carpeta", help="carpeta del experimento (una subcarpeta por tanda)")
+    a.add_argument("--solo-prompts", dest="solo_prompts", action="store_true",
+                   help="sin modelo: observa y compara los prompts de cada pareja; no detiene nada")
+    a.add_argument("--modelo", default="qwen3:4b-instruct")
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, default=4096)
+    a.add_argument("--keep-alive", dest="keep_alive", default="0s")
+    a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_suggestions)
     a = sub.add_parser("laboratorio-eleccion-forense",
                        help="Análisis forense de SOLO LECTURA de una Etapa 1 terminada (sin modelo)")
     a.add_argument("carpeta")

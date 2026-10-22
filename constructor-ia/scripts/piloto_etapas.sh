@@ -11,6 +11,8 @@
 #   e0 [--defectos dir]    — E0 (SIN modelo; no detiene nada; varios minutos); con --defectos, evaluación a ciegas.
 #   ciclo0 --defectos dir [--ids X01,…] — Ciclo v1 SIN modelo (observación, reglas, juez); no detiene nada.
 #   ciclo [minutos] --defectos dir --ids … --limite-llamadas N — Ciclo con Qwen (v1.3.4), protegido como el ensayo.
+#   sugerencias0 --tanda 1|2|control — experimento de sugerencias SIN modelo: compara los prompts; no detiene nada.
+#   sugerencias [minutos] --tanda 1|2|control — experimento de sugerencias con Qwen, protegido como el ensayo.
 #   forense carpeta [--salida f.md] — SOLO LECTURA: análisis forense de una Etapa 1 terminada (sin modelo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
@@ -109,6 +111,12 @@ cmd_ciclo() {
   local limite="${1:-60}"
   shift || true   # p. ej. --defectos <banco> --ids X01,X04,X07,X11 --limite-llamadas 12
   ejecutar_guardado "$limite" laboratorio-ciclo --yes "$@"
+}
+
+cmd_sugerencias() {
+  local limite="${1:-45}"
+  shift || true   # --tanda 1, 2 o control (plan fijo; una llamada por defecto y condición)
+  ejecutar_guardado "$limite" laboratorio-sugerencias --yes "$@"
 }
 
 ejecutar_guardado() {
@@ -214,8 +222,10 @@ case "${1:-}" in
   e0) shift; bash "$PILOTO_SH" laboratorio-eleccion-e0 --yes "$@" ;;
   ciclo0) shift; bash "$PILOTO_SH" laboratorio-ciclo --yes --sin-modelo "$@" ;;
   ciclo) shift; cmd_ciclo "$@" ;;
+  sugerencias0) shift; bash "$PILOTO_SH" laboratorio-sugerencias --yes --solo-prompts "$@" ;;
+  sugerencias) shift; cmd_sugerencias "$@" ;;
   forense) shift; bash "$PILOTO_SH" laboratorio-eleccion-forense "$@" ;;
   revisar) shift; cmd_revisar "$@" ;;
   comparar) cmd_comparar ;;
-  *) sed -n '2,20p' "$0"; exit 2 ;;
+  *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

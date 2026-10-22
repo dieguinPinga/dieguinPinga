@@ -76,6 +76,8 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   v1.3.4: el coordinador sugiere una línea solo con evidencia (una regla congelada o un diagnóstico previo de Qwen
   sin probar); si no, no marca ninguna. El historial de una respuesta ambigua muestra todas sus propuestas, sin
   ejecutar ninguna.
+  Experimento de sugerencias (`laboratorio-sugerencias --tanda 1|2|control`): «localizador» contra «evidencia» en
+  la primera llamada, con plan fijo, la misma semilla por pareja y los prompts comparados antes de llamar.
 
 ## Proyectos que evolucionan (v0.4.0)
 

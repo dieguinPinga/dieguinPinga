@@ -1969,3 +1969,90 @@ importar qué le pida ahora. Demuestra que **el coordinador toma las decisiones 
 ```
 bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X07 --llamadas-por-defecto 3 --limite-llamadas 3
 ```
+
+## Experimento de sugerencias (2026-10-22, preparado sin inferencias reales)
+
+### Pregunta y alcance
+
+¿La sugerencia de la **primera** llamada ayuda o perjudica el diagnóstico de Qwen?
+- **Ayuda cuando se equivoca:** ¿quitarla mejora el diagnóstico donde el localizador apunta mal (X08)?
+- **Perjudica cuando acierta:** ¿quitarla empeora el diagnóstico donde el localizador apunta bien (X05)? **Es la
+  pregunta principal.**
+
+Origen: X07 con v1.3.4 dio una confirmación verdadera en 1 llamada, pero es n = 1 y con cinco cambios del prompt a la
+vez (revisión forense).
+
+**Después de esta comparación**, la investigación sobre sugerencias se cierra **provisionalmente** y el proyecto
+vuelve a su objetivo original: un agente que explora bases de datos por contexto, comprende sus tablas y construye
+memoria persistente.
+
+### Diseño (fijo antes de correr; `constructor_ia/laboratorio/piloto/sugerencias.py`)
+
+- **Condiciones**, con todo lo demás idéntico (ciclo v1.3.4, incluido su formato nuevo, verificaciones, juez y
+  presupuesto):
+  - **localizador:** la sugerencia de v1.3.3. Es la primera hipótesis, marcada con «>>» y «← sugerida», y con la
+    redacción exacta de v1.3.3, sin decir de dónde viene;
+  - **evidencia:** la de v1.3.4. Como ninguna regla responde en estos defectos, no sugiere ni marca nada.
+- **Plan fijo, en tandas** (`TANDAS`; orden alternado y balanceado):
+
+  | tanda | llamadas, en orden | causa | localizador sugiere |
+  |---|---|---|---|
+  | 1 | X05 L, X05 E, X08 E, X08 L | X05: 17; X08: 15 | 17 en los dos (acierta en X05, se equivoca en X08) |
+  | 2 | X11 L, X11 E, X12 E, X12 L | fuera de las candidatas (omisiones) | X11: 20; X12: 15 |
+  | control | X07 L | 12 | 17 |
+
+  L = localizador, E = evidencia.
+- **X07 control.** Su prompt es **el de la corrida real de v1.3.3 salvo la línea nueva del formato**; una
+  prueba lo comprueba contra `tests/datos/llamadas-X07-v133.jsonl`. Como la semilla es la misma (40056709), separa
+  los dos factores de v1.3.4:
+  - si Qwen vuelve a diagnosticar 17, la mejora de X07 venía de quitar la sugerencia;
+  - si diagnostica 12, alcanzaba con la línea nueva del formato.
+- **Mismas semillas por pareja.** La semilla depende del defecto y la llamada, no de la condición.
+- **Una llamada por defecto y condición**, sin opción para cambiarla. El límite de cada tanda es su plan.
+- **Prompts comparados antes de llamar.** Antes de llamar a Qwen, el coordinador arma los dos prompts de cada pareja y
+  comprueba que difieran **solo** en la sugerencia:
+  - el encabezado de la vista;
+  - la marca «>>»;
+  - el título de las candidatas;
+  - «← sugerida»;
+  - la frase del pedido.
+
+  Con la misma evidencia, guarda el diff exacto en `parejas.json`. Si difieren en otra cosa, o si las dos
+  condiciones sugieren lo mismo, **no se llama a nadie**. Después de cada llamada registra si el prompt enviado era
+  el comparado.
+- **Registro por llamada (`comparacion.json` y `resumen.md`):**
+  - el diagnóstico y su categoría: correcto, incorrecto, ambiguo, abstención o sin diagnóstico;
+  - si la respuesta fue correcta: en X11 y X12, la causa está fuera de las candidatas y lo correcto es NINGUNA;
+  - si quedó anclada a la sugerencia;
+  - si el coordinador la aceptó;
+  - el veredicto del juez y si hubo confirmación falsa;
+  - las fugas, los tokens y el tiempo.
+
+  Además, un resumen por condición y otro general de las tandas terminadas.
+- **Sin cambios:** las reglas E0 (`ee46552429b3047e`), los verificadores, el juez independiente y las protecciones de
+  la VivoBook. El verbo `sugerencias` del script sigue el mismo camino que `ciclo`.
+
+### Lectura preregistrada
+
+- **Métrica principal:** confirmaciones falsas. Tienen que ser 0 en las dos condiciones.
+- **A favor de «evidencia»:** en X08, «evidencia» acierta (15) y «localizador» queda anclado en 17, y en X05
+  «evidencia» no empeora.
+- **En contra:** en X05, «localizador» acierta y «evidencia» no. Quitar la sugerencia tiene costo cuando el
+  localizador acierta.
+- **X11 / X12:** se comparan las abstenciones correctas y las reparaciones ancladas, que el coordinador debe rechazar.
+- **Alcance:** con 4 parejas y 1 control, el resultado es **descriptivo**. Es el banco de desarrollo: afirmar que
+  generaliza va a requerir defectos nuevos y ciegos.
+
+### Comandos en la VivoBook
+
+```
+bash $E sugerencias0 --tanda 1                     # SIN modelo: compara los prompts; no detiene nada
+bash $E sugerencias 30 --tanda 1                   # X05 y X08: 4 llamadas, protegido
+bash $E sugerencias0 --tanda 2
+bash $E sugerencias 30 --tanda 2                   # X11 y X12: 4 llamadas
+bash $E sugerencias 20 --tanda control             # X07 con la sugerencia 17: 1 llamada
+```
+
+- Las tandas van en `…/laboratorio/sugerencias-v1/tanda-N/`.
+- Al terminar cada una se actualiza `sugerencias-v1/resumen.md`.
+- Si una tanda se corta, el mismo comando la reanuda sin repetir llamadas.

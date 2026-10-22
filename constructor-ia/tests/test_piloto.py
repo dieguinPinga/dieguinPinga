@@ -427,3 +427,16 @@ class StagesScriptTests(unittest.TestCase):
         self.assertEqual((rc, estado), (0, "active"))
         self.assertIn("piloto laboratorio-ciclo --yes --sin-modelo --defectos b servicio=active", log)
         self.assertNotIn("systemd-run", log)
+
+    def test_suggestion_experiment_is_guarded_and_prompts_only_stops_nothing(self):
+        rc, estado, log, out = self.correr("cuelga", senal="SIGINT", orden=("sugerencias",), limite="20",
+                                           extra=("--tanda", "1"))
+        self.assertEqual(estado, "active", (out, log))
+        self.assertIn("piloto laboratorio-sugerencias --yes --tanda 1 servicio=inactive", log)
+        self.assertIn("piloto: limpieza", log)
+        self.assertIn("start constructor-ia.service", log)
+        rc, estado, log, out = self.correr("ok", orden=("sugerencias0",), limite=None, extra=("--tanda", "2"))
+        self.assertEqual((rc, estado), (0, "active"))
+        self.assertIn("piloto laboratorio-sugerencias --yes --solo-prompts --tanda 2 servicio=active", log)
+        self.assertNotIn("stop constructor-ia.service", log)
+        self.assertNotIn("systemd-run", log)

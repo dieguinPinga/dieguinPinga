@@ -234,8 +234,9 @@ def partes(problema: dict, obs: dict, sugerida: int | None, historia=(), pendien
         previo.append(("historial", "Candidatas que todavía no se probaron: "
                                     + (", ".join(f"línea {x}" for x in pendientes) or "ninguna") + ".\n"))
     if sugerida is not None:
-        pedido = (f"El coordinador sugiere investigar la línea {sugerida} ({origen}), pero es solo una sugerencia, "
-                  "TODAVÍA NO COMPROBADA: ")
+        # Sin origen: la redacción exacta de v1.3.3 (la condición «localizador» del experimento de sugerencias).
+        pedido = (f"El coordinador sugiere investigar la línea {sugerida}" + (f" ({origen})" if origen else "")
+                  + ", pero es solo una sugerencia, TODAVÍA NO COMPROBADA: ")
         vista = ("Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son parte del "
                  "código:\n")
         titulo = "Instrucciones candidatas (solo se puede cambiar UNA de estas, completa):\n\n"
@@ -815,13 +816,40 @@ def decidir(reg: dict, regla: dict | None, usados: dict, pistas: list[int], fall
 
 
 NO_CABE = object()
+POLITICAS = ("evidencia", "localizador")
+
+
+def primer_paso(obs: dict, politica: str = "evidencia") -> dict:
+    """La sugerencia de la PRIMERA llamada. «evidencia» (v1.3.4): solo si una regla congelada respondió.
+    «localizador» (solo para el experimento de sugerencias): la de v1.3.3, la primera hipótesis (la regla, si
+    respondió; si no, la primera candidata del localizador), sin decir de dónde viene."""
+    if politica not in POLITICAS:
+        raise ValueError(f"política desconocida: {politica}")
+    regla = obs["reglas_v1"]["respuesta"]
+    if politica == "localizador":
+        return {"foco": obs["hipotesis"][0], "origen": None, "dudas": [], "dudas_previas": False,
+                "porque": "primera llamada: primera hipótesis (v1.3.3), condición «localizador»"}
+    if regla:
+        return {"foco": regla["eleccion"], "origen": f"regla congelada {regla['lectura']}", "dudas": [],
+                "dudas_previas": False, "porque": "primera llamada: una regla congelada tiene evidencia"}
+    return {"foco": None, "origen": None, "dudas": [], "dudas_previas": False,
+            "porque": "primera llamada: ninguna regla tiene evidencia"}
+
+
+def partes_iniciales(problema: dict, obs: dict, politica: str = "evidencia") -> list[tuple[str, str]]:
+    """Las partes de la primera llamada, idénticas a las que arma investigar (el experimento las compara antes)."""
+    paso = primer_paso(obs, politica)
+    return partes(problema, obs, paso["foco"], [], list(obs["candidatas"]), origen=paso["origen"],
+                  dudas=paso["dudas"], dudas_previas=paso["dudas_previas"])
 
 
 def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, *,
-               llamadas: int = MAX_HIPOTESIS, log=print) -> dict:
+               llamadas: int = MAX_HIPOTESIS, log=print, politica: str = "evidencia", etiqueta: str = "") -> dict:
     """Investigación v1.3.4. pedir(clave, partes, semilla) -> texto | None | NO_CABE.
     None: el límite GLOBAL cortó (incompleto). NO_CABE: no entra en el contexto.
-    hechas: respuestas ya obtenidas (reanudación): el camino se reconstruye igual, sin pedir de nuevo."""
+    hechas: respuestas ya obtenidas (reanudación): el camino se reconstruye igual, sin pedir de nuevo.
+    politica: la sugerencia de la primera llamada (primer_paso). etiqueta: prefijo de las claves (la condición del
+    experimento); la semilla NO depende de ella, así cada pareja comparte semilla."""
     codigo = problema["codigo"]
     llamadas = max(1, min(int(llamadas), TOPE_LLAMADAS))
     autorizadas = list(obs["candidatas"])
@@ -831,14 +859,11 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
     sin_diagnostico = 0
     fallas_iniciales = {f["id"] for f in obs["juegos"][0]["fallas"]}
     intentos = []
-    paso = ({"foco": regla["eleccion"], "origen": f"regla congelada {regla['lectura']}", "dudas": [],
-             "dudas_previas": False, "porque": "primera llamada: una regla congelada tiene evidencia"} if regla else
-            {"foco": None, "origen": None, "dudas": [], "dudas_previas": False,
-             "porque": "primera llamada: ninguna regla tiene evidencia"})
+    paso = primer_paso(obs, politica)
     for k in range(llamadas):
         sugerida = paso["foco"]
         pendientes = [x for x in autorizadas if usados.get(x, 0) == 0]
-        clave = f"{problema['id']}|c{k}|S{sugerida if sugerida is not None else '-'}"
+        clave = f"{etiqueta}{problema['id']}|c{k}|S{sugerida if sugerida is not None else '-'}"
         ps = partes(problema, obs, sugerida, intentos, pendientes, origen=paso["origen"], dudas=paso["dudas"],
                     dudas_previas=paso["dudas_previas"])
         if clave in hechas:
@@ -1123,35 +1148,9 @@ def _agregar(path: Path, obj: dict) -> None:
         f.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
 
 
-def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, limite_llamadas: int | None = None,
-           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, datos_juez: dict = DATOS_JUEZ,
-           datos_variados: dict = DATOS_VARIADOS, log=print) -> dict:
-    """defectos: los de defectos.cargar (con etiquetas). A la investigación solo pasan id y código.
-    crear_modelo None: sin modelo (observación, reglas y juez; sirve como E0 v1 de punta a punta)."""
-    if E0.huella_reglas() != HUELLA_REGLAS:
-        raise RuntimeError(f"las reglas de E0 cambiaron ({E0.huella_reglas()} ≠ {HUELLA_REGLAS}): el ciclo v1 usa "
-                           "las congeladas; otra versión de reglas es otra versión del ciclo")
-    salida = Path(salida)
-    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
-    vpath = salida / "version.json"
-    previa = json.loads(vpath.read_text()).get("version") if vpath.exists() else (
-        "ciclo v1" if (salida / "llamadas.jsonl").exists() else None)
-    if previa not in (None, VERSION):
-        raise RuntimeError(f"la carpeta es de «{previa}» y este código es «{VERSION}»: no se reanuda (los resultados "
-                           "de otra versión no se mezclan ni se modifican); usar una carpeta nueva")
-    vpath.write_text(json.dumps({"version": VERSION}))
-    bordes = agregar_bordes(ent)            # la base privada es nueva en cada corrida: también al reanudar
-    (salida / "bordes.json").write_text(json.dumps(bordes))
-    ent_variado, datos_variados_info = crear_datos_variados(ent, datos_variados)
-    co = Coordinador(ent, ent_variado)
-    hechas = {x["clave"]: x for x in _jsonl(salida / "llamadas.jsonl")}
-    terminados = {x["id"]: x for x in _jsonl(salida / "resultados.jsonl")}
-    modelo = None
-    if crear_modelo is not None:
-        modelo = V2.ModeloV2(crear_modelo(), 10 ** 6, 10 ** 9, guardia or V2.Guardia(minimo_mb=0))
-        modelo.system = PR.SYSTEM.replace("{resultado_kb}", str(cfg.instrumentos_resultado_kb))
-    estado = {"nuevas": 0, "corrida": "completa", "interrupciones": []}
-
+def pedidor(modelo, salida: Path, estado: dict, hechas: dict, limite_llamadas: int | None):
+    """pedir(clave, partes, semilla) -> texto | None (sin modelo o límite) | NO_CABE. Registra cada llamada en
+    llamadas.jsonl y las interrupciones del entorno; dos interrupciones seguidas detienen la corrida."""
     def pedir(clave, ps, sem):
         if modelo is None:
             return None
@@ -1182,6 +1181,38 @@ def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, l
             modelo.guardia.antes_de_sandbox()
             return resp
         return None
+    return pedir
+
+
+def correr(cfg, ent, *, defectos: list[dict], salida: Path, crear_modelo=None, limite_llamadas: int | None = None,
+           llamadas_por_defecto: int = MAX_HIPOTESIS, guardia=None, datos_juez: dict = DATOS_JUEZ,
+           datos_variados: dict = DATOS_VARIADOS, log=print) -> dict:
+    """defectos: los de defectos.cargar (con etiquetas). A la investigación solo pasan id y código.
+    crear_modelo None: sin modelo (observación, reglas y juez; sirve como E0 v1 de punta a punta)."""
+    if E0.huella_reglas() != HUELLA_REGLAS:
+        raise RuntimeError(f"las reglas de E0 cambiaron ({E0.huella_reglas()} ≠ {HUELLA_REGLAS}): el ciclo v1 usa "
+                           "las congeladas; otra versión de reglas es otra versión del ciclo")
+    salida = Path(salida)
+    salida.mkdir(parents=True, exist_ok=True, mode=0o700)
+    vpath = salida / "version.json"
+    previa = json.loads(vpath.read_text()).get("version") if vpath.exists() else (
+        "ciclo v1" if (salida / "llamadas.jsonl").exists() else None)
+    if previa not in (None, VERSION):
+        raise RuntimeError(f"la carpeta es de «{previa}» y este código es «{VERSION}»: no se reanuda (los resultados "
+                           "de otra versión no se mezclan ni se modifican); usar una carpeta nueva")
+    vpath.write_text(json.dumps({"version": VERSION}))
+    bordes = agregar_bordes(ent)            # la base privada es nueva en cada corrida: también al reanudar
+    (salida / "bordes.json").write_text(json.dumps(bordes))
+    ent_variado, datos_variados_info = crear_datos_variados(ent, datos_variados)
+    co = Coordinador(ent, ent_variado)
+    hechas = {x["clave"]: x for x in _jsonl(salida / "llamadas.jsonl")}
+    terminados = {x["id"]: x for x in _jsonl(salida / "resultados.jsonl")}
+    modelo = None
+    if crear_modelo is not None:
+        modelo = V2.ModeloV2(crear_modelo(), 10 ** 6, 10 ** 9, guardia or V2.Guardia(minimo_mb=0))
+        modelo.system = PR.SYSTEM.replace("{resultado_kb}", str(cfg.instrumentos_resultado_kb))
+    estado = {"nuevas": 0, "corrida": "completa", "interrupciones": []}
+    pedir = pedidor(modelo, salida, estado, hechas, limite_llamadas)
 
     observaciones, resultados = {}, dict(terminados)
     try:
