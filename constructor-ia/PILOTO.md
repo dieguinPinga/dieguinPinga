@@ -1881,3 +1881,91 @@ reserva (30/5). Es decir: **un error que depende de parámetros que el coordinad
 - **Un `max_filas` que no es literal.** VC espera el total.
 
 Y los límites del juez (v1.3.2) siguen valiendo.
+
+## Ciclo v1.3.4: sugerencias solo con evidencia (2026-10-22, sin inferencias reales)
+
+### Lo que mostró la corrida real de X07 con v1.3.3
+
+La corrida real (`tests/datos/llamadas-X07-v133.jsonl`) tuvo 3 llamadas: 2317, 2576 y 2823 tokens de prompt, y entre
+177 y 267 s cada una. Terminó en abstención, sin confirmaciones falsas. Pero mostró cuatro problemas del coordinador:
+
+1. **Anclaje.** En las 6 llamadas reales con DIAGNOSTICO (v1.3 y v1.3.3), el primer DIAGNOSTICO fue la línea
+   sugerida. Y la sugerencia era la primera del localizador (17, después 15, después 12), sin evidencia a favor:
+   ninguna regla congelada responde en X07, y la causa (12) quedaba última.
+2. **Historial sesgado.** La primera respuesta fue ambigua: DIAGNOSTICO 17 y, en la «CORRECCIÓN FINAL»,
+   DIAGNOSTICO 12. El historial de v1.3.3 mostraba solo el primer CAMBIA y el primer bloque, como si la propuesta
+   hubiera sido la 17.
+3. **Decisión que ignoraba lo diagnosticado.** Tras la ambigua, el coordinador repitió la sugerencia 17. La 12, que
+   Qwen había nombrado, no se probó nunca.
+4. **Constantes copiadas y `__len__`.** Qwen escribió `validas = 14803` e `invalidas = 1643` (números de la
+   evidencia) y volvió a usar `r.filas.__len__()`, que el sandbox rechaza.
+
+### Qué cambió (solo el coordinador)
+
+1. **Historial neutral de las respuestas ambiguas.** Lista **todas** las propuestas en pie de igualdad
+   («propuesta 1: DIAGNOSTICO 17, CAMBIA …; propuesta 2: DIAGNOSTICO 12, CAMBIA …»), con sus bloques, y dice que no
+   se probó ninguna. Ya no dice «declaraste que cambiabas …» sobre una sola.
+2. **Sin evidencia, sin sugerencia.**
+   - El coordinador sugiere una línea solo si tiene evidencia, y dice cuál: «regla congelada R4_…», «tu diagnóstico
+     anterior …», «la diagnosticaste antes y todavía no se probó».
+   - Si no la tiene, el prompt dice «El coordinador NO sugiere ninguna línea: no tiene evidencia suficiente para
+     preferir una candidata (el orden de la lista no indica preferencia)». Además, el código no tiene «>>» y las
+     candidatas no tienen «← sugerida».
+3. **Prioridad a lo que Qwen diagnosticó**, sin ejecutarlo. Se usan solo los **números de línea** de los DIAGNOSTICO
+   de cualquier respuesta, también de las ambiguas, y solo para **ordenar** la llamada siguiente. Una reparación
+   ambigua **nunca** se ejecuta ni cuenta como diagnóstico. La regla de decisión (`decidir`), en orden:
+   1. la línea diagnosticada, si su intento no llegó a probarse o si redujo las fallas (máx. 2 por línea);
+   2. tras una ambigua:
+      - con sugerencia, la única diagnosticada distinta de la sugerencia;
+      - si queda una sola sin probar, esa;
+      - si son varias, **ninguna marcada**, y el prompt dice «En tu respuesta anterior dudaste entre las líneas
+        17, 12: elegí UNA»;
+   3. una línea diagnosticada antes y nunca probada. Si son varias, ninguna marcada: «En respuestas anteriores
+      diagnosticaste las líneas …, que todavía no se probaron: elegí UNA»;
+   4. sin diagnóstico válido, la misma sugerencia de antes (o ninguna);
+   5. la línea de una regla congelada que respondió y no se probó;
+   6. si quedan candidatas sin probar, ninguna marcada (Qwen elige);
+   7. si no quedan, fin.
+4. **Instrucción genérica en el formato.** «El código tiene que CALCULAR los valores: no copies números de la salida
+   ni de las verificaciones. No uses atributos internos (nombres con doble guion bajo, como __len__): el sandbox los
+   rechaza.» No menciona X07 ni sus números.
+
+**Registro y versión:**
+- Cada intento registra el origen de su sugerencia (`origen_de_la_sugerencia`, y en las etapas «sugerida L19 (regla
+  congelada …)» o «sin sugerencia»).
+- El resumen cuenta `diagnosticos_sin_sugerencia`. `diagnostico_distinto_de_la_sugerencia` cuenta solo los intentos
+  que tuvieron sugerencia.
+- La clave de la llamada es `X07|c1|S-` cuando no hay sugerencia.
+- Una carpeta de v1.3.3 no se reanuda.
+
+**Sin cambios:**
+- las reglas E0 (`ee46552429b3047e`);
+- el juez y sus datos independientes;
+- las verificaciones del coordinador (S1–S3, VF, VC_cobertura, datos variados);
+- la coherencia, la detección de ambigüedad y los presupuestos;
+- las protecciones productivas.
+
+### Resultados de las pruebas (modelos simulados y respuestas reales reproducidas, sin inferencias)
+
+| caso | v1.3.3 | v1.3.4 |
+|---|---|---|
+| X07, llamada 1 | sugiere 17 (orden del localizador) | **sin sugerencia** (ninguna regla responde) |
+| X07 v1.3.3 real, tras la ambigua (17 / 12) | sugiere 17 otra vez; el historial muestra solo la 17 | **sin sugerencia**, «dudaste entre las líneas 17, 12: elegí UNA»; el historial muestra las dos propuestas |
+| X07 v1.3.3 real, tras el fallo de la 17 | sugiere 15 (siguiente de la cola) | sugiere **12** («la diagnosticaste antes y todavía no se probó») |
+| X07 v1.3 real, tras el fallo de la 15 | sugería 12 por la cola | **sin sugerencia**, «diagnosticaste las líneas 17, 12, que todavía no se probaron: elegí UNA» |
+| reparaciones de una respuesta ambigua | no se ejecutan | no se ejecutan |
+| X01 (respuesta real) | sugiere 19, confirmación verdadera | sugiere 19 «(regla congelada R4_…)», **confirmación verdadera** |
+
+- Al reproducir las tres respuestas reales de v1.3.3 se obtiene ambigua → comportamiento → comportamiento, con
+  abstención, 0 aceptadas, 0 confirmaciones falsas y 0 fugas.
+- Al reproducir las de v1.3 se obtiene ambigua → comportamiento → revisión, con abstención y 0 confirmaciones falsas.
+
+**Advertencia.** La reproducción le devuelve al coordinador las respuestas reales **en su orden original**, sin
+importar qué le pida ahora. Demuestra que **el coordinador toma las decisiones previstas** ante esas respuestas, pero
+**no garantiza que Qwen vaya a responder igual con un prompt distinto**. Eso solo lo dice una corrida real.
+
+**Próximo paso (Diego y ChatGPT):** X07 en la VivoBook, con un máximo de 3 llamadas:
+
+```
+bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo --ids X07 --llamadas-por-defecto 3 --limite-llamadas 3
+```

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import itertools
 import json
 import random
 import re
@@ -46,7 +47,7 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.3.3"                   # v1.3.3: verificación del recuento y datos variados del coordinador
+VERSION = "ciclo v1.3.4"                   # v1.3.4: sugerencias solo con evidencia; historial neutral de ambiguas
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
 TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
@@ -196,16 +197,26 @@ FORMATO = ("Respondé EXACTAMENTE con este formato:\n"
            "MOTIVO: <una frase>\n"
            "UNA sola propuesta por respuesta: un DIAGNOSTICO, un CAMBIA y un bloque; si dudás entre dos líneas, elegí "
            "una (una respuesta con dos propuestas distintas se rechaza sin probar ninguna).\n"
+           "El código tiene que CALCULAR los valores: no copies números de la salida ni de las verificaciones. No uses "
+           "atributos internos (nombres con doble guion bajo, como __len__): el sandbox los rechaza.\n"
            "Si la corrección es borrar esa instrucción, en lugar del bloque escribí ELIMINAR.\n"
            "Si creés que ninguna de las candidatas es la causa, respondé solo DIAGNOSTICO: NINGUNA y MOTIVO.")
 
 
-def partes(problema: dict, obs: dict, sugerida: int, historia=(), pendientes=(), compacto: bool = False
-           ) -> list[tuple[str, str]]:
-    """sugerida: la hipótesis del coordinador (una SUGERENCIA: Qwen puede diagnosticar otra candidata).
-    historia: intentos anteriores de esta investigación (retroalimentación); pendientes: candidatas sin probar."""
+def _vista(codigo: str, foco: int | None) -> str:
+    if foco is not None:
+        return P.mostrar(codigo, P.unidad_en(codigo, foco), contexto=200, completa=True)
+    return "\n".join(f"   {i:3d} | {t}" for i, t in enumerate(codigo.splitlines(), 1))
+
+
+def partes(problema: dict, obs: dict, sugerida: int | None, historia=(), pendientes=(), compacto: bool = False,
+           origen: str | None = None, dudas=(), dudas_previas: bool = False) -> list[tuple[str, str]]:
+    """sugerida: la línea en la que el coordinador sugiere enfocarse, SOLO si tiene evidencia (una regla congelada o
+    un diagnóstico previo de Qwen), con su `origen`; None = no sugiere ninguna (el orden no indica preferencia).
+    dudas: líneas entre las que Qwen dudó en su respuesta anterior (ambigua) o, con dudas_previas, líneas que
+    diagnosticó en respuestas anteriores y todavía no se probaron.
+    historia: intentos anteriores (retroalimentación); pendientes: candidatas sin probar."""
     codigo = problema["codigo"]
-    u = P.unidad_en(codigo, sugerida)
     evid = []
     for j in obs["juegos"]:
         if j["fallas"]:
@@ -222,18 +233,30 @@ def partes(problema: dict, obs: dict, sugerida: int, historia=(), pendientes=(),
         previo = historial(codigo, historia, compacto)
         previo.append(("historial", "Candidatas que todavía no se probaron: "
                                     + (", ".join(f"línea {x}" for x in pendientes) or "ninguna") + ".\n"))
+    if sugerida is not None:
+        pedido = (f"El coordinador sugiere investigar la línea {sugerida} ({origen}), pero es solo una sugerencia, "
+                  "TODAVÍA NO COMPROBADA: ")
+        vista = ("Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son parte del "
+                 "código:\n")
+        titulo = "Instrucciones candidatas (solo se puede cambiar UNA de estas, completa):\n\n"
+    else:
+        pedido = ("El coordinador NO sugiere ninguna línea: no tiene evidencia suficiente para preferir una candidata "
+                  "(el orden de la lista no indica preferencia). "
+                  + (f"En respuestas anteriores diagnosticaste las líneas {', '.join(str(x) for x in dudas)}, que "
+                     "todavía no se probaron: elegí UNA. " if dudas and dudas_previas else
+                     f"En tu respuesta anterior dudaste entre las líneas {', '.join(str(x) for x in dudas)}: elegí UNA. "
+                     if dudas else ""))
+        vista = "Código actual. Los números de línea están SOLO para ubicarte; no son parte del código:\n"
+        titulo = "Instrucciones candidatas, sin orden de preferencia (solo se puede cambiar UNA de estas, completa):\n\n"
     return [("coordinador", f"Un instrumento de medición escrito en Python responde: {B.PREGUNTA}\n"),
             ("evidencia", "\n\n".join(evid) + "\n"),
             ("coordinador", GLOSARIO + "\n"),
             *previo,
-            ("coordinador", "Código actual. Los números de línea y la marca «>>» están SOLO para ubicarte; no son "
-                            "parte del código:\n" + P.mostrar(codigo, u, contexto=200, completa=True) + "\n"),
-            ("coordinador", "Instrucciones candidatas (solo se puede cambiar UNA de estas, completa):\n\n"
-                            + "\n\n".join(cands) + "\n"),
-            ("coordinador", f"El coordinador sugiere investigar la línea {sugerida}, pero es solo una sugerencia, TODAVÍA "
-                            "NO COMPROBADA: primero decidí cuál de las candidatas es la causa (DIAGNOSTICO) y qué "
-                            "variable o clave hay que cambiar (CAMBIA); después escribí el cambio MÍNIMO para ESA "
-                            "instrucción, que haga lo que dijiste.\n" + FORMATO)]
+            ("coordinador", vista + _vista(codigo, sugerida) + "\n"),
+            ("coordinador", titulo + "\n\n".join(cands) + "\n"),
+            ("coordinador", pedido + "primero decidí cuál de las candidatas es la causa (DIAGNOSTICO) y qué variable o "
+                            "clave hay que cambiar (CAMBIA); después escribí el cambio MÍNIMO para ESA instrucción, que "
+                            "haga lo que dijiste.\n" + FORMATO)]
 
 
 CATEGORIAS = {"ambigua": "la respuesta tenía varias propuestas incompatibles y no se probó ninguna",
@@ -249,12 +272,22 @@ def historial(codigo: str, historia, compacto: bool) -> list[tuple[str, str]]:
     out = [("historial", "Intentos anteriores de esta investigación (ninguno se aceptó):\n")]
     for n, it in enumerate(historia, 1):
         d = it["diagnostico"]
-        txt = f"Intento {n}: el coordinador sugirió la línea {it['sugerida']}"
+        txt = (f"Intento {n}: el coordinador sugirió la línea {it['sugerida']}" if it.get("sugerida") is not None
+               else f"Intento {n}: el coordinador no sugirió ninguna línea")
         if it.get("ambiguedad"):
-            txt += ("; tu respuesta tenía VARIAS propuestas incompatibles (" + "; ".join(it["ambiguedad"])
-                    + "), así que no se probó ninguna: respondé con UNA sola")
-        else:
-            txt += (f"; diagnosticaste la línea {d['linea']}" if d.get("linea") else "; no diste un diagnóstico válido")
+            # Neutral: TODAS las propuestas, en pie de igualdad; ninguna se probó.
+            props = it.get("propuestas") or []
+            txt += ("; tu respuesta tenía VARIAS propuestas incompatibles, así que no se probó ninguna: "
+                    + "; ".join(f"propuesta {k}: DIAGNOSTICO {pp.get('diagnostico') or '—'}, CAMBIA "
+                                f"{pp.get('cambia') or '—'}" for k, pp in enumerate(props, 1))
+                    + ". Respondé con UNA sola.\n")
+            out.append(("historial", txt))
+            for k, pp in enumerate(props, 1):
+                if pp.get("bloque") and not compacto:
+                    out.append(("propuesta_previa", f"  Propuesta {k}:\n```python\n" + pp["bloque"].strip()[:300]
+                                + "\n```\n"))
+            continue
+        txt += (f"; diagnosticaste la línea {d['linea']}" if d.get("linea") else "; no diste un diagnóstico válido")
         txt += (f" y declaraste que cambiabas {d['cambia']}" if d.get("cambia") else "")
         txt += (f", esperando {d['efecto']}" if d.get("efecto") else "") + ".\n"
         out.append(("historial", txt))
@@ -543,6 +576,12 @@ def preparar(texto: str | None, codigo: str, autorizadas: list[int], usados: dic
         return reg
     amb = ambiguedades(it)
     reg["ambiguedad"] = amb
+    reg["propuestas"] = [{"diagnostico": dg, "cambia": cb, "bloque": bl} for dg, cb, bl in itertools.zip_longest(
+        it["todos"]["diagnostico"], it["todos"]["cambia"], it["bloques"])]
+    reg["diagnosticadas"] = list(dict.fromkeys(
+        u.lineno for v in it["todos"]["diagnostico"] if (m := re.match(r"(?:l[íi]nea\s*)?(\d+)\b", v, re.I))
+        and 1 <= int(m.group(1)) <= len(codigo.splitlines()) and (u := P.unidad_en(codigo, int(m.group(1))))
+        and u.lineno in autorizadas))
     if amb:
         return invalido("respuesta ambigua: " + "; ".join(amb))
     if it["tipo"] == "ninguna":
@@ -665,7 +704,8 @@ def etapas(reg: dict) -> str:
     """Una línea legible: sugerida → diagnóstico → limpieza → fragmento → coherencia → ensamblado → verificación →
     efecto → siguiente."""
     d = reg["diagnostico"]
-    out = [f"sugerida L{reg['sugerida']}"]
+    out = [f"sugerida L{reg['sugerida']} ({reg.get('origen')})" if reg.get("sugerida") is not None
+           else "sin sugerencia"]
     if reg["propuesta"]["tipo"] == "ninguna":
         out.append("diagnóstico: NINGUNA de las candidatas")
     elif d["valido"]:
@@ -693,7 +733,7 @@ def etapas(reg: dict) -> str:
         out.append(f"efecto: {aviso}")
     dec = reg.get("decision")
     if dec:
-        out.append(f"siguiente: {('sugerir L' + str(dec['siguiente'])) if dec['siguiente'] else 'ninguna'} "
+        out.append(f"siguiente: {('sugerir L' + str(dec['siguiente'])) if dec['siguiente'] else 'sin sugerencia'} "
                    f"({dec['porque']})")
     return " → ".join(out)
 
@@ -722,29 +762,56 @@ def _rechazo(reg: dict) -> tuple[str | None, str]:
     return v.get("categoria") or "comportamiento", v.get("detalle") or v.get("motivo") or ""
 
 
-def decidir(reg: dict, cola: list[int], usados: dict, fallas_iniciales: set) -> tuple[int | None, str]:
-    """Qué SUGERIR en la llamada siguiente (Qwen puede diagnosticar otra candidata). Regla fija:
-    1. la línea que Qwen diagnosticó, si el intento no llegó a probarse (sintaxis, incoherencia, ensamblado,
-       revisión, sin cambio) o si se ejecutó y REDUJO las verificaciones que fallan, y le quedan intentos;
-    2. si la respuesta no tuvo diagnóstico válido, la misma sugerencia (reintento con la retroalimentación);
-    3. la siguiente candidata sin probar de la cola;
-    4. ninguna."""
-    d, rechazo = reg["diagnostico"], reg.get("rechazo")
-    if rechazo in ("formato", "ambigua"):
-        return reg["sugerida"], ("reintento: la respuesta tuvo varias propuestas incompatibles" if rechazo == "ambigua"
-                                 else "reintento: la respuesta no tuvo un diagnóstico válido")
+def decidir(reg: dict, regla: dict | None, usados: dict, pistas: list[int], fallas_iniciales: set) -> dict:
+    """Dónde enfocar la llamada siguiente (v1.3.4). El coordinador solo SUGIERE una línea si tiene evidencia; si no,
+    no marca ninguna. Regla fija, en orden:
+    1. la línea que Qwen diagnosticó, si su intento no llegó a probarse (sintaxis, incoherencia, ensamblado, revisión,
+       sin cambio) o si se ejecutó y REDUJO las verificaciones que fallan, y le quedan intentos;
+    2. tras una respuesta ambigua: si una sola de las líneas que diagnosticó no se probó (o una sola contradice a la
+       sugerencia), esa; si dudó entre varias sin probar, ninguna marcada y se le pide que elija UNA;
+    3. una línea que Qwen diagnosticó en cualquier respuesta anterior y todavía no se probó (si son varias, ninguna
+       marcada: se le pide que elija UNA de esas);
+    4. sin diagnóstico válido: la misma sugerencia que antes (o ninguna);
+    5. la línea de la regla congelada, si respondió y no se probó;
+    6. sin evidencia y con candidatas sin probar: ninguna marcada (Qwen elige);
+    7. fin: no quedan candidatas por probar.
+    Nunca ejecuta una reparación ambigua: solo usa los NÚMEROS de línea que Qwen diagnosticó para ordenar."""
+    d, rechazo, sug = reg["diagnostico"], reg.get("rechazo"), reg.get("sugerida")
     L = d.get("linea")
+
+    def foco(linea, origen, porque=None, dudas=(), dudas_previas=False):
+        return {"foco": linea, "origen": origen, "dudas": list(dudas), "dudas_previas": dudas_previas, "fin": False,
+                "porque": porque or origen}
     if L and usados.get(L, 0) < MAX_POR_LINEA:
         if rechazo in ("sintaxis", "incoherencia", "ensamblado", "revision", "sin_cambio"):
-            return L, f"reintento sobre el diagnóstico: no llegó a probarse ({CATEGORIAS[rechazo]})"
+            return foco(L, f"tu diagnóstico anterior; no llegó a probarse: {CATEGORIAS[rechazo]}")
         juegos = (reg.get("verificacion") or {}).get("juegos") or []
         if rechazo == "comportamiento" and juegos and set(juegos[0]["fallas"]) < fallas_iniciales:
-            return L, f"reintento sobre el diagnóstico: redujo las fallas ({sorted(fallas_iniciales)} → " \
-                      f"{sorted(juegos[0]['fallas'])})"
-    for x in cola:
-        if usados.get(x, 0) == 0:
-            return x, "siguiente candidata sin probar"
-    return None, "no quedan candidatas por probar"
+            return foco(L, f"tu diagnóstico anterior redujo las fallas ({sorted(fallas_iniciales)} → "
+                           f"{sorted(juegos[0]['fallas'])})")
+    if rechazo == "ambigua":
+        dudas = [x for x in reg.get("diagnosticadas") or [] if usados.get(x, 0) == 0]
+        distintas = [x for x in dudas if x != sug] if sug is not None else []
+        if len(distintas) == 1:
+            return foco(distintas[0], "la diagnosticaste en tu respuesta anterior, distinta de la sugerencia")
+        if len(dudas) == 1:
+            return foco(dudas[0], "la diagnosticaste en tu respuesta anterior y todavía no se probó")
+        if len(dudas) > 1:
+            return foco(None, None, f"dudó entre {dudas}: se le pide que elija UNA", dudas)
+    nuevas = [x for x in pistas if usados.get(x, 0) == 0]
+    if len(nuevas) == 1:
+        return foco(nuevas[0], "la diagnosticaste antes y todavía no se probó")
+    if len(nuevas) > 1:
+        return foco(None, None, f"diagnosticó antes {nuevas} sin que se probaran: se le pide que elija UNA", nuevas,
+                    dudas_previas=True)
+    if rechazo == "formato":
+        return foco(sug, reg.get("origen"), "reintento: la respuesta no tuvo un diagnóstico válido")
+    if regla and usados.get(regla["eleccion"], 0) == 0:
+        return foco(regla["eleccion"], f"regla congelada {regla['lectura']}")
+    if any(usados.get(x, 0) == 0 for x in reg.get("_candidatas", [])):
+        return foco(None, None, "sin evidencia para preferir una candidata: Qwen elige")
+    return {"foco": None, "origen": None, "dudas": [], "dudas_previas": False, "fin": True,
+            "porque": "no quedan candidatas por probar"}
 
 
 NO_CABE = object()
@@ -752,36 +819,43 @@ NO_CABE = object()
 
 def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, *,
                llamadas: int = MAX_HIPOTESIS, log=print) -> dict:
-    """Investigación v1.3. pedir(clave, partes, semilla) -> texto | None | NO_CABE.
+    """Investigación v1.3.4. pedir(clave, partes, semilla) -> texto | None | NO_CABE.
     None: el límite GLOBAL cortó (incompleto). NO_CABE: no entra en el contexto.
     hechas: respuestas ya obtenidas (reanudación): el camino se reconstruye igual, sin pedir de nuevo."""
     codigo = problema["codigo"]
     llamadas = max(1, min(int(llamadas), TOPE_LLAMADAS))
-    cola, autorizadas = list(obs["hipotesis"]), list(obs["candidatas"])
+    autorizadas = list(obs["candidatas"])
+    regla = obs["reglas_v1"]["respuesta"]
     usados: dict = {}
+    pistas: list[int] = []                      # líneas que Qwen diagnosticó (en cualquier respuesta), en orden
     sin_diagnostico = 0
     fallas_iniciales = {f["id"] for f in obs["juegos"][0]["fallas"]}
-    intentos, sugerida, porque = [], (cola[0] if cola else None), "primera sugerencia"
+    intentos = []
+    paso = ({"foco": regla["eleccion"], "origen": f"regla congelada {regla['lectura']}", "dudas": [],
+             "dudas_previas": False, "porque": "primera llamada: una regla congelada tiene evidencia"} if regla else
+            {"foco": None, "origen": None, "dudas": [], "dudas_previas": False,
+             "porque": "primera llamada: ninguna regla tiene evidencia"})
     for k in range(llamadas):
-        if sugerida is None:
-            return {"id": problema["id"], "estado": "se_abstiene", "motivo": porque, "intentos": intentos}
-        pendientes = [x for x in cola if usados.get(x, 0) == 0]
-        clave = f"{problema['id']}|c{k}|S{sugerida}"
-        ps = partes(problema, obs, sugerida, intentos, pendientes)
+        sugerida = paso["foco"]
+        pendientes = [x for x in autorizadas if usados.get(x, 0) == 0]
+        clave = f"{problema['id']}|c{k}|S{sugerida if sugerida is not None else '-'}"
+        ps = partes(problema, obs, sugerida, intentos, pendientes, origen=paso["origen"], dudas=paso["dudas"],
+                    dudas_previas=paso["dudas_previas"])
         if clave in hechas:
             resp, ps = hechas[clave]["respuesta"], hechas[clave].get("partes") or ps
         else:
             resp = pedir(clave, ps, semilla(problema["id"], k))
             if resp is NO_CABE:                        # se resume el historial y se intenta una vez más
-                ps = partes(problema, obs, sugerida, intentos, pendientes, compacto=True)
+                ps = partes(problema, obs, sugerida, intentos, pendientes, compacto=True, origen=paso["origen"],
+                            dudas=paso["dudas"], dudas_previas=paso["dudas_previas"])
                 resp = pedir(clave, ps, semilla(problema["id"], k))
             if resp is NO_CABE:
                 return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
                         "motivo": "el pedido no entra en el contexto ni con el historial resumido"}
             if resp is None:
                 return {"id": problema["id"], "estado": "incompleto", "intentos": intentos, "pendientes": pendientes}
-        reg = {"clave": clave, "sugerida": sugerida, "por_que_esta_sugerencia": porque, "respuesta": resp,
-               "partes": ps, **preparar(resp, codigo, autorizadas, usados)}
+        reg = {"clave": clave, "sugerida": sugerida, "origen": paso["origen"], "por_que_esta_sugerencia": paso["porque"],
+               "respuesta": resp, "partes": ps, **preparar(resp, codigo, autorizadas, usados)}
         if reg["diagnostico"]["valido"] and reg["diagnostico"]["efecto"]:
             reg["efecto_previo"] = contrastar_efecto(reg["diagnostico"]["efecto"], referencias(obs))
         reg["hipotesis"] = reg["diagnostico"]["linea"] or sugerida      # la instrucción efectivamente investigada
@@ -796,12 +870,15 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
             reg["verificacion"] = {"realizada": False, "aceptada": None, "motivo": reg["ensamblado"]["detalle"]}
         if reg["diagnostico"]["linea"]:
             usados[reg["diagnostico"]["linea"]] = usados.get(reg["diagnostico"]["linea"], 0) + 1
+        for x in reg.get("diagnosticadas") or []:
+            if x not in pistas:
+                pistas.append(x)
         reg["rechazo"], reg["rechazo_detalle"] = _rechazo(reg)
         intentos.append(reg)
         if reg["verificacion"].get("aceptada"):
             log(f"    {clave}: {etapas(reg)}")
             return {"id": problema["id"], "estado": "confirmada", "linea": reg["linea_reparada"], "intentos": intentos}
-        if reg["propuesta"]["tipo"] == "ninguna":
+        if reg["propuesta"]["tipo"] == "ninguna" and not reg.get("ambiguedad"):
             log(f"    {clave}: {etapas(reg)}")
             return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
                     "motivo": "Qwen diagnosticó que ninguna candidata es la causa"}
@@ -812,9 +889,11 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
                 reg["decision"] = {"siguiente": None, "porque": motivo}
                 log(f"    {clave}: {etapas(reg)}")
                 return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos, "motivo": motivo}
-        sugerida, porque = decidir(reg, cola, usados, fallas_iniciales)
-        reg["decision"] = {"siguiente": sugerida, "porque": porque}
+        paso = decidir({**reg, "_candidatas": autorizadas}, regla, usados, pistas, fallas_iniciales)
+        reg["decision"] = {"siguiente": paso["foco"], "porque": paso["porque"], "dudas": paso["dudas"]}
         log(f"    {clave}: {etapas(reg)}")
+        if paso["fin"]:
+            return {"id": problema["id"], "estado": "se_abstiene", "motivo": paso["porque"], "intentos": intentos}
     return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
             "motivo": f"se agotó el presupuesto del defecto ({llamadas} llamadas)"}
 
@@ -1000,7 +1079,7 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
              "interpretacion": it["interpretacion"], "etapas": etapas(it),
              "verificacion_realizada": bool((it.get("verificacion") or {}).get("realizada")),
              "aceptada": (it.get("verificacion") or {}).get("aceptada"), "sugerida": it.get("sugerida"),
-             "diagnostico": (it.get("diagnostico") or {}).get("linea"),
+             "origen_de_la_sugerencia": it.get("origen"), "diagnostico": (it.get("diagnostico") or {}).get("linea"),
              "diagnostico_en_objetivo": (it.get("diagnostico") or {}).get("linea") in obj,
              "rechazo": it.get("rechazo"), "ambiguedad": it.get("ambiguedad") or [],
              "rechazada_por": (it.get("verificacion") or {}).get("rechazada_por"),
@@ -1172,7 +1251,10 @@ def resumir(juicio: list[dict]) -> dict:
                 {True: "coincide", False: "contradice"}[x["efecto_previo_compatible"]] for j in juicio
                 for x in j.get("intentos", []) if x.get("efecto_previo_compatible") is not None)),
             "diagnostico_distinto_de_la_sugerencia": sum(1 for j in juicio for x in j.get("intentos", [])
-                                                         if x.get("diagnostico") and x["diagnostico"] != x["sugerida"]),
+                                                         if x.get("diagnostico") and x["sugerida"] is not None
+                                                         and x["diagnostico"] != x["sugerida"]),
+            "diagnosticos_sin_sugerencia": sum(1 for j in juicio for x in j.get("intentos", [])
+                                               if x.get("diagnostico") and x["sugerida"] is None),
             "diagnosticos_en_el_objetivo": sum(1 for j in juicio for x in j.get("intentos", [])
                                                if x.get("diagnostico_en_objetivo")),
             "fugas": sum(len(x["fugas"]) for j in juicio for x in j.get("intentos", []))}
@@ -1194,7 +1276,8 @@ def markdown(res: dict) -> str:
            f"- Resultados: {r['resultados']}",
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
            f"- Rechazos por categoría: {r['rechazos']} · diagnósticos distintos de la sugerencia: "
-           f"{r['diagnostico_distinto_de_la_sugerencia']} · diagnósticos que dan con la causa (según el juez): "
+           f"{r['diagnostico_distinto_de_la_sugerencia']} · diagnósticos sin sugerencia: "
+           f"{r['diagnosticos_sin_sugerencia']} · diagnósticos que dan con la causa (según el juez): "
            f"{r['diagnosticos_en_el_objetivo']} · EFECTO declarado frente a lo que midió VF: "
            f"{r['efecto_declarado_contra_vf']}",
            f"- Reglas v1 de punta a punta (sin filtro): {r['reglas_v1_punta_a_punta']}",

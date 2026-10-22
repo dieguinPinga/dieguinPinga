@@ -1,4 +1,4 @@
-"""Ciclo de investigación v1.3 (PILOTO.md, «Ciclo v1», «v1.1», «v1.2» y «v1.3»): diagnóstico estructurado →
+"""Ciclo de investigación v1.3.4 (PILOTO.md, «Ciclo v1» a «v1.3.4»): diagnóstico estructurado →
 reparación → coherencia → verificación → juez separado.
 
 Los modelos simulados validan el CIRCUITO (aislamiento del juez, diagnóstico y coherencia, verificación en dos juegos
@@ -36,8 +36,21 @@ def banco(*ids):
     return [d for d in ok if not ids or d["id"] in ids]
 
 
-def sugerida_del_prompt(prompt: str) -> int:
-    return int(re.search(r"El coordinador sugiere investigar la línea (\d+)", prompt).group(1))
+def sugerida_del_prompt(prompt: str) -> int | None:
+    """La línea que sugiere el coordinador, o None si no sugiere ninguna (v1.3.4: sin evidencia no marca)."""
+    m = re.search(r"El coordinador sugiere investigar la línea (\d+)", prompt)
+    if m:
+        return int(m.group(1))
+    assert "El coordinador NO sugiere ninguna línea" in prompt, "el prompt tiene que decir si sugiere o no"
+    return None
+
+
+def primera_sin_probar(prompt: str) -> int:
+    """Para los modelos simulados que necesitan elegir cuando el coordinador no sugiere: la primera candidata que
+    todavía no se probó (o la primera de la lista)."""
+    m = re.search(r"Candidatas que todavía no se probaron: ([^\n]*)", prompt)
+    pend = [int(x) for x in re.findall(r"línea (\d+)", m.group(1))] if m else []
+    return pend[0] if pend else int(re.search(r"^Línea (\d+)", prompt, re.M).group(1))
 
 
 class Modelo:
@@ -62,7 +75,9 @@ def responde(linea, cambia, codigo, efecto=None, motivo="simulado"):
 
 
 def inocuo(prompt, linea):
-    """Diagnostica la línea sugerida y propone un cambio que no altera el comportamiento (para recorrer la cola)."""
+    """Diagnostica la línea sugerida (o, sin sugerencia, la primera sin probar) y propone un cambio que no altera el
+    comportamiento (para recorrer la cola)."""
+    linea = linea if linea is not None else primera_sin_probar(prompt)
     codigo = next(d["codigo"] for d in banco("X07"))
     instr = C.instruccion(codigo, C.P.unidad_en(codigo, linea))
     destino = next(iter(C._especificas(C.escrituras(ast.parse(instr).body))))
@@ -147,9 +162,11 @@ class UnitTests(unittest.TestCase):
         obs = {"candidatas": [21, 19, 20],
                "juegos": [{"params": p, "salida": {"resultado": {}}, "fallas": [{"id": "VF"}],
                            "texto": "- VF: algo (campos: suma)"} for p in C.PARAMS_COORDINADOR]}
-        ps = C.partes({"id": "X04", "codigo": x04["codigo"]}, obs, 20)
+        ps = C.partes({"id": "X04", "codigo": x04["codigo"]}, obs, 20, origen="regla congelada R2_ultimo_escritor")
         texto = "\n".join(t for _, t in ps)
-        self.assertIn("es solo una sugerencia, TODAVÍA NO COMPROBADA", texto)
+        self.assertIn("El coordinador sugiere investigar la línea 20 (regla congelada R2_ultimo_escritor), pero es "
+                      "solo una sugerencia, TODAVÍA NO COMPROBADA", texto)
+        self.assertIn(">>  20 |", texto)
         self.assertIn("Línea 20  ← sugerida por el coordinador:\n```python\nsumas[inicio] = sumas.get(inicio, 0.0) + v"
                       "\n```", texto)
         self.assertIn("Línea 21:\n```python\nmejores = sorted", texto)
@@ -159,6 +176,33 @@ class UnitTests(unittest.TestCase):
         self.assertNotIn("[modelo]", texto)
         self.assertEqual(C.auditar(ps, x04), [])
 
+    def test_without_evidence_no_line_is_suggested_or_marked(self):
+        """v1.3.4: si ninguna regla respondió y Qwen todavía no diagnosticó nada, el coordinador no marca ninguna
+        línea: ni «>>», ni «← sugerida», ni «sugiere investigar»; y dice que el orden no es una preferencia."""
+        x07 = banco("X07")[0]
+        obs = {"candidatas": [17, 15, 12], "juegos": []}
+        ps = C.partes({"id": "X07", "codigo": x07["codigo"]}, obs, None)
+        texto = "\n".join(t for _, t in ps)
+        self.assertIn("El coordinador NO sugiere ninguna línea: no tiene evidencia suficiente para preferir una "
+                      "candidata (el orden de la lista no indica preferencia).", texto)
+        self.assertIn("Instrucciones candidatas, sin orden de preferencia", texto)
+        self.assertNotRegex(texto, r"(?m)^>>", "ninguna línea marcada en el código")
+        for marca in ("← sugerida", "sugiere investigar", "dudaste"):
+            self.assertNotIn(marca, texto)
+        self.assertIn("  12 | ", texto, "el código se sigue numerando para ubicarse")
+        ps = C.partes({"id": "X07", "codigo": x07["codigo"]}, obs, None, dudas=[17, 12])
+        self.assertIn("En tu respuesta anterior dudaste entre las líneas 17, 12: elegí UNA.",
+                      "\n".join(t for _, t in ps))
+        self.assertEqual(C.auditar(ps, x07), [])
+
+    def test_format_asks_to_compute_values_and_avoid_internal_attributes(self):
+        """Instrucción GENÉRICA (no menciona X07 ni sus números): Qwen copió 14803 / 1643 y usó __len__."""
+        self.assertIn("El código tiene que CALCULAR los valores: no copies números de la salida ni de las "
+                      "verificaciones.", C.FORMATO)
+        self.assertIn("No uses atributos internos (nombres con doble guion bajo, como __len__)", C.FORMATO)
+        for propio in ("14803", "1643", "16446", "leidas", "cobertura"):
+            self.assertNotIn(propio, C.FORMATO)
+
     def test_a_folder_from_another_version_is_not_resumed(self):
         d = Path(tempfile.mkdtemp())
         (d / "llamadas.jsonl").write_text('{"clave": "X01|h0|L19", "respuesta": "x"}\n')
@@ -167,7 +211,7 @@ class UnitTests(unittest.TestCase):
         self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
                          "la corrida original no se toca")
         self.assertFalse((d / "version.json").exists())
-        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3", "ciclo v1.3.1", "ciclo v1.3.2"):
+        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3", "ciclo v1.3.1", "ciclo v1.3.2", "ciclo v1.3.3"):
             e = Path(tempfile.mkdtemp())
             (e / "version.json").write_text(json.dumps({"version": anterior}))
             with self.assertRaisesRegex(RuntimeError, f"{anterior}»"):
@@ -270,18 +314,28 @@ class DiagnosisAndCoherenceTests(unittest.TestCase):
         self.assertEqual((bien["avisos"], bien["efecto_cumplido"]), ([], True))
 
     def test_decision_rule(self):
-        cola, ini = [17, 15, 12], {"S2_cobertura", "VF"}
-        base = {"sugerida": 17, "diagnostico": {"linea": 12}}
-        self.assertEqual(C.decidir({**base, "rechazo": "formato"}, cola, {}, ini)[0], 17,
-                         "sin diagnóstico: misma sugerencia, con la retroalimentación")
+        ini, cand = {"S2_cobertura", "VF"}, [17, 15, 12]
+        base = {"sugerida": 17, "origen": "regla congelada R2", "diagnostico": {"linea": 12}, "_candidatas": cand}
+        dec = lambda reg, usados, pistas=(), regla=None: C.decidir(reg, regla, usados, list(pistas), ini)
+        sin = {**base, "diagnostico": {"linea": None}, "rechazo": "formato"}
+        self.assertEqual(dec(sin, {})["foco"], 17, "sin diagnóstico: misma sugerencia, con la retroalimentación")
+        self.assertIsNone(dec({**sin, "sugerida": None}, {})["foco"], "y si no había sugerencia, sigue sin haberla")
         inc = {**base, "rechazo": "incoherencia"}
-        self.assertEqual(C.decidir(inc, cola, {12: 1}, ini)[0], 12, "se insiste sobre lo que Qwen diagnosticó")
-        self.assertEqual(C.decidir(inc, cola, {12: 2}, ini)[0], 17, "pero no sin fin")
+        self.assertEqual(dec(inc, {12: 1})["foco"], 12, "se insiste sobre lo que Qwen diagnosticó")
+        self.assertIsNone(dec(inc, {12: 2})["foco"], "pero no sin fin; y sin evidencia no se sugiere otra")
+        self.assertFalse(dec(inc, {12: 2})["fin"], "quedan candidatas sin probar: Qwen elige")
         menos = {**base, "rechazo": "comportamiento", "verificacion": {"juegos": [{"fallas": ["VF"]}]}}
-        self.assertEqual(C.decidir(menos, cola, {12: 1}, ini)[0], 12)
+        self.assertEqual(dec(menos, {12: 1})["foco"], 12)
         igual = {**base, "rechazo": "comportamiento", "verificacion": {"juegos": [{"fallas": ["S2_cobertura", "VF"]}]}}
-        self.assertEqual(C.decidir(igual, cola, {12: 1}, ini)[0], 17)
-        self.assertEqual(C.decidir(igual, cola, {17: 1, 15: 1, 12: 1}, ini), (None, "no quedan candidatas por probar"))
+        self.assertIsNone(dec(igual, {12: 1})["foco"], "v1.3.3 pasaba a la 17 por el orden del localizador")
+        self.assertEqual(dec(igual, {12: 1}, pistas=[12, 15])["foco"], 15,
+                         "una línea que Qwen diagnosticó antes y no se probó va primero")
+        empate = dec(igual, {12: 1}, pistas=[17, 15])
+        self.assertEqual((empate["foco"], empate["dudas"], empate["dudas_previas"]), (None, [17, 15], True),
+                         "si son varias, no se prefiere la primera mencionada")
+        self.assertEqual(dec(igual, {12: 1}, regla={"eleccion": 17, "lectura": "R2"})["origen"], "regla congelada R2")
+        fin = dec(igual, {17: 1, 15: 1, 12: 1})
+        self.assertEqual((fin["foco"], fin["fin"], fin["porque"]), (None, True, "no quedan candidatas por probar"))
 
     def test_feedback_names_the_contradiction(self):
         r = self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17))
@@ -361,17 +415,34 @@ class AmbiguityTests(unittest.TestCase):
                          "una respuesta única pero incoherente sigue siendo un problema de COHERENCIA, no de ambigüedad")
 
     def test_ambiguity_feedback_and_decision(self):
+        """v1.3.4: el historial de una respuesta ambigua muestra TODAS las propuestas en pie de igualdad (v1.3.3
+        mostraba solo el primer CAMBIA / bloque), y la decisión no repite la sugerencia por defecto."""
         r = self.preparar(X07_V13_AMBIGUA_DESCRITA)
-        r.update({"sugerida": 17})
+        r.update({"sugerida": 17, "origen": "regla congelada R2"})
         r["rechazo"], r["rechazo_detalle"] = C._rechazo(r)
         self.assertEqual(r["rechazo"], "ambigua")
-        self.assertEqual(C.decidir(r, [17, 15, 12], {}, {"VF"}),
-                         (17, "reintento: la respuesta tuvo varias propuestas incompatibles"))
-        texto = "\n".join(t for _, t in C.partes({"id": "X07", "codigo": self.x07},
-                                                  {"candidatas": [17, 15, 12], "juegos": []}, 17, [r], [15, 12]))
-        self.assertIn("tu respuesta tenía VARIAS propuestas incompatibles (DIAGNOSTICO distintos: «17», «12»", texto)
-        self.assertIn("respondé con UNA sola", texto)
+        self.assertEqual(r["diagnosticadas"], [17, 12])
+        self.assertEqual([(p["diagnostico"], p["cambia"]) for p in r["propuestas"]],
+                         [("17", 'cobertura["validas"]'), ("12", 'cobertura["leidas"]')])
+        paso = C.decidir({**r, "_candidatas": [17, 15, 12]}, None, {}, [17, 12], {"VF"})
+        self.assertEqual((paso["foco"], paso["dudas"]), (12, []),
+                         "con sugerencia 17, la única diagnosticada DISTINTA de la sugerencia")
+        r["sugerida"] = None
+        paso = C.decidir({**r, "_candidatas": [17, 15, 12]}, None, {}, [17, 12], {"VF"})
+        self.assertEqual((paso["foco"], paso["dudas"]), (None, [17, 12]), "sin sugerencia: empate, que elija UNA")
+        ps = C.partes({"id": "X07", "codigo": self.x07}, {"candidatas": [17, 15, 12], "juegos": []}, None, [r],
+                      [17, 15, 12], dudas=paso["dudas"])
+        texto = "\n".join(t for _, t in ps)
+        self.assertIn('Intento 1: el coordinador no sugirió ninguna línea; tu respuesta tenía VARIAS propuestas '
+                      'incompatibles, así que no se probó ninguna: propuesta 1: DIAGNOSTICO 17, CAMBIA '
+                      'cobertura["validas"]; propuesta 2: DIAGNOSTICO 12, CAMBIA cobertura["leidas"]. Respondé con '
+                      'UNA sola.', texto)
+        self.assertNotIn("declaraste que cambiabas", texto, "no se presenta una de las propuestas como LA respuesta")
+        self.assertIn(("propuesta_previa", '  Propuesta 1:\n```python\ncobertura["validas"] += 1\n```\n'), ps)
+        self.assertIn(("propuesta_previa", '  Propuesta 2:\n```python\ncobertura["leidas"] += 1\n```\n'), ps)
+        self.assertIn("En tu respuesta anterior dudaste entre las líneas 17, 12: elegí UNA.", texto)
         self.assertIn("UNA sola propuesta por respuesta", texto, "el formato lo pide desde el principio")
+        self.assertNotRegex(texto, r"(?m)^>>")
 
     def test_effect_is_contrasted_with_what_the_coordinator_measured_and_only_warns(self):
         obs = {"juegos": [{"fallas": [
@@ -598,6 +669,11 @@ class CycleTests(unittest.TestCase):
         res = self.correr("x01", banco("X01"), m)
         (j,) = res["juicio"]
         self.assertEqual(len(m.llamadas), 1)
+        p0 = m.llamadas[0]["prompt"]
+        self.assertEqual(sugerida_del_prompt(p0), 19, "v1.3.4: la regla congelada sigue respaldando la sugerencia")
+        self.assertIn("El coordinador sugiere investigar la línea 19 (regla congelada R4", p0)
+        self.assertIn(">>  19 |", p0)
+        self.assertIn("sugerida L19 (regla congelada R4", j["intentos"][0]["etapas"])
         self.assertIn("diagnóstico L19, cambia inicio → limpieza: se quitó la numeración 19–19 → fragmento válido → "
                       "coherente → ensamblado ok → ACEPTADA", j["intentos"][0]["etapas"])
         self.assertEqual(j["resultado"], "confirmación verdadera")
@@ -623,14 +699,16 @@ class CycleTests(unittest.TestCase):
         m = Modelo(responder)
         res = self.correr("x07_v13", banco("X07"), m)
         (j,) = res["juicio"]
-        self.assertEqual(sugerida_del_prompt(m.llamadas[0]["prompt"]), 17, "el coordinador sugería la 17")
+        self.assertIsNone(sugerida_del_prompt(m.llamadas[0]["prompt"]),
+                          "v1.3.4: ninguna regla responde en X07, así que no se sugiere nada (v1.3.3 sugería la 17)")
         self.assertEqual([it["diagnostico"] for it in j["intentos"]], [12, 12])
         self.assertIn("efecto: cobertura.leidas pasó de número", j["intentos"][0]["etapas"])
         p2 = m.llamadas[1]["prompt"]
         self.assertIn("Efecto observado: cobertura.leidas pasó de número (1) a booleano (True)", p2)
         self.assertIn(X07_V12_L12, p2, "ve lo que propuso")
         self.assertEqual(j["resultado"], "confirmación verdadera")
-        self.assertEqual(res["resumen"]["diagnostico_distinto_de_la_sugerencia"], 2)
+        self.assertEqual(res["resumen"]["diagnosticos_sin_sugerencia"], 2,
+                         "el primer intento no redujo las fallas: sin evidencia nueva, tampoco se sugiere la segunda vez")
         self.assertEqual(res["resumen"]["diagnosticos_en_el_objetivo"], 2)
         self.assertEqual(res["resumen"]["fugas"], 0)
 
@@ -645,7 +723,11 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(len(m.llamadas), 2)
         self.assertEqual(j["intentos"][0]["rechazo"], "ambigua")
         self.assertFalse(j["intentos"][0]["verificacion_realizada"], "no se probó ninguna de las dos propuestas")
-        self.assertEqual(sugerida_del_prompt(m.llamadas[1]["prompt"]), 17, "misma sugerencia, con la retroalimentación")
+        p1 = m.llamadas[1]["prompt"]
+        self.assertIsNone(sugerida_del_prompt(p1), "v1.3.3 repetía la sugerencia 17; v1.3.4 no prefiere ninguna")
+        self.assertIn("En tu respuesta anterior dudaste entre las líneas 17, 12: elegí UNA.", p1)
+        self.assertIn("propuesta 1: DIAGNOSTICO 17", p1)
+        self.assertIn("propuesta 2: DIAGNOSTICO 12", p1)
         self.assertEqual(j["resultado"], "confirmación verdadera")
         self.assertEqual(res["resumen"]["rechazos"], {"ambigua": 1})
         self.assertEqual(res["resumen"]["efecto_declarado_contra_vf"], {"coincide": 1})
@@ -667,20 +749,60 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(j["resultado"], "confirmación verdadera", "la reparación correcta se acepta igual")
         self.assertEqual(res["resumen"]["efecto_declarado_contra_vf"], {"contradice": 1})
 
-    @unittest.skipUnless((DATOS / "llamadas-X07-v13.jsonl").exists(), "falta tests/datos/llamadas-X07-v13.jsonl")
-    def test_replaying_the_real_v13_answers_under_v131(self):
-        """Las tres respuestas reales de v1.3, en orden, bajo v1.3.1: la ambigua no se prueba; la de la 15 se
-        ejecuta y falla; la de la 12 la rechaza la revisión del sandbox. Abstención, 0 confirmaciones falsas."""
-        reales = [json.loads(x)["respuesta"] for x in (DATOS / "llamadas-X07-v13.jsonl").read_text().splitlines()
-                  if x.strip()]
+    def reproducir(self, nombre, archivo):
+        """Devuelve las respuestas REALES en su orden original, sin importar qué pida el coordinador ahora. Prueba
+        las DECISIONES del coordinador ante esas respuestas; no garantiza que Qwen respondería igual con el prompt
+        nuevo (la respuesta depende del prompt)."""
+        filas = [json.loads(x) for x in (DATOS / archivo).read_text().splitlines() if x.strip()]
+        filas.sort(key=lambda f: int(re.search(r"\|c(\d+)\|", f["clave"]).group(1)))
+        reales = [f["respuesta"] for f in filas]
         m = Modelo(lambda p, ln: reales[len(m.llamadas) - 1])
-        res = self.correr("real_v13", banco("X07"), m)
-        (j,) = res["juicio"]
+        res = self.correr(nombre, banco("X07"), m, llamadas_por_defecto=3)
+        return m, res, res["juicio"][0]
+
+    @unittest.skipUnless((DATOS / "llamadas-X07-v13.jsonl").exists(), "falta tests/datos/llamadas-X07-v13.jsonl")
+    def test_replaying_the_real_v13_answers_under_v134(self):
+        """Las tres respuestas reales de v1.3, en orden: la ambigua no se prueba; la de la 15 se ejecuta y falla; y
+        después el coordinador NO sugiere la 17 por el orden del localizador (v1.3.3): le recuerda que diagnosticó la
+        17 y la 12, nunca probadas, y le pide que elija UNA, sin preferir ninguna. La de la 12 la rechaza la revisión
+        del sandbox. 0 confirmaciones falsas."""
+        m, res, j = self.reproducir("real_v13", "llamadas-X07-v13.jsonl")
         self.assertEqual(len(m.llamadas), 3)
         self.assertEqual([it["rechazo"] for it in j["intentos"]], ["ambigua", "comportamiento", "revision"])
         self.assertFalse(j["intentos"][0]["verificacion_realizada"], "la ambigua no se ejecutó")
+        self.assertEqual([sugerida_del_prompt(x["prompt"]) for x in m.llamadas], [None, None, None])
+        self.assertIn("En respuestas anteriores diagnosticaste las líneas 17, 12, que todavía no se probaron: elegí "
+                      "UNA.", m.llamadas[2]["prompt"])
         self.assertEqual(j["resultado"], "abstención")
         self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
+
+    @unittest.skipUnless((DATOS / "llamadas-X07-v133.jsonl").exists(), "falta tests/datos/llamadas-X07-v133.jsonl")
+    def test_replaying_the_real_v133_answers_under_v134(self):
+        """Corrida REAL de X07 con v1.3.3 (VivoBook): 1) ambigua, DIAGNOSTICO 17 y «CORRECCIÓN FINAL» 12; 2) 17,
+        validas = 14803; 3) 15, invalidas = 1643. v1.3.3 sugirió 17, 17, 15 y su historial mostraba solo la primera
+        propuesta de la ambigua. Con v1.3.4: sin sugerencia; tras la ambigua, empate 17/12 sin marcar ninguna y con
+        las DOS propuestas en el historial; tras el fallo de la 17, la 12 (diagnosticada y nunca probada)."""
+        m, res, j = self.reproducir("real_v133", "llamadas-X07-v133.jsonl")
+        self.assertEqual(len(m.llamadas), 3)
+        self.assertEqual([it["clave"] for it in j["intentos"]], ["X07|c0|S-", "X07|c1|S-", "X07|c2|S12"])
+        self.assertEqual([sugerida_del_prompt(x["prompt"]) for x in m.llamadas], [None, None, 12])
+        p0, p1, p2 = (x["prompt"] for x in m.llamadas)
+        self.assertNotRegex(p0, r"(?m)^>>")
+        self.assertIn("En tu respuesta anterior dudaste entre las líneas 17, 12: elegí UNA.", p1)
+        self.assertNotRegex(p1, r"(?m)^>>")
+        self.assertIn('propuesta 1: DIAGNOSTICO 17, CAMBIA cobertura["validas"]; propuesta 2: DIAGNOSTICO 12, '
+                      'CAMBIA cobertura["leidas"]', p1, "v1.3.3 mostraba solo la primera")
+        self.assertIn('Propuesta 2:\n```python\ncobertura["leidas"] = r.filas.__len__()', p1)
+        self.assertIn("El coordinador sugiere investigar la línea 12 (la diagnosticaste antes y todavía no se "
+                      "probó)", p2)
+        self.assertEqual([it["rechazo"] for it in j["intentos"]], ["ambigua", "comportamiento", "comportamiento"])
+        self.assertFalse(j["intentos"][0]["verificacion_realizada"], "ninguna propuesta ambigua se ejecuta")
+        self.assertEqual([it["diagnostico"] for it in j["intentos"]], [None, 17, 15],
+                         "el número 12 de la ambigua solo ORDENA la siguiente sugerencia; no se da por diagnosticado")
+        self.assertEqual(j["resultado"], "abstención")
+        self.assertEqual(res["resumen"]["aceptadas_por_el_coordinador"], [])
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
+        self.assertEqual(res["resumen"]["fugas"], 0)
 
     def test_a_fixed_counter_copied_from_the_evidence_is_rejected_by_the_coordinators_varied_data(self):
         """v1.3.1: fijar leidas en el total que midió VF pasaba la suite y al juez. v1.3.2: el juez lo marcaba como
@@ -753,7 +875,8 @@ class CycleTests(unittest.TestCase):
     def test_x07_incoherent_answers_are_rejected_before_the_sandbox(self):
         respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17),
                       15: responde(15, 'cobertura["leidas"]', X07_V12_L15)}
-        m = Modelo(lambda p, ln: respuestas.get(ln, "DIAGNOSTICO: NINGUNA\nMOTIVO: no sé"))
+        m = Modelo(lambda p, ln: respuestas.get(ln if ln is not None else primera_sin_probar(p),
+                                                "DIAGNOSTICO: NINGUNA\nMOTIVO: no sé"))
         res = self.correr("x07_incoherente", banco("X07"), m, llamadas_por_defecto=3)
         (j,) = res["juicio"]
         self.assertEqual([it["rechazo"] for it in j["intentos"][:2]], ["incoherencia", "incoherencia"])
@@ -798,7 +921,7 @@ class CycleTests(unittest.TestCase):
         compensa = {20: ("sumas", "sumas[inicio] = round(sumas.get(inicio, 0.0) + v, 1)"),
                     21: ("mejores", "mejores = sorted(sumas.items(), key=lambda x: -round(x[1], 1))[:top]"),
                     19: ("inicio", "inicio = m - datetime.timedelta(minutes=m.minute % ancho)")}
-        m = Modelo(lambda p, ln: responde(ln, *compensa[ln]))
+        m = Modelo(lambda p, ln: responde(ln or primera_sin_probar(p), *compensa[ln or primera_sin_probar(p)]))
         res = self.correr("x04_comp", banco("X04"), m)
         (j,) = res["juicio"]
         self.assertTrue(all(it["verificacion_realizada"] and not it["aceptada"] for it in j["intentos"]))
