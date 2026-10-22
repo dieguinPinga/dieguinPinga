@@ -45,7 +45,7 @@ from . import v2 as V2
 from . import verificaciones as V
 from ...instrumentos.medicion import ejecutar
 
-VERSION = "ciclo v1.3"                     # v1.3: diagnóstico estructurado y controles de coherencia
+VERSION = "ciclo v1.3.1"                   # v1.3.1: respuestas ambiguas (varias propuestas incompatibles)
 HUELLA_REGLAS = "ee46552429b3047e"         # E0 v1, congeladas: el ciclo se niega a correr con otras
 MAX_HIPOTESIS = 3                          # llamadas por defecto, por omisión (presupuesto explícito)
 TOPE_LLAMADAS = 6                          # ningún presupuesto por defecto puede superar esto
@@ -181,6 +181,8 @@ FORMATO = ("Respondé EXACTAMENTE con este formato:\n"
            "```python\n<el código que REEMPLAZA a la instrucción de la línea DIAGNOSTICO, SIN números de línea, "
            "SIN «>>» y SIN «|»>\n```\n"
            "MOTIVO: <una frase>\n"
+           "UNA sola propuesta por respuesta: un DIAGNOSTICO, un CAMBIA y un bloque; si dudás entre dos líneas, elegí "
+           "una (una respuesta con dos propuestas distintas se rechaza sin probar ninguna).\n"
            "Si la corrección es borrar esa instrucción, en lugar del bloque escribí ELIMINAR.\n"
            "Si creés que ninguna de las candidatas es la causa, respondé solo DIAGNOSTICO: NINGUNA y MOTIVO.")
 
@@ -221,7 +223,8 @@ def partes(problema: dict, obs: dict, sugerida: int, historia=(), pendientes=(),
                             "instrucción, que haga lo que dijiste.\n" + FORMATO)]
 
 
-CATEGORIAS = {"formato": "la respuesta no tiene un diagnóstico válido", "incoherencia": "el código no corresponde "
+CATEGORIAS = {"ambigua": "la respuesta tenía varias propuestas incompatibles y no se probó ninguna",
+              "formato": "la respuesta no tiene un diagnóstico válido", "incoherencia": "el código no corresponde "
               "al diagnóstico", "sintaxis": "el fragmento no compila", "ensamblado": "no se pudo ensamblar en el código",
               "revision": "la revisión estática del sandbox lo rechazó", "sin_cambio": "no cambia el código",
               "comportamiento": "se ejecutó y no pasó las verificaciones"}
@@ -234,7 +237,11 @@ def historial(codigo: str, historia, compacto: bool) -> list[tuple[str, str]]:
     for n, it in enumerate(historia, 1):
         d = it["diagnostico"]
         txt = f"Intento {n}: el coordinador sugirió la línea {it['sugerida']}"
-        txt += (f"; diagnosticaste la línea {d['linea']}" if d.get("linea") else "; no diste un diagnóstico válido")
+        if it.get("ambiguedad"):
+            txt += ("; tu respuesta tenía VARIAS propuestas incompatibles (" + "; ".join(it["ambiguedad"])
+                    + "), así que no se probó ninguna: respondé con UNA sola")
+        else:
+            txt += (f"; diagnosticaste la línea {d['linea']}" if d.get("linea") else "; no diste un diagnóstico válido")
         txt += (f" y declaraste que cambiabas {d['cambia']}" if d.get("cambia") else "")
         txt += (f", esperando {d['efecto']}" if d.get("efecto") else "") + ".\n"
         out.append(("historial", txt))
@@ -249,6 +256,8 @@ def historial(codigo: str, historia, compacto: bool) -> list[tuple[str, str]]:
             det = it.get("rechazo_detalle") or ""
             out.append(("historial", f"  Resultado: rechazada: {CATEGORIAS[it['rechazo']]}"
                                      + (f": {det[:400 if not compacto else 140]}" if det else "") + ".\n"))
+        if (it.get("efecto_previo") or {}).get("compatible") is False:
+            out.append(("historial", f"  Antes de ejecutar: {it['efecto_previo']['aviso']}\n"))
         for aviso in (it.get("efecto_observado") or {}).get("avisos", []):
             out.append(("historial", f"  Efecto observado: {aviso}\n"))
     return out
@@ -265,20 +274,48 @@ RE_CAMPO = {k: re.compile(rf"^[ \t]*\**{k}\**[ \t]*:[ \t]*(.+?)[ \t]*$", re.M | 
 
 
 def interpretar(texto: str | None) -> dict:
-    """Separa los campos de la respuesta, sin decidir nada todavía."""
+    """Separa los campos de la respuesta, sin decidir nada todavía. Lee TODAS las apariciones de cada campo y todos
+    los bloques: si hay varias propuestas incompatibles, `ambiguedades()` lo dice (no se elige la primera ni la
+    última)."""
     t = texto or ""
-    afuera = RE_BLOQUE.sub("", t)                 # los campos se leen FUERA del bloque de código
-    campos = {k: (m.group(1).strip() if (m := r.search(afuera)) else None) for k, r in RE_CAMPO.items()}
-    m = RE_BLOQUE.search(t)
-    if m and m.group(1).strip():
-        tipo, frag = "reemplazar", m.group(1)
-    elif re.search(r"^[ \t]*ELIMINAR[ \t]*$", afuera, re.M):
+    afuera = RE_BLOQUE.sub("", t)                 # los campos se leen FUERA de los bloques de código
+    todos = {k: [m.group(1).strip() for m in r.finditer(afuera)] for k, r in RE_CAMPO.items()}
+    bloques = [m.group(1) for m in RE_BLOQUE.finditer(t) if m.group(1).strip()]
+    eliminar = bool(re.search(r"^[ \t]*ELIMINAR[ \t]*$", afuera, re.M))
+    campos = {k: (v[0] if v else None) for k, v in todos.items()}
+    if bloques:
+        tipo, frag = "reemplazar", bloques[0]
+    elif eliminar:
         tipo, frag = "eliminar", None
     elif (campos["DIAGNOSTICO"] or "").upper().startswith("NINGUNA"):
         tipo, frag = "ninguna", None
     else:
         tipo, frag = "sin_codigo", None
-    return {"tipo": tipo, "fragmento": frag, **{k.lower(): v for k, v in campos.items()}}
+    return {"tipo": tipo, "fragmento": frag, **{k.lower(): v for k, v in campos.items()},
+            "todos": {k.lower(): v for k, v in todos.items()}, "bloques": bloques, "eliminar": eliminar}
+
+
+def _diag_norm(v: str) -> str:
+    m = re.match(r"(?:l[íi]nea\s*)?(\d+)\b", v, re.I)
+    return m.group(1) if m else ("NINGUNA" if v.upper().startswith("NINGUNA") else v.strip().lower())
+
+
+def ambiguedades(it: dict) -> list[str]:
+    """Propuestas incompatibles dentro de UNA respuesta. Repetir lo mismo no es ambiguo; decir dos cosas
+    distintas sí: dos DIAGNOSTICO, dos CAMBIA, dos bloques de código distintos, o código y ELIMINAR a la vez."""
+    out = []
+    diags = list(dict.fromkeys(_diag_norm(v) for v in it["todos"]["diagnostico"]))
+    if len(diags) > 1:
+        out.append("DIAGNOSTICO distintos: " + ", ".join(f"«{v}»" for v in diags))
+    cambias = list(dict.fromkeys(str(objetivo_declarado(v) or v.strip()) for v in it["todos"]["cambia"]))
+    if len(cambias) > 1:
+        out.append("CAMBIA distintos: " + ", ".join(f"«{v}»" for v in it["todos"]["cambia"]))
+    bloques = list(dict.fromkeys(P.limpiar_fragmento(b).strip() for b in it["bloques"]))
+    if len(bloques) > 1:
+        out.append(f"{len(bloques)} bloques de código distintos")
+    if it["bloques"] and it["eliminar"]:
+        out.append("un bloque de código y ELIMINAR a la vez")
+    return out
 
 
 # Prefijo de la vista numerada que muestra el prompt («>>  19 | código» o «    19 | código»).
@@ -431,7 +468,7 @@ def efecto(salida_antes, salida_despues, declarado: str | None) -> dict:
     cumplido = None
     m = RE_EFECTO.match(declarado or "")
     if m and despues:
-        campo, valor = m.group(1).split(".")[-1].strip("\"'[]"), float(m.group(2))
+        campo, valor = re.findall(r"\w+", m.group(1))[-1], float(m.group(2))
         rutas = [r for r in despues if r.split(".")[-1] == campo]
         if rutas:
             obtenido = despues[rutas[0]]
@@ -440,6 +477,38 @@ def efecto(salida_antes, salida_despues, declarado: str | None) -> dict:
             if not cumplido:
                 avisos.append(f"esperabas {campo} = {m.group(2)} y quedó {rutas[0]} = {str(obtenido)[:30]}")
     return {"avisos": avisos[:6], "efecto_cumplido": cumplido}
+
+
+def referencias(obs: dict) -> dict:
+    """Valores que el COORDINADOR ya midió y le mostró a Qwen (contraejemplos {'salida', 'medido'} de sus
+    verificaciones, con los parámetros visibles), por campo. Nada del juez."""
+    refs = {}
+    for f in obs["juegos"][0]["fallas"]:
+        try:
+            ej = ast.literal_eval(f.get("detalle") or "")
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            continue
+        if isinstance(ej, list) and len(ej) == 1 and isinstance(ej[0], dict) and set(ej[0]) == {"salida", "medido"} \
+                and isinstance(ej[0]["medido"], (int, float)):
+            for campo in f.get("campos") or []:
+                refs[campo] = ej[0]["medido"]
+    return refs
+
+
+def contrastar_efecto(declarado: str | None, refs: dict) -> dict:
+    """¿El EFECTO declarado contradice lo que las verificaciones del coordinador ya midieron? Solo AVISA: no rechaza
+    ni acepta (Qwen puede declarar mal el efecto de una reparación correcta)."""
+    m = RE_EFECTO.match(declarado or "")
+    if not m:
+        return {"compatible": None, "aviso": "sin EFECTO numérico declarado"}
+    campo, valor = re.findall(r"\w+", m.group(1))[-1], float(m.group(2))
+    if campo not in refs:
+        return {"compatible": None, "aviso": f"las verificaciones no miden {campo}"}
+    ref = refs[campo]
+    ok = abs(ref - valor) <= 1e-6 * max(1.0, abs(ref))
+    return {"compatible": ok, "referencia": {campo: ref},
+            "aviso": "coincide con lo que midió VF" if ok else
+                     f"tu EFECTO espera {campo} = {m.group(2)}, pero la verificación VF midió {campo} = {ref}"}
 
 
 def preparar(texto: str | None, codigo: str, autorizadas: list[int], usados: dict) -> dict:
@@ -459,6 +528,10 @@ def preparar(texto: str | None, codigo: str, autorizadas: list[int], usados: dic
         d["problema"] = problema
         reg["ensamblado"]["detalle"] = f"no se aplica nada: {problema}"
         return reg
+    amb = ambiguedades(it)
+    reg["ambiguedad"] = amb
+    if amb:
+        return invalido("respuesta ambigua: " + "; ".join(amb))
     if it["tipo"] == "ninguna":
         d["valido"] = True
         reg["ensamblado"]["detalle"] = "Qwen diagnosticó que ninguna candidata es la causa"
@@ -562,6 +635,8 @@ def etapas(reg: dict) -> str:
         out.append(f"diagnóstico inválido ({d['problema']})")
     if reg["limpieza"]["aplicada"]:
         out.append(f"limpieza: {reg['limpieza']['detalle']}")
+    if (reg.get("efecto_previo") or {}).get("compatible") is False:
+        out.append(f"aviso previo: {reg['efecto_previo']['aviso']}")
     if reg["fragmento"]["valido"] is not None:
         out.append("fragmento válido" if reg["fragmento"]["valido"] else f"fragmento inválido ({reg['fragmento']['error']})")
     if reg["coherencia"]["revisada"]:
@@ -592,6 +667,8 @@ def _rechazo(reg: dict) -> tuple[str | None, str]:
     d = reg["diagnostico"]
     if reg["propuesta"]["tipo"] == "ninguna":
         return None, ""
+    if reg.get("ambiguedad"):
+        return "ambigua", d["problema"] or ""
     if not d["valido"]:
         return "formato", d["problema"] or ""
     if reg["fragmento"]["valido"] is False:
@@ -614,8 +691,9 @@ def decidir(reg: dict, cola: list[int], usados: dict, fallas_iniciales: set) -> 
     3. la siguiente candidata sin probar de la cola;
     4. ninguna."""
     d, rechazo = reg["diagnostico"], reg.get("rechazo")
-    if rechazo == "formato":
-        return reg["sugerida"], "reintento: la respuesta no tuvo un diagnóstico válido"
+    if rechazo in ("formato", "ambigua"):
+        return reg["sugerida"], ("reintento: la respuesta tuvo varias propuestas incompatibles" if rechazo == "ambigua"
+                                 else "reintento: la respuesta no tuvo un diagnóstico válido")
     L = d.get("linea")
     if L and usados.get(L, 0) < MAX_POR_LINEA:
         if rechazo in ("sintaxis", "incoherencia", "ensamblado", "revision", "sin_cambio"):
@@ -665,6 +743,8 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
                 return {"id": problema["id"], "estado": "incompleto", "intentos": intentos, "pendientes": pendientes}
         reg = {"clave": clave, "sugerida": sugerida, "por_que_esta_sugerencia": porque, "respuesta": resp,
                "partes": ps, **preparar(resp, codigo, autorizadas, usados)}
+        if reg["diagnostico"]["valido"] and reg["diagnostico"]["efecto"]:
+            reg["efecto_previo"] = contrastar_efecto(reg["diagnostico"]["efecto"], referencias(obs))
         reg["hipotesis"] = reg["diagnostico"]["linea"] or sugerida      # la instrucción efectivamente investigada
         reg["linea_reparada"] = reg["diagnostico"]["linea"] if reg["ensamblado"]["ok"] else None
         reg["interpretacion"] = reg["propuesta"]["tipo"]
@@ -686,13 +766,13 @@ def investigar(co: Coordinador, problema: dict, obs: dict, pedir, hechas: dict, 
             log(f"    {clave}: {etapas(reg)}")
             return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
                     "motivo": "Qwen diagnosticó que ninguna candidata es la causa"}
-        if reg["rechazo"] == "formato":
+        if reg["rechazo"] in ("formato", "ambigua"):
             sin_diagnostico += 1
             if sin_diagnostico >= MAX_SIN_DIAGNOSTICO:
-                reg["decision"] = {"siguiente": None, "porque": f"{MAX_SIN_DIAGNOSTICO} respuestas sin diagnóstico válido"}
+                motivo = f"{MAX_SIN_DIAGNOSTICO} respuestas sin un diagnóstico válido y único"
+                reg["decision"] = {"siguiente": None, "porque": motivo}
                 log(f"    {clave}: {etapas(reg)}")
-                return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos,
-                        "motivo": f"{MAX_SIN_DIAGNOSTICO} respuestas sin diagnóstico válido"}
+                return {"id": problema["id"], "estado": "se_abstiene", "intentos": intentos, "motivo": motivo}
         sugerida, porque = decidir(reg, cola, usados, fallas_iniciales)
         reg["decision"] = {"siguiente": sugerida, "porque": porque}
         log(f"    {clave}: {etapas(reg)}")
@@ -766,7 +846,8 @@ def juzgar(juez: Juez, defecto: dict, obs: dict, res: dict | None) -> dict:
              "aceptada": (it.get("verificacion") or {}).get("aceptada"), "sugerida": it.get("sugerida"),
              "diagnostico": (it.get("diagnostico") or {}).get("linea"),
              "diagnostico_en_objetivo": (it.get("diagnostico") or {}).get("linea") in obj,
-             "rechazo": it.get("rechazo"),
+             "rechazo": it.get("rechazo"), "ambiguedad": it.get("ambiguedad") or [],
+             "efecto_previo_compatible": (it.get("efecto_previo") or {}).get("compatible"),
              "fugas": auditar(it["partes"], defecto)}
         if "codigo_propuesto" in it and not incompleto:   # una investigación sin terminar no se juzga
             j["correcta_segun_juez"] = juez.correcto(it["codigo_propuesto"])
@@ -907,6 +988,9 @@ def resumir(juicio: list[dict]) -> dict:
             "confirmaciones_falsas": [j["id"] for j in juicio if j.get("resultado") == "CONFIRMACIÓN FALSA"],
             "incompletos": [j["id"] for j in juicio if "pendientes" in j],
             "rechazos": dict(Counter(x["rechazo"] for j in juicio for x in j.get("intentos", []) if x.get("rechazo"))),
+            "efecto_declarado_contra_vf": dict(Counter(
+                {True: "coincide", False: "contradice"}[x["efecto_previo_compatible"]] for j in juicio
+                for x in j.get("intentos", []) if x.get("efecto_previo_compatible") is not None)),
             "diagnostico_distinto_de_la_sugerencia": sum(1 for j in juicio for x in j.get("intentos", [])
                                                          if x.get("diagnostico") and x["diagnostico"] != x["sugerida"]),
             "diagnosticos_en_el_objetivo": sum(1 for j in juicio for x in j.get("intentos", [])
@@ -925,7 +1009,8 @@ def markdown(res: dict) -> str:
            f"- Incompletos por el límite de llamadas (sin juzgar): {r['incompletos']}",
            f"- Rechazos por categoría: {r['rechazos']} · diagnósticos distintos de la sugerencia: "
            f"{r['diagnostico_distinto_de_la_sugerencia']} · diagnósticos que dan con la causa (según el juez): "
-           f"{r['diagnosticos_en_el_objetivo']}",
+           f"{r['diagnosticos_en_el_objetivo']} · EFECTO declarado frente a lo que midió VF: "
+           f"{r['efecto_declarado_contra_vf']}",
            f"- Reglas v1 de punta a punta (sin filtro): {r['reglas_v1_punta_a_punta']}",
            f"- Equivalentes según el juez: {r['equivalentes']} · no detectados: {r['no_detectados']} · causa fuera "
            f"de las candidatas: {r['causa_fuera_de_las_candidatas']} · fugas: {r['fugas']}", "", "## Por defecto", ""]

@@ -11,3 +11,14 @@ usan las pruebas `tests/test_ciclo.py::RealX07V12Tests` y las constantes `X07_V1
 | 1 | 17 (`validas += 1`) | `cobertura["leidas"] += 1` |
 | 2 | 15 (`invalidas += 1`) | `cobertura["leidas"] += 1` |
 | 3 | 12 (`leidas = 1`) | `cobertura["leidas"] = r.filas[0][0] is not None and len(r.filas) > 0` |
+
+## `llamadas-X07-v13.jsonl`
+
+Es el `llamadas.jsonl` **real** de la corrida de X07 con el ciclo v1.3 en la VivoBook. Lo usan
+`tests/test_ciclo.py::RealX07V13Tests` y `CycleTests.test_replaying_the_real_v13_answers_under_v131`.
+
+| llamada | sugerida | respuesta (resumen) |
+|---|---|---|
+| 1 | 17 | `DIAGNOSTICO: 17` (`validas = 1`) y después `DIAGNOSTICO: 12` (`leidas = len(r.filas)`); cortada en 768 tokens |
+| 2 | 15 | `DIAGNOSTICO: 15`, `cobertura["invalidas"] = 1643` (un número copiado de la evidencia) |
+| 3 | 12 | `DIAGNOSTICO: 12`, `cobertura["leidas"] = r.filas.__len__()` |

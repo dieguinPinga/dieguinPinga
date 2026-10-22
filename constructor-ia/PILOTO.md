@@ -1623,3 +1623,109 @@ bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo -
 **Pruebas:** `tests/test_ciclo.py::RealX07V12Tests` (5), que corren con el archivo y no quedan omitidas. Las
 regresiones de `DiagnosisAndCoherenceTests` usan ahora el texto real; las reconstrucciones se eliminaron porque eran
 incorrectas.
+
+## Ciclo v1.3.1: respuestas ambiguas (2026-10-22, sin inferencias reales)
+
+### El problema
+
+En la primera respuesta real de X07 con v1.3, Qwen:
+- empezó con `DIAGNOSTICO: 17`;
+- después escribió que la causa era la línea 12;
+- presentó un **segundo** `DIAGNOSTICO: 12` con otra reparación.
+
+`interpretar()` tomaba la primera aparición de cada campo y el primer bloque, así que **procesó la primera
+propuesta sin ver que había otra que la contradecía**. Es una falla de interpretación del coordinador: no se puede
+construir sobre una interfaz que puede malinterpretar lo que Qwen respondió.
+
+### Corrección (pequeña; el resto del ciclo no cambia)
+
+1. **`interpretar()` lee todo.** Todas las apariciones de DIAGNOSTICO, CAMBIA, EFECTO y MOTIVO (fuera de los
+   bloques), todos los bloques de código y si aparece ELIMINAR.
+2. **`ambiguedades()`** declara la respuesta **ambigua** si hay propuestas incompatibles:
+   - DIAGNOSTICO distintos (incluido «NINGUNA» junto a un número);
+   - CAMBIA distintos (`d["k"]`, `d['k']` y `d.k` cuentan como lo mismo);
+   - bloques de código distintos (se comparan sin la sangría);
+   - un bloque y ELIMINAR a la vez.
+   
+   **Repetir lo mismo no es ambiguo.**
+3. **Una respuesta ambigua no se interpreta.** No se elige el primer diagnóstico ni el último, no se aplica nada y no
+   se ejecuta nada. Queda registrada con sus contradicciones (`ambiguedad`) y con la categoría de rechazo `ambigua`.
+4. **Retroalimentación y presupuesto.**
+   - El intento siguiente mantiene la misma sugerencia y le dice a Qwen exactamente qué fue contradictorio:
+     «tu respuesta tenía VARIAS propuestas incompatibles (DIAGNOSTICO distintos: «17», «12»; …), así que no se probó
+     ninguna: respondé con UNA sola».
+   - El formato lo pide desde el principio: «UNA sola propuesta por respuesta».
+   - Las respuestas ambiguas y las que no traen un diagnóstico válido comparten el tope `MAX_SIN_DIAGNOSTICO = 2`;
+     después, la investigación se abstiene. Todo dentro del presupuesto de llamadas.
+5. **Las carpetas de v1.3 no se reanudan con v1.3.1**, porque el pedido cambió.
+
+**Sin cambios:**
+- la coherencia antes del sandbox;
+- la verificación en los dos juegos de parámetros, que sigue siendo lo único que acepta;
+- el juez;
+- las reglas E0 (`ee46552429b3047e`);
+- los resultados históricos.
+
+### Investigación: ¿un control de EFECTO contra las verificaciones?
+
+**Se implementó solo como aviso** (`referencias()` + `contrastar_efecto()`).
+- **Fuente.** Toma, de las verificaciones **del coordinador** con los parámetros visibles, los contraejemplos de un
+  solo valor por campo (`{'salida': …, 'medido': …}`), por ejemplo `leidas → 16446` de VF. Son datos que Qwen ya
+  vio en el pedido, así que **nada del juez**.
+- **Contraste.** Si el EFECTO declarado contradice ese valor, se registra antes de ejecutar y va al historial: «tu
+  EFECTO espera leidas = 15000, pero la verificación VF midió leidas = 16446».
+- **No rechaza ni acepta.** Qwen puede declarar mal el efecto de una reparación correcta. Una prueba lo comprueba: con
+  EFECTO 15000, la reparación `+= 1` se confirma igual.
+- **Cobertura limitada, a propósito.** No hay referencia para las sumas por ventana (un valor por ventana) ni para las
+  relaciones de S2. Derivarlas sería empezar a escribir reglas del dominio.
+- **Métrica.** El resumen cuenta `efecto_declarado_contra_vf` (coincide / contradice).
+- **Recomendación.** Mantenerlo como aviso, y decidir con datos reales si una contradicción predice el fracaso de la
+  reparación antes de darle más peso.
+
+### Pruebas
+
+`tests/test_ciclo.py`: 49 pruebas, 2 omitidas mientras falte el archivo real de v1.3.
+- **La respuesta descrita de X07 v1.3** (`DIAGNOSTICO: 17` … `DIAGNOSTICO: 12`): ambigua por diagnóstico, CAMBIA y
+  bloques; no se elige ninguna; no se aplica nada.
+- **Cada tipo de incompatibilidad** se detecta. Las repeticiones compatibles y una respuesta única válida siguen
+  funcionando. Una respuesta única pero incoherente sigue siendo un problema de coherencia, no de ambigüedad.
+- **Retroalimentación y decisión:** la misma sugerencia y un mensaje que nombra la contradicción.
+- **De punta a punta:**
+  - ambigua → retroalimentación → respuesta única → **confirmación verdadera**;
+  - dos ambiguas → abstención, sin ejecutar nada;
+  - EFECTO contradictorio → aviso previo, pero la reparación correcta se acepta.
+- **Contraste de EFECTO:** las referencias salen solo de contrastes de un valor; incompatible, compatible y sin
+  referencia.
+- **Las respuestas reales de v1.2** (`RealX07V12Tests`) siguen pasando.
+
+### Las respuestas REALES de X07 con v1.3 (`tests/datos/llamadas-X07-v13.jsonl`)
+
+| llamada | sugerida | respuesta real | bajo v1.3.1 |
+|---|---|---|---|
+| 1 | 17 | `DIAGNOSTICO: 17` / `validas = 1`, … «la causa es la línea 12» …, `DIAGNOSTICO: 12` / `leidas = len(r.filas)`. **Cortada en 768 tokens**, el tope de una respuesta corta | **ambigua**: dos DIAGNOSTICO, dos CAMBIA y dos bloques; no se prueba ninguna |
+| 2 | 15 | una sola propuesta: `DIAGNOSTICO: 15`, `cobertura["invalidas"] = 1643`, con un **número copiado de la evidencia** | coherente → se ejecuta → falla (`leidas` sigue en 1) |
+| 3 | 12 | una sola propuesta: `DIAGNOSTICO: 12`, `cobertura["leidas"] = r.filas.__len__()`, `EFECTO: leidas = 14803` | coherente → la revisión del sandbox lo rechaza (`__len__`); el EFECTO contradice lo que midió VF (16446) |
+
+Reproducido de punta a punta en el sandbox con las tres respuestas reales, en orden: **abstención, 0 confirmaciones
+falsas**. La segunda propuesta de la llamada 1 (`len(r.filas)`) era correcta, y el rechazo por ambigüedad la
+descarta: es lo acordado, no elegir ninguna.
+
+### Hallazgos nuevos (no se corrigen en v1.3.1)
+
+1. **Un número copiado de la evidencia puede engañar al coordinador Y AL JUEZ.**
+   - Probado: fijar `cobertura["leidas"] = <total que midió VF>` después del bucle pasa toda la suite en los dos
+     juegos de parámetros, y **el juez la da por correcta**.
+   - La razón: los dos juegos del coordinador y los parámetros de reserva del juez cambian `ancho_min` y `top`, pero
+     **usan los mismos datos**, y los conteos no dependen de esos parámetros.
+   - Es una confirmación falsa que la métrica principal **no vería**. La respuesta 2 de Qwen (`invalidas = 1643`)
+     muestra que el modelo ya hace esto.
+   - **Propuesta, como prioridad antes de seguir midiendo:**
+     - **(a)** que el juez evalúe también sobre **otros datos**, por ejemplo una segunda base privada con otra semilla.
+       Esto arregla la medición;
+     - **(b)** que el coordinador verifique sobre datos variados, o rechace por coherencia los literales numéricos que
+       coinciden con valores mostrados en la evidencia.
+2. **Las respuestas largas se cortan.** La primera llegó al tope de 768 tokens: Qwen razonó en voz alta hasta cambiar
+   de diagnóstico. Conviene registrar «respuesta cortada» cuando se alcanza el tope y, quizás, pedir el MOTIVO en
+   una sola frase de verdad.
+3. **`__len__` otra vez.** Ya había aparecido con v1.2. La revisión estática lo rechaza y el historial lo explica, pero
+   no hubo un cuarto intento para comprobar si Qwen aprende de ese aviso.

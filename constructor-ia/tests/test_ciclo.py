@@ -83,6 +83,17 @@ X07_V12_L17 = X07_V12_L15 = 'cobertura["leidas"] += 1'
 X07_V12_L12 = 'cobertura["leidas"] = r.filas[0][0] is not None and len(r.filas) > 0'
 
 
+# X07 con v1.3 (descripción de Diego y ChatGPT; el archivo real todavía no llegó): la primera respuesta empezó con
+# DIAGNOSTICO: 17, después dijo que la causa era la 12 y presentó un segundo DIAGNOSTICO: 12 con otra reparación.
+X07_V13_AMBIGUA_DESCRITA = (
+    'DIAGNOSTICO: 17\nCAMBIA: cobertura["validas"]\n```python\ncobertura["validas"] += 1\n```\n'
+    'MOTIVO: valida cada lectura.\nPero revisando el código, la causa real es la línea 12, que reinicia leidas.\n'
+    'DIAGNOSTICO: 12\nCAMBIA: cobertura["leidas"]\nEFECTO: leidas = 15000\n'
+    '```python\ncobertura["leidas"] += 1\n```\nMOTIVO: hay que acumular las lecturas.')
+UNICA_X07 = ('DIAGNOSTICO: 12\nCAMBIA: cobertura["leidas"]\nEFECTO: leidas = 16446\n```python\ncobertura["leidas"] += 1\n'
+             '```\nMOTIVO: acumula')
+
+
 class UnitTests(unittest.TestCase):
     def test_rules_are_the_frozen_ones(self):
         self.assertEqual(E0.huella_reglas(), C.HUELLA_REGLAS)
@@ -156,7 +167,7 @@ class UnitTests(unittest.TestCase):
         self.assertEqual((d / "llamadas.jsonl").read_text(), '{"clave": "X01|h0|L19", "respuesta": "x"}\n',
                          "la corrida original no se toca")
         self.assertFalse((d / "version.json").exists())
-        for anterior in ("ciclo v1.1", "ciclo v1.2"):
+        for anterior in ("ciclo v1.1", "ciclo v1.2", "ciclo v1.3"):
             e = Path(tempfile.mkdtemp())
             (e / "version.json").write_text(json.dumps({"version": anterior}))
             with self.assertRaisesRegex(RuntimeError, f"{anterior}»"):
@@ -288,6 +299,125 @@ class DiagnosisAndCoherenceTests(unittest.TestCase):
         self.assertEqual(C.auditar(ps, banco("X07")[0]), [])
 
 
+class AmbiguityTests(unittest.TestCase):
+    """v1.3.1: una respuesta con varias propuestas incompatibles no se interpreta: se rechaza como ambigua."""
+
+    def setUp(self):
+        self.x07 = banco("X07")[0]["codigo"]
+
+    def preparar(self, texto):
+        return C.preparar(texto, self.x07, [17, 15, 12], {})
+
+    def test_the_described_x07_v13_answer_is_ambiguous_and_nothing_is_applied(self):
+        r = self.preparar(X07_V13_AMBIGUA_DESCRITA)
+        self.assertEqual(r["ambiguedad"], ['DIAGNOSTICO distintos: «17», «12»',
+                                           'CAMBIA distintos: «cobertura["validas"]», «cobertura["leidas"]»',
+                                           "2 bloques de código distintos"])
+        self.assertFalse(r["diagnostico"]["valido"])
+        self.assertIsNone(r["diagnostico"]["linea"], "no se elige el primero ni el último")
+        self.assertFalse(r["ensamblado"]["realizado"])
+        self.assertNotIn("codigo_propuesto", r)
+
+    def test_each_kind_of_incompatibility(self):
+        casos = {
+            "DIAGNOSTICO distintos": "DIAGNOSTICO: 12\nDIAGNOSTICO: 15\nCAMBIA: cobertura['leidas']\n```python\ncobertura['leidas'] += 1\n```",
+            "CAMBIA distintos": "DIAGNOSTICO: 12\nCAMBIA: cobertura['leidas']\nCAMBIA: total\n```python\ncobertura['leidas'] += 1\n```",
+            "bloques de código distintos": "DIAGNOSTICO: 12\nCAMBIA: cobertura['leidas']\n```python\ncobertura['leidas'] += 1\n```\n"
+                                           "```python\ncobertura['leidas'] = len(r.filas)\n```",
+            "ELIMINAR a la vez": "DIAGNOSTICO: 12\nCAMBIA: cobertura['leidas']\n```python\ncobertura['leidas'] += 1\n```\nELIMINAR",
+            "«NINGUNA»": "DIAGNOSTICO: NINGUNA\nDIAGNOSTICO: 12\nCAMBIA: cobertura['leidas']\n```python\ncobertura['leidas'] += 1\n```",
+        }
+        for esperado, texto in casos.items():
+            with self.subTest(esperado):
+                r = self.preparar(texto)
+                self.assertIn(esperado, " ".join(r["ambiguedad"]))
+                self.assertFalse(r["ensamblado"]["realizado"])
+
+    def test_compatible_repetitions_and_a_single_answer_still_work(self):
+        repetida = ('DIAGNOSTICO: 12\nCAMBIA: cobertura["leidas"]\n```python\ncobertura["leidas"] += 1\n```\n'
+                    "Resumen:\nDIAGNOSTICO: línea 12\nCAMBIA: cobertura['leidas']\n```python\n    cobertura[\"leidas\"] += 1\n```")
+        for texto in (UNICA_X07, repetida):
+            r = self.preparar(texto)
+            self.assertEqual(r["ambiguedad"], [])
+            self.assertTrue(r["ensamblado"]["ok"])
+            self.assertEqual(r["diagnostico"]["linea"], 12)
+        self.assertEqual(self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17))["ambiguedad"], [],
+                         "una respuesta única pero incoherente sigue siendo un problema de COHERENCIA, no de ambigüedad")
+
+    def test_ambiguity_feedback_and_decision(self):
+        r = self.preparar(X07_V13_AMBIGUA_DESCRITA)
+        r.update({"sugerida": 17})
+        r["rechazo"], r["rechazo_detalle"] = C._rechazo(r)
+        self.assertEqual(r["rechazo"], "ambigua")
+        self.assertEqual(C.decidir(r, [17, 15, 12], {}, {"VF"}),
+                         (17, "reintento: la respuesta tuvo varias propuestas incompatibles"))
+        texto = "\n".join(t for _, t in C.partes({"id": "X07", "codigo": self.x07},
+                                                  {"candidatas": [17, 15, 12], "juegos": []}, 17, [r], [15, 12]))
+        self.assertIn("tu respuesta tenía VARIAS propuestas incompatibles (DIAGNOSTICO distintos: «17», «12»", texto)
+        self.assertIn("respondé con UNA sola", texto)
+        self.assertIn("UNA sola propuesta por respuesta", texto, "el formato lo pide desde el principio")
+
+    def test_effect_is_contrasted_with_what_the_coordinator_measured_and_only_warns(self):
+        obs = {"juegos": [{"fallas": [
+            {"id": "VF", "campos": ["filas_analizadas", "leidas"], "detalle": "[{'salida': 1, 'medido': 16446}]"},
+            {"id": "S2_cobertura", "campos": ["leidas"], "detalle": "aritmética de la cobertura: {'leidas': 1}"},
+            {"id": "VF", "campos": ["inicio", "suma"], "detalle": "[{'inicio': 'x', 'suma': 1.0, 'medido': 2.0}]"}]}]}
+        refs = C.referencias(obs)
+        self.assertEqual(refs, {"filas_analizadas": 16446, "leidas": 16446}, "solo contrastes de un valor por campo")
+        mal = C.contrastar_efecto("leidas = 15000", refs)
+        self.assertEqual((mal["compatible"], mal["aviso"]),
+                         (False, "tu EFECTO espera leidas = 15000, pero la verificación VF midió leidas = 16446"))
+        self.assertTrue(C.contrastar_efecto('cobertura["leidas"] = 16446', refs)["compatible"])
+        self.assertIsNone(C.contrastar_efecto("suma = 3", refs)["compatible"])
+        self.assertIsNone(C.contrastar_efecto(None, refs)["compatible"])
+
+
+@unittest.skipUnless((DATOS / "llamadas-X07-v13.jsonl").exists(), "falta tests/datos/llamadas-X07-v13.jsonl")
+class RealX07V13Tests(unittest.TestCase):
+    """Con el archivo REAL de la corrida de X07 con v1.3 (cuando esté): ninguna respuesta con propuestas
+    incompatibles se interpreta, y la primera (DIAGNOSTICO 17 y después 12) queda ambigua."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.x07 = banco("X07")[0]["codigo"]
+        cls.filas = [json.loads(x) for x in (DATOS / "llamadas-X07-v13.jsonl").read_text().splitlines() if x.strip()]
+        cls.filas.sort(key=lambda f: int(re.search(r"\|c(\d+)\|", f["clave"]).group(1)))
+
+    def test_first_answer_is_ambiguous(self):
+        r = C.preparar(self.filas[0]["respuesta"], self.x07, [17, 15, 12], {})
+        self.assertTrue(any("DIAGNOSTICO distintos" in a for a in r["ambiguedad"]), r["ambiguedad"])
+        self.assertFalse(r["ensamblado"]["realizado"])
+
+    def test_exact_text_of_the_three_answers(self):
+        """1: DIAGNOSTICO 17 (validas = 1) y después DIAGNOSTICO 12 (leidas = len(r.filas)), cortada en 768 tokens.
+        2: una sola propuesta: 15, invalidas = 1643 (un número copiado de la evidencia). 3: una sola: 12, __len__."""
+        r1 = C.preparar(self.filas[0]["respuesta"], self.x07, [17, 15, 12], {})
+        self.assertEqual(r1["ambiguedad"], ['DIAGNOSTICO distintos: «17», «12»',
+                                            'CAMBIA distintos: «cobertura["validas"]», «cobertura["leidas"]»',
+                                            "2 bloques de código distintos"])
+        self.assertEqual(self.filas[0]["tokens_generados"], 768, "la respuesta llegó al tope de generación")
+        r2 = C.preparar(self.filas[1]["respuesta"], self.x07, [17, 15, 12], {})
+        self.assertEqual((r2["ambiguedad"], r2["diagnostico"]["linea"], r2["coherencia"]["problemas"]), ([], 15, []))
+        self.assertIn('cobertura["invalidas"] = 1643', r2["codigo_propuesto"])
+        r3 = C.preparar(self.filas[2]["respuesta"], self.x07, [17, 15, 12], {})
+        self.assertEqual((r3["ambiguedad"], r3["diagnostico"]["linea"], r3["coherencia"]["problemas"]), ([], 12, []))
+        self.assertIn("r.filas.__len__()", r3["codigo_propuesto"])
+        self.assertFalse(C.contrastar_efecto(r3["diagnostico"]["efecto"], {"leidas": 16446})["compatible"],
+                         "EFECTO 14803 contradice lo que VF midió en la VivoBook (16446)")
+
+    def test_no_answer_with_incompatible_proposals_is_applied(self):
+        for f in self.filas:
+            with self.subTest(clave=f["clave"]):
+                it = C.interpretar(f["respuesta"])
+                varias = (len({C._diag_norm(v) for v in it["todos"]["diagnostico"]}) > 1
+                          or len({C.P.limpiar_fragmento(b).strip() for b in it["bloques"]}) > 1)
+                r = C.preparar(f["respuesta"], self.x07, [17, 15, 12], {})
+                if varias:
+                    self.assertTrue(r["ambiguedad"])
+                    self.assertFalse(r["ensamblado"]["realizado"])
+                    self.assertIsNone(r["diagnostico"]["linea"], "no se elige el primero ni el último")
+
+
 @unittest.skipUnless((DATOS / "llamadas-X07-v12.jsonl").exists(), "falta tests/datos/llamadas-X07-v12.jsonl")
 class RealX07V12Tests(unittest.TestCase):
     """Con el archivo REAL de la VivoBook (llamadas.jsonl de X07, ciclo v1.2, commit b954b2f): las tres respuestas,
@@ -408,7 +538,7 @@ class CycleTests(unittest.TestCase):
         self.assertTrue(all(it["rechazo"] == "formato" and not it["verificacion_realizada"] for it in j["intentos"]))
         self.assertIn("no diste un diagnóstico válido", m.llamadas[1]["prompt"])
         self.assertIn("rechazada: la respuesta no tiene un diagnóstico válido: falta DIAGNOSTICO", m.llamadas[1]["prompt"])
-        self.assertEqual(j["motivo"], f"{C.MAX_SIN_DIAGNOSTICO} respuestas sin diagnóstico válido")
+        self.assertEqual(j["motivo"], f"{C.MAX_SIN_DIAGNOSTICO} respuestas sin un diagnóstico válido y único")
         self.assertEqual(j["resultado"], "abstención")
 
     def test_x07_diagnosis_beats_the_suggestion_and_feedback_fixes_the_effect(self):
@@ -431,6 +561,54 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(res["resumen"]["diagnostico_distinto_de_la_sugerencia"], 2)
         self.assertEqual(res["resumen"]["diagnosticos_en_el_objetivo"], 2)
         self.assertEqual(res["resumen"]["fugas"], 0)
+
+    def test_ambiguous_answer_gets_feedback_then_a_single_answer_is_verified(self):
+        def responder(prompt, linea):
+            medido = re.search(r"'medido': (\d+)", prompt).group(1)       # lo que midió VF en ESTA base de prueba
+            return (UNICA_X07.replace("16446", medido) if "VARIAS propuestas incompatibles" in prompt
+                    else X07_V13_AMBIGUA_DESCRITA)
+        m = Modelo(responder)
+        res = self.correr("ambigua", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertEqual(len(m.llamadas), 2)
+        self.assertEqual(j["intentos"][0]["rechazo"], "ambigua")
+        self.assertFalse(j["intentos"][0]["verificacion_realizada"], "no se probó ninguna de las dos propuestas")
+        self.assertEqual(sugerida_del_prompt(m.llamadas[1]["prompt"]), 17, "misma sugerencia, con la retroalimentación")
+        self.assertEqual(j["resultado"], "confirmación verdadera")
+        self.assertEqual(res["resumen"]["rechazos"], {"ambigua": 1})
+        self.assertEqual(res["resumen"]["efecto_declarado_contra_vf"], {"coincide": 1})
+
+    def test_two_ambiguous_answers_end_the_investigation_within_budget(self):
+        m = Modelo(lambda p, ln: X07_V13_AMBIGUA_DESCRITA)
+        res = self.correr("ambigua2", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertEqual(len(m.llamadas), C.MAX_SIN_DIAGNOSTICO)
+        self.assertTrue(all(not it["verificacion_realizada"] for it in j["intentos"]))
+        self.assertEqual(j["motivo"], f"{C.MAX_SIN_DIAGNOSTICO} respuestas sin un diagnóstico válido y único")
+
+    def test_effect_contradicting_vf_is_reported_but_does_not_decide(self):
+        m = Modelo(lambda p, ln: UNICA_X07.replace("16446", "15000"))
+        res = self.correr("efecto_previo", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertIn("aviso previo: tu EFECTO espera leidas = 15000, pero la verificación VF midió leidas =",
+                      j["intentos"][0]["etapas"])
+        self.assertEqual(j["resultado"], "confirmación verdadera", "la reparación correcta se acepta igual")
+        self.assertEqual(res["resumen"]["efecto_declarado_contra_vf"], {"contradice": 1})
+
+    @unittest.skipUnless((DATOS / "llamadas-X07-v13.jsonl").exists(), "falta tests/datos/llamadas-X07-v13.jsonl")
+    def test_replaying_the_real_v13_answers_under_v131(self):
+        """Las tres respuestas reales de v1.3, en orden, bajo v1.3.1: la ambigua no se prueba; la de la 15 se
+        ejecuta y falla; la de la 12 la rechaza la revisión del sandbox. Abstención, 0 confirmaciones falsas."""
+        reales = [json.loads(x)["respuesta"] for x in (DATOS / "llamadas-X07-v13.jsonl").read_text().splitlines()
+                  if x.strip()]
+        m = Modelo(lambda p, ln: reales[len(m.llamadas) - 1])
+        res = self.correr("real_v13", banco("X07"), m)
+        (j,) = res["juicio"]
+        self.assertEqual(len(m.llamadas), 3)
+        self.assertEqual([it["rechazo"] for it in j["intentos"]], ["ambigua", "comportamiento", "revision"])
+        self.assertFalse(j["intentos"][0]["verificacion_realizada"], "la ambigua no se ejecutó")
+        self.assertEqual(j["resultado"], "abstención")
+        self.assertEqual(res["resumen"]["confirmaciones_falsas"], [])
 
     def test_x07_incoherent_answers_are_rejected_before_the_sandbox(self):
         respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17),
