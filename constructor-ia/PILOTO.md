@@ -1051,3 +1051,100 @@ cambio de regla es otra versión con otra huella, evaluada sobre defectos nuevos
 - **Los defectos con la causa fuera de las candidatas** miden al localizador, no a las reglas.
 - **R4 tiene un límite conocido:** su verificador de contraste es específico de este instrumento de ventanas.
   Generalizarlo a instrumentos desconocidos es un problema de la arquitectura, no de esta evaluación.
+
+## Auditoría de la primera evaluación a ciegas de E0 (2026-10-22; reglas `ee46552429b3047e` sin cambios)
+
+**Fuente.** 12 defectos escritos por otro ChatGPT, sin conocer las reglas.
+- Banco original: `banco_depuracion_python.zip`. Versión con el manifiesto en formato E0:
+  `banco_e0_12_validado.zip`. Los programas de los dos ZIP son idénticos.
+- Las huellas de código de los 8 casos evaluados coinciden con las del informe de la VivoBook, así que se auditó
+  exactamente lo que se midió.
+- Cada defecto se comparó línea a línea contra la referencia del banco.
+
+### Etiquetas
+
+| id | cambio real (diff contra la referencia) | etiqueta | auditoría |
+|---|---|---|---|
+| X01 | l.19 `% (ancho + 1)` | 19 | correcta |
+| X02 | l.19 `m.minute // ancho` | 19 | correcta. **Es el mismo defecto que el mutante M049 del banco**, que se miró al escribir las reglas. |
+| X03 | l.20 `+ (v - 1)` | 20 | correcta |
+| X04 | l.22 `round(s, 1)` | 22 | correcta |
+| X05 | l.17 `validas = 1` | 17 | correcta |
+| X06 | l.20 `sumas[inicio] = v` | 20 | correcta |
+| X07 | l.12 `leidas = 1` | 12 | correcta |
+| X08 | l.15 `invalidas = 1` | 15 | correcta |
+| X09 | l.14 `0.5 <= v` | 14 | correcta. Equivalente con estos datos: se infiere que ninguna lectura vale exactamente 0,5. |
+| X10 | l.14 `v <= 900` | 14 | correcta. Equivalente con estos datos: se infiere lo mismo para 900. |
+| X11 | se borró `continue` (l.16) | 16 | **incorrecta.** En X11.py la línea 16 es `cobertura["validas"] += 1`, que es inocente. Falta el `continue` dentro del `if` de la l.14. |
+| X12 | se borró `validas += 1` (l.17) | 17 | **incorrecta.** En X12.py la línea 17 es `m = strptime(…)`, que es inocente. La instrucción falta entre la l.16 y la l.17. |
+
+**Por qué fallan las omisiones.** Al borrar una línea, todas las siguientes se corren una posición, y la etiqueta
+quedó apuntando a la línea que ocupa ahora ese lugar. En una omisión no hay ninguna línea existente que sea «la
+causa»: hay un **punto de inserción**. La convención para puntuarlas tiene que fijarse antes de la próxima
+evaluación.
+
+### Resultado auditado
+
+**Con el filtro de E0** (solo los casos con la causa entre las candidatas):
+- X11 pasa a «causa fuera de las candidatas», porque ni el `if` de la l.14 ni la l.15 están entre [20, 18, 16].
+- Quedan **7 evaluables: 4 aciertos, 3 abstenciones, 0 errores.**
+- Los 4 aciertos son reales: R4 eligió exactamente la línea del diff.
+
+**Sin el filtro, como respondería el coordinador en uso real** (no sabe si la causa quedó entre las candidatas).
+Se corrieron las mismas lecturas congeladas sobre los 10 defectos detectados:
+- **4 aciertos, 1 error y 5 abstenciones.**
+- **El error es X04.** El contraste dice «la clave está bien y el valor no» (403,1 contra 403,121), y R4 elige la l.20,
+  donde se acumula la suma. La causa es la l.22: el redondeo, **después** de la agregación.
+- La precisión cuando responde es **4 de 5**, no 4 de 4.
+
+**Un casi-error oculto en X11.** El contraste también dice «valor». Si la localización hubiera incluido la l.19, donde
+se acumulan las sumas, R4 la habría elegido, y la causa es un `continue` que falta. Se comprobó llamando a R4 con
+esas candidatas. R4 se abstuvo solo porque la localización dejó afuera la l.19.
+
+### Por qué no respondieron R1, R2, R3, R5 y R6
+
+- **R1.** Ningún defecto lanza una excepción.
+- **R2 y R3, en X05, X07 y X08** (`x = 1` en lugar de `x += 1`). La evidencia estaba en la traza: en X07, la l.12 se
+  ejecuta 15000 veces y `leidas` queda clavado en 1. Pero:
+  - R2 mira solo la **última** ejecución, donde «antes» y «después» valen 1;
+  - R3 exige la sintaxis `+=`;
+  - la traza observa el diccionario `cobertura` entero, no la clave `leidas`.
+  
+  Las reglas están atadas a la **sintaxis** y no al **comportamiento**: «un contador que no progresa».
+- **R5.** Omitir `x = 1` no repara nada: falta acumular, no sobra una instrucción.
+- **R6.** Solo escala acumulaciones `+=`. Pasar de `=` a `+=` no está en su vocabulario de reparaciones.
+- **Las intervenciones confirman solo lo que su vocabulario de cambios puede reparar.** Con defectos que no son
+  mutaciones de un punto, ese vocabulario no alcanza.
+
+### Localización
+
+- **X04:** el localizador propuso [21, 19, 20] y no la l.22, que arma `ventanas` con una comprensión.
+- **X12:** propuso [15, 12, 9], las escrituras de `cobertura`. Es la zona correcta, pero la causa es una instrucción
+  ausente.
+- **X11:** con la etiqueta corregida, también quedó afuera.
+- Son **3 de 10** defectos detectados con la causa fuera de las candidatas.
+
+### Qué se puede concluir y qué no
+
+**Se puede concluir:**
+- En este instrumento, con estos datos, el **contraste clave/valor** (R4) localiza defectos nuevos de cálculo en la
+  clave y en el valor de la agregación: X01, X02, X03 y X06.
+- Las seis reglas **se abstienen** en los reinicios de contadores y en las omisiones, en lugar de inventar una
+  respuesta.
+
+**No se puede concluir:**
+- **Que el coordinador sepa cuándo no sabe.** En uso real respondió con confianza y se equivocó en X04, y estuvo a
+  una candidata de equivocarse en X11. El modelo de R4 del «camino del valor» termina en la agregación y no ve lo que
+  pasa después (redondeo, orden, formato), ni el flujo de control.
+- **Que generalice a otros instrumentos.** R4 depende de un verificador de contraste escrito a mano para ventanas.
+- **Una estimación de precisión.** Es 4 de 5, con muy pocos casos. X02 repite a M049, y los 12 son cambios de una
+  línea en el mismo instrumento.
+- **Algo sobre condiciones de borde.** X09 y X10 no se pueden detectar con estos datos.
+
+### Lecciones de método (para la próxima evaluación, sin tocar esta)
+
+1. **Evaluar de punta a punta:** sobre todos los defectos detectados, sin filtrar por «causa entre las candidatas».
+   El filtro escondió el único error.
+2. **Etiquetar las omisiones por punto de inserción:** bloque y posición, con una regla de puntuación fijada antes.
+3. **Las condiciones de borde necesitan datos de borde.** Introducir filas de prueba en la base privada (por
+   ejemplo, valores exactos de 0,5 y 900) es en sí una intervención que el coordinador podría diseñar.
