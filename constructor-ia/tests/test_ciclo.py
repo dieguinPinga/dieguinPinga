@@ -76,11 +76,11 @@ QWEN_X01_V11 = ('```python\n19 |         inicio = datetime.datetime.strptime(min
 # La misma reparación con el formato v1.3.
 QWEN_X01_V13 = 'DIAGNOSTICO: 19\nCAMBIA: inicio\n' + QWEN_X01_V11
 
-# X07 con v1.2 (commit b954b2f): la línea 12 es TEXTUAL (la citaron Diego y ChatGPT); las de 17 y 15 son
-# RECONSTRUCCIONES de su descripción («explicó que el defecto era leidas, pero modificó validas / invalidas»).
+# X07 con v1.2 (commit b954b2f), TEXTO REAL (tests/datos/llamadas-X07-v12.jsonl). En las líneas 17 y 15 Qwen
+# escribió la reparación CORRECTA (leidas += 1), pero v1.2 la aplicó EN LUGAR de la instrucción marcada y se perdió
+# el conteo de válidas / inválidas; en la 12 escribió un booleano.
+X07_V12_L17 = X07_V12_L15 = 'cobertura["leidas"] += 1'
 X07_V12_L12 = 'cobertura["leidas"] = r.filas[0][0] is not None and len(r.filas) > 0'
-X07_V12_L17_RECONSTRUIDA = 'cobertura["validas"] = cobertura["leidas"] - cobertura["invalidas"]'
-X07_V12_L15_RECONSTRUIDA = 'cobertura["invalidas"] = cobertura["leidas"] - cobertura["validas"]'
 
 
 class UnitTests(unittest.TestCase):
@@ -205,13 +205,17 @@ class DiagnosisAndCoherenceTests(unittest.TestCase):
         self.assertEqual(nuevo[:11] + nuevo[12:], self.x07.splitlines()[:11] + self.x07.splitlines()[12:])
 
     def test_x07_v12_answers_reproduce_their_failures(self):
-        """Las tres respuestas de X07 con v1.2, con el diagnóstico que Qwen dio en palabras («leidas»)."""
-        r17 = self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17_RECONSTRUIDA))
+        """Las tres respuestas REALES de X07 con v1.2, con el diagnóstico que Qwen dio en palabras («leidas»)."""
+        r17 = self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17))
         self.assertEqual(r17["coherencia"]["problemas"],
-                         ['declaraste que cambiabas cobertura["leidas"], pero tu código escribe cobertura["validas"]'])
+                         ['tu reemplazo de la línea 17 deja de escribir cobertura["validas"], que la instrucción '
+                          'original escribía y no declaraste cambiar'])
         self.assertFalse(r17["ensamblado"]["realizado"], "se rechaza ANTES del sandbox")
-        r15 = self.preparar(responde(15, 'cobertura["leidas"]', X07_V12_L15_RECONSTRUIDA))
-        self.assertIn("tu código escribe cobertura[\"invalidas\"]", r15["coherencia"]["problemas"][0])
+        r15 = self.preparar(responde(15, 'cobertura["leidas"]', X07_V12_L15))
+        self.assertIn('deja de escribir cobertura["invalidas"]', r15["coherencia"]["problemas"][0])
+        bien = self.preparar(responde(12, 'cobertura["leidas"]', X07_V12_L17))
+        self.assertEqual(bien["coherencia"]["problemas"], [], "el MISMO código, en la instrucción que diagnosticó")
+        self.assertTrue(bien["ensamblado"]["ok"])
         r12 = self.preparar(responde(12, 'cobertura["leidas"]', X07_V12_L12, "leidas = 15000"))
         self.assertEqual(r12["coherencia"]["problemas"], [], "escribe lo que declaró: le toca a la verificación")
         self.assertTrue(r12["ensamblado"]["ok"])
@@ -269,32 +273,81 @@ class DiagnosisAndCoherenceTests(unittest.TestCase):
         self.assertEqual(C.decidir(igual, cola, {17: 1, 15: 1, 12: 1}, ini), (None, "no quedan candidatas por probar"))
 
     def test_feedback_names_the_contradiction(self):
-        r = self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17_RECONSTRUIDA))
+        r = self.preparar(responde(17, 'cobertura["leidas"]', X07_V12_L17))
         r.update({"sugerida": 17, "rechazo": "incoherencia", "rechazo_detalle": "; ".join(r["coherencia"]["problemas"])})
         obs = {"candidatas": self.aut, "juegos": []}
         ps = C.partes({"id": "X07", "codigo": self.x07}, obs, 15, [r], [15, 12])
         texto = "\n".join(t for _, t in ps)
         self.assertIn('Intento 1: el coordinador sugirió la línea 17; diagnosticaste la línea 17 y declaraste que '
                       'cambiabas cobertura["leidas"].', texto)
-        self.assertIn('rechazada: el código no corresponde al diagnóstico: declaraste que cambiabas cobertura["leidas"],'
-                      ' pero tu código escribe cobertura["validas"]', texto)
-        self.assertIn(("propuesta_previa", f"  Propusiste:\n```python\n{X07_V12_L17_RECONSTRUIDA}\n```\n"), ps)
+        self.assertIn('rechazada: el código no corresponde al diagnóstico: tu reemplazo de la línea 17 deja de escribir '
+                      'cobertura["validas"]', texto,
+                      "v1.2 decía solo «rechazada» y Qwen abandonó el += 1; v1.3 dice dónde estuvo el problema")
+        self.assertIn(("propuesta_previa", f"  Propusiste:\n```python\n{X07_V12_L17}\n```\n"), ps)
         self.assertIn("Candidatas que todavía no se probaron: línea 15, línea 12.", texto)
         self.assertEqual(C.auditar(ps, banco("X07")[0]), [])
 
 
 @unittest.skipUnless((DATOS / "llamadas-X07-v12.jsonl").exists(), "falta tests/datos/llamadas-X07-v12.jsonl")
 class RealX07V12Tests(unittest.TestCase):
-    """Con el archivo REAL de la VivoBook: las tres respuestas, tal como llegaron, bajo v1.3."""
+    """Con el archivo REAL de la VivoBook (llamadas.jsonl de X07, ciclo v1.2, commit b954b2f): las tres respuestas,
+    con su texto exacto. Comprueba lo que describieron Diego y ChatGPT y cómo las trata v1.3."""
 
-    def test_real_answers_without_diagnosis_are_not_applied(self):
-        x07 = banco("X07")[0]["codigo"]
-        filas = [json.loads(x) for x in (DATOS / "llamadas-X07-v12.jsonl").read_text().splitlines() if x.strip()]
-        self.assertEqual(len(filas), 3)
-        for f in filas:
-            r = C.preparar(f["respuesta"], x07, [17, 15, 12], {})
-            self.assertFalse(r["diagnostico"]["valido"], "el formato v1.2 no trae DIAGNOSTICO")
-            self.assertFalse(r["ensamblado"]["realizado"])
+    @classmethod
+    def setUpClass(cls):
+        cls.x07 = banco("X07")[0]["codigo"]
+        cls.filas = [json.loads(x) for x in (DATOS / "llamadas-X07-v12.jsonl").read_text().splitlines() if x.strip()]
+        cls.por_linea = {int(re.search(r"\|L(\d+)$", f["clave"]).group(1)): f for f in cls.filas}
+
+    def bloque(self, linea):
+        return C.interpretar(self.por_linea[linea]["respuesta"])["fragmento"]
+
+    def test_three_real_calls_on_17_15_12(self):
+        self.assertEqual(len(self.filas), 3)
+        self.assertEqual(sorted(self.por_linea), [12, 15, 17])
+
+    def test_v12_format_is_not_applied_in_v13(self):
+        for ln, f in self.por_linea.items():
+            with self.subTest(linea=ln):
+                r = C.preparar(f["respuesta"], self.x07, [17, 15, 12], {})
+                self.assertFalse(r["diagnostico"]["valido"], "el formato v1.2 no trae DIAGNOSTICO")
+                self.assertFalse(r["ensamblado"]["realizado"], "no se aplica nada")
+
+    def test_feedback_reached_qwen_in_calls_2_and_3(self):
+        orden = sorted(self.filas, key=lambda f: int(re.search(r"\|c(\d+)\|", f["clave"]).group(1)))
+        for f in orden[1:]:
+            texto = "\n".join(t for _, t in f["partes"])
+            self.assertIn("Intentos anteriores de esta investigación", texto)
+        tercero = "\n".join(t for _, t in orden[2]["partes"])
+        self.assertEqual(tercero.count(f"Propusiste:\n```python\n{X07_V12_L17}\n```"), 2)
+        self.assertNotIn("deja de escribir", tercero,
+                         "v1.2 no decía que el += 1 se había aplicado en lugar de validas / invalidas")
+
+    def test_real_code_with_the_diagnosis_qwen_gave_in_words(self):
+        """En 17 y 15 Qwen escribió la reparación correcta (leidas += 1) y v1.2 la aplicó EN LUGAR de la instrucción
+        marcada. Bajo v1.3, con DIAGNOSTICO en esa línea, la coherencia lo rechaza sin ejecutar (se dejaría de contar
+        válidas / inválidas); con DIAGNOSTICO 12, el mismo código es coherente. La 12 real es coherente."""
+        for ln, otra in ((17, "validas"), (15, "invalidas")):
+            with self.subTest(linea=ln):
+                frag = self.bloque(ln)
+                self.assertEqual(frag.strip(), X07_V12_L17, "el código real coincide con la constante de la prueba")
+                r = C.preparar(responde(ln, 'cobertura["leidas"]', frag), self.x07, [17, 15, 12], {})
+                self.assertTrue(r["coherencia"]["revisada"])
+                self.assertIn(f'deja de escribir cobertura["{otra}"]', " ".join(r["coherencia"]["problemas"]))
+                self.assertFalse(r["ensamblado"]["realizado"])
+                r = C.preparar(responde(12, 'cobertura["leidas"]', frag), self.x07, [17, 15, 12], {})
+                self.assertEqual(r["coherencia"]["problemas"], [])
+                self.assertTrue(r["ensamblado"]["ok"])
+        frag12 = self.bloque(12)
+        self.assertIn(X07_V12_L12, frag12, "la línea 12 citada coincide con el texto real")
+        r = C.preparar(responde(12, 'cobertura["leidas"]', frag12), self.x07, [17, 15, 12], {})
+        self.assertEqual(r["coherencia"]["problemas"], [])
+        self.assertTrue(r["ensamblado"]["ok"], "coherente: le toca a la verificación (que lo rechaza por comportamiento)")
+
+    def test_controls_do_not_reject_the_correct_repair_of_the_same_line(self):
+        r = C.preparar(responde(12, 'cobertura["leidas"]', 'cobertura["leidas"] += 1'), self.x07, [17, 15, 12], {})
+        self.assertEqual(r["coherencia"]["problemas"], [])
+        self.assertTrue(r["ensamblado"]["ok"])
 
 
 @unittest.skipUnless(bwrap_works() and mariadb_fixture.available(), "bubblewrap o MariaDB no disponibles")
@@ -380,14 +433,14 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(res["resumen"]["fugas"], 0)
 
     def test_x07_incoherent_answers_are_rejected_before_the_sandbox(self):
-        respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17_RECONSTRUIDA),
-                      15: responde(15, 'cobertura["leidas"]', X07_V12_L15_RECONSTRUIDA)}
+        respuestas = {17: responde(17, 'cobertura["leidas"]', X07_V12_L17),
+                      15: responde(15, 'cobertura["leidas"]', X07_V12_L15)}
         m = Modelo(lambda p, ln: respuestas.get(ln, "DIAGNOSTICO: NINGUNA\nMOTIVO: no sé"))
         res = self.correr("x07_incoherente", banco("X07"), m, llamadas_por_defecto=3)
         (j,) = res["juicio"]
         self.assertEqual([it["rechazo"] for it in j["intentos"][:2]], ["incoherencia", "incoherencia"])
         self.assertTrue(all(not it["verificacion_realizada"] for it in j["intentos"][:2]))
-        self.assertIn("pero tu código escribe cobertura[\"validas\"]", m.llamadas[1]["prompt"])
+        self.assertIn('deja de escribir cobertura["validas"]', m.llamadas[1]["prompt"])
 
     def test_true_and_false_confirmations_are_told_apart_by_the_judge(self):
         vistos = []

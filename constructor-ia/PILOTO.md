@@ -1545,9 +1545,8 @@ bien en palabras las tres veces: «`cobertura["leidas"] = 1` debe acumular». Pe
   Hay una prueba que lo deja caracterizado.
 - **Las respuestas viejas de X07 no predicen** cómo responderá Qwen con el formato nuevo. Solo reproducen los fallos
   anteriores, y lo único que puede medirlo es la prueba real.
-- **El archivo real `llamadas-X07-v12.jsonl` no llegó.**
-  - Las regresiones usan la línea 12 textual (la que citaron) y una **reconstrucción** de la 17 y la 15.
-  - Al copiar el archivo en `tests/datos/`, se activa una prueba con las respuestas exactas.
+- ~~El archivo real no llegó~~: llegó después y las regresiones usan ahora el texto exacto (ver «Verificación con
+  las respuestas REALES de X07 v1.2», más abajo).
 
 ### Pruebas
 
@@ -1594,3 +1593,33 @@ bash $E ciclo 45 --defectos constructor_ia/laboratorio/piloto/banco_desarrollo -
 - si diagnostica la 12 aunque se le sugiera otra línea;
 - si lo que declara en CAMBIA coincide con su código;
 - si el aviso de efecto (cambio de tipo) le sirve en el intento siguiente.
+
+### Verificación con las respuestas REALES de X07 v1.2 (`tests/datos/llamadas-X07-v12.jsonl`)
+
+**El texto exacto corrige la descripción de arriba.** En las llamadas 1 y 2 Qwen no modificó `validas` ni
+`invalidas`: escribió **la reparación correcta**, `cobertura["leidas"] += 1`.
+
+| llamada | línea marcada | código de Qwen | qué pasó en v1.2 |
+|---|---|---|---|
+| 1 | 17 `validas += 1` | `cobertura["leidas"] += 1` | se aplicó **en lugar** de la línea 17: `leidas` no se reinicia, pero `validas` deja de contarse |
+| 2 | 15 `invalidas += 1` | `cobertura["leidas"] += 1` | igual: deja de contarse `invalidas` |
+| 3 | 12 `leidas = 1` | `… is not None and len(r.filas) > 0` | un booleano donde va un contador |
+
+**Lecturas:**
+1. **Qwen tenía la reparación desde la primera llamada.** Lo que falló fue **dónde** se aplicó: v1.2 obligaba a
+   reemplazar la línea marcada.
+2. **La retroalimentación de v1.2 lo desorientó.** Le dijo dos veces «Propusiste `leidas += 1` → rechazada: S2,
+   VF», sin aclarar que se había aplicado en lugar de `validas` o `invalidas`. En la llamada 3, sobre la línea
+   correcta, Qwen **abandonó el `+= 1`**, probablemente porque «ya había fallado».
+3. **v1.3 maneja los tres casos sin cambios en `ciclo.py`:**
+   - con DIAGNOSTICO 17 o 15 y CAMBIA `cobertura["leidas"]`, el mismo código se rechaza **antes del sandbox** con un
+     aviso que nombra el problema: «tu reemplazo de la línea 17 deja de escribir cobertura["validas"], que la
+     instrucción original escribía y no declaraste cambiar»;
+   - con DIAGNOSTICO 12, el mismo `+= 1` es coherente, se ensambla y le toca a la verificación;
+   - la respuesta 3 es coherente con lo declarado, así que se ejecuta y la verificación decide, con el aviso de
+     cambio de tipo;
+   - el formato v1.2, sin DIAGNOSTICO, no se aplica.
+
+**Pruebas:** `tests/test_ciclo.py::RealX07V12Tests` (5), que corren con el archivo y no quedan omitidas. Las
+regresiones de `DiagnosisAndCoherenceTests` usan ahora el texto real; las reconstrucciones se eliminaron porque eran
+incorrectas.

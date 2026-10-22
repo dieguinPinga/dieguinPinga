@@ -1,7 +1,13 @@
 # Datos de pruebas
 
-- `llamadas-X07-v12.jsonl` (pendiente): el `llamadas.jsonl` de la corrida de X07 con el ciclo v1.2 en la VivoBook
-  (commit `b954b2f`), con las tres respuestas reales de Qwen y los prompts que recibió. Tiene solo datos sintéticos.
-  Si se copia acá, `tests/test_ciclo.py::RealX07V12Tests` comprueba con el texto exacto que el formato v1.2 (sin
-  DIAGNOSTICO) no se aplica en v1.3. Mientras falte, esa prueba queda omitida, y las regresiones usan la línea 12
-  textual y una reconstrucción de las líneas 17 y 15.
+## `llamadas-X07-v12.jsonl`
+
+Es el `llamadas.jsonl` **real** de la corrida de X07 con el ciclo v1.2 en la VivoBook (commit `b954b2f`): las tres
+respuestas de Qwen, los prompts por partes, semillas, tokens, tiempos y memoria. Tiene solo datos sintéticos. Lo
+usan las pruebas `tests/test_ciclo.py::RealX07V12Tests` y las constantes `X07_V12_*` de ese archivo.
+
+| llamada | línea marcada | código de Qwen (textual) |
+|---|---|---|
+| 1 | 17 (`validas += 1`) | `cobertura["leidas"] += 1` |
+| 2 | 15 (`invalidas += 1`) | `cobertura["leidas"] += 1` |
+| 3 | 12 (`leidas = 1`) | `cobertura["leidas"] = r.filas[0][0] is not None and len(r.filas) > 0` |
