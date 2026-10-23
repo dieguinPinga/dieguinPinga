@@ -4,4 +4,4 @@ El coordinador conduce, el modelo interpreta en microtareas, el sistema verifica
 verificado, con su procedencia. Reutiliza sin modificarlos el intermediario de solo lectura del Explorador
 (broker, sqlguard, mysqlproto), su mapa (instantáneas de esquema) y su estimación de contexto.
 """
-VERSION = "agente de datos 0.8-fase1"
+VERSION = "agente de datos 0.8-fase2c"

@@ -5,7 +5,11 @@ El coordinador detecta lo que la pregunta exige ANTES de avanzar a la microtarea
 - orden y límite: «más/mayor» → mayor, «menos/menor» → menor; una entidad en singular → 1 resultado; un número
   explícito («los 3 productos») → ese número;
 - entidad: el sustantivo preguntado («qué producto»);
-- medida: un ranking o un promedio necesitan algo que medir (una columna de rol «medida» o filas que contar).
+- medida: un ranking o un promedio necesitan algo que medir (una columna de rol «medida» o filas que contar);
+- conceptos de la medida (fase 2c, A1): las palabras de contenido que quedan después de quitar el período, el
+  orden, el límite y la entidad («gastó», «unidades»). Determinan QUÉ se mide; el modelo tiene que declarar cómo
+  las interpreta (INTERPRETA) y esa declaración tiene que coincidir con la MEDIDA del plan. Es una HIPÓTESIS del
+  modelo, nunca una verificación: solo sirve para que la interpretación quede escrita y sea comparable.
 
 Nunca inventa: si la regla no puede determinar algo sin ambigüedad (varios períodos, un mes sin año, «la semana
 pasada», mayor y menor a la vez, una comparación «más de …», varios resultados sin decir cuántos), devuelve una
@@ -30,7 +34,7 @@ def deducir(pregunta: str) -> dict:
     ws = TX.palabras(pregunta)
     s = set(ws)
     out = {"periodo": None, "orden": None, "limite": None, "entidad": TX.entidad(pregunta),
-           "medida_requerida": False, "aclaraciones": [], "deducido": []}
+           "medida_requerida": False, "aclaraciones": [], "deducido": [], "conceptos": conceptos(pregunta)}
     per = TX.periodo(pregunta)
     if per and per.get("varios"):
         out["aclaraciones"].append("la pregunta menciona más de un período: ¿cuál hay que usar?")
@@ -70,7 +74,15 @@ def deducir(pregunta: str) -> dict:
     out["medida_requerida"] = bool(it["orden"] or it["agregado"] == "promedio")
     if out["entidad"]:
         out["deducido"].append(f"entidad «{out['entidad']}»")
+    if out["conceptos"]:
+        out["deducido"].append("conceptos de la medida: " + ", ".join(f"«{w}»" for w in out["conceptos"]))
     return out
+
+
+def conceptos(pregunta: str) -> list[str]:
+    """La primera palabra de la pregunta por cada raíz de TX.terminos (los conceptos que determinan la medida)."""
+    ws = TX.palabras(pregunta)
+    return [next(w for w in ws if TX.raiz(w) == r) for r in TX.terminos(pregunta)]
 
 
 # Cobertura de las tablas elegidas (después de M2) ------------------------------------------------------------------
@@ -172,3 +184,69 @@ def faltantes(req: dict, plan: dict, schema: dict, tablas: list[str], fichas: di
         out.append((f"la pregunta pregunta por «{req['entidad']}» y falta AGRUPAR",
                     f"agregá «AGRUPAR: <tabla.columna>»" + (f" con una de: {', '.join(sorted(cols))}" if cols else "")))
     return out
+
+
+# A1 — interpretación declarada de los conceptos de la medida (después de M3, ANTES de ejecutar) --------------------
+
+FUNCIONES_TEXTO = {"suma": "suma", "sumar": "suma", "conteo": "conteo", "contar": "conteo", "promedio": "promedio",
+                   "maximo": "maximo", "minimo": "minimo", "distintos": "distintos"}
+
+
+def interpretacion(req: dict, prop: dict) -> list[tuple[str, str]]:
+    """(motivo, corrección) si falta la INTERPRETA de un concepto de la medida o si contradice la MEDIDA del plan.
+    En un plan MEDIR, las columnas citadas por esas INTERPRETA tienen que estar en la MEDIDA y entre todas cubrirla;
+    si nombran una función, tiene que ser la del plan. En SQL libre solo se exige que estén declaradas.
+    Quedan fuera las palabras que el plan usa como VALOR de un filtro por igualdad («Rosario» en «FILTRO:
+    clientes.ciudad = Rosario»): no dicen qué se mide."""
+    palabras_ = req.get("conceptos") or []
+    if not palabras_:
+        return []
+    plan = prop.get("plan") if prop.get("tipo") == "medir" else None
+    valores = {w for f in (plan or {}).get("filtros", []) if f["tipo"] == "igual" for w in TX.palabras(f["a"])}
+    interp = prop.get("interpreta") or {}
+    declaradas, faltan = {}, []
+    for w in palabras_:
+        if w in valores:
+            continue
+        r = TX.raiz(w)
+        vals = [v for k, v in interp.items() if r in TX.raices(k) or TX.raiz(k) == r]
+        if vals:
+            declaradas[w] = vals
+        else:
+            faltan.append(w)
+    forma = (f"<la misma MEDIDA: {_medida_texto(plan)}>" if plan else "<qué columna o cálculo representa>")
+    out = []
+    if faltan:
+        out.append((f"falta INTERPRETA para {', '.join(f'«{w}»' for w in faltan)} (dice qué se mide)",
+                    "agregá " + "; ".join(f"«INTERPRETA: {w} = {forma}»" for w in faltan)
+                    + " (es tu hipótesis: el coordinador la registra como declarada, no como verificada)"))
+    if plan is None:
+        return out
+    medida = {f"{t}.{c}".lower() for t, c in plan["medida"]["columnas"]}
+    cubiertas = set()
+    for w, vals in declaradas.items():
+        for v in vals:
+            citadas = {m.lower() for m in re.findall(r"[A-Za-z_][\w$]*\.[A-Za-z_][\w$]*", v)}
+            ajenas = sorted(citadas - medida)
+            cubiertas |= citadas & medida
+            funcs = {FUNCIONES_TEXTO[x] for x in TX.palabras(v) if x in FUNCIONES_TEXTO}
+            if ajenas:
+                out.append((f"INTERPRETA «{w} = {v}» cita {', '.join(ajenas)}, que no está en la MEDIDA del plan",
+                            f"la interpretación y la MEDIDA tienen que decir lo mismo: o cambiás la MEDIDA o cambiás "
+                            f"la interpretación de «{w}»"))
+            if funcs and funcs != {plan["medida"]["funcion"]}:
+                out.append((f"INTERPRETA «{w} = {v}» dice {', '.join(sorted(funcs))} y la MEDIDA es "
+                            f"«{plan['medida']['funcion']}»", f"usá la misma función en la MEDIDA y en la "
+                                                               f"interpretación de «{w}»"))
+    sin = sorted(medida - cubiertas)
+    if declaradas and sin:
+        out.append((f"la MEDIDA usa {', '.join(sin)}, que ninguna INTERPRETA de "
+                    f"{', '.join(f'«{w}»' for w in declaradas)} explica",
+                    "cada columna de la MEDIDA tiene que aparecer en la interpretación de alguna palabra de la pregunta "
+                    "(si ninguna palabra la pide, sacala de la MEDIDA)"))
+    return out
+
+
+def _medida_texto(plan: dict) -> str:
+    med = plan["medida"]
+    return med["funcion"] + ("" if not med["columnas"] else " " + " * ".join(f"{t}.{c}" for t, c in med["columnas"]))

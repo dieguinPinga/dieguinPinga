@@ -345,7 +345,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(sorted(m1["nuevo"]["tablas_perfiladas"]), sorted(G.calcular_verdad(
             G.generar_filas())["tablas"]))
         cheq = {c["id"]: c for c in m1["chequeos"]}
-        self.assertTrue(all(c["estado"] == "ok" for c in m1["chequeos"] if c["id"] != "S4_terminos"), m1["chequeos"])
+        self.assertTrue(all(c["estado"] == "ok" for c in m1["chequeos"]
+                            if c["id"] not in ("S4_terminos", "S9_sensibilidad_medida")), m1["chequeos"])
+        # Fase 2c: no hay otra medida ENTERA para comparar con la suma de unidades; las sumas de dinero responden otra
+        # pregunta y no se comparan. S9 lo informa sin cambiar el nivel (la medida sigue sin confirmar por S4).
+        self.assertEqual((cheq["S9_sensibilidad_medida"]["estado"], m1["sensibilidad"]["clase"]),
+                         ("no_verificable", "sin_alternativas"))
+        self.assertIn("suma(lineas_pedido.cantidad × lineas_pedido.precio_unitario)",
+                      " ".join(m1["sensibilidad"]["otras_magnitudes"]))
+        self.assertEqual(m1["respuesta"]["estructurada"]["clave"], [verdad["preguntas"]["Q1"]["clave"]])
         self.assertEqual(cheq["S4_terminos"]["estado"], "no_verificable")
         self.assertIn("respaldados solo por una ficha del modelo: «vend…», «unid…»", cheq["S4_terminos"]["detalle"])
         self.assertIn("interpretación del modelo", cheq["S4_terminos"]["respaldo"], "el respaldo débil se informa")

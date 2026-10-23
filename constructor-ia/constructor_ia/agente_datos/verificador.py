@@ -28,10 +28,22 @@
       por el modelo tampoco es respaldo;
    S5 ninguna otra tabla describe lo mismo con igual o mayor respaldo (alternativa no descartada);
    S6 la respuesta redactada cita el valor y el grupo del resultado, y ningún número ajeno;
-   S7 la columna por la que se agrupa identifica filas distintas (si no, puede juntar entidades distintas);
-   S8 no hay empate en el primer puesto.
+   S6 desde la fase 2c además rechaza alias internos del coordinador («g1», «e1») en el texto para el usuario y,
+      si la etiqueta se repite en la tabla, exige también la clave;
+   S7 la CLAVE del grupo identifica entidades distintas: clave primaria, referencia comprobada a una clave única,
+      o el valor mismo cuando la entidad preguntada es esa columna (identidad.py). La etiqueta visible es aparte;
+   S8 no hay empate en el primer puesto;
+   S9 sensibilidad de la respuesta a la medida (sensibilidad.py), con la política aprobada:
+      Solo cuentan las alternativas de la MISMA magnitud que la medida del plan (firma de tipos): sumar unidades o
+      sumar dinero responden preguntas distintas y no demuestran ambigüedad;
+      - medida NO confirmada (S4 sin respaldo verificable para las palabras de la pregunta):
+        ganador dependiente → ABSTENCIÓN (sin reintento), con las alternativas como diagnóstico;
+        valor dependiente o exploración incompleta → incierta, con el valor de cada interpretación;
+        estable o sin alternativas → incierta igual: la estabilidad no es respaldo semántico;
+      - medida confirmada: se informa, sin cambiar el nivel.
 
-Cada chequeo: ok | falla | no_verificable. Nivel de la respuesta:
+Cada chequeo: ok | falla | no_verificable | impide (solo S9: abstención sin reintento). Nivel de la respuesta:
+- abstencion: un chequeo impide responder (no se reintenta: otra medida no confirmaría nada);
 - rechazada (técnica o semántica): hay una falla → se reintenta con el motivo o la misión se abstiene;
 - incierta: ninguna falla, pero algo no se pudo verificar → se informa con la lista exacta de lo no verificado;
 - verificada: todo ok. Aun así, lo respaldado por fichas es interpretación del modelo: el juez (en el laboratorio)
@@ -329,18 +341,57 @@ def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list
                   f"otra(s) tabla(s) describen lo mismo con igual respaldo: {', '.join(alternativas)}; la elección "
                   "depende de una interpretación que el coordinador no puede comprobar" if alternativas else
                   "ninguna otra tabla con igual respaldo"))
-    # S7 identidad del grupo.
+    # S7 identidad del grupo (la CLAVE; la etiqueta es solo para mostrar).
     if c["gby"]:
         t, col = c["grupos"][0]
-        p = perfiles.get(t, {})
-        pc = p.get("columnas", {}).get(col, {})
-        es_pk = [x["nombre"] for x in schema["tablas"][t]["columnas"] if x["clave"] == "PRI"] == [col]
-        unico = es_pk or (pc and pc.get("distintos") == p.get("filas"))
-        out.append(ch("S7_identidad", "semantica", "ok" if unico else "no_verificable",
-                      f"{t}.{col} distingue cada fila ({pc.get('distintos')} valores en {p.get('filas')} filas)" if unico
-                      else f"{t}.{col} tiene {pc.get('distintos')} valores distintos en {p.get('filas')} filas: agrupar "
-                           "por ella puede juntar filas distintas"))
+        ident = (c["plan"].get("identidad") or [None])[0]
+        if ident is None:                       # plan sin paso de identidad (por ejemplo, compilado a mano)
+            from . import identidad as ID
+            ident = ({"tipo": "clave", "detalle": f"{t}.{col} es la clave primaria de {t}"}
+                     if ID.clave_primaria(schema, t) == col else
+                     {"tipo": "unica_en_datos", "detalle": f"{t}.{col} tiene un valor distinto por fila"}
+                     if ID.unica_en_datos(perfiles, t, col) else
+                     {"tipo": "sin_verificar", "detalle": f"{t}.{col} repite valores: puede juntar filas distintas"})
+        estado = "ok" if ident["tipo"] in ("clave", "referencia", "reagrupada", "atributo") else "no_verificable"
+        if ident["tipo"] == "unica_en_datos":
+            estado = "ok"
+        etq = [e for e in (c.get("etiquetas") or []) if e]
+        out.append(ch("S7_identidad", "semantica", estado, ident["detalle"] + (
+            f"; etiqueta visible: {', '.join(f'{a}.{b}' for a, b in etq)} (la clave se conserva)" if etq else "")))
     return out
+
+
+def medida_confirmada(chequeos: list[dict], pregunta: str) -> bool:
+    """La medida cuenta como confirmada solo si la pregunta dice qué medir y S4 respalda TODAS sus palabras con
+    el esquema o con el glosario verificado (nunca con fichas ni declaraciones del modelo)."""
+    s4 = next((x for x in chequeos if x["id"] == "S4_terminos"), None)
+    return bool(TX.terminos(pregunta)) and s4 is not None and s4["estado"] == "ok"
+
+
+def sensibilidad(s: dict, confirmada: bool, resumen: str) -> dict:
+    """S9: aplica la política aprobada a la exploración de sensibilidad."""
+    clase = s["clase"]
+    if clase == "no_aplica":
+        return ch("S9_sensibilidad_medida", "semantica", "ok", f"no aplica: {s['motivo']}")
+    det = (f"{clase}: {s['exploradas']} de {s['candidatas']} alternativas exploradas"
+           + (f" ({s['motivo']})" if s.get("motivo") else "") + (f"; {resumen}" if resumen else "")
+           + (f"; otras magnitudes, que responden otra pregunta y no se comparan: {', '.join(s['otras_magnitudes'])}"
+              if s.get("otras_magnitudes") else ""))
+    if confirmada:
+        return ch("S9_sensibilidad_medida", "semantica", "ok", "la medida tiene respaldo verificable; " + det,
+                  s.get("justificacion"))
+    if clase == "ganador_dependiente":
+        return ch("S9_sensibilidad_medida", "semantica", "impide",
+                  "el ganador depende de qué se mida y la medida no está confirmada: no hay respuesta definitiva; "
+                  + det, s.get("justificacion"))
+    nota = {"valor_dependiente": "mismo ganador, pero cada valor corresponde a una interpretación distinta y ninguna "
+                                 "está confirmada",
+            "incompleta": "la exploración quedó incompleta: no se puede concluir que el ganador sea estable",
+            "estable": "mismo ganador y valor con todas las alternativas; la estabilidad NO constituye respaldo "
+                       "semántico",
+            "sin_alternativas": "no hay otra medida de la misma magnitud para comparar; eso NO implica que la medida "
+                                "sea correcta"}[clase]
+    return ch("S9_sensibilidad_medida", "semantica", "no_verificable", f"{nota}; " + det, s.get("justificacion"))
 
 
 def semantica_sql_libre(pregunta: str) -> list[dict]:
@@ -351,20 +402,28 @@ def semantica_sql_libre(pregunta: str) -> list[dict]:
 _NUM = re.compile(r"(?<![\w.])-?\d+(?:[.,]\d+)?(?![\w])")
 
 
-def fidelidad(respuesta: str, columnas: list, filas: list, ng: int) -> dict:
-    """S6: la respuesta cita el grupo y el valor del primer resultado, y ningún número ajeno a las filas."""
+ALIAS = re.compile(r"\b[ge]\d+\b", re.I)
+
+
+def fidelidad(respuesta: str, columnas: list, filas: list, ng: int, citar: list | None = None,
+              valor=None) -> dict:
+    """S6: la respuesta cita el grupo (citar: etiqueta o clave, y la clave si la etiqueta se repite) y el valor del
+    primer resultado, ningún número ajeno a las filas y ningún alias interno («g1», «e1»)."""
     texto = TX.fold(respuesta)
     top = filas[0]
-    faltan = [str(v) for v in top[:ng] if v is not None and TX.fold(str(v)) not in texto]
+    citar = [v for v in top[:ng]] if citar is None else citar
+    faltan = [str(v) for v in citar if v is not None and TX.fold(str(v)) not in texto]
     valores = {num(v) for r in filas for v in r if num(v) is not None}
-    valor_top = num(top[ng]) if len(top) > ng else None
+    valor_top = num(valor if valor is not None else (top[ng] if len(top) > ng else None))
+    alias = sorted({a.lower() for a in ALIAS.findall(respuesta)} - {TX.fold(str(v)) for r in filas for v in r})
     citados = [num(x.replace(",", ".")) for x in _NUM.findall(respuesta)]
     ajenos = [str(x) for x in citados if x is not None and not any(_igual(x, v) for v in valores)
               and not (1900 <= x <= 2100)]
     cita_valor = valor_top is None or any(_igual(x, valor_top) for x in citados if x is not None)
-    problemas = ([f"no menciona {', '.join(faltan)}"] if faltan else []) + (
+    problemas = ([f"usa nombres internos del coordinador ({', '.join(alias)}) en lugar de los valores"]
+                 if alias else []) + ([f"no menciona {', '.join(faltan)}"] if faltan else []) + (
         [f"cita números que no están en el resultado: {', '.join(ajenos[:3])}"] if ajenos else []) + (
-        [f"no cita el valor {top[ng]}"] if not cita_valor else [])
+        [f"no cita el valor {valor_top}"] if not cita_valor else [])
     return ch("S6_fidelidad", "semantica", "falla" if problemas else "ok",
               "; ".join(problemas) or "cita el grupo y el valor del resultado")
 
@@ -375,5 +434,8 @@ def nivel(chequeos: list[dict]) -> tuple[str, list[str]]:
         return "rechazada_tecnica", [f"{x['id']}: {x['detalle']}" for x in fallas]
     if fallas:
         return "rechazada_semantica", [f"{x['id']}: {x['detalle']}" for x in fallas]
+    impiden = [x for x in chequeos if x["estado"] == "impide"]
+    if impiden:
+        return "abstencion", [f"{x['id']}: {x['detalle']}" for x in impiden]
     dudas = [f"{x['id']}: {x['detalle']}" for x in chequeos if x["estado"] == "no_verificable"]
     return ("incierta", dudas) if dudas else ("verificada", [])

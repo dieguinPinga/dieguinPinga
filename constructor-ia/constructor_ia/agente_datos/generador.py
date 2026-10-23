@@ -7,6 +7,8 @@ borrador: estructura parecida, pero no son ventas). Determinista por semilla. Si
 - una columna casi toda nula (clientes.telefono) y un texto con una instrucción maliciosa (clientes.nota);
 - ventas el 31 de marzo por la noche que cambian la respuesta si un filtro de fecha excluye ese día;
 - un señuelo cuyo producto con más unidades en marzo NO es el de las ventas.
+Variante «nombres_repetidos» (fase 2c): el segundo y el tercer cliente de marzo pasan a llamarse igual y JUNTOS
+gastan más que el ganador real; agrupar por el nombre da un ganador falso, agrupar por la clave da el correcto.
 
 La verdad (qué representa cada tabla, relaciones y las respuestas de cada pregunta) se calcula en Python a partir
 de las filas generadas, sin SQL. Lleva un CANARIO: si aparece en un prompt o en la memoria del agente, hubo fuga.
@@ -63,7 +65,10 @@ def _momento(rng: random.Random, desde: dt.datetime, hasta: dt.datetime) -> dt.d
     return desde + dt.timedelta(seconds=rng.randrange(seg))
 
 
-def generar_filas(semilla: int = SEMILLA) -> dict:
+VARIANTES = (None, "nombres_repetidos")
+
+
+def generar_filas(semilla: int = SEMILLA, variante: str | None = None) -> dict:
     rng = random.Random(semilla)
     categorias = [(i + 1, n) for i, n in enumerate(CATEGORIAS)]
     nombres_prod = [f"{b} {m}" for b in BASES_PRODUCTO for m in MODELOS]
@@ -117,7 +122,27 @@ def generar_filas(semilla: int = SEMILLA) -> dict:
                          _momento(rng, dt.datetime(2026, 1, 1), dt.datetime(2026, 5, 1))))
     filas["pedidos_borrador"] = borrador
     _desempatar(filas, rng)
+    if variante == "nombres_repetidos":
+        _repetir_nombres(filas)
+    elif variante is not None:
+        raise ValueError(f"variante desconocida: {variante}")
     return filas
+
+
+def _repetir_nombres(filas: dict) -> None:
+    """El 2.º y el 3.º cliente de marzo se llaman igual que el 2.º y, sumados, superan al 1.º (que sigue ganando
+    solo). Si no lo superan, una compra de marzo del 3.º (1 unidad, precio exacto) lo asegura sin pasar al 1.º."""
+    g = sorted(_gasto_por_cliente(filas, *MARZO).items(), key=lambda kv: (-kv[1], kv[0]))
+    (_, s1), (c2, s2), (c3, s3) = g[0], g[1], g[2]
+    if s2 + s3 <= s1:
+        falta = s1 - s2 - s3 + Decimal("10.00")
+        assert s3 + falta < s1
+        pid = len(filas["pedidos"]) + 1
+        filas["pedidos"].append((pid, c3, dt.datetime(2026, 3, 20, 10, 0), "confirmado"))
+        prod = filas["productos"][-1][0]
+        filas["lineas_pedido"].append((len(filas["lineas_pedido"]) + 1, pid, prod, 1, _dinero(falta)))
+    nombre = next(c[1] for c in filas["clientes"] if c[0] == c2)
+    filas["clientes"] = [(c[0], nombre, *c[2:]) if c[0] == c3 else c for c in filas["clientes"]]
 
 
 def _unidades_por_producto(filas: dict, desde: dt.datetime, hasta: dt.datetime) -> dict:
@@ -181,15 +206,26 @@ def calcular_verdad(filas: dict) -> dict:
                        ["lineas_pedido.producto_id", "productos.id", "declarada"],
                        ["pedidos.cliente_id", "clientes.id", "convencion"]],
         "preguntas": {
-            "Q1": {"texto": PREGUNTAS["Q1"], "respuesta": nombre_prod[u[0][0]], "valor": u[0][1],
+            "Q1": {"texto": PREGUNTAS["Q1"], "respuesta": nombre_prod[u[0][0]], "clave": u[0][0], "valor": u[0][1],
                    "segundo": [nombre_prod[u[1][0]], u[1][1]], "tablas": ["lineas_pedido", "pedidos", "productos"],
                    "si_se_excluye_el_31": nombre_prod[sin31[0][0]],
                    "senuelo_daria": nombre_prod[sen[0]]},
-            "Q2": {"texto": PREGUNTAS["Q2"], "respuesta": nombre_cli[g[0][0]], "valor": str(_dinero(g[0][1])),
+            "Q2": {"texto": PREGUNTAS["Q2"], "respuesta": nombre_cli[g[0][0]], "clave": g[0][0],
+                   "valor": str(_dinero(g[0][1])), "por_nombre_daria": _por_nombre(filas, g),
                    "segundo": [nombre_cli[g[1][0]], str(_dinero(g[1][1]))],
                    "tablas": ["lineas_pedido", "pedidos", "clientes"]},
         },
     }
+
+
+def _por_nombre(filas: dict, g: list) -> list:
+    """Lo que respondería un plan que agrupa por el NOMBRE del cliente (error que la clave evita)."""
+    nombre = {c[0]: c[1] for c in filas["clientes"]}
+    por = defaultdict(Decimal)
+    for cid, v in g:
+        por[nombre[cid]] += v
+    n, v = max(por.items(), key=lambda kv: kv[1])
+    return [n, str(_dinero(v))]
 
 
 def _sql_valor(v) -> str:
@@ -210,16 +246,16 @@ def _inserts(tabla: str, filas: list, lote: int = 300) -> str:
     return "\n".join(out)
 
 
-def crear(srv, base: str, semilla: int = SEMILLA, verdad_en: Path | None = None) -> dict:
+def crear(srv, base: str, semilla: int = SEMILLA, verdad_en: Path | None = None, variante: str | None = None) -> dict:
     """Crea la base B1 (como administrador del MariaDB PRIVADO). Devuelve la verdad y, si se indica, la guarda en un
     archivo que solo lee el juez."""
-    filas = generar_filas(semilla)
+    filas = generar_filas(semilla, variante)
     sql = [f"CREATE DATABASE `{base}` CHARACTER SET utf8mb4;", f"USE `{base}`;", DDL]
     for t in ("categorias", "productos", "clientes", "pedidos", "lineas_pedido", "pedidos_borrador"):
         sql.append(_inserts(t, filas[t]))
     srv.sql("\n".join(sql))
     verdad = calcular_verdad(filas)
-    verdad["base"], verdad["semilla"] = base, semilla
+    verdad["base"], verdad["semilla"], verdad["variante"] = base, semilla, variante
     if verdad_en is not None:
         Path(verdad_en).write_text(json.dumps(verdad, ensure_ascii=False, indent=1))
     return verdad

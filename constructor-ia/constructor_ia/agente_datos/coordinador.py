@@ -7,10 +7,14 @@ F3 requisitos de la pregunta por regla (si no se pueden determinar sin ambigüed
    elegir: M2 + COBERTURA de los requisitos (tiempo, entidad, medida) antes de avanzar (o una consulta aprendida
    para la misma pregunta: plantilla que se vuelve a ejecutar y verificar)
 F4 consultar: M3 → normalizaciones de forma registradas → orden y límite completados por regla (registrados) →
-   requisitos del plan ANTES de ejecutar → compilación MEDIR (o SQL libre) → verificación técnica previa →
-   intermediario
-F5 verificar: técnica del resultado y semántica de la respuesta (separadas)
-F6 redactar: M4 → fidelidad (o respuesta determinista si M4 falla)
+   identidad del grupo: clave, etiqueta y valor separados (identidad.py, registrada) → requisitos del plan e
+   interpretación declarada de los conceptos de la medida (A1) ANTES de ejecutar → compilación MEDIR (o SQL libre)
+   → verificación técnica previa → intermediario
+F5 verificar: técnica del resultado y semántica de la respuesta (separadas); si nada falló, sensibilidad a la
+   medida (A2, sensibilidad.py): un ganador que depende de una medida no confirmada es una ABSTENCIÓN sin reintento
+F6 redactar: M4 con nombres reales (nunca los alias internos g1/e1/valor) → fidelidad (o respuesta determinista si
+   M4 falla). Si el valor depende de una medida no confirmada, la respuesta es determinista y muestra el valor de
+   cada interpretación, sin presentar ninguno como confirmado
 F7 registrar: memoria (solo lo verificado como verificado)
 F8 informe
 
@@ -36,9 +40,11 @@ from pathlib import Path
 from ..explorer import knowledge as K
 from . import VERSION
 from . import cartografo as CA
+from . import identidad as ID
 from . import medir as MD
 from . import microtareas as MT
 from . import requisitos as RQ
+from . import sensibilidad as SE
 from . import texto as TX
 from . import verificador as VE
 
@@ -128,6 +134,7 @@ class Coordinador:
         self.uso_memoria = {"mediciones_reutilizadas": [], "relaciones_reutilizadas": 0, "fichas_reutilizadas": [],
                             "glosario_mostrado": [], "consulta_aprendida": None}
         self.nuevo = {"tablas_perfiladas": [], "relaciones_medidas": 0, "fichas_nuevas": [], "terminos": []}
+        self.sens = None
         self.mem.mision_nueva(self.mid, self.conexion, pregunta)
         t0 = time.monotonic()
         estado = self.broker.verify()
@@ -316,6 +323,9 @@ class Coordinador:
                                                       "con los datos y el esquema actuales")
             try:
                 plan = MD.parsear(aprendida["medir_texto"])
+                self._identidad(plan, aprendida["tablas"])
+                self._decidir("F3", "interpretacion_de_la_consulta_aprendida", "A1 no se vuelve a pedir: la "
+                              "interpretación se declaró en la misión original y sigue siendo una hipótesis")
                 faltan = RQ.faltantes(self.req, plan, self.schema, aprendida["tablas"], self.fichas)
                 r = ({"nivel": "rechazada_semantica", "motivos": [m for m, _ in faltan]} if faltan else
                      self._intentar({"tipo": "medir", "plan": plan, "texto": aprendida["medir_texto"],
@@ -325,6 +335,8 @@ class Coordinador:
             if r["nivel"] in ("verificada", "incierta"):
                 self.mem.usar_consulta(aprendida["id"])
                 return self._redactar_y_cerrar(r, aprendida["tablas"], t0)
+            if r["nivel"] == "abstencion":
+                return self._abstener(r, aprendida["tablas"], t0)
             retro.append("; ".join(r["motivos"]))
             self._decidir("F3", "consulta_aprendida_rechazada", "; ".join(r["motivos"])[:300])
         tablas = self._elegir(recuerdos)
@@ -356,17 +368,27 @@ class Coordinador:
                 if completado:
                     self._decidir("F4", "completado_por_regla", f"{', '.join(completado)} (deducidos de la pregunta: "
                                                                 f"{'; '.join(self.req['deducido'])})")
+                self._identidad(plan, tablas)
                 prop["texto"] = MD.texto_canonico(plan)
                 faltan = RQ.faltantes(self.req, plan, self.schema, tablas, self.fichas)
-                if faltan:
-                    motivo = "; ".join(m for m, _ in faltan)
-                    retro.append(MT.retro_m3(resp, motivo, "; ".join(c for _, c in faltan)))
-                    self._decidir("F4", "m3_requisito_incompleto", motivo + " (no se ejecuta nada)")
-                    ultimo, ultimo_motivo = None, motivo
-                    continue
+            else:
+                faltan = []
+            faltan += RQ.interpretacion(self.req, prop)
+            if faltan:
+                motivo = "; ".join(m for m, _ in faltan)
+                retro.append(MT.retro_m3(resp, motivo, "; ".join(c for _, c in faltan)))
+                self._decidir("F4", "m3_requisito_incompleto", motivo + " (no se ejecuta nada)")
+                ultimo, ultimo_motivo = None, motivo
+                continue
+            if prop.get("interpreta"):
+                self._decidir("F4", "interpretacion_declarada", "; ".join(f"«{k}» = {v}" for k, v in
+                                                                          prop["interpreta"].items())[:400]
+                              + " (hipótesis del modelo, coherente con el plan; no es una verificación)")
             ultimo = self._intentar(prop, tablas)
             if ultimo["nivel"] in ("verificada", "incierta"):
                 return self._redactar_y_cerrar(ultimo, tablas, t0)
+            if ultimo["nivel"] == "abstencion":
+                return self._abstener(ultimo, tablas, t0)
             ultimo_motivo = "; ".join(ultimo["motivos"])
             retro.append(MT.retro_m3(resp, ultimo_motivo[:600]))
             self._decidir("F5", ultimo["nivel"], "; ".join(ultimo["motivos"])[:400], {"intento": intento + 1})
@@ -403,6 +425,27 @@ class Coordinador:
         self.mem.fallo(self.conexion, self.mid, "F3", retro)
         return None
 
+    def _identidad(self, plan: dict, tablas: list[str]):
+        if not plan["agrupar"]:
+            plan["etiquetas"], plan["identidad"] = [], []
+            return
+        for nota in ID.resolver(plan, self.schema, self.perfiles, self.fichas, self.rels, self.req.get("entidad"),
+                                tablas):
+            self._decidir("F4", "identidad_normalizada", nota)
+        self._decidir("F4", "identidad", "; ".join(f"{t}.{c}: {i['tipo']} ({i['detalle']})" for (t, c), i in
+                                                    zip(plan["agrupar"], plan["identidad"]))
+                      + (" · etiquetas: " + ", ".join(f"{e[0]}.{e[1]}" for e in plan["etiquetas"] if e)
+                         if any(plan["etiquetas"]) else ""))
+
+    def _abstener(self, r: dict, tablas: list[str], t0) -> dict:
+        """Abstención sin reintento (S9): el ganador depende de una medida no confirmada. Las alternativas quedan como
+        diagnóstico, sin declarar cuál es correcta."""
+        self.mem.fallo(self.conexion, self.mid, "F5", "el ganador depende de qué se mida y la medida no está "
+                                                      "confirmada: abstención", {"tablas": tablas})
+        self._decidir("fin", "abstencion_por_sensibilidad", "; ".join(r["motivos"])[:400],
+                      {"sensibilidad": r.get("sensibilidad")})
+        return self._cerrar("completa", "abstencion", None, r["motivos"], r["chequeos"], t0)
+
     def _resolver(self, tablas: list[str]):
         """Completa una columna sin tabla SOLO si está en exactamente una de las tablas elegidas."""
         def resolver(nombre: str) -> str:
@@ -416,8 +459,9 @@ class Coordinador:
         return resolver
 
     def _intentar(self, prop: dict, tablas: list[str]) -> dict:
-        """Una propuesta → verificación técnica previa → ejecución → técnica posterior → semántica."""
+        """Una propuesta → verificación técnica previa → ejecución → técnica posterior → semántica → sensibilidad."""
         chequeos = []
+        self.sens = None
         if prop["tipo"] == "medir":
             try:
                 c = MD.compilar(prop["plan"], self.schema, self.rels)
@@ -448,6 +492,13 @@ class Coordinador:
             chequeos += VE.invariantes(lambda q, h: self._run(q, h, "contraprueba"), c, o)
             chequeos += VE.semantica(self.pregunta, c, self.schema, self.fichas, self.mem.glosario(self.conexion),
                                      self.perfiles, self.req)
+            if not any(x["estado"] == "falla" for x in chequeos):
+                self.sens = SE.explorar(c, self.schema, self.fichas, self.rels,
+                                        lambda q, h: self._run(q, h, "sensibilidad"), o, self.perfiles)
+                self.sens["confirmada"] = VE.medida_confirmada(chequeos, self.pregunta)
+                chequeos.append(VE.sensibilidad(self.sens, self.sens["confirmada"], SE.resumen(self.sens)))
+                self._decidir("F5", "sensibilidad", f"{self.sens['clase']}: {self.sens['consultas']} consultas"
+                              + (" (medida confirmada)" if self.sens["confirmada"] else " (medida NO confirmada)"))
         else:
             chequeos.append(VE.ch("invariantes", "tecnica", "no_verificable", "consulta SQL libre: el coordinador no "
                                                                               "puede derivar contrapruebas"))
@@ -456,14 +507,38 @@ class Coordinador:
         return {"nivel": n, "motivos": motivos, "chequeos": chequeos, "sql": sql, "compilado": c, "propuesta": prop,
                 "resultado": o}
 
+    def _vista(self, c: dict | None, o):
+        """El resultado con nombres reales: etiquetas, claves y la medida (los alias internos no salen de acá).
+        Devuelve (columnas, filas, citar, valor, clave, etiqueta)."""
+        if c is None:
+            ng = max(0, len(o.columns) - 1)
+            top = o.rows[0]
+            # SQL libre: el coordinador no sabe qué columna es clave; el grupo es lo que devolvió la consulta.
+            return o.columns, o.rows[:10], list(top[:ng]), top[ng] if len(top) > ng else None, None, list(top[:ng])
+        ng, ne, nom = len(c["gby"]), len(c["eby"]), c["nombres"]
+        cols = [nom[f"e{i + 1}"] for i in range(ne)] + [nom[f"g{i + 1}"] for i in range(ng)] + [nom["valor"]]
+        filas = [list(r[ng + 1:ng + 1 + ne]) + list(r[:ng]) + [r[ng]] for r in o.rows[:10]]
+        top = o.rows[0]
+        clave, etiqueta = list(top[:ng]), list(top[ng + 1:ng + 1 + ne]) or None
+        citar = list(etiqueta or clave)
+        if etiqueta and any(not ID.unica_en_datos(self.perfiles, t, col) for t, col in (e for e in c["etiquetas"] if e)):
+            citar += clave          # la etiqueta se repite en la tabla: la clave distingue
+        return cols, filas, citar, top[ng], clave, etiqueta
+
     def _redactar_y_cerrar(self, r: dict, tablas: list[str], t0) -> dict:
         o, c = r["resultado"], r.get("compilado")
-        ng = len(c["gby"]) if c else max(0, len(o.columns) - 1)
-        filas = o.rows[:10]
+        columnas, filas, citar, valor, clave, etiqueta = self._vista(c, o)
+        sens = self.sens if c is not None else None
         respuesta, fid = None, None
         retro = ""
-        for intento in range(INTENTOS):
-            partes = MT.prompt_m4(self.pregunta, o.columns, filas)
+        if sens and not sens["confirmada"] and sens["clase"] in ("valor_dependiente", "incompleta"):
+            respuesta = self._respuesta_sensible(sens, etiqueta, clave)
+            fid = VE.ch("S6_fidelidad", "semantica", "ok", "respuesta determinista del coordinador: el valor depende de "
+                                                           "una interpretación no confirmada")
+            self._decidir("F6", "respuesta_determinista_sensibilidad", "no se pide M4: cada valor corresponde a una "
+                                                                       "interpretación distinta y ninguna está confirmada")
+        for intento in range(INTENTOS if respuesta is None else 0):
+            partes = MT.prompt_m4(self.pregunta, columnas, filas)
             if retro:
                 partes.append(("coordinador", f"\nTU RESPUESTA ANTERIOR SE RECHAZÓ: {retro}\n"))
             try:
@@ -474,25 +549,40 @@ class Coordinador:
             except SinPresupuesto as e:
                 retro = str(e)
                 break
-            fid = VE.fidelidad(texto, o.columns, filas, ng)
+            fid = VE.fidelidad(texto, columnas, filas, len(columnas) - 1, citar, valor)
             if fid["estado"] == "ok":
                 respuesta = texto
                 break
             retro = fid["detalle"]
             self._decidir("F6", "m4_rechazada", fid["detalle"])
         if respuesta is None:
-            respuesta = "Resultado: " + "; ".join(f"{k} = {v}" for k, v in zip(o.columns, filas[0]))
+            respuesta = "Resultado: " + "; ".join(f"{k} = {v}" for k, v in zip(columnas, filas[0]))
             fid = VE.ch("S6_fidelidad", "semantica", "ok", f"respuesta determinista del coordinador ({retro})")
             self._decidir("F6", "respuesta_determinista", f"la redacción del modelo no pasó: {retro}")
         chequeos = r["chequeos"] + [fid]
         nivel, dudas = VE.nivel(chequeos)
         if nivel.startswith("rechazada"):
             nivel = "abstencion"
-        estructurada = {"grupo": list(filas[0][:ng]), "valor": filas[0][ng] if len(filas[0]) > ng else None}
+        estructurada = {"grupo": list(etiqueta or clave or []), "clave": clave, "etiqueta": etiqueta, "valor": valor,
+                        "medida": c["nombres"]["valor"] if c else None, "valor_confirmado": nivel == "verificada"}
+        if sens and sens["clase"] not in ("no_aplica",):
+            estructurada["sensibilidad"] = {"clase": sens["clase"], "medida_confirmada": sens["confirmada"],
+                                            "interpretaciones": SE.resumen(sens)}
         self._registrar(r, tablas, nivel, chequeos)
         self._decidir("fin", nivel, "; ".join(dudas)[:400] or "todos los chequeos técnicos y semánticos pasaron")
         return self._cerrar("completa", nivel, {"texto": respuesta, "estructurada": estructurada, "sql": r["sql"],
                                                 "consulta_id": o.query_id}, dudas, chequeos, t0)
+
+    def _respuesta_sensible(self, s: dict, etiqueta, clave) -> str:
+        quien = " / ".join(str(v) for v in (etiqueta or clave)) + (
+            f" (clave {', '.join(str(v) for v in clave)})" if etiqueta else "")
+        if s["clase"] == "valor_dependiente":
+            inicio = f"{quien} queda primero con todas las medidas comparadas"
+        else:
+            inicio = (f"{quien} queda primero con la medida del plan y con las {s['exploradas']} alternativas "
+                      "exploradas, pero la exploración quedó incompleta")
+        return (f"{inicio}. El valor depende de qué se mida y ninguna interpretación está confirmada, así que ningún "
+                f"valor es un resultado confirmado: {SE.resumen(s)}.")
 
     def _registrar(self, r: dict, tablas: list[str], nivel: str, chequeos: list[dict]):
         prop, c = r["propuesta"], r.get("compilado")
@@ -530,8 +620,9 @@ class Coordinador:
                                 if "rechazada" in d["regla"] or "incomplet" in d["regla"]],
                    "requisitos": {k: v for k, v in (getattr(self, "req", None) or {}).items()
                                   if k in ("deducido", "aclaraciones")},
-                   "normalizaciones": [d["porque"] for d in decisiones if d["regla"] in ("forma_normalizada",
-                                                                                         "completado_por_regla")],
+                   "normalizaciones": [d["porque"] for d in decisiones if d["regla"] in (
+                       "forma_normalizada", "completado_por_regla", "identidad_normalizada")],
+                   "sensibilidad": getattr(self, "sens", None),
                    "interrupciones_del_entorno": list(getattr(self.modelo, "interrupciones", [])),
                    "decisiones": len(decisiones)}
         self.mem.terminar_mision(self.mid, estado, nivel, informe)
@@ -547,6 +638,20 @@ def markdown(inf: dict) -> str:
            f"**Respuesta:** {r.get('texto', '— (se abstiene)')}", ""]
     if inf["dudas_o_motivos"]:
         out += ["## Lo que no se pudo verificar o por qué se abstuvo", ""] + [f"- {d}" for d in inf["dudas_o_motivos"]]
+    s = inf.get("sensibilidad")
+    if s and s.get("clase") != "no_aplica":
+        out += ["", f"## Sensibilidad a la medida: {s['clase']}" + (" (medida confirmada)" if s.get("confirmada") else
+                                                                    " (medida NO confirmada)"), "",
+                "Diagnóstico: ninguna interpretación se declara correcta por esta comparación.", ""]
+        if s.get("elegida"):
+            out.append(f"- {s['elegida']['medida']} [la del plan]: {', '.join(' '.join(g) for g in s['elegida']['ganador'])}"
+                       f" = {s['elegida']['valor']}")
+        out += [f"- {a['medida']}: " + ("no se pudo calcular" if a.get("estado") == "error" else
+                                        f"{', '.join(' '.join(g) for g in a['ganador'])} = {a['valor']}")
+                for a in s["alternativas"]]
+        if s.get("otras_magnitudes"):
+            out += ["", "Otras magnitudes (responden otra pregunta; no se comparan ni cuentan como ambigüedad): "
+                    + ", ".join(s["otras_magnitudes"])]
     out += ["", "## Chequeos", "", "| capa | chequeo | estado | detalle |", "|---|---|---|---|"]
     out += [f"| {c['capa']} | {c['id']} | {c['estado']} | {c['detalle'][:160]}"
             + (f" · respaldo: {c['respaldo'][:100]}" if c.get("respaldo") else "") + " |" for c in inf["chequeos"]]

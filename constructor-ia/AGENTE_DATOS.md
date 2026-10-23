@@ -611,3 +611,173 @@ bash $E huellas despues && bash $E comparar
 
 Si M1 da una respuesta correcta según el juez, el orquestador habilita M2 (`bash $E agente 60 --mision M2 --carpeta $C`)
 y después M2′ (`--mision M2p`). Si no, M2 queda bloqueada con el motivo.
+
+## 14. Fase 2c: medida insuficiente, clave ≠ etiqueta y sin alias internos (2026-10-23, sin inferencias)
+
+### La segunda corrida real de M2 (carpeta original `agente-fase2-b`, conservada)
+
+- **Resultado:** completa, **incierta**. 4 llamadas, 16 consultas. Juez: **incorrecta**, sin confirmación falsa.
+- **Plan de Qwen:** `MEDIDA: suma lineas_pedido.precio_unitario`, `AGRUPAR: clientes.id`, con el filtro de marzo, el
+  orden y el límite correctos, e `INTERPRETA: cliente = clientes.id`. El cliente era el correcto (59, Lucía Castro);
+  el valor no: 60996.72 en lugar de 400521.93 (el gasto es la suma de cantidad × precio unitario).
+- **Respuesta:** Qwen escribió dos veces «El cliente g1 gastó 60996.72». S6 las rechazó y el coordinador usó la
+  respuesta determinista `g1 = 59; valor = 60996.72`, que muestra un alias interno y la clave en lugar del nombre.
+
+Tres problemas: una medida matemáticamente correcta que mide otra cosa; la clave de agrupación confundida con lo que
+se muestra; alias internos que llegan al usuario.
+
+### Corrección (aprobada por Diego y ChatGPT)
+
+**A1 — interpretación declarada de los conceptos de la medida** (`requisitos.py`):
+- Los **conceptos de la medida** son las palabras de contenido que quedan al quitar el período, el orden, el límite
+  y la entidad, que ya tienen sus propios controles: «gastó» en Q2, «vendió» y «unidades» en Q1. Tampoco cuentan
+  las palabras que el plan usa como valor de un filtro por igualdad («Rosario» en `FILTRO: clientes.ciudad = Rosario`).
+- M3 tiene que escribir una línea `INTERPRETA` para cada concepto. En un plan MEDIR, esas líneas tienen que decir lo
+  mismo que la MEDIDA:
+  - no pueden citar columnas que no estén en la MEDIDA;
+  - entre todas tienen que cubrir todas las columnas de la MEDIDA;
+  - si nombran una función, tiene que ser la del plan.
+- En SQL libre solo se exige que estén declaradas.
+- Si falta una o no es coherente, el plan se rechaza **antes de ejecutar**, con una retroalimentación que cita la
+  respuesta y muestra la forma.
+- La declaración es una **hipótesis** de Qwen, nunca una verificación: se guarda en el glosario como «declarada».
+
+**A2 — sensibilidad a la medida** (`sensibilidad.py`):
+- Se aplica cuando el plan es un ranking agrupado con suma, promedio, máximo o mínimo sobre una columna, y solo si los
+  demás chequeos no fallaron. El coordinador vuelve a calcular el mismo ranking con otras medidas plausibles.
+- **Las alternativas son acotadas y justificadas por tipos, roles y relaciones:**
+  - columnas con rol «medida» en la ficha (sin ficha: numéricas que no son clave ni referencia);
+  - de la tabla raíz del plan y de las tablas que el plan ya une en sentido muchos→uno;
+  - cada columna sola, y cada producto de dos con al menos una de la raíz;
+  - **solo de la misma magnitud** que la medida del plan;
+  - siempre con la misma función, los mismos filtros, los mismos grupos y el mismo orden.
+- **Alternativa plausible ≠ operación posible** (corrección pedida por Diego y ChatGPT antes del commit).
+  - Sumar unidades y sumar dinero son operaciones posibles sobre los mismos datos, pero responden preguntas
+    distintas: si cambian el ganador, no demuestran ambigüedad, cambian la magnitud.
+  - La magnitud de una medida es su **firma de tipos**, una regla genérica y no propia de B1: la clase SQL de cada
+    factor.
+    - **entera:** INT y similares;
+    - **continua:** DECIMAL, FLOAT, DOUBLE;
+    - **indicador:** una columna entera cuyos valores medidos están todos entre 0 y 1. Su suma cuenta filas, no suma
+      cantidades.
+  - Una suma de unidades (entera) solo se compara con otras columnas enteras. Un producto entera × continua solo se
+    compara con otros productos entera × continua.
+  - Las operaciones de otra magnitud se listan como **«otras magnitudes»**: no se ejecutan, no cuestan consultas y
+    nunca provocan una abstención.
+- **Ninguna alternativa agrega un JOIN** ni cambia las filas.
+- **Límites:** el orden es determinista y hay a lo sumo 6 consultas además de la del plan. Si hay más candidatas o
+  una consulta falla, la exploración queda **incompleta**, se registra y nunca se concluye que el ganador es estable.
+- **Clases:**
+  - ganador dependiente: alguna alternativa cambia el ganador;
+  - valor dependiente: el mismo ganador con otro valor;
+  - estable: el mismo ganador y el mismo valor;
+  - sin alternativas;
+  - incompleta;
+  - no aplica.
+
+**Política (S9)**, aplicada solo cuando la **medida no está confirmada**:
+
+| Caso | Nivel | Qué se muestra |
+|---|---|---|
+| El ganador depende de la medida | **abstención**, sin reintento (otra medida no confirmaría nada) | las alternativas como diagnóstico, sin declarar cuál es correcta |
+| Mismo ganador, el valor depende, o exploración incompleta | **incierta** | una respuesta determinista con el valor de cada interpretación; ninguno se presenta como confirmado (no se pide M4) |
+| Mismo ganador y mismo valor | **incierta** (vía S4) | «la estabilidad no constituye respaldo semántico» |
+| Sin alternativas de la misma magnitud | **incierta** (vía S4) | «no implica que la medida sea correcta», más la lista de otras magnitudes |
+
+- **Medida confirmada:** la pregunta dice qué medir y S4 respalda **todas** sus palabras con el esquema o con el
+  glosario verificado. Una ficha de Qwen o un vínculo declarado no confirman nada.
+- **Con la medida confirmada,** S9 se informa y no cambia el nivel.
+- **Por qué la condición:** si la abstención fuera incondicional, una pregunta como «¿qué producto tiene la mayor
+  cantidad?» (el esquema dice `cantidad`) se abstendría solo porque existen otras columnas numéricas.
+
+**Clave, etiqueta y valor, siempre separados** (`identidad.py`, `medir.py`). El coordinador decide por regla qué
+identifica a cada grupo:
+1. **Clave primaria** → es la clave. La etiqueta se elige aparte.
+2. **Referencia comprobada** a una clave única → es la clave. La etiqueta sale de la tabla referida, si está elegida.
+3. **La entidad nombra la columna** («qué ciudad» ↔ `clientes.ciudad`) → el valor es la entidad.
+4. **La entidad nombra la tabla** («qué cliente» ↔ `clientes`), la columna no es la clave y hay una clave primaria →
+   se agrupa por la clave y la columna queda como etiqueta. Se registra como normalización.
+5. **Un valor distinto por fila en los datos actuales** → sirve como clave, pero solo por los datos.
+6. **Nada de lo anterior** → la identidad queda sin verificar.
+
+- El SQL agrupa por la clave y la etiqueta.
+- La **respuesta estructurada** trae `clave`, `etiqueta`, `valor`, `medida`, `valor_confirmado` y, si corresponde, la
+  sensibilidad.
+- **S7** da «ok» con clave primaria, referencia comprobada, reagrupación o atributo. La etiqueta visible se informa
+  aparte.
+- **El juez** compara también la clave cuando la verdad la tiene: dos clientes con el mismo nombre no son la misma
+  respuesta.
+
+**Sin alias internos:**
+- M4, la respuesta determinista y el informe usan nombres reales, por ejemplo `clientes.nombre`,
+  `clientes.id (clave)` y `suma(lineas_pedido.cantidad × lineas_pedido.precio_unitario)`.
+- **S6** rechaza `g1`, `e1` y similares, salvo que sean valores del resultado. Exige la etiqueta y, si la etiqueta se
+  repite en la tabla, también la clave.
+
+**Memoria:**
+- Solo una respuesta «verificada» registra términos como verificados, y eso exige el respaldo del esquema o del
+  glosario verificado.
+- Una declaración repetida en varias misiones (o coincidente entre agentes) sigue siendo «declarada».
+- Una abstención no deja consulta aprendida.
+
+### Resultados (modelo de guion y respuestas reales reproducidas; sin inferencias)
+
+| Caso | Antes de la fase 2c | Ahora |
+|---|---|---|
+| **Plan real de M2** (suma de precios unitarios para «gastó») | incierta, «El cliente g1 gastó 60996.72» / `g1 = 59; valor = 60996.72` | Sin INTERPRETA para «gastó», se **rechaza antes de ejecutar**. Declarada como `suma lineas_pedido.precio_unitario`: no hay otra medida continua en esas tablas (cantidad × precio es otra magnitud, listada) → **incierta** por S4. El M4 real con «g1» se rechaza dos veces; respuesta determinista `clientes.nombre = Lucía Castro; clientes.id (clave) = 59; suma(lineas_pedido.precio_unitario) = 60996.72`. Juez: incorrecta, **error declarado, sin confirmación falsa** |
+| **Q1 («más unidades»), plan correcto** | incierta y correcta | **incierta y correcta; M1 se completa.** Las sumas de dinero (que darían Pincel B2, clave 22, en lugar de Balde B2, clave 34) son otras magnitudes: se listan, no se ejecutan y no provocan abstención |
+| **Q2, plan correcto** (cantidad × precio unitario) — control positivo | incierta y correcta | incierta y correcta, nunca verificada |
+| **«¿Qué producto facturó más?»** (cantidad × precio cobrado) | — | se compara con cantidad × precio de lista, que es la misma magnitud: mismo ganador, otro valor → incierta con el valor de cada interpretación, sin M4 |
+| **Nombres repetidos** (variante del generador: el 2.º y el 3.º cliente de marzo se llaman igual y juntos superan al ganador) | agrupar por nombre habría dado «Carla Domínguez», 675355.93 | el guion agrupa por `clientes.nombre`, el coordinador reagrupa por `clientes.id` → clave 59, «Lucía Castro», 400521.93; un M4 sin la clave se rechaza; juez correcta |
+| **Base opaca** (`t_x`, `t_y`, `t_w`), dos precios (`p`, `p2`) que cambian el ganador | — | misma magnitud → **abstención**, con `suma(t_w.q)` listada como otra magnitud |
+| **Base opaca**, medida correcta (q·p) | — | **también abstención**: q·p2 es la misma magnitud y da otro ganador; nada confirma cuál precio pide la pregunta |
+| **Base opaca**, «compró más unidades» con suma de `q` | — | el dinero da otros ganadores, pero es otra magnitud → **incierta**, sin abstención |
+| **Base opaca**, ganador estable | — | incierta, clave 4 y etiqueta «Tres», con la clave citada porque `t_x.n` se repite |
+| **Base opaca**, agrupada por un nombre repetido | — | la regla no puede reagrupar (nada dice que «cliente» sea `t_x`); S7 lo informa e incierta, nunca verificada |
+| **Medida confirmada por el esquema** («la mayor cantidad») | — | S9 solo informa; un M4 que insiste en «g1» se rechaza dos veces; respuesta determinista con nombres reales |
+| **Glosario declarado** en 3 misiones coincidentes y por otro agente | — | sigue «declarado»; S4 sigue sin respaldo |
+
+**Consecuencia para el laboratorio:**
+- La M1 preregistrada (Q1) se completa, incierta y correcta según el guion, y habilita M2 como antes.
+- Las preguntas preregistradas no cambiaron.
+- La ambigüedad que la primera versión de esta corrección le atribuía a Q1 era falsa: comparaba unidades con dinero.
+
+### Limitaciones que permanecen
+
+1. **A1 exige coherencia, no corrección.** La propuesta real con `INTERPRETA: gastó = suma
+   lineas_pedido.precio_unitario` pasa A1. En esas tablas no hay otra medida continua, así que tampoco la frena la
+   sensibilidad. Queda **incierta** porque «gastó» no tiene respaldo verificable, y el juez la marca incorrecta: es un
+   error declarado, no una confirmación falsa. Que sea la medida equivocada lo sigue detectando solo el juez.
+2. **La firma de tipos es un indicio de magnitud, no una prueba de significado.**
+   - Dos columnas enteras pueden ser magnitudes distintas (unidades y días) y se compararían.
+   - Dinero guardado en centavos enteros quedaría separado de un DECIMAL.
+   - Productos de la misma firma pueden no tener sentido (precio × precio).
+   - Lo que la firma no separa se muestra como diagnóstico; el significado sigue sin confirmar (S4).
+3. **La sensibilidad no sabe cuál medida es la correcta.** No la elige: decide si la respuesta depende de una
+   interpretación de la misma magnitud. Con la medida correcta y otra de la misma magnitud que cambia el ganador,
+   también se abstiene (base opaca).
+4. **Lo que la exploración no mira:** otras funciones (conteo frente a suma), otras tablas (los borradores siguen a
+   cargo de S5), otros filtros o columnas de tablas unidas uno→muchos. En tablas con muchas medidas de la misma
+   magnitud, el tope de 6 consultas deja la exploración incompleta y la respuesta incierta.
+5. **«Medida confirmada» se decide por raíces de 4 letras (S4).** Una coincidencia accidental puede contar como
+   respaldo, y un sinónimo no cuenta.
+6. **Límites de la identidad:**
+   - La reagrupación por la clave necesita que la entidad nombre la tabla. Con nombres opacos no ocurre: S7 lo
+     informa, pero la respuesta puede juntar entidades distintas (queda incierta, nunca verificada).
+   - Una columna única «en los datos actuales» cuenta como clave solo por los datos.
+   - La etiqueta automática se elige por regla (la de más valores distintos) y puede no ser la más legible.
+7. **Respuestas deterministas:** con valor dependiente no se pide M4. La respuesta es correcta en su forma, pero
+   menos natural.
+8. **Costo y consulta aprendida:**
+   - La sensibilidad suma hasta 6 consultas por intento; las otras magnitudes no cuestan consultas.
+   - La consulta aprendida no vuelve a pedir A1: la interpretación se declaró en la misión original y sigue siendo una
+     hipótesis.
+9. **Sin inferencias nuevas.** Las pruebas no dicen cómo responderá Qwen al requisito de INTERPRETA. Puede escribir
+   una interpretación coherente y equivocada (limitación 1).
+
+**Pruebas:** `tests/test_agente_fase2c.py` (34) y ajustes puntuales en las pruebas de las fases 1, 2 y 2b. La suite
+completa: 507 pruebas, OK (624 s).
+
+Sin cambios: el Explorador 0.4.8, el Investigador 0.5, los servicios, Vigilancia, Node-RED, OpenClaw y las bases
+productivas. Las corridas `agente-fase2` y `agente-fase2-b` quedan intactas. Las corridas nuevas van en carpetas
+nuevas.

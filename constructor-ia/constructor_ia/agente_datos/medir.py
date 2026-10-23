@@ -215,6 +215,7 @@ def compilar(plan: dict, schema: dict, relaciones: list[dict]) -> dict:
     med = plan["medida"]
     cols_med = [_resolver(schema, t, c) + (c,) for t, c in med["columnas"]]
     grupos = [_resolver(schema, t, c) for t, c in plan["agrupar"]]
+    etiquetas = [None if e is None else _resolver(schema, *e) for e in (plan.get("etiquetas") or [])]
     filtros = [(_resolver(schema, *f["objeto"]), f) for f in plan["filtros"]]
     if cols_med:
         raiz = cols_med[0][0]
@@ -227,7 +228,8 @@ def compilar(plan: dict, schema: dict, relaciones: list[dict]) -> dict:
     for (t, col, _) in cols_med:
         if med["funcion"] in ("suma", "promedio") and not is_numeric(col["tipo"]):
             raise Aclaracion(f"«{med['funcion']}» necesita una columna numérica; {t}.{col['nombre']} es {col['tipo']}")
-    tablas = [raiz] + [t for t, *_ in cols_med[1:]] + [t for t, _ in grupos] + [t for (t, _), _ in filtros]
+    tablas = ([raiz] + [t for t, *_ in cols_med[1:]] + [t for t, _ in grupos] + [t for (t, _), _ in filtros]
+              + [e[0] for e in etiquetas if e])
     rels = _aristas(relaciones)
     alias = {raiz: "t0"}
     joins, multiplica = [], False
@@ -291,21 +293,47 @@ def compilar(plan: dict, schema: dict, relaciones: list[dict]) -> dict:
         f" JOIN {_q(j['tabla'])} {j['alias']} ON {j['on'][0]}.{_q(j['on'][1])} = {j['on'][2]}.{_q(j['on'][3])}"
         for j in joins)
     cond = (" WHERE " + " AND ".join(where)) if where else ""
-    gsel = [f"{ref(t, col['nombre'])} AS g{i + 1}" for i, (t, col) in enumerate(grupos)]
     gby = [ref(t, col["nombre"]) for t, col in grupos]
-    sql = f"SELECT {', '.join(gsel + [agg + ' AS valor'])} {desde}{cond}"
-    if gby:
-        sql += " GROUP BY " + ", ".join(gby)
-    if plan["orden"]:
-        sql += f" ORDER BY valor {'DESC' if plan['orden'] == 'mayor' else 'ASC'}" + "".join(
-            f", g{i + 1}" for i in range(len(gby)))
-    if plan["limite"]:
-        sql += f" LIMIT {plan['limite']}"
+    eby = [ref(t, col["nombre"]) for t, col in (e for e in etiquetas if e)]
     pk = [c["nombre"] for c in schema["tablas"][raiz]["columnas"] if c["clave"] == "PRI"]
-    return {"plan": plan, "sql": sql, "raiz": raiz, "alias": alias, "joins": joins, "desde": desde, "where": cond,
-            "agregado": agg, "expresion": expr, "grupos": [(t, col["nombre"]) for t, col in grupos], "gby": gby,
-            "tablas": sorted(alias), "intervalos": intervalos, "puede_multiplicar": multiplica,
-            "pk_raiz": pk[0] if len(pk) == 1 else None, "medida_tablas": [t for t, *_ in cols_med]}
+    c = {"plan": plan, "raiz": raiz, "alias": alias, "joins": joins, "desde": desde, "where": cond,
+         "agregado": agg, "expresion": expr, "grupos": [(t, col["nombre"]) for t, col in grupos], "gby": gby,
+         "etiquetas": [None if e is None else (e[0], e[1]["nombre"]) for e in etiquetas], "eby": eby,
+         "tablas": sorted(alias), "intervalos": intervalos, "puede_multiplicar": multiplica,
+         "pk_raiz": pk[0] if len(pk) == 1 else None, "medida_tablas": [t for t, *_ in cols_med]}
+    c["sql"] = sql_con_agregado(c, agg, plan["limite"])
+    c["nombres"] = nombres(c)
+    return c
+
+
+def sql_con_agregado(c: dict, agg: str, limite: int | None) -> str:
+    """El SELECT del plan con otro agregado: mismas filas (FROM, JOIN, WHERE), mismos grupos, mismo orden.
+    Columnas del resultado: claves g1.. (alias internos), valor, etiquetas e1.. (alias internos). Los alias nunca
+    llegan al usuario: el coordinador los traduce con nombres()."""
+    gsel = [f"{g} AS g{i + 1}" for i, g in enumerate(c["gby"])]
+    esel = [f"{e} AS e{i + 1}" for i, e in enumerate(c["eby"])]
+    sql = f"SELECT {', '.join(gsel + [agg + ' AS valor'] + esel)} {c['desde']}{c['where']}"
+    if c["gby"]:
+        sql += " GROUP BY " + ", ".join(c["gby"] + c["eby"])
+    if c["plan"]["orden"]:
+        sql += f" ORDER BY valor {'DESC' if c['plan']['orden'] == 'mayor' else 'ASC'}" + "".join(
+            f", g{i + 1}" for i in range(len(c["gby"])))
+    if limite:
+        sql += f" LIMIT {limite}"
+    return sql
+
+
+def describir_medida(func: str, columnas) -> str:
+    """«suma(lineas_pedido.cantidad × lineas_pedido.precio_unitario)»: el significado de la columna «valor»."""
+    return f"{func}(" + (" × ".join(f"{t}.{c}" for t, c in columnas) or "filas") + ")"
+
+
+def nombres(c: dict) -> dict:
+    """Alias interno → nombre que se muestra (para M4, la respuesta y el informe)."""
+    out = {f"g{i + 1}": f"{t}.{col}" + (" (clave)" if c["eby"] else "") for i, (t, col) in enumerate(c["grupos"])}
+    out.update({f"e{i + 1}": f"{t}.{col}" for i, (t, col) in enumerate(e for e in c["etiquetas"] if e)})
+    out["valor"] = describir_medida(c["plan"]["medida"]["funcion"], c["plan"]["medida"]["columnas"])
+    return out
 
 
 def _intervalo(t: str, col: dict, tipo: str, a: dt.datetime, b: dt.datetime) -> dict:

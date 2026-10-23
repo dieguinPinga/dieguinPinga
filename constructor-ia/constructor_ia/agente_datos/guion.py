@@ -125,7 +125,9 @@ class Guion:
         entidad = next((t for t in cols if TX.raiz(t) == ent), None)
         if self.perfil == "multiplica":
             return (f"MEDIR: agregado\nMEDIDA: conteo pedidos.id\nAGRUPAR: productos.nombre\n"
-                    f"FILTRO: pedidos.fecha desde 2026-03-01 hasta 2026-04-01\nORDEN: mayor\nLIMITE: 1")
+                    f"FILTRO: pedidos.fecha desde 2026-03-01 hasta 2026-04-01\nORDEN: mayor\nLIMITE: 1\n"
+                    + "".join(f"INTERPRETA: {w} = conteo pedidos.id\n" for w in TX.palabras(pregunta)
+                              if TX.raiz(w) in terms))
         if terms & {"gast", "impo", "mont", "pago"}:
             t = next(t for t, _ in medidas if t != entidad)
             par = [c for tt, c in medidas if tt == t][:2]
@@ -153,7 +155,8 @@ class Guion:
             if TX.raiz(w) in terms:
                 lineas.append(f"INTERPRETA: {w} = {medida}")
         if self.perfil == "sql_libre":
-            return self._sql(medida, grupo, tiempo, per)
+            return self._sql(medida, grupo, tiempo, per) + "".join(
+                f"\nINTERPRETA: {w} = suma lineas_pedido.cantidad" for w in TX.palabras(pregunta) if TX.raiz(w) in terms)
         if self.perfil.startswith("qwen_m1"):
             sin_tabla = grupo.split(".")[1] if grupo else None
             return "\n".join([f"MEDIR: {medida}"] + ([f"AGRUPAR: {sin_tabla}"] if sin_tabla else [])

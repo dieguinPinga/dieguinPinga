@@ -181,7 +181,8 @@ class RealM1RegressionTests(unittest.TestCase):
         mem = Memoria(lab / "agente.db")
         self.addCleanup(mem.cerrar)
         q = mem.consulta_aprendida("b1", "que producto vendio mas unidades en marzo de 2026")
-        self.assertTrue(q["medir_texto"].startswith("MEDIDA: suma lineas_pedido.cantidad\nAGRUPAR: productos.nombre"))
+        # Desde la fase 2c se agrupa por la clave (productos.id); el nombre queda como etiqueta.
+        self.assertTrue(q["medir_texto"].startswith("MEDIDA: suma lineas_pedido.cantidad\nAGRUPAR: productos.id"))
         self.assertIn("ORDEN: mayor\nLIMITE: 1", q["medir_texto"], "se guarda la forma canónica, ya completada")
         self.assertEqual(J.auditar_fugas([lab], self.verdad), [])
 

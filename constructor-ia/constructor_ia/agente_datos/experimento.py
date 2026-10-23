@@ -39,7 +39,7 @@ from . import VERSION
 from . import generador as G
 from . import juez as J
 
-VERSION_EXPERIMENTO = "agente de datos fase 2 v1"
+VERSION_EXPERIMENTO = "agente de datos fase 2 v2"
 BASE = "b1_lab"
 TABLAS = ("categorias", "productos", "clientes", "pedidos", "lineas_pedido", "pedidos_borrador")
 CRITERIO_M2 = ("M1 completa, con respuesta (verificada o incierta, no abstención), correcta según el juez y sin "

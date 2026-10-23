@@ -84,7 +84,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   semántica separadas, vigencia del esquema distinta de la de los datos, y juez con verdad oculta en el laboratorio.
   Ver [AGENTE_DATOS.md](AGENTE_DATOS.md). Fase 2 (preparada, sin inferencias todavía): adaptador de Qwen con los
   parámetros y la guardia del piloto, `laboratorio-agente` (`--preparar`, `--comprobar`, `--mision M1|M2|M2p`) y los
-  comandos `agente0`/`agente` de `scripts/piloto_etapas.sh`.
+  comandos `agente0`/`agente` de `scripts/piloto_etapas.sh`. Fase 2c: interpretación declarada de la medida, sensibilidad
+  de la respuesta a medidas de la misma magnitud (abstención si el ganador depende de una medida no confirmada), clave y
+  etiqueta separadas, y respuestas sin alias internos (AGENTE_DATOS.md, §14).
 
 ## Proyectos que evolucionan (v0.4.0)
 

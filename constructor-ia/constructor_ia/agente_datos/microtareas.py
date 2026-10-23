@@ -283,6 +283,11 @@ def formato_m3(req: dict, tablas: list[str], fichas: dict) -> str:
                       + " (si no los escribís, el coordinador los completa por esta regla)")
     if req.get("entidad"):
         lineas.append(f"- pregunta por «{req['entidad']}»: AGRUPAR OBLIGATORIO")
+    conceptos = req.get("conceptos") or []
+    if conceptos:
+        lineas.append("- palabras que dicen QUÉ medir: " + ", ".join(f"«{w}»" for w in conceptos)
+                      + ": INTERPRETA OBLIGATORIA para cada una, con la misma función y columnas que tu MEDIDA "
+                        "(es tu hipótesis; el coordinador la compara con el plan, no la da por verificada)")
     if len(lineas) == 1:
         lineas.append("- ninguno (la pregunta no pide período, orden ni entidad)")
     lineas += ["", "Respondé con estas líneas, una por campo, sin texto fuera de ellas:",
@@ -295,7 +300,8 @@ def formato_m3(req: dict, tablas: list[str], fichas: dict) -> str:
                + ("" if p else "   (opcional)"),
                "ORDEN: <mayor | menor>" + ("" if req.get("orden") else "   (opcional)"),
                "LIMITE: <N>" + ("" if req.get("limite") else "   (opcional)"),
-               "INTERPRETA: <palabra de la pregunta> = <tabla.columna>   (una línea por palabra importante)",
+               "INTERPRETA: <palabra de la pregunta> = <función> <tabla.columna[ * tabla.columna]>   (una línea por "
+               "palabra que dice qué medir)",
                "Usá siempre «tabla.columna». El coordinador escribe los JOIN siguiendo las relaciones comprobadas.",
                "Si no se puede expresar así, en lugar de esas líneas: SQL: <una sola sentencia SELECT de lectura>"]
     return "\n".join(lineas)
@@ -360,7 +366,8 @@ def parsear_m3(texto: str, resolver=None) -> dict:
 # M4 — redactar la respuesta ---------------------------------------------------------------------------------------
 
 FORMATO_M4 = ("Respondé EXACTAMENTE así:\nRESPUESTA: <una o dos frases que respondan la pregunta citando los valores "
-              "del resultado tal como aparecen>")
+              "del resultado tal como aparecen (el nombre o la etiqueta del primer resultado y su valor), no los "
+              "nombres de las columnas>")
 
 
 def prompt_m4(pregunta: str, columnas: list, filas: list) -> list:

@@ -23,11 +23,16 @@ def evaluar(informe: dict, verdad: dict, pregunta_id: str) -> dict:
         valor_ok = Decimal(str(r["valor"])) == Decimal(str(v["valor"]))
     except Exception:
         valor_ok = False
-    correcta = grupo == v["respuesta"] and valor_ok
+    # Desde la fase 2c la respuesta trae la CLAVE aparte de la etiqueta: si la verdad la tiene, también se compara
+    # (dos clientes con el mismo nombre no son la misma respuesta).
+    clave_ok = True
+    if v.get("clave") is not None and r.get("clave"):
+        clave_ok = str(r["clave"][0]) == str(v["clave"])
+    correcta = grupo == v["respuesta"] and valor_ok and clave_ok
     return {"pregunta": pregunta_id, "nivel": nivel, "correcta": correcta,
             "confirmacion_falsa": nivel == "verificada" and not correcta,
             "error_declarado": nivel == "incierta" and not correcta, "abstencion": False,
-            "respondio": [grupo, r["valor"]]}
+            "respondio": [grupo, r["valor"]] + ([r["clave"][0]] if r.get("clave") else [])}
 
 
 def auditar_fugas(rutas: list[Path], verdad: dict) -> list[str]:
