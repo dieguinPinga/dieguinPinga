@@ -67,9 +67,94 @@ Suite completa con esta etapa: 521 pruebas, OK (670 s).
    - `constructor-ia oficina registrar …`;
    - `constructor-ia oficina estado` (no hace inferencias; la notebook solo ve tres lecturas).
 
+Comprobada en hardware real por Diego y ChatGPT (commit `db453ca`, worktree independiente de la VivoBook):
+- trabajador `pulenta` registrado: identidad de Tailscale `rampern`, `gemma4:12b`, RTX 4070 de 8 GB, capacidad 1 y
+  permiso «inferencia»;
+- estado disponible, latencia de comprobación 282 ms, historial persistente en SQLite;
+- sin inferencias.
+
+**Pendiente antes de enviar trabajos reales:** verificar la ACL restrictiva de Tailscale.
+
+## Etapa 2: cola persistente de tareas (implementada, sin inferencias)
+
+`constructor_ia/oficina/cola.py`, en la misma base experimental (`<datos>/oficina/oficina.db`, tablas propias:
+`misiones`, `tareas`, `dependencias`, `eventos`).
+
+- **Misiones con dependencias:**
+  - una misión es un grupo de tareas;
+  - cada tarea declara rol, modelo, permiso (`inferencia`), origen de los datos (`sintetico`), una carga JSON de
+    hasta 64 KB, `max_intentos` (1–10), `tiempo_max_s` y `depende_de`;
+  - se rechazan los ciclos, las dependencias desconocidas, los permisos que no sean `inferencia` y los datos que no
+    sean sintéticos;
+  - todo o nada: una misión inválida no deja nada a medias.
+- **Estados:** `pendiente → asignada → en_curso → propuesta → verificada`. Una tarea rechazada, vencida o con una falla
+  informada vuelve a `pendiente` mientras queden intentos; si no, pasa a `fallida`, y lo que dependía de ella queda
+  `cancelada`. La misión queda `pendiente`, `en_curso`, `completa`, `fallida` o `cancelada`.
+- **Asignación atómica:**
+  - `tomar` corre en una transacción `BEGIN IMMEDIATE`, y tiene pruebas con 8 hilos y con 4 procesos;
+  - un turno por trabajador;
+  - solo se asignan tareas con todas sus dependencias **verificadas**, el modelo y el permiso declarados y datos
+    sintéticos;
+  - `tomar_para` exige, además, un trabajador del registro disponible **ahora** (latido vigente).
+- **Arriendos:**
+  - cada asignación lleva un token y vence a los `tiempo_max_s` segundos; `latido` la renueva;
+  - una entrega con un token viejo, o con el arriendo vencido, se rechaza: el resultado tardío de un trabajador
+    desconectado nunca pisa una reasignación.
+- **Recuperación:** `recuperar` devuelve a la cola los arriendos vencidos y cuenta el intento. Se llama al arrancar y
+  periódicamente, así que un coordinador que se cae y vuelve recupera lo que quedó «en curso».
+- **Verificación central:**
+  - el trabajador solo entrega una **propuesta**;
+  - solo el coordinador la verifica o la rechaza;
+  - una propuesta no habilita a las tareas que dependen de ella; una rechazada no queda como resultado.
+- **Trazabilidad:** cada transición queda en `eventos`, con su origen, su destino, el trabajador y el motivo.
+- **Ensayo** (`ensayo.py`): trabajadores simulados en hilos, en una base desechable propia, sin red ni modelos.
+  - Dos misiones: d y e sueltas, y la cadena a → b → c.
+  - El «caido» toma d y se desconecta; el «tramposo» entrega una propuesta incorrecta; el «firme» trabaja bien.
+  - El coordinador recupera y verifica con una regla determinista.
+  - Se espera:
+    - las dos misiones completas;
+    - una recuperación;
+    - una propuesta rechazada;
+    - la entrega tardía rechazada;
+    - las dos misiones avanzando a la vez.
+
+**CLI** (base de la oficina; solo el ensayo usa una base desechable):
+
+```bash
+constructor-ia oficina mision --archivo plan.json   # {"titulo": …, "tareas": [{"nombre", "rol", "modelo", "carga", "depende_de", …}]}
+constructor-ia oficina cola [--json]                # misiones y tareas con estado, intento, trabajador y dependencias
+constructor-ia oficina recuperar                    # arriendos vencidos → cola
+constructor-ia oficina cancelar --mision <id>
+constructor-ia oficina ensayo-cola                  # trabajadores simulados, base en <datos>/oficina/ensayos/cola-<fecha>
+```
+
+En esta etapa nadie toma tareas de la base real: no hay ejecutor todavía (etapa 3). Las misiones creadas ahí quedan
+pendientes, que es lo esperado.
+
+Suite completa con esta etapa: 536 pruebas, OK (657 s).
+
+### Cómo verificar la cola desde la VivoBook (sin inferencias)
+
+Ejecutar en el worktree independiente; no se detiene ni se toca ningún servicio:
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_cola tests.test_oficina     # 31 pruebas, sin red ni modelos
+python3 -m constructor_ia oficina ensayo-cola                     # «Resultado: OK» (unos 3 s)
+cat > /tmp/plan-revision.json <<'JSON'
+{"titulo": "revisión de prueba", "tareas": [
+  {"nombre": "revisar", "rol": "revisor", "modelo": "gemma4:12b", "carga": {"texto": "def f(): return 1"}},
+  {"nombre": "resumir", "rol": "redactor", "modelo": "gemma4:12b", "carga": {}, "depende_de": ["revisar"]}]}
+JSON
+python3 -m constructor_ia oficina mision --archivo /tmp/plan-revision.json
+python3 -m constructor_ia oficina cola          # «resumir» depende de «revisar»; las dos quedan pendientes
+python3 -m constructor_ia oficina cancelar --mision <id que imprimió «mision»>
+```
+
+El ensayo y las pruebas no usan la red, la notebook, Ollama ni el laboratorio.
+
 ### Lo que falta (siguientes etapas)
 
-2. Cola persistente de tareas: estados, arriendos, dependencias, intentos, vencimientos y desconexión.
 3. Adaptador remoto con la interfaz `pedir()` y solo rutas de inferencia, candado por destino, y planificador por
    modelo, turno libre, permisos y RAM de la VivoBook (umbral de 3.900 MiB: si no alcanza, remoto o pendiente).
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

@@ -1192,11 +1192,38 @@ def cmd_explorer_trial(args) -> int:
 def cmd_oficina(args) -> int:
     """Oficina distribuida, etapa 1 (OFICINA.md): registro de trabajadores y disponibilidad, SIN inferencias.
     Base propia (<datos>/oficina/oficina.db): no toca la base de la aplicación, el laboratorio ni Tailscale."""
+    from .oficina import cola as CO
+    from .oficina import ensayo as EN
     from .oficina import registro as RG
 
     cfg = _cfg(args)
     carpeta = Path(args.carpeta) if args.carpeta else cfg.data_dir / "oficina"
     carpeta.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if args.accion == "ensayo-cola":
+        destino = carpeta / "ensayos" / time.strftime("cola-%Y%m%d-%H%M%S")
+        return 0 if EN.correr(destino)["ok"] else 1
+    if args.accion in ("mision", "cola", "recuperar", "cancelar"):
+        cola = CO.Cola(carpeta / "oficina.db")
+        try:
+            if args.accion == "mision":
+                plan = json.loads(Path(args.archivo).read_text())
+                print(f"Misión {cola.crear_mision(plan['titulo'], plan['tareas'])} creada.")
+            elif args.accion == "recuperar":
+                tocadas = cola.recuperar()
+                print(f"{len(tocadas)} arriendo(s) vencido(s) devuelto(s) a la cola" + (": " + ", ".join(tocadas)
+                                                                                        if tocadas else "."))
+            elif args.accion == "cancelar":
+                cola.cancelar_mision(args.mision)
+                print(f"{args.mision}: cancelada.")
+            else:
+                ms = cola.misiones()
+                print(json.dumps(ms, ensure_ascii=False, indent=1, default=str) if args.json else CO.texto_cola(ms))
+            return 0
+        except (CO.ErrorCola, KeyError, ValueError) as e:
+            print(f"oficina: {e}", file=sys.stderr)
+            return 2
+        finally:
+            cola.cerrar()
     reg = RG.Registro(carpeta / "oficina.db")
     try:
         if args.accion == "registrar":
@@ -1405,6 +1432,21 @@ def main(argv=None) -> int:
     o = osub.add_parser("retirar", help="retira un trabajador del registro (queda su historial)")
     o.add_argument("--id", required=True)
     o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("mision", help="crea una misión desde un JSON {titulo, tareas:[{nombre, rol, modelo, carga, "
+                                       "depende_de, max_intentos, tiempo_max_s}]} (no ejecuta nada)")
+    o.add_argument("--archivo", required=True)
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("cola", help="misiones y tareas con su estado (solo lectura)")
+    o.add_argument("--json", action="store_true")
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("recuperar", help="devuelve a la cola las tareas con el arriendo vencido")
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("cancelar", help="cancela las tareas no terminadas de una misión")
+    o.add_argument("--mision", required=True)
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("ensayo-cola", help="ensayo con trabajadores SIMULADOS en una base desechable propia (sin red "
+                                            "ni inferencias)")
+    o.add_argument("--carpeta", help="carpeta de la oficina (el ensayo va en <carpeta>/ensayos/cola-<fecha>)")
     a.set_defaults(fn=cmd_oficina)
     a = sub.add_parser("laboratorio-sugerencias",
                        help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
