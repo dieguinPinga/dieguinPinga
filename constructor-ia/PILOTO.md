@@ -2056,3 +2056,59 @@ bash $E sugerencias 20 --tanda control             # X07 con la sugerencia 17: 1
 - Las tandas van en `…/laboratorio/sugerencias-v1/tanda-N/`.
 - Al terminar cada una se actualiza `sugerencias-v1/resumen.md`.
 - Si una tanda se corta, el mismo comando la reanuda sin repetir llamadas.
+
+## Cierre provisional del experimento de sugerencias (2026-10-23)
+
+### Datos disponibles
+
+- **Control X07 («localizador», sugerencia 17, formato de v1.3.4).** La corrida terminó completa. Qwen diagnosticó
+  la 17, un diagnóstico incorrecto; la reparación no se aceptó; el juez registró abstención, y hubo 0
+  confirmaciones falsas.
+  - Fuente: el resumen de Diego y ChatGPT. Los archivos de esa corrida no llegaron a este análisis, así que no
+    están verificados de forma independiente.
+- **Tandas 1 (X05, X08) y 2 (X11, X12):** no se informaron resultados. Si se corrieron, sus archivos quedan para
+  analizar.
+
+### Las tres primeras llamadas reales de X07, con la misma semilla (40056709)
+
+| corrida | sugerencia | formato | primer DIAGNOSTICO | resultado |
+|---|---|---|---|---|
+| v1.3.3 | 17, con «>>» | sin la línea nueva | 17 (después 12: respuesta ambigua) | no se probó nada |
+| control | 17, con «>>» | **con** la línea nueva | 17 | incorrecto, no aceptado |
+| v1.3.4 | ninguna | con la línea nueva | 12 | **confirmación verdadera** |
+
+- El prompt del control difiere del de v1.3.3 **solo** en la línea nueva del formato (comprobado en las pruebas
+  contra el archivo real).
+- Difiere del de v1.3.4 **solo** en los 5 pares de líneas de la sugerencia.
+
+### Conclusiones (provisionales, limitadas a X07)
+
+1. **En X07, la línea nueva del formato sola no cambió el diagnóstico.** Con la sugerencia 17, Qwen siguió en la 17.
+2. **La diferencia entre fallar y acertar está asociada a cómo se presenta la sugerencia.** Lo que cambió fue la frase,
+   la marca «>>», «← sugerida» y el título de la lista. No se puede separar cuál de esas cinco diferencias pesa más.
+3. **Decisión provisional:** queda la política de v1.3.4. El coordinador sugiere solo con evidencia y, sin ella,
+   presenta las candidatas sin orden de preferencia.
+
+### Limitaciones
+
+- **n = 1 por condición:** un solo defecto, con una sola semilla. No medimos si la misma llamada se repite igual
+  en Ollama CPU.
+- **La pregunta principal sigue abierta:** ¿quitar la sugerencia perjudica cuando el localizador acierta (X05)? Sin
+  la tanda 1, no hay datos. La política de v1.3.4 podría tener un costo que no medimos.
+- **Es el banco de desarrollo, y el coordinador se ajustó a X07.** Afirmar que generaliza requiere defectos nuevos y
+  ciegos.
+- **El control no se comparó contra los archivos de la corrida** (ver arriba).
+
+### Qué se lleva el proyecto
+
+Lecciones de todo el laboratorio de depuración (no solo del experimento), para el agente de datos:
+- **Una preferencia sin evidencia ancla a un modelo pequeño.** Las candidatas se presentan sin orden de preferencia, y
+  cualquier preferencia dice de dónde viene.
+- **Una sola propuesta por respuesta.** Las respuestas ambiguas se rechazan sin elegir por el modelo.
+- **El coordinador conduce el flujo y verifica.** El modelo resuelve microtareas acotadas, y la métrica principal son
+  las confirmaciones falsas, medidas por un juez con datos propios.
+- **La reproducción de respuestas reales prueba las decisiones del coordinador**, no lo que haría el modelo con otro
+  prompt.
+
+El laboratorio de depuración queda cerrado **sin nuevas versiones**. El proyecto vuelve a su objetivo original:
+ver [AGENTE_DATOS.md](AGENTE_DATOS.md).
