@@ -781,3 +781,37 @@ completa: 507 pruebas, OK (624 s).
 Sin cambios: el Explorador 0.4.8, el Investigador 0.5, los servicios, Vigilancia, Node-RED, OpenClaw y las bases
 productivas. Las corridas `agente-fase2` y `agente-fase2-b` quedan intactas. Las corridas nuevas van en carpetas
 nuevas.
+
+## 15. Trabajo futuro: oficina de agentes distribuidos (registrado, NO implementado)
+
+**Estado comprobado por Diego y ChatGPT (2026-10-23), fuera de este repositorio:**
+- La VivoBook (servidor central, con Qwen 4B, la coordinación y la memoria) envió una microtarea de revisión de Python
+  a una segunda computadora con Windows, GPU de 8 GB y Ollama con `gemma4:12b`.
+- La conexión fue por Tailscale, con Tailscale Serve en un puerto propio y sin tocar el Ollama principal.
+- Gemma encontró y corrigió un error de cálculo: 21 s, 71 tokens, 13,19 tokens/s, con la GPU trabajando.
+- La comunicación está probada. Todavía no hay un trabajador registrado ni una cola distribuida.
+
+**Idea: separar tres conceptos.**
+- **Roles:** qué tarea se hace (intérprete, revisor, redactor…). Cada rol tiene su memoria lógica, y el conocimiento
+  queda centralizado en la VivoBook.
+- **Computadoras:** cada una se postula como trabajador y declara sus modelos y capacidades (GPU, contexto,
+  velocidad).
+- **Misiones:** el coordinador las divide en tareas y asigna cada una a un trabajador compatible con su rol.
+
+**Componentes a diseñar en una etapa propia:**
+- registro de trabajadores, con detección de disponibilidad (latido y vencimiento);
+- cola persistente de misiones y tareas, con estados equivalentes a los actuales (completa, interrumpida, error);
+- ejecución remota con permisos acotados y por invitación del coordinador;
+- resultados verificables: el coordinador central verifica todo, igual que hoy, y un trabajador nunca escribe la
+  memoria directamente;
+- recuperación ante desconexiones: una tarea sin respuesta vuelve a la cola o se declara interrumpida, nunca se da
+  por completa.
+
+**Distinción obligatoria:**
+- **Inferencia remota:** enviar un prompt y recibir texto. Es lo único probado hasta ahora.
+- **Ejecución remota de código** (por ejemplo, Python en el trabajador): requiere un aislamiento específico,
+  equivalente a lo que exige el piloto con Bubblewrap y seccomp, y no se habilita por el solo hecho de tener inferencia
+  remota.
+
+Esta sección no cambia el laboratorio ni sus pruebas. Las direcciones y los nombres de las computadoras se dejan
+fuera del repositorio a propósito.
