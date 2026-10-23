@@ -239,10 +239,146 @@ Salida esperada: las cinco misiones `completa`. Por perfil (tomadas / aceptadas 
 de un turno, `desconectado` con 1 abandonada y 1 entrega tardía rechazada, y `riguroso` y `correcto` sin rechazos.
 En total, 6 rechazos y 1 recuperación.
 
+## Etapa 3: programación real con Gemma remoto (preparada, SIN inferencias ni código de la IA ejecutado)
+
+Objetivo: que una IA real reciba una misión, escriba Python, lo ejecute aislado, reciba una evaluación y se corrija
+en nuevos intentos, sin intervención humana entre ellos.
+
+### Lo que ya existía y se reutiliza sin cambios
+
+| Componente | Qué aporta |
+|---|---|
+| `engine.Engine` (motor original de Constructor IA) | El ciclo completo: prompt inicial → código → validación estática → pruebas en el sandbox → informe de fallos → reparación, hasta `max_attempts`. Registra cada intento: respuesta, código, resultado, tokens, tiempo y motivo de corte |
+| `sandbox.executor.Executor` | Bubblewrap + seccomp, sin red, límites de memoria, procesos y CPU (scope de systemd), plazo por caso y total, autodiagnóstico antes de habilitarse y resultado firmado con un nonce |
+| `prompts` | Ejemplos visibles en el prompt y casos ocultos solo contados. `failure_report` no revela el valor esperado de un caso oculto |
+| `codeextract` | Extracción y validación estática del código |
+| `ollama.OllamaClient` | Inferencia por `/api/chat`, con plazo, cancelación y respaldo si el modelo no admite «think» |
+| Oficina, etapas 1 y 2 | Registro con identidad, disponibilidad y la cola con arriendos, recuperación y verificación central |
+
+El `InferenceGate` global de la aplicación y `ollama.py` no se modificaron.
+
+### Lo que se agregó (lo mínimo)
+
+- **`oficina/remoto.py`:**
+  - `ClienteRemoto`: el mismo `OllamaClient`, con una lista blanca de rutas (`GET /api/version|tags|ps` y
+    `POST /api/chat`). `pull`, `delete`, `create` y `generate` se rechazan sin conectarse;
+  - `compuerta(destino)`: un candado por URL; Gemma remoto y un Qwen local no se bloquean entre sí;
+  - `elegir()`: el planificador. Un trabajador sirve si está disponible ahora y tiene el modelo y el permiso. Un
+    destino local necesita además 3.900 MiB libres; si no hay ninguno, la tarea queda pendiente con el motivo.
+- **`oficina/misiones_programacion.py`:** la primera misión, `resumen_ventas(ventas, desde=None, hasta=None)`, sobre los
+  mismos 20 registros del almacén.
+  - 2 casos visibles (un ejemplo chico y la lista vacía).
+  - 5 casos ocultos: los 20 registros, el período del 1 al 10 inclusive, un «desde» en el último día, un período sin
+    ventas y un empate resuelto por orden alfabético.
+  - Incluye nuestra **solución de referencia**: la comprobación previa la corre en el sandbox para demostrar que las
+    pruebas son correctas antes de gastar una inferencia.
+- **`oficina/programador.py`:**
+  - `Taller`: el `Engine` original, con su base y su carpeta **propias** (`<oficina>/taller.db` y
+    `<oficina>/taller/`) y el cliente remoto;
+  - `Programador.atender(trabajador)`, en este orden:
+    1. toma una tarea de rol «programador» de la cola;
+    2. registra la ejecución (tarea, intento de la cola, misión del taller);
+    3. corre el ciclo completo, renovando el arriendo con un latido; si el arriendo se pierde, la misión se cancela;
+    4. entrega una **propuesta** con la huella del código, los tokens y el tiempo.
+
+    Si Ollama no responde o el sandbox está bloqueado, es una falla de entorno: la tarea vuelve a la cola, nunca
+    queda como respuesta.
+  - `verificar()`: el coordinador **vuelve a ejecutar** el `solucion.py` final contra todos los casos, incluidos los
+    ocultos. Además comprueba la huella y que la misión haya aprobado. Recién ahí la tarea queda verificada.
+  - **Interrupciones:** una ejecución que quedó a medias por un proceso caído se marca «interrumpida», nunca
+    «aprobada». La cola reasigna la tarea con otro token, y una entrega tardía del proceso anterior se rechaza.
+- **Dónde se ejecuta el código:** **siempre en la VivoBook**, dentro del sandbox. La pulenta solo hace inferencia:
+  nunca recibe ni ejecuta código.
+- **CLI:**
+
+```bash
+constructor-ia oficina comprobar-programacion --trabajador pulenta    # SIN inferencias ni código de la IA
+constructor-ia oficina encolar-programacion                           # misión resumen_ventas, gemma4:12b
+constructor-ia oficina programar --trabajador pulenta --autorizo-inferencia-remota
+```
+
+`comprobar-programacion` comprueba, sin inferencias:
+- el trabajador: identidad, modelo instalado y latido;
+- el planificador;
+- el autodiagnóstico del sandbox;
+- la misión con la solución de referencia (7/7).
+
+`programar` repite esas comprobaciones y se niega sin `--autorizo-inferencia-remota`. Con la autorización, atiende
+**una** tarea, la verifica centralmente e imprime cada intento (estado, casos, tokens y segundos).
+
+Pruebas: `tests/test_oficina_programacion.py` (13), con un Ollama falso que devuelve código escrito a mano y el
+sandbox real (bwrap):
+- **Rutas:** la lista blanca rechaza todo lo demás antes de conectarse.
+- **Candado:** uno por destino.
+- **Planificador:**
+  - lo remoto no depende de la RAM de la VivoBook;
+  - un destino local con 3.650 MiB queda pendiente;
+  - sin modelo, sin permiso o no disponible: pendiente.
+- **Misión:**
+  - la referencia aprueba 7/7;
+  - dos soluciones con errores típicos (sin filtro de fecha; «hasta» exclusivo) fallan en casos ocultos;
+  - el prompt no contiene ningún valor ni argumento de un caso oculto.
+- **Ciclo completo sin intervención:**
+  - el intento 1 falla, el 2 falla y el 3 aprueba;
+  - el informe de corrección llega al modelo sin la verdad;
+  - la verificación central aprueba 7/7;
+  - código y respuesta guardados por intento.
+- **Casos negativos:**
+  - una misión que nunca aprueba se rechaza y vuelve a la cola;
+  - una propuesta con la huella adulterada se rechaza;
+  - un trabajador caído es una falla de entorno;
+  - una ejecución interrumpida queda «interrumpida», sin duplicados y con la entrega tardía rechazada;
+  - un arriendo perdido cancela la misión;
+  - un trabajador no disponible no toma nada.
+- **CLI:** comprobar no infiere; programar sin la autorización se niega sin enviar nada; con la autorización,
+  ACEPTADA.
+
+Suite completa con esta etapa: 561 pruebas, OK (665 s).
+
+### Comprobaciones necesarias antes de la primera ejecución real
+
+1. **ACL de Tailscale (pendiente, a cargo de ustedes; la oficina no las modifica):**
+   - en la consola de administración, solo la VivoBook llega al puerto 11435 de la pulenta;
+   - desde otro equipo del tailnet, `curl http://<pulenta>:11435/api/tags` tiene que fallar;
+   - en la pulenta, `netstat -an | findstr 11434` debe mostrar solo `127.0.0.1:11434`;
+   - Tailscale Serve, sin Funnel: `tailscale serve status` y `tailscale funnel status`.
+2. **Conectividad e identidad, desde la VivoBook:**
+   - `tailscale ping <pulenta>`;
+   - `tailscale whois <IP>`: tiene que mostrar el nodo `rampern`.
+3. **Modelo realmente instalado:** `constructor-ia oficina estado --id pulenta` (lee `/api/tags` y `/api/ps`): tiene que
+   decir disponible, con `gemma4:12b`.
+4. **Sandbox habilitado en la VivoBook:** lo cubre `comprobar-programacion` (autodiagnóstico de bwrap, seccomp y
+   límites).
+5. **Pruebas válidas:** la referencia aprueba 7/7, también en `comprobar-programacion`.
+
+### Procedimiento protegido para la primera ejecución (cuando lo autoricen)
+
+En el worktree independiente de la VivoBook. No se detiene ni se reinicia ningún servicio: la inferencia es remota y
+el sandbox tiene sus propios límites.
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_programacion tests.test_oficina_almacen tests.test_oficina_cola tests.test_oficina
+C=~/constructor-ia-piloto/data/oficina-programacion-1          # carpeta NUEVA para esta corrida
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta   # todo [OK]
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --autorizo-inferencia-remota
+python3 -m constructor_ia oficina cola --carpeta $C
+```
+
+**Qué se espera:**
+- hasta 4 intentos con Gemma, cada uno ejecutado en el sandbox de la VivoBook;
+- la verificación central imprime ACEPTADA o RECHAZADA. Si es RECHAZADA, la tarea vuelve a la cola: queda 1 intento;
+- todo queda en `$C`:
+  - `taller.db` y `taller/`: respuestas, código por intento, resultados, tokens y tiempos;
+  - `oficina.db`: cola, eventos, ejecuciones y comprobaciones.
+
+**Lo que esta etapa no demuestra:** que Gemma resuelva la misión. Eso lo dice la primera corrida autorizada.
+
 ### Lo que falta (siguientes etapas)
 
-3. Adaptador remoto con la interfaz `pedir()` y solo rutas de inferencia, candado por destino, y planificador por
-   modelo, turno libre, permisos y RAM de la VivoBook (umbral de 3.900 MiB: si no alcanza, remoto o pendiente).
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
 5. Prueba de punta a punta con dos misiones simultáneas (Ollama falsos con latencia), más la suite completa.
 6. Procedimiento manual con la notebook: revisión de Python con verificación independiente (la corren ustedes).

@@ -1209,6 +1209,8 @@ def cmd_oficina(args) -> int:
         (destino / "informe.json").write_text(json.dumps(r, ensure_ascii=False, indent=1, default=str))
         print(f"Historial completo (quién, cuándo, por qué): {destino / 'informe.json'}")
         return 0 if r["ok"] else 1
+    if args.accion in ("comprobar-programacion", "encolar-programacion", "programar"):
+        return _oficina_programacion(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
         try:
@@ -1253,6 +1255,86 @@ def cmd_oficina(args) -> int:
         return 2
     finally:
         reg.cerrar()
+
+
+def _oficina_programacion(args, cfg, carpeta) -> int:
+    """Etapa 3 (OFICINA.md). «comprobar-programacion» no infiere ni ejecuta código de la IA; «programar» exige
+    --autorizo-inferencia-remota y corre UNA tarea de programación con el trabajador indicado."""
+    from .oficina import cola as CO
+    from .oficina import programador as PG
+    from .oficina import registro as RG
+    from .oficina import remoto as RM
+    from .oficina.misiones_programacion import MISIONES
+    from .sandbox.executor import Executor
+
+    if args.accion == "encolar-programacion":
+        if args.mision not in MISIONES:
+            print(f"oficina: misión desconocida «{args.mision}»; existen: {', '.join(MISIONES)}", file=sys.stderr)
+            return 2
+        cola = CO.Cola(carpeta / "oficina.db")
+        try:
+            mid = cola.crear_mision(f"programación: {args.mision}", [{
+                "nombre": args.mision, "rol": "programador", "modelo": args.modelo, "carga": {"mision": args.mision},
+                "max_intentos": 2, "tiempo_max_s": 300}])
+        finally:
+            cola.cerrar()
+        print(f"Misión {mid} encolada (rol programador, modelo {args.modelo}). No se ejecuta nada hasta «programar».")
+        return 0
+    reg, cola = RG.Registro(carpeta / "oficina.db"), CO.Cola(carpeta / "oficina.db")
+    pasos = []
+
+    def paso(nombre, ok, detalle):
+        pasos.append(ok)
+        print(f"[{'OK' if ok else 'FALLA'}] {nombre}: {detalle}")
+    try:
+        try:
+            t = reg.comprobar(args.trabajador)
+            paso("trabajador (identidad, modelos, latido; sin inferencias)", t["disponible_ahora"],
+                 f"{t['estado']} · {t['motivo']} · cargados: {(t.get('comprobacion') or {}).get('cargados')}")
+        except RG.ErrorRegistro as e:
+            t = None
+            paso("trabajador", False, str(e))
+        if t:
+            paso(f"modelo {args.modelo} declarado e instalado", args.modelo in t["modelos"] and t["disponible_ahora"],
+                 ", ".join(t["modelos"]))
+            elegido, motivo = RM.elegir({"modelo": args.modelo, "permiso": "inferencia"}, [t])
+            paso("planificador", elegido is not None, motivo)
+        ex = Executor(cfg)
+        rep = ex.self_test()
+        paso("sandbox (autodiagnóstico de aislamiento, sin código de la IA)", ex.enabled,
+             ex.disabled_reason if not ex.enabled else "bwrap, seccomp y límites verificados")
+        if ex.enabled:
+            c = PG.comprobar_mision(ex, args.mision)
+            paso(f"misión «{args.mision}» con la solución de REFERENCIA", c["ok"],
+                 f"{c['casos']} casos ({c['visibles']} visibles, {c['ocultos']} ocultos) · {c['estado']}")
+        mem = RM.memoria_disponible_mb()
+        print(f"[INFO] memoria disponible en esta máquina: {mem} MiB (la inferencia es remota; el sandbox usa su "
+              f"propio límite de {cfg.sandbox_memory_mb} MiB)")
+        if args.accion == "comprobar-programacion" or not all(pasos):
+            print("Comprobación " + ("completa: listo para autorizar «programar»." if all(pasos) else "con FALLAS."))
+            return 0 if all(pasos) else 3
+        if not args.autorizo_inferencia_remota:
+            print("oficina: «programar» envía inferencias al trabajador remoto y ejecuta en el sandbox el código que "
+                  "genere. Agregá --autorizo-inferencia-remota para autorizarlo.", file=sys.stderr)
+            return 2
+        prog = PG.Programador(carpeta, cfg, ex, cola)
+        r = prog.atender(t)
+        if r is None:
+            print("No hay tareas de programación pendientes para este trabajador (usá «encolar-programacion»).")
+            return 0
+        print(json.dumps({k: v for k, v in r.items() if k != "informe"}, ensure_ascii=False))
+        inf = r["informe"]
+        for i in inf["intentos"]:
+            print(f"  intento {i['n']}: {i['test_status']} {i['passed']}/{i['total']} · {i['eval_tokens']} tokens · "
+                  f"{(i['gen_ms'] or 0) / 1000:.1f} s" + (f" · {i['error'][:120]}" if i["error"] else ""))
+        if r["resultado"] == "propuesta":
+            ok, detalle = PG.verificar(cola, carpeta, cfg, ex, r["tarea"])
+            print(f"Verificación central: {'ACEPTADA' if ok else 'RECHAZADA'} — {detalle}")
+            return 0 if ok else 1
+        return 1
+    finally:
+        reg.cerrar()
+        cola.cerrar()
 
 
 def main(argv=None) -> int:
@@ -1457,6 +1539,20 @@ def main(argv=None) -> int:
     o = osub.add_parser("ensayo-almacen", help="escenario estándar: 20 ventas de un almacén, misiones A–F y nueve "
                                                "trabajadores simulados (base desechable, sin red ni inferencias)")
     o.add_argument("--carpeta", help="carpeta de la oficina (el ensayo va en <carpeta>/ensayos/almacen-<fecha>)")
+    for nombre, ayuda in (("comprobar-programacion", "etapa 3, SIN inferencias ni código de la IA: trabajador, "
+                                                      "planificador, sandbox y misión con la solución de referencia"),
+                          ("programar", "etapa 3: UNA tarea de programación con el trabajador remoto (exige "
+                                        "--autorizo-inferencia-remota)")):
+        o = osub.add_parser(nombre, help=ayuda)
+        o.add_argument("--trabajador", required=True)
+        o.add_argument("--modelo", default="gemma4:12b")
+        o.add_argument("--mision", default="resumen_ventas")
+        o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
+        o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
+    o.add_argument("--mision", default="resumen_ventas")
+    o.add_argument("--modelo", default="gemma4:12b")
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
     a.set_defaults(fn=cmd_oficina)
     a = sub.add_parser("laboratorio-sugerencias",
                        help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
