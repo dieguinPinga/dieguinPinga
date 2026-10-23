@@ -813,5 +813,6 @@ nuevas.
   equivalente a lo que exige el piloto con Bubblewrap y seccomp, y no se habilita por el solo hecho de tener inferencia
   remota.
 
+La implementación avanza por etapas en `OFICINA.md`; la etapa 1 (registro y disponibilidad) ya está hecha.
 Esta sección no cambia el laboratorio ni sus pruebas. Las direcciones y los nombres de las computadoras se dejan
 fuera del repositorio a propósito.

@@ -87,6 +87,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   comandos `agente0`/`agente` de `scripts/piloto_etapas.sh`. Fase 2c: interpretación declarada de la medida, sensibilidad
   de la respuesta a medidas de la misma magnitud (abstención si el ganador depende de una medida no confirmada), clave y
   etiqueta separadas, y respuestas sin alias internos (AGENTE_DATOS.md, §14).
+- **Oficina de agentes distribuidos** (etapa 1; `constructor_ia/oficina/`): registro de trabajadores del tailnet con
+  identidad comprobada y disponibilidad sin inferencias (`constructor-ia oficina registrar|estado|retirar`). Ver
+  [OFICINA.md](OFICINA.md).
 
 ## Proyectos que evolucionan (v0.4.0)
 

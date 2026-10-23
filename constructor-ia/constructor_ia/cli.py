@@ -1189,6 +1189,38 @@ def cmd_explorer_trial(args) -> int:
     return _print_evaluation(app.db, mid)
 
 
+def cmd_oficina(args) -> int:
+    """Oficina distribuida, etapa 1 (OFICINA.md): registro de trabajadores y disponibilidad, SIN inferencias.
+    Base propia (<datos>/oficina/oficina.db): no toca la base de la aplicación, el laboratorio ni Tailscale."""
+    from .oficina import registro as RG
+
+    cfg = _cfg(args)
+    carpeta = Path(args.carpeta) if args.carpeta else cfg.data_dir / "oficina"
+    carpeta.mkdir(parents=True, exist_ok=True, mode=0o700)
+    reg = RG.Registro(carpeta / "oficina.db")
+    try:
+        if args.accion == "registrar":
+            recursos = {k: v for k, v in (("cpu", args.cpu), ("ram_gb", args.ram_gb), ("gpu", args.gpu),
+                                          ("vram_gb", args.vram_gb)) if v is not None}
+            t = reg.registrar(args.id, args.url, args.modelo, nodo=args.nodo, recursos=recursos,
+                              permitir_local=args.permitir_local)
+            print(f"Registrado {t['id']} (capacidad {t['capacidad']}, permisos {', '.join(t['permisos'])}). "
+                  "Comprobá su disponibilidad con «oficina estado».")
+            return 0
+        if args.accion == "retirar":
+            t = reg.retirar(args.id)
+            print(f"{t['id']}: retirado.")
+            return 0
+        lista = [reg.comprobar(args.id)] if args.id else reg.comprobar_todos()
+        print(json.dumps(lista, ensure_ascii=False, indent=1, default=str) if args.json else RG.texto_estado(lista))
+        return 0 if all(t["estado"] == "disponible" for t in lista) else 3
+    except RG.ErrorRegistro as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    finally:
+        reg.cerrar()
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="constructor-ia", description=f"Constructor IA {VERSION}")
     p.add_argument("--config", help="Ruta del config.toml")
@@ -1352,6 +1384,28 @@ def main(argv=None) -> int:
     a.add_argument("--max-llamadas", dest="max_llamadas", type=int, default=8)
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_agent)
+    a = sub.add_parser("oficina", help="Oficina distribuida, etapa 1: registrar trabajadores y comprobar su "
+                                       "disponibilidad (sin inferencias)")
+    osub = a.add_subparsers(dest="accion", required=True)
+    o = osub.add_parser("registrar", help="registra un trabajador del tailnet (comprueba su identidad con whois)")
+    o.add_argument("--id", required=True, help="nombre corto del trabajador (minúsculas)")
+    o.add_argument("--url", required=True, help="http://<IP 100.x o nombre *.ts.net>:<puerto> de Tailscale Serve")
+    o.add_argument("--modelo", action="append", required=True, help="modelo declarado (repetible)")
+    o.add_argument("--nodo", help="nombre del nodo de Tailscale esperado (obligatorio salvo loopback de prueba)")
+    o.add_argument("--cpu")
+    o.add_argument("--ram-gb", dest="ram_gb", type=float)
+    o.add_argument("--gpu")
+    o.add_argument("--vram-gb", dest="vram_gb", type=float)
+    o.add_argument("--permitir-local", dest="permitir_local", action="store_true", help="solo pruebas: loopback")
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("estado", help="comprueba identidad, /api/version, /api/tags y /api/ps (sin inferencias)")
+    o.add_argument("--id", help="solo este trabajador")
+    o.add_argument("--json", action="store_true")
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("retirar", help="retira un trabajador del registro (queda su historial)")
+    o.add_argument("--id", required=True)
+    o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    a.set_defaults(fn=cmd_oficina)
     a = sub.add_parser("laboratorio-sugerencias",
                        help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
     a.add_argument("--tanda", required=True, choices=["1", "2", "control"],
