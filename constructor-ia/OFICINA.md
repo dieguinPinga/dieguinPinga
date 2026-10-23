@@ -153,6 +153,92 @@ python3 -m constructor_ia oficina cancelar --mision <id que imprimió «mision»
 
 El ensayo y las pruebas no usan la red, la notebook, Ollama ni el laboratorio.
 
+## Escenario estándar permanente: el almacén (aprobado por Diego y ChatGPT)
+
+Un único contexto ficticio para probar la oficina, hoy con trabajadores simulados y en las etapas siguientes con
+inferencia distribuida. Está en `constructor_ia/oficina/almacen.py` (datos, verdad, misiones y verificación) y en
+`ensayo_almacen.py` (los nueve trabajadores y el coordinador). El ensayo genérico de la cola (`ensayo-cola`) se
+conserva.
+
+### Registros: `ventas(id, fecha, producto, cantidad, precio_unitario)`
+
+20 ventas, del 1 al 20 de marzo de 2026, una por día y rotando los productos: Arroz $2, Fideos $3, Aceite $10 y
+Yerba $5. Todo con enteros.
+
+| id | fecha | producto | cant. | precio | importe | | id | fecha | producto | cant. | precio | importe |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 03-01 | Arroz | 2 | 2 | 4 | | 11 | 03-11 | Aceite | 1 | 10 | 10 |
+| 2 | 03-02 | Fideos | 3 | 3 | 9 | | 12 | 03-12 | Yerba | 4 | 5 | 20 |
+| 3 | 03-03 | Aceite | 1 | 10 | 10 | | 13 | 03-13 | Arroz | 4 | 2 | 8 |
+| 4 | 03-04 | Yerba | 2 | 5 | 10 | | 14 | 03-14 | Fideos | 1 | 3 | 3 |
+| 5 | 03-05 | Arroz | 5 | 2 | 10 | | 15 | 03-15 | Aceite | 3 | 10 | 30 |
+| 6 | 03-06 | Fideos | 2 | 3 | 6 | | 16 | 03-16 | Yerba | 2 | 5 | 10 |
+| 7 | 03-07 | Aceite | 2 | 10 | 20 | | 17 | 03-17 | Arroz | 6 | 2 | 12 |
+| 8 | 03-08 | Yerba | 1 | 5 | 5 | | 18 | 03-18 | Fideos | 5 | 3 | 15 |
+| 9 | 03-09 | Arroz | 3 | 2 | 6 | | 19 | 03-19 | Aceite | 2 | 10 | 20 |
+| 10 | 03-10 | Fideos | 4 | 3 | 12 | | 20 | 03-20 | Yerba | 3 | 5 | 15 |
+
+### Misiones y resultados esperados
+
+| Misión | Tarea(s) | Resultado |
+|---|---|---|
+| A | importe total | **235** |
+| B | unidades totales | **56** |
+| C | por producto | Arroz 20 u / $40 · Fideos 15 / 45 · Yerba 12 / 60 · Aceite 9 / 90 |
+| D | más unidades, más importe (dependen de C verificada) | **Arroz 20** · **Aceite 90** (rankings inversos) |
+| E | período del 1 al 10 de marzo, inclusive | **$92 y 25 unidades** |
+| F | auditoría de casos sintéticos propios (no depende de A) | $220 → «incorrecto», valor 235 · $235 → «correcto», 235 |
+
+- **El auditor** recibe los registros y la propuesta a auditar, nunca la respuesta del coordinador. El coordinador
+  verifica su dictamen por su cuenta.
+- **Más adelante**, la auditoría de propuestas reales se integrará como un paso previo a la verificación definitiva.
+
+### Verdad independiente
+
+- `verdad()` la calcula en Python desde los registros, y las pruebas exigen que coincida con la tabla escrita a mano
+  (`ESPERADO`).
+- La verdad nunca entra en una carga y lleva un canario que se busca en la base del ensayo.
+- Un rechazo dice qué campo no coincide, sin revelar el valor correcto.
+- Se comparan enteros exactos: `"235"` (texto) o `true` no valen como 235.
+
+### Nueve trabajadores simulados
+
+| Perfil | Rol | Conducta | Dónde se ve |
+|---|---|---|---|
+| periodo_corrido | calculista, un turno | incluye el día 11 | E: 102 / 26 → rechazada |
+| distraido | calculista, un turno | omite la última fila | A: 220 → rechazada |
+| confundido | calculista, un turno | ignora la cantidad | B: 20 → rechazada |
+| mezclador | calculista, un turno | intercambia unidades e importe | C → rechazada |
+| complaciente | auditor, un turno | dice «correcto» a todo | F $220 → rechazada |
+| formato_roto | calculista, un turno | devuelve algo ilegible | la primera tarea que vuelve a la cola → rechazada |
+| desconectado | calculista | abandona su primera tarea; vuelve después del vencimiento | arriendo recuperado; su entrega tardía, rechazada; después trabaja bien |
+| riguroso | auditor | recalcula | F → aceptadas |
+| correcto | calculista | calcula bien | termina los reintentos → aceptadas |
+
+- **Arranque escalonado:** cada trabajador arranca cuando el anterior ya tomó su primera tarea. Por eso cada perfil
+  recibe una tarea donde su error se ve, y la corrida es reproducible.
+- **Lo que comprueba el ensayo:**
+  - las cinco misiones completas, con exactamente los valores de la tabla;
+  - **cero verificaciones falsas**: cada tarea verificada se vuelve a comparar con la tabla escrita a mano;
+  - los nueve perfiles participaron;
+  - cada perfil con error fue rechazado una vez;
+  - un arriendo recuperado y una entrega tardía rechazada;
+  - aceptaciones en un reintento;
+  - varias misiones avanzando a la vez;
+  - ninguna fuga de la verdad.
+- **Historial:** `informe.json` guarda, por cada transición y cada verificación, quién, cuándo y por qué.
+
+```bash
+python3 -m unittest tests.test_oficina_almacen          # 12 pruebas
+python3 -m constructor_ia oficina ensayo-almacen        # «Resultado: OK» en unos 2 s; informe en <datos>/oficina/ensayos/almacen-<fecha>/
+```
+
+Suite completa con el almacén: 548 pruebas, OK (653 s).
+
+Salida esperada: las cinco misiones `completa`. Por perfil (tomadas / aceptadas / rechazadas): `1/0/1` en los seis
+de un turno, `desconectado` con 1 abandonada y 1 entrega tardía rechazada, y `riguroso` y `correcto` sin rechazos.
+En total, 6 rechazos y 1 recuperación.
+
 ### Lo que falta (siguientes etapas)
 
 3. Adaptador remoto con la interfaz `pedir()` y solo rutas de inferencia, candado por destino, y planificador por

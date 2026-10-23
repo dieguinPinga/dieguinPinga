@@ -132,8 +132,10 @@ class Cola:
             self._estado_mision(c, mid)
 
     # Trabajadores -----------------------------------------------------------------------------------------------
-    def tomar(self, trabajador_id: str, modelos: list[str], permisos=PERMISOS, capacidad: int = 1) -> dict | None:
-        """Asigna atómicamente la primera tarea lista y compatible (orden de creación). None si no hay."""
+    def tomar(self, trabajador_id: str, modelos: list[str], permisos=PERMISOS, capacidad: int = 1,
+              roles: list[str] | None = None) -> dict | None:
+        """Asigna atómicamente la primera tarea lista y compatible (orden de creación). None si no hay. roles: si se
+        indica, solo tareas de esos roles (por ejemplo, un auditor no toma cálculos)."""
         ahora = self.reloj()
         with self.db.tx() as c:
             activas = c.execute("SELECT COUNT(*) FROM tareas WHERE trabajador_id=? AND estado IN ('asignada','en_curso')",
@@ -143,9 +145,10 @@ class Cola:
             q = ("SELECT t.* FROM tareas t WHERE t.estado='pendiente' AND t.modelo IN ({}) AND t.permiso IN ({}) "
                  "AND t.origen_datos='sintetico' AND NOT EXISTS (SELECT 1 FROM dependencias d JOIN tareas x "
                  "ON x.id=d.depende_de WHERE d.tarea_id=t.id AND x.estado!='verificada') "
-                 "ORDER BY t.creado, t.orden LIMIT 1").format(",".join("?" * len(modelos)) or "NULL",
-                                                             ",".join("?" * len(permisos)) or "NULL")
-            r = c.execute(q, (*modelos, *permisos)).fetchone()
+                 "{}ORDER BY t.creado, t.orden LIMIT 1").format(
+                ",".join("?" * len(modelos)) or "NULL", ",".join("?" * len(permisos)) or "NULL",
+                f"AND t.rol IN ({','.join('?' * len(roles))}) " if roles else "")
+            r = c.execute(q, (*modelos, *permisos, *(roles or []))).fetchone()
             if r is None:
                 return None
             token = secrets.token_hex(12)

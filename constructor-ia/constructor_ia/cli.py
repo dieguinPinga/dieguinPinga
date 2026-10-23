@@ -1202,6 +1202,13 @@ def cmd_oficina(args) -> int:
     if args.accion == "ensayo-cola":
         destino = carpeta / "ensayos" / time.strftime("cola-%Y%m%d-%H%M%S")
         return 0 if EN.correr(destino)["ok"] else 1
+    if args.accion == "ensayo-almacen":
+        from .oficina import ensayo_almacen as EA
+        destino = carpeta / "ensayos" / time.strftime("almacen-%Y%m%d-%H%M%S")
+        r = EA.correr(destino)
+        (destino / "informe.json").write_text(json.dumps(r, ensure_ascii=False, indent=1, default=str))
+        print(f"Historial completo (quién, cuándo, por qué): {destino / 'informe.json'}")
+        return 0 if r["ok"] else 1
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
         try:
@@ -1447,6 +1454,9 @@ def main(argv=None) -> int:
     o = osub.add_parser("ensayo-cola", help="ensayo con trabajadores SIMULADOS en una base desechable propia (sin red "
                                             "ni inferencias)")
     o.add_argument("--carpeta", help="carpeta de la oficina (el ensayo va en <carpeta>/ensayos/cola-<fecha>)")
+    o = osub.add_parser("ensayo-almacen", help="escenario estándar: 20 ventas de un almacén, misiones A–F y nueve "
+                                               "trabajadores simulados (base desechable, sin red ni inferencias)")
+    o.add_argument("--carpeta", help="carpeta de la oficina (el ensayo va en <carpeta>/ensayos/almacen-<fecha>)")
     a.set_defaults(fn=cmd_oficina)
     a = sub.add_parser("laboratorio-sugerencias",
                        help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
