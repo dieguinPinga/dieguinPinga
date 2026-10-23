@@ -78,9 +78,11 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
   ejecutar ninguna.
   Experimento de sugerencias (`laboratorio-sugerencias --tanda 1|2|control`): «localizador» contra «evidencia» en
   la primera llamada, con plan fijo, la misma semilla por pareja y los prompts comparados antes de llamar.
-  Cerrado provisionalmente (PILOTO.md, «Cierre provisional del experimento de sugerencias»).
-- **Agente de datos** (diseño, sin código): explorador autónomo de bases MariaDB con memoria persistente, conducido
-  por un coordinador y con el modelo en microtareas verificadas. Ver [AGENTE_DATOS.md](AGENTE_DATOS.md).
+  Cerrado (PILOTO.md, «Cierre definitivo de la etapa experimental de depuración»).
+- **Agente de datos** (fase 1, sin Qwen; `constructor_ia/agente_datos/`): explorador autónomo de bases MariaDB con
+  memoria persistente (`agente.db`), conducido por un coordinador, con el modelo en microtareas, verificación técnica y
+  semántica separadas, vigencia del esquema distinta de la de los datos, y juez con verdad oculta en el laboratorio.
+  Ver [AGENTE_DATOS.md](AGENTE_DATOS.md).
 
 ## Proyectos que evolucionan (v0.4.0)
 

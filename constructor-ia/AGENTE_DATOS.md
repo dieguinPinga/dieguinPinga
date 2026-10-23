@@ -112,22 +112,52 @@ elegir) y la retroalimentación dice qué falló. Ninguna lleva una preferencia 
 | **M3 consultar** | La pregunta, las fichas elegidas, los caminos de relación y las coincidencias del glosario | `MEDIR {...}` o `SQL` (un SELECT) | Antes de ejecutar: `precheck_sql`, solo las tablas elegidas (o un cambio declarado), `sqlguard` y `EXPLAIN` bajo el tope. Después: ver F5 |
 | **M4 redactar** | La pregunta y el resultado verificado (datos no confiables) | `RESPUESTA` en 1–2 frases, citando las celdas | Contraste léxico (`validation`): cada cifra y valor está en el resultado. Si falla dos veces, la respuesta es la tabla del resultado, sin redacción |
 
-### F5: verificar un resultado
+### F5: verificar — dos capas separadas (ajustado tras la revisión del diseño)
 
-Las comprobaciones son genéricas: ninguna conoce la base ni la pregunta.
+**Un SQL correcto no implica una respuesta correcta.** Por eso hay dos verificaciones distintas, y la respuesta lleva
+el nivel que corresponde a lo que efectivamente se pudo comprobar.
 
-- **Ejecución y utilidad:** sin error, con filas, sin recortes; si hay recorte, el alcance lo dice (reglas de 0.4.7).
-- **Invariantes:**
-  - un conteo o una suma no supera el total de la tabla;
-  - en un ranking, el primero es realmente el máximo (se reordena el resultado);
-  - una fecha pedida cae en el rango que perfiló el cartógrafo.
-- **Multiplicación por JOIN** (error clásico): se cuentan las filas con y sin el JOIN (`COUNT(*)` contra
-  `COUNT(DISTINCT clave)` de la tabla principal). Si los agregados se inflan, se rechaza y se explica por qué.
-- **Contraprueba independiente:** el coordinador recalcula el número clave con otra formulación derivada
-  mecánicamente. Por ejemplo, para «el grupo con más X», recalcula X solo para ese grupo con un `WHERE`. Si no
-  coinciden, se rechaza.
-- **Memoria:** si una consulta aprendida respondía lo mismo, se comparan los resultados. Una diferencia se registra
-  como `difiere_tiempo` (los datos cambian); no se presume un error.
+**1. Verificación técnica de la consulta** (¿es válida y su resultado es aritméticamente coherente?):
+- **antes de ejecutar:** nombres reales, solo lectura, solo las tablas elegidas y costo estimado (`EXPLAIN`);
+- **después:** ejecución sin error, sin recorte y con filas;
+- **contrapruebas derivadas mecánicamente del plan MEDIR.** Todas son **matemáticamente válidas para cualquier base**:
+  no suponen nada sobre los valores (por ejemplo, una SUMA puede superar la cantidad de filas: la versión anterior de
+  este diseño decía «un conteo o una suma no supera el total de la tabla», que es falso para sumas):
+  - **multiplicación por JOIN:** filas unidas = filas distintas de la tabla raíz. Si cada fila raíz se une con a lo
+    sumo una fila de cada tabla, son iguales. Se exige solo para agregados sensibles a duplicados (conteo, suma,
+    promedio);
+  - **partición:** la suma de los conteos o sumas de TODOS los grupos = el total con el mismo filtro (los grupos de
+    un GROUP BY particionan las filas filtradas);
+  - **cotas:** si las k filas de un grupo valen entre mín y máx, su suma está entre k·mín y k·máx, y su promedio
+    entre mín y máx;
+  - **ranking:** el primero informado es el extremo entre todos los grupos;
+  - **contraprueba del ganador:** el mismo agregado recalculado solo para ese grupo (WHERE, sin GROUP BY, ORDER ni
+    LIMIT).
+- **SQL libre:** no permite derivar estas contrapruebas, así que su verificación técnica queda incompleta y la
+  respuesta no puede pasar de «incierta».
+
+**2. Verificación semántica de la respuesta** (¿responde la PREGUNTA?), sin conocer el dominio:
+
+| Chequeo | Qué comprueba |
+|---|---|
+| S1 período | El período de la pregunta es exactamente el intervalo efectivo del filtro. Detecta el error clásico de «entre A y B» sobre DATETIME, que deja afuera casi todo el último día |
+| S2 intención | Mayor o menor, conteo y promedio coinciden con el orden y el agregado del plan |
+| S3 entidad | La entidad preguntada («qué producto») corresponde a la tabla por la que se agrupa |
+| S4 términos | Cada término de contenido tiene respaldo en el plan: nombres del esquema, la ficha de una tabla del plan (interpretación del modelo: **respaldo débil, se informa como tal**) o un término del glosario vinculado en una respuesta verificada. Un vínculo solo **declarado** por el modelo no es respaldo |
+| S5 alternativas | Ninguna otra tabla describe lo mismo con igual o mayor respaldo. Si alguna lo hace, la elección depende de una interpretación que el coordinador no puede comprobar |
+| S6 fidelidad | La respuesta redactada cita el grupo y el valor del resultado, y ningún número ajeno |
+| S7 identidad | La columna de agrupación distingue filas: si no, puede juntar entidades distintas |
+| S8 empate | No hay empate en el primer puesto |
+
+**Nivel de la respuesta:**
+- **rechazada** (por la capa técnica o la semántica): hay una falla. Se reintenta M3 con el motivo; si vuelve a
+  fallar, la misión **se abstiene**.
+- **incierta:** no hay fallas, pero algo no se pudo verificar. La respuesta se informa con la lista exacta de lo no
+  verificado.
+- **verificada:** todo dio ok. Lo respaldado por fichas sigue siendo interpretación del modelo; en el laboratorio,
+  el juez mide si era correcta, y una «verificada» incorrecta es una **confirmación falsa**.
+- **Memoria:** una consulta aprendida se vuelve a ejecutar y verificar siempre; su resultado anterior no se usa como
+  respuesta.
 
 ### Regla de decisión y presupuesto
 
@@ -154,7 +184,7 @@ intermediario y el mapa, más las nuevas `mem_*`.
 | 3. Hechos | `explore_facts` + historial (existe) | `comprobado`, `inferencia`, `hipótesis` o `descartado`, con evidencia y misión creadora | Nunca se reescriben; las reevaluaciones se agregan |
 | 4. Fichas de tabla | `mem_fichas` (nueva) | Qué es una fila, roles de las columnas y relaciones, con evidencia (P#, C#), la huella de la tabla al crearla y las confirmaciones (usada en respuestas verificadas) | `vigente`; `revisar` si cambió la huella; `obsoleta` si la tabla desapareció |
 | 5. Glosario | `mem_glosario` (nueva) | Término de una pregunta («vendió», «marzo», «cliente») → tabla.columna, respaldado por una respuesta verificada | Usos y contradicciones; sube o baja con la evidencia, nunca se borra |
-| 6. Consultas aprendidas | `mem_consultas` (nueva) | Pregunta, tablas, MEDIR o SQL, firma, huella del esquema, hash del resultado, verificación y veredicto del juez (laboratorio) | Plantilla: **siempre se vuelve a ejecutar y verificar**, nunca se responde «de memoria» |
+| 6. Consultas aprendidas | `mem_consultas` (nueva) | Pregunta, tablas, MEDIR o SQL, huellas del esquema, hash del resultado y nivel de verificación. **El veredicto del juez NUNCA se escribe en la memoria**: el agente no puede ver si acertó (corrige la versión anterior de este diseño) | Plantilla: **siempre se vuelve a ejecutar y verificar**, nunca se responde «de memoria» |
 | 7. Fallos | `mem_fallos` (nueva) | Qué se intentó, en qué etapa y por qué falló | Para no repetirlo; se muestra como «intentos fallidos» |
 | 8. Bitácora | `mem_misiones`, `mem_decisiones` (nuevas) | Misiones, estados, decisiones y costo | Permanente |
 
@@ -162,10 +192,15 @@ intermediario y el mapa, más las nuevas `mem_*`.
 - **Solo lo verificado es `comprobado`.** Lo que interpreta el modelo es `inferencia`, con evidencia. Una ficha
   confirmada por respuestas verificadas sigue siendo una interpretación respaldada, no un hecho del sistema.
 - **No se borra nada:** cada cambio queda en el historial (como desde 0.4.5).
-- **Vigencia por huella de tabla:**
-  - si una tabla cambia, sus fichas pasan a `revisar` y sus consultas aprendidas a «a revalidar»;
-  - el cartógrafo vuelve a perfilar **solo** esa tabla;
-  - los hechos de datos llevan fecha, porque los datos cambian aunque el esquema no.
+- **Dos vigencias distintas** (ajustado tras la revisión del diseño: un esquema sin cambios no significa que las
+  mediciones sigan actualizadas):
+  - **vigencia del esquema:** huella de la estructura de cada tabla (columnas, tipos, claves, índices). Si cambia,
+    la ficha de la tabla pasa a `revisar` y se vuelve a describir (M1), y la tabla se vuelve a medir;
+  - **vigencia de los datos:** huella de los datos de cada tabla (filas y dos resúmenes de todas sus celdas). Si
+    cambia, con el esquema igual, se repiten las **mediciones** (perfil, contención de las relaciones que la tocan),
+    pero la ficha se conserva. En tablas demasiado grandes la huella no se calcula y la vigencia de los datos se
+    trata como desconocida, es decir, desactualizada;
+  - en ningún caso se responde con un resultado guardado: las consultas aprendidas se vuelven a ejecutar.
 
 **Recuperación (F0), determinista y sin dependencias externas.** Se buscan coincidencias léxicas (sin acentos, con
 raíces simples) entre la pregunta y el glosario, las fichas y los nombres de columnas. El resultado se acota en tokens
@@ -291,3 +326,93 @@ la evidencia y no por los nombres.
 
 **Fuera de alcance por ahora:** proponer aplicaciones o tableros (lo hacía el Explorador) y el agente libre que elige
 herramientas.
+
+---
+
+## 11. Fase 1: implementación y resultados (2026-10-23, sin Qwen)
+
+**Decisiones de Diego y ChatGPT aplicadas:**
+1. MEDIR primero y SQL libre solo de lectura, por el intermediario existente;
+2. memoria propia en `agente.db`;
+3. opción A para Ollama CPU (para la fase 2);
+4. Explorador 0.4.8 e Investigador 0.5 reutilizados **sin modificarlos**.
+
+### Módulos (`constructor_ia/agente_datos/`)
+
+| Archivo | Rol |
+|---|---|
+| `generador.py` | Base B1 con verdad oculta: 6 tablas, señuelo, relación solo por convención, columna casi nula, instrucción maliciosa en los datos, ventas del 31 de marzo que deciden la respuesta y un canario en la verdad. La verdad se calcula en Python, sin SQL. Incluye el cambio de esquema (M3) y datos nuevos con el mismo esquema |
+| `cartografo.py` | Esquema (consultas e instantánea del Explorador), huella de estructura y huella de datos por tabla, perfiles de tabla completa, frecuentes, muestra, y relaciones candidatas con contención y unicidad medidas |
+| `medir.py` | Contrato MEDIR (agregado, medida, agrupar, filtros, orden y límite) y su compilador. Los JOIN siguen solo relaciones comprobadas, primero muchos→uno; calcula los intervalos efectivos de cada filtro y genera las consultas de contraprueba |
+| `microtareas.py` | M1 a M4: prompts por partes y lectura estricta, con una sola propuesta. Los datos y los perfiles van delimitados como no confiables, y las fichas en orden barajado con semilla registrada |
+| `verificador.py` | Capa técnica (previa, posterior e invariantes) y capa semántica (S1 a S8), separadas, y el nivel resultante |
+| `memoria.py` | `agente.db`: migraciones existentes más las tablas `mem_*` (misiones, decisiones, mediciones, relaciones, fichas, glosario, consultas aprendidas y fallos) |
+| `coordinador.py` | Misión F0–F8, regla de decisión, presupuesto de llamadas, registro (`decisiones.jsonl`, `llamadas.jsonl`) e informe (`informe.json`, `informe.md`) |
+| `juez.py` | Evalúa cada informe contra la verdad oculta y audita fugas (canario y descripciones de la verdad) en todo lo que produjo el agente |
+| `guion.py` | Modelo de guion para las pruebas: responde leyendo solo su prompt y tiene perfiles negativos |
+| `__main__.py` | `python -m constructor_ia.agente_datos mision …`: una misión por proceso |
+
+### Diferencias con el diseño (decididas al implementar)
+
+- **El contrato MEDIR es propio del agente.** El del Investigador no expresa agregados agrupados sobre varias tablas;
+  se tomó su idea («qué medir sobre qué») y su escape de literales.
+- **La fase 1 no usa `explore_facts`.** Las relaciones y mediciones van en `mem_*`, con su propia vigencia. Del mapa
+  se usan las instantáneas de esquema, y del intermediario, el registro de consultas.
+- **Primer contacto:** el agente describe **todas** las tablas sin ficha, no solo las relevantes a la pregunta. Por
+  eso, en M2, las 6 fichas ya existen.
+- **Consulta aprendida:** se reconoce solo cuando la pregunta normalizada es idéntica. Las paráfrasis no se reconocen.
+- **Presupuesto agotado:** la misión se abstiene. Todavía no se reanuda una misión cortada.
+- **Pendiente para las fases 2 y 3:** el agente residente y el adaptador de Qwen.
+
+### Resultados (modelo de guion, MariaDB privado, cada misión en un proceso distinto)
+
+| Misión | Nivel | Correcta (juez) | Llamadas | Consultas | Tablas medidas | Fichas reutilizadas | Consulta aprendida |
+|---|---|---|---|---|---|---|---|
+| M1 (proceso A, memoria vacía, Q1) | verificada | sí | 5 (M1×2, M2, M3, M4) | 41 | 6 | 0 | no |
+| M2 (proceso B, con la memoria de M1, Q2) | incierta | sí | 3 (M2, M3, M4) | 16 | 0 | 6 | no |
+| M2′ (proceso C, sin memoria, Q2) | incierta | sí | 5 (M1×2, M2, M3, M4) | 41 | 6 | 0 | no |
+| M3 (proceso D, columna nueva en productos, Q1) | verificada | sí | 2 (M1, M4) | 23 | 1 | 5 | sí |
+| Datos nuevos (proceso E, mismo esquema, Q1) | verificada | sí | 1 (M4) | 25 | 2 | 6 | sí |
+
+- **M2 y M2′ quedan «inciertas» a propósito.** Para «gastó», el único vínculo con cantidad × precio_unitario es el
+  que declara el modelo, y eso no es respaldo. La respuesta es correcta, pero se informa como no verificada.
+- **Memoria:**
+  - M2 tuvo la misma respuesta que M2′, con **2 llamadas y 25 consultas menos**;
+  - M3 volvió a medir y describir **solo** productos;
+  - con datos nuevos, se volvieron a medir **solo** pedidos y líneas de pedido, se conservaron las fichas y se volvió
+    a ejecutar la consulta aprendida.
+- **Pruebas negativas:**
+
+  | Caso | Lo que pasó |
+  |---|---|
+  | Señuelo | Usó los borradores y dio el producto equivocado, pero como **incierta** (S5: lineas_pedido describe lo mismo). Para el juez es un error declarado, **no** una confirmación falsa |
+  | Filtro «entre el 1 y el 31» en DATETIME | Rechazado por S1 con la explicación; el guion lo corrigió en el segundo intento |
+  | Mismo error, sin corregir | Abstención; el fallo quedó en la memoria |
+  | JOIN que multiplica filas | Rechazado dos veces por la capa técnica; abstención |
+  | SQL libre | Incierta: las contrapruebas no se pueden derivar |
+  | Respuesta ambigua | Rechazada sin elegir |
+  | Consulta aprendida ilegible | Siguió por el camino normal |
+  | Relación que desaparece | Se retiró solo esa relación |
+  | Cuenta con INSERT | Misión bloqueada antes de cualquier llamada |
+
+- **Seguridad:**
+  - el canario y las descripciones de la verdad no aparecen en ningún archivo del agente;
+  - la instrucción maliciosa solo aparece dentro de bloques de datos no confiables;
+  - la base explorada no cambia;
+  - 0 confirmaciones falsas en todas las misiones.
+
+**Lo que esto NO demuestra:**
+- Ninguna capacidad de Qwen: el guion está escrito para esta base.
+- Que la capa semántica sea suficiente. El respaldo por fichas es interpretación del modelo, y la fase 2 va a medir
+  cuántas confirmaciones falsas deja pasar.
+- Que las raíces léxicas reconozcan sinónimos o paráfrasis.
+- Nada sobre bases grandes o reales.
+
+### Próximo paso (fase 2, cuando lo autoricen)
+
+Falta, antes de usar Qwen:
+- un adaptador del modelo (`laboratorio/protocolo.Modelo` con la guardia de memoria de V2, como en el piloto);
+- un verbo protegido en `scripts/piloto_etapas.sh` que detenga el servicio y lo restaure siempre (opción A).
+
+Con eso, en la VivoBook: M1, reinicio, M2 y M2′ con Qwen y un presupuesto de llamadas por misión, sobre una base
+sintética en el MariaDB privado.

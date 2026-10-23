@@ -2112,3 +2112,44 @@ Lecciones de todo el laboratorio de depuración (no solo del experimento), para 
 
 El laboratorio de depuración queda cerrado **sin nuevas versiones**. El proyecto vuelve a su objetivo original:
 ver [AGENTE_DATOS.md](AGENTE_DATOS.md).
+
+
+## Cierre definitivo de la etapa experimental de depuración (2026-10-23)
+
+Resultados finales del experimento de sugerencias, informados por Diego y ChatGPT. Los archivos de las tandas no se
+analizaron aquí.
+
+| Defecto | Causa | «localizador» (sugerencia) | «evidencia» (sin sugerencia) |
+|---|---|---|---|
+| X05 | 17 | diagnóstico 17, correcto; reparación rechazada | diagnóstico 17, correcto; reparación rechazada |
+| X08 | 15 | diagnóstico 15, correcto **contra la sugerencia 17**; rechazada | diagnóstico 15, correcto; rechazada |
+| X11 | fuera de las candidatas | incorrecto; ninguna aceptada | incorrecto; ninguna aceptada |
+| X12 | fuera de las candidatas | respuesta **ambigua**; ninguna aceptada | incorrecto; ninguna aceptada |
+| X07 (control) | 12 | diagnóstico 17, incorrecto (la sugerida) | (corrida v1.3.4) diagnóstico 12, **confirmación verdadera** |
+
+En las nueve llamadas comparativas hubo **0 reparaciones aceptadas y 0 confirmaciones falsas**.
+
+### Conclusiones
+
+1. **Cuando el localizador acierta (X05), quitar la sugerencia no perjudicó el diagnóstico.** Era la pregunta
+   principal, y esta corrida no encontró el costo temido.
+2. **Cuando el localizador se equivoca, la sugerencia no siempre ancla.** En X08, Qwen la contradijo y acertó. En
+   X07 sí ancló: con la sugerencia 17 diagnosticó la 17, y sin ella encontró la 12.
+3. **Cuando la causa está fuera de las candidatas (X11, X12), ninguna de las dos condiciones lo resolvió.** Es lo
+   esperable: el problema es el localizador, no la sugerencia.
+4. **La política de v1.3.4 queda como la mejor disponible:** sugerir solo con evidencia.
+
+### Limitaciones (sin cambios respecto del cierre provisional)
+
+- **Una llamada por condición y por defecto, con una sola semilla.** No sabemos si cada resultado se repetiría.
+- **Es el banco de desarrollo.**
+- **Las reparaciones no avanzaron:** ninguna se aceptó en la comparación, así que el experimento midió el diagnóstico,
+  no la reparación.
+- **0 confirmaciones falsas en nueve llamadas sin ninguna aceptación no es evidencia de seguridad general:** no hubo
+  ninguna reparación que juzgar como verdadera o falsa.
+
+### Estado
+
+**La etapa experimental de depuración queda cerrada.** No se implementan nuevas versiones del ciclo, ni del piloto,
+ni del experimento. El código y los resultados quedan como referencia. Las lecciones que se trasladan al agente de
+datos están en el cierre provisional, más arriba, y en [AGENTE_DATOS.md](AGENTE_DATOS.md), §1.
