@@ -21,9 +21,11 @@
    S1 período pedido = intervalo efectivo del filtro (incluido el error clásico de «entre A y B» en DATETIME);
    S2 intención (mayor/menor, conteo, promedio) = orden y agregado del plan;
    S3 la entidad preguntada («qué producto») corresponde a la tabla por la que se agrupa;
-   S4 cada término de contenido de la pregunta tiene RESPALDO en el plan: nombres del esquema, la ficha de una
-      tabla del plan (interpretación del modelo: respaldo débil, se informa) o un término del glosario vinculado
-      en una respuesta verificada. Un vínculo solo DECLARADO por el modelo no es respaldo;
+   S4 cada término de contenido de la pregunta tiene RESPALDO en el plan: nombres del esquema o un término del
+      glosario vinculado en una respuesta verificada. Desde la fase 2, la ficha de una tabla (escrita por el modelo)
+      NO alcanza: que una interpretación del modelo respalde otra interpretación del modelo no es una verificación,
+      así que el término queda «no verificable» (la ficha se informa como respaldo débil). Un vínculo solo DECLARADO
+      por el modelo tampoco es respaldo;
    S5 ninguna otra tabla describe lo mismo con igual o mayor respaldo (alternativa no descartada);
    S6 la respuesta redactada cita el valor y el grupo del resultado, y ningún número ajeno;
    S7 la columna por la que se agrupa identifica filas distintas (si no, puede juntar entidades distintas);
@@ -205,8 +207,10 @@ def _raices_ficha(f: dict | None) -> set[str]:
     return TX.raices(f["fila"])
 
 
-def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list[dict], perfiles: dict) -> list[dict]:
-    """c: plan compilado MEDIR. fichas: {tabla: ficha vigente}. glosario: entradas de la conexión."""
+def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list[dict], perfiles: dict,
+              req: dict | None = None) -> list[dict]:
+    """c: plan compilado MEDIR. fichas: {tabla: ficha vigente}. glosario: entradas de la conexión. req: requisitos
+    deducidos de la pregunta (para el límite)."""
     out = []
     # S1 período.
     q = TX.periodo(pregunta)
@@ -255,6 +259,9 @@ def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list
         reconocido = True
         if func != "promedio":
             problemas.append(f"la pregunta pide un promedio y la medida es «{func}»")
+    if req and req.get("limite") and c["plan"]["limite"] != req["limite"]:
+        problemas.append(f"la pregunta pide {req['limite']} resultado(s) y la consulta devuelve "
+                         f"{c['plan']['limite'] or 'todos'}")
     out.append(ch("S2_intencion", "semantica", "falla" if problemas else ("ok" if reconocido else "no_verificable"),
                   "; ".join(problemas) or ("orden y agregado coherentes con la pregunta" if reconocido else
                                            "no se reconoce la intención de la pregunta")))
@@ -271,8 +278,8 @@ def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list
         if r in _raices_objeto(t, col):
             out.append(ch("S3_entidad", "semantica", "ok", f"«{ent}» ↔ {t}.{col}", "esquema"))
         elif r in _raices_ficha(fichas.get(t)):
-            out.append(ch("S3_entidad", "semantica", "ok", f"«{ent}» ↔ ficha de {t}",
-                          f"ficha F{fichas[t]['id']} (interpretación del modelo)"))
+            out.append(ch("S3_entidad", "semantica", "no_verificable", f"«{ent}» solo aparece en la ficha de {t}: una "
+                          "interpretación del modelo no verifica a otra", f"ficha F{fichas[t]['id']} (respaldo débil)"))
         else:
             out.append(ch("S3_entidad", "semantica", "no_verificable", f"no se puede vincular «{ent}» con {t}.{col}"))
     # S4 términos.
@@ -288,7 +295,7 @@ def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list
     ficha_r = {t: _raices_ficha(fichas.get(t)) for t in plan_tablas}
     glos = {g["raiz"]: g for g in glosario if g["origen"] == "verificada" and
             (g["objeto"] in objetos or g["objeto"].split(".")[0] in plan_tablas)}
-    sin_respaldo, respaldos = [], []
+    sin_respaldo, solo_ficha, respaldos = [], [], []
     for r in TX.terminos(pregunta):
         if r in esquema_r:
             respaldos.append(f"«{r}…»: esquema")
@@ -296,12 +303,18 @@ def semantica(pregunta: str, c: dict, schema: dict, fichas: dict, glosario: list
             respaldos.append(f"«{r}…»: glosario G{glos[r]['id']} (verificado en {', '.join(glos[r]['misiones'])})")
         elif any(r in fr for fr in ficha_r.values()):
             t = next(t for t, fr in ficha_r.items() if r in fr)
-            respaldos.append(f"«{r}…»: ficha F{fichas[t]['id']} de {t} (interpretación del modelo)")
+            solo_ficha.append(r)
+            respaldos.append(f"«{r}…»: solo la ficha F{fichas[t]['id']} de {t} (interpretación del modelo: respaldo "
+                             "débil, no verifica)")
         else:
             sin_respaldo.append(r)
-    out.append(ch("S4_terminos", "semantica", "no_verificable" if sin_respaldo else "ok",
-                  (f"sin respaldo en el plan: {', '.join(f'«{r}…»' for r in sin_respaldo)}" if sin_respaldo else
-                   "todos los términos tienen respaldo"), "; ".join(respaldos) or None))
+    detalle = "; ".join(x for x in (
+        f"sin respaldo en el plan: {', '.join(f'«{r}…»' for r in sin_respaldo)}" if sin_respaldo else "",
+        f"respaldados solo por una ficha del modelo: {', '.join(f'«{r}…»' for r in solo_ficha)}" if solo_ficha else "")
+        if x)
+    out.append(ch("S4_terminos", "semantica", "no_verificable" if sin_respaldo or solo_ficha else "ok",
+                  detalle or "todos los términos tienen respaldo en el esquema o en el glosario verificado",
+                  "; ".join(respaldos) or None))
     # S5 alternativas.
     terms = set(TX.terminos(pregunta))
     medida_t = set(c["medida_tablas"]) or {c["raiz"]}

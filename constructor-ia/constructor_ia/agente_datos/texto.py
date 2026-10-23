@@ -16,7 +16,8 @@ PALABRAS_FUNCIONALES = {
     "y", "o", "e", "u", "a", "que", "qué", "cual", "cuales", "quien", "quienes", "como", "donde", "cuando", "fue",
     "fueron", "es", "son", "era", "eran", "ha", "han", "hay", "se", "su", "sus", "mi", "tu", "durante", "entre",
     "desde", "hasta", "este", "esta", "ese", "esa", "año", "ano", "mes", "dia", "total", "cada", "todo", "toda",
-    "todos", "todas", "registrado", "registrada", "registrados", "registradas",
+    "todos", "todas", "registrado", "registrada", "registrados", "registradas", "tiene", "tienen", "tuvo",
+    "tuvieron", "tenia", "tenian",
 }
 MESES = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
          "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12}

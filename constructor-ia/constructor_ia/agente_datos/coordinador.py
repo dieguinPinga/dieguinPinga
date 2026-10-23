@@ -3,8 +3,12 @@
 F0 recordar: memoria de la conexión + huellas actuales (estructura y datos, por tabla)
 F1 descubrir: perfiles y relaciones SOLO de lo nuevo o cambiado (cartógrafo, sin modelo)
 F2 comprender: M1 para las tablas sin ficha vigente (lotes de hasta 3)
-F3 elegir: M2 (o una consulta aprendida para la misma pregunta: plantilla que se vuelve a ejecutar y verificar)
-F4 consultar: M3 → compilación MEDIR (o SQL libre) → verificación técnica previa → intermediario
+F3 requisitos de la pregunta por regla (si no se pueden determinar sin ambigüedad: aclaración y abstención) →
+   elegir: M2 + COBERTURA de los requisitos (tiempo, entidad, medida) antes de avanzar (o una consulta aprendida
+   para la misma pregunta: plantilla que se vuelve a ejecutar y verificar)
+F4 consultar: M3 → normalizaciones de forma registradas → orden y límite completados por regla (registrados) →
+   requisitos del plan ANTES de ejecutar → compilación MEDIR (o SQL libre) → verificación técnica previa →
+   intermediario
 F5 verificar: técnica del resultado y semántica de la respuesta (separadas)
 F6 redactar: M4 → fidelidad (o respuesta determinista si M4 falla)
 F7 registrar: memoria (solo lo verificado como verificado)
@@ -34,6 +38,7 @@ from . import VERSION
 from . import cartografo as CA
 from . import medir as MD
 from . import microtareas as MT
+from . import requisitos as RQ
 from . import texto as TX
 from . import verificador as VE
 
@@ -292,6 +297,14 @@ class Coordinador:
         return {"glosario": glos, "fallos": self.mem.fallos(self.conexion, 3)}
 
     def _responder(self, t0) -> dict:
+        self.req = RQ.deducir(self.pregunta)
+        if self.req["aclaraciones"]:
+            motivo = "aclaración necesaria: " + "; ".join(self.req["aclaraciones"])
+            self.mem.fallo(self.conexion, self.mid, "F3", motivo)
+            self._decidir("F3", "aclaracion_necesaria", motivo + " (no se inventan parámetros; no se llama al modelo "
+                                                                  "para elegir tablas)")
+            return self._cerrar("completa", "abstencion", None, [motivo], [], t0)
+        self._decidir("F3", "requisitos", "deducidos por regla: " + ("; ".join(self.req["deducido"]) or "ninguno"))
         recuerdos = self._recuerdos()
         aprendida = self.mem.consulta_aprendida(self.conexion, self.pnorm)
         retro: list[str] = []
@@ -303,8 +316,10 @@ class Coordinador:
                                                       "con los datos y el esquema actuales")
             try:
                 plan = MD.parsear(aprendida["medir_texto"])
-                r = self._intentar({"tipo": "medir", "plan": plan, "texto": aprendida["medir_texto"],
-                                    "interpreta": {}}, aprendida["tablas"])
+                faltan = RQ.faltantes(self.req, plan, self.schema, aprendida["tablas"], self.fichas)
+                r = ({"nivel": "rechazada_semantica", "motivos": [m for m, _ in faltan]} if faltan else
+                     self._intentar({"tipo": "medir", "plan": plan, "texto": aprendida["medir_texto"],
+                                     "interpreta": {}}, aprendida["tablas"]))
             except MD.Aclaracion as e:
                 r = {"nivel": "rechazada_tecnica", "motivos": [f"la consulta aprendida ya no se puede leer: {e}"]}
             if r["nivel"] in ("verificada", "incierta"):
@@ -315,22 +330,47 @@ class Coordinador:
         tablas = self._elegir(recuerdos)
         if tablas is None:
             return self._cerrar("completa", "abstencion", None, ["no se pudieron elegir tablas"], [], t0)
-        ultimo = None
+        ultimo, ultimo_motivo = None, None
         for intento in range(INTENTOS):
             resp = self._pedir("M3", MT.prompt_m3(self.pregunta, tablas, self.schema, self.fichas, self.perfiles,
-                                                  self.rels, recuerdos, retro))
+                                                  self.rels, recuerdos, retro, self.req))
             try:
-                prop = MT.parsear_m3(resp)
+                prop = MT.parsear_m3(resp, self._resolver(tablas))
             except MT.Rechazo as e:
-                retro.append(e.motivo)
+                retro.append(MT.retro_m3(resp, e.motivo))
+                ultimo_motivo = e.motivo
                 self._decidir("F4", "m3_rechazada" + ("_ambigua" if e.ambigua else ""), e.motivo)
                 continue
+            if prop["tipo"] == "medir":
+                plan = prop["plan"]
+                if plan["normalizaciones"]:
+                    self._decidir("F4", "forma_normalizada", "; ".join(plan["normalizaciones"]) + " (el contenido se "
+                                                                                                  "valida igual)")
+                completado = []
+                if self.req["orden"] and plan["orden"] is None:
+                    plan["orden"] = self.req["orden"]
+                    completado.append(f"ORDEN: {plan['orden']}")
+                if self.req["limite"] and plan["limite"] is None:
+                    plan["limite"] = self.req["limite"]
+                    completado.append(f"LIMITE: {plan['limite']}")
+                if completado:
+                    self._decidir("F4", "completado_por_regla", f"{', '.join(completado)} (deducidos de la pregunta: "
+                                                                f"{'; '.join(self.req['deducido'])})")
+                prop["texto"] = MD.texto_canonico(plan)
+                faltan = RQ.faltantes(self.req, plan, self.schema, tablas, self.fichas)
+                if faltan:
+                    motivo = "; ".join(m for m, _ in faltan)
+                    retro.append(MT.retro_m3(resp, motivo, "; ".join(c for _, c in faltan)))
+                    self._decidir("F4", "m3_requisito_incompleto", motivo + " (no se ejecuta nada)")
+                    ultimo, ultimo_motivo = None, motivo
+                    continue
             ultimo = self._intentar(prop, tablas)
             if ultimo["nivel"] in ("verificada", "incierta"):
                 return self._redactar_y_cerrar(ultimo, tablas, t0)
-            retro.append("; ".join(ultimo["motivos"]))
+            ultimo_motivo = "; ".join(ultimo["motivos"])
+            retro.append(MT.retro_m3(resp, ultimo_motivo[:600]))
             self._decidir("F5", ultimo["nivel"], "; ".join(ultimo["motivos"])[:400], {"intento": intento + 1})
-        motivos = retro[-1:] if retro else ["sin propuesta válida"]
+        motivos = [ultimo_motivo] if ultimo_motivo else ["sin propuesta válida"]
         self.mem.fallo(self.conexion, self.mid, "F4-F5", "; ".join(motivos)[:500], {"tablas": tablas})
         self._decidir("fin", "abstencion", f"{INTENTOS} propuestas rechazadas: {'; '.join(motivos)[:300]}")
         return self._cerrar("completa", "abstencion", None, motivos, (ultimo or {}).get("chequeos", []), t0)
@@ -350,12 +390,30 @@ class Coordinador:
                 retro = e.motivo
                 self._decidir("F3", "m2_rechazada" + ("_ambigua" if e.ambigua else ""), e.motivo)
                 continue
+            falta = RQ.cobertura(self.req, out["tablas"], self.fichas, self.rels)
+            if falta:
+                retro = (f"elegiste {', '.join(out['tablas'])}; " + " ".join(falta)
+                         + " Elegí de nuevo (hasta 3 tablas conectadas) cubriendo lo que pide la pregunta.")
+                self._decidir("F3", "m2_cobertura_incompleta", " ".join(falta)[:500])
+                continue
             self._decidir("F3", "tablas_elegidas", f"{', '.join(out['tablas'])} (orden de presentación barajado con "
                                                    f"semilla {semilla}; el coordinador no sugirió ninguna)",
                           {"por_que": out["por_que"]})
             return out["tablas"]
         self.mem.fallo(self.conexion, self.mid, "F3", retro)
         return None
+
+    def _resolver(self, tablas: list[str]):
+        """Completa una columna sin tabla SOLO si está en exactamente una de las tablas elegidas."""
+        def resolver(nombre: str) -> str:
+            hits = [f"{t}.{c['nombre']}" for t in tablas for c in self.schema["tablas"][t]["columnas"]
+                    if c["nombre"].lower() == nombre.lower()]
+            if len(hits) == 1:
+                return hits[0]
+            raise MD.Aclaracion(f"«{nombre}» debe escribirse como tabla.columna" + (
+                f": está en varias tablas elegidas ({', '.join(hits)})" if hits else
+                f": no es una columna de las tablas elegidas ({', '.join(tablas)})"))
+        return resolver
 
     def _intentar(self, prop: dict, tablas: list[str]) -> dict:
         """Una propuesta → verificación técnica previa → ejecución → técnica posterior → semántica."""
@@ -389,7 +447,7 @@ class Coordinador:
         if c is not None:
             chequeos += VE.invariantes(lambda q, h: self._run(q, h, "contraprueba"), c, o)
             chequeos += VE.semantica(self.pregunta, c, self.schema, self.fichas, self.mem.glosario(self.conexion),
-                                     self.perfiles)
+                                     self.perfiles, self.req)
         else:
             chequeos.append(VE.ch("invariantes", "tecnica", "no_verificable", "consulta SQL libre: el coordinador no "
                                                                               "puede derivar contrapruebas"))
@@ -469,7 +527,11 @@ class Coordinador:
                              "tokens": self.tokens, "respuestas_truncadas": self.truncadas,
                              "segundos": round(time.monotonic() - t0, 2)},
                    "rechazos": [f"{d['etapa']} {d['regla']}: {d['porque'][:200]}" for d in decisiones
-                                if "rechazada" in d["regla"]],
+                                if "rechazada" in d["regla"] or "incomplet" in d["regla"]],
+                   "requisitos": {k: v for k, v in (getattr(self, "req", None) or {}).items()
+                                  if k in ("deducido", "aclaraciones")},
+                   "normalizaciones": [d["porque"] for d in decisiones if d["regla"] in ("forma_normalizada",
+                                                                                         "completado_por_regla")],
                    "interrupciones_del_entorno": list(getattr(self.modelo, "interrupciones", [])),
                    "decisiones": len(decisiones)}
         self.mem.terminar_mision(self.mid, estado, nivel, informe)

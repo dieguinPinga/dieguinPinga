@@ -12,7 +12,11 @@ Perfiles (para las pruebas negativas):
 - terco: el mismo error, sin corregirlo nunca;
 - multiplica: cuenta pedidos agrupando por una tabla más detallada (los JOIN duplican filas);
 - sql_libre: responde con SQL propio en lugar de MEDIR;
-- ambiguo: en M2 da dos listas de tablas distintas la primera vez.
+- ambiguo: en M2 da dos listas de tablas distintas la primera vez;
+- qwen_m1: imita los errores de la primera corrida real de M1 con Qwen (fase 2): en M2 omite la tabla que tiene la
+  fecha; en M3 escribe la medida en «MEDIR:», agrupa por una columna sin tabla y no escribe ORDEN ni LIMITE. Corrige
+  la elección de tablas si el coordinador le explica qué falta;
+- qwen_m1_terco: los mismos errores, sin corregir nunca la elección de tablas.
 """
 from __future__ import annotations
 
@@ -84,7 +88,10 @@ class Guion:
                   re.finditer(r"^- (\w+): (.*)\n  columnas: (.*)$", prompt, re.M)}
         if self.perfil == "ambiguo" and "TU RESPUESTA ANTERIOR" not in prompt:
             return "TABLAS: lineas_pedido, productos\nTABLAS: pedidos_borrador, productos\nPOR_QUE: dudo"
-        return f"TABLAS: {', '.join(self._tablas(pregunta, fichas))}\nPOR_QUE: medida, entidad y fecha"
+        tablas = self._tablas(pregunta, fichas)
+        if self.perfil == "qwen_m1_terco" or (self.perfil == "qwen_m1" and "TU RESPUESTA ANTERIOR" not in prompt):
+            tablas = [t for t in tablas if "(tiempo" not in fichas[t][1]] or tablas      # omite la de la fecha
+        return f"TABLAS: {', '.join(tablas)}\nPOR_QUE: medida, entidad y fecha"
 
     def _tablas(self, pregunta: str, fichas: dict) -> list[str]:
         ent = TX.raiz(TX.entidad(pregunta) or "")
@@ -147,6 +154,10 @@ class Guion:
                 lineas.append(f"INTERPRETA: {w} = {medida}")
         if self.perfil == "sql_libre":
             return self._sql(medida, grupo, tiempo, per)
+        if self.perfil.startswith("qwen_m1"):
+            sin_tabla = grupo.split(".")[1] if grupo else None
+            return "\n".join([f"MEDIR: {medida}"] + ([f"AGRUPAR: {sin_tabla}"] if sin_tabla else [])
+                             + [x for x in lineas if x.startswith(("FILTRO", "INTERPRETA"))])
         return "\n".join(lineas)
 
     @staticmethod

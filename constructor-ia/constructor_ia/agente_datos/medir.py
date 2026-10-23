@@ -5,8 +5,7 @@ varias tablas. El modelo nunca escribe JOIN: el compilador une las tablas siguie
 el cartógrafo (contención de valores medida) y prefiere el sentido muchos→uno, que no multiplica filas. Si una tabla
 solo se alcanza en el sentido uno→muchos, el plan queda marcado («puede multiplicar filas») y el verificador lo mide.
 
-Formato (líneas, una sola propuesta):
-    MEDIR: agregado
+Formato (líneas, una sola propuesta; desde la fase 2 la línea «MEDIR: agregado» ya no se pide):
     MEDIDA: suma lineas.cantidad            (conteo | conteo t.c | distintos t.c | suma | promedio | maximo | minimo;
                                              la medida puede ser el producto de dos columnas: suma t.a * t.b)
     AGRUPAR: t.c[, t.d]                     (opcional, hasta 2)
@@ -18,6 +17,13 @@ Formato (líneas, una sola propuesta):
 
 Los nombres se resuelven solo por coincidencia EXACTA (sin distinguir mayúsculas). Nada se elige por parecido: un
 nombre inexistente produce una ACLARACIÓN con las opciones reales, sin ejecutar nada.
+
+Normalizaciones de FORMA (nunca de contenido), cada una registrada en plan["normalizaciones"]:
+- «MEDIR: suma t.c» sin una línea MEDIDA se lee como «MEDIDA: suma t.c» (la primera corrida real con Qwen escribió
+  así la medida). El contenido pasa por las mismas validaciones; «MEDIR: suma» sin columna sigue siendo inválido, y
+  una MEDIR con medida distinta de la MEDIDA es una ambigüedad;
+- una columna sin tabla («producto_id») se completa SOLO si está en exactamente una de las tablas elegidas (el
+  coordinador da la función que lo resuelve); si no, es una aclaración.
 """
 from __future__ import annotations
 
@@ -42,8 +48,9 @@ def _q(ident: str) -> str:
     return "`" + str(ident).replace("`", "``") + "`"
 
 
-def parsear(texto: str) -> dict:
-    """Lee las líneas del contrato. Los campos repetidos (salvo FILTRO) con valores distintos son una ambigüedad."""
+def parsear(texto: str, resolver=None) -> dict:
+    """Lee las líneas del contrato. Los campos repetidos (salvo FILTRO) con valores distintos son una ambigüedad.
+    resolver(nombre) -> «tabla.columna» completa una columna sin tabla, o lanza Aclaracion."""
     campos: dict = {}
     filtros = []
     for linea in texto.splitlines():
@@ -58,12 +65,32 @@ def parsear(texto: str) -> dict:
         if k in campos and campos[k] != v:
             raise Aclaracion(f"campo {k} con valores distintos («{campos[k]}» y «{v}»): una sola propuesta")
         campos[k] = v
+    normalizaciones = []
+    medir = (campos.get("MEDIR") or "").strip()
+    if medir and medir.lower() != "agregado":
+        if "MEDIDA" in campos and campos["MEDIDA"] != medir:
+            raise Aclaracion(f"MEDIR «{medir}» y MEDIDA «{campos['MEDIDA']}» dicen cosas distintas (valores distintos): "
+                             "una sola propuesta")
+        if "MEDIDA" not in campos:
+            _medida(medir)                      # el contenido se valida igual que en MEDIDA
+            campos["MEDIDA"] = medir
+            normalizaciones.append(f"«MEDIR: {medir}» se leyó como «MEDIDA: {medir}»")
     if "MEDIDA" not in campos:
         raise Aclaracion("falta MEDIDA")
-    plan = {"medida": _medida(campos["MEDIDA"]), "agrupar": [], "filtros": [_filtro(f) for f in filtros],
-            "orden": None, "limite": None}
+
+    def obj(x):
+        x = x.strip().strip("`")
+        if "." not in x and resolver is not None and x:
+            completo = resolver(x)
+            normalizaciones.append(f"«{x}» se completó como «{completo}» (única columna con ese nombre en las tablas "
+                                   "elegidas)")
+            x = completo
+        return _objeto(x)
+    med = _medida(campos["MEDIDA"], obj)
+    plan = {"medida": med, "agrupar": [], "filtros": [_filtro(f, obj) for f in filtros], "orden": None,
+            "limite": None, "normalizaciones": normalizaciones}
     if campos.get("AGRUPAR"):
-        plan["agrupar"] = [_objeto(x) for x in campos["AGRUPAR"].split(",") if x.strip()]
+        plan["agrupar"] = [obj(x) for x in campos["AGRUPAR"].split(",") if x.strip()]
         if len(plan["agrupar"]) > 2:
             raise Aclaracion("AGRUPAR admite hasta 2 columnas")
     orden = (campos.get("ORDEN") or "").lower()
@@ -86,13 +113,14 @@ def _objeto(x: str) -> tuple[str, str]:
     return t.strip("` "), c.strip("` ")
 
 
-def _medida(v: str) -> dict:
+def _medida(v: str, obj=None) -> dict:
+    obj = obj or _objeto
     m = re.match(r"^(\w+)\s*(.*)$", v.strip())
     func = (m.group(1) if m else "").lower()
     if func not in FUNCIONES:
         raise Aclaracion(f"función de MEDIDA desconocida «{func}»; opciones: {', '.join(FUNCIONES)}")
     resto = m.group(2).strip()
-    cols = [_objeto(x) for x in resto.split("*")] if resto else []
+    cols = [obj(x) for x in resto.split("*")] if resto else []
     if len(cols) > 2:
         raise Aclaracion("la medida admite a lo sumo el producto de dos columnas")
     if func != "conteo" and not cols:
@@ -102,19 +130,38 @@ def _medida(v: str) -> dict:
     return {"funcion": func, "columnas": cols}
 
 
-def _filtro(v: str) -> dict:
+def _filtro(v: str, obj=None) -> dict:
+    obj = obj or _objeto
     m = re.match(r"^(\S+)\s+desde\s+(.+?)\s+hasta\s+(.+)$", v, re.I)
     if m:
-        return {"objeto": _objeto(m.group(1)), "tipo": "desde_hasta", "a": m.group(2).strip("'\" "),
+        return {"objeto": obj(m.group(1)), "tipo": "desde_hasta", "a": m.group(2).strip("'\" "),
                 "b": m.group(3).strip("'\" ")}
     m = re.match(r"^(\S+)\s+entre\s+(.+?)\s+y\s+(.+)$", v, re.I)
     if m:
-        return {"objeto": _objeto(m.group(1)), "tipo": "entre", "a": m.group(2).strip("'\" "),
+        return {"objeto": obj(m.group(1)), "tipo": "entre", "a": m.group(2).strip("'\" "),
                 "b": m.group(3).strip("'\" ")}
     m = re.match(r"^(\S+)\s*=\s*(.+)$", v)
     if m:
-        return {"objeto": _objeto(m.group(1)), "tipo": "igual", "a": m.group(2).strip("'\" ")}
+        return {"objeto": obj(m.group(1)), "tipo": "igual", "a": m.group(2).strip("'\" ")}
     raise Aclaracion(f"FILTRO no reconocido «{v}»: usá «t.c desde A hasta B», «t.c entre A y B» o «t.c = valor»")
+
+
+def texto_canonico(plan: dict) -> str:
+    """El plan en su forma canónica (lo que se guarda como consulta aprendida, ya normalizado)."""
+    med = plan["medida"]
+    lineas = [f"MEDIDA: {med['funcion']}" + ("" if not med["columnas"] else " " + " * ".join(
+        f"{t}.{c}" for t, c in med["columnas"]))]
+    if plan["agrupar"]:
+        lineas.append("AGRUPAR: " + ", ".join(f"{t}.{c}" for t, c in plan["agrupar"]))
+    for f in plan["filtros"]:
+        o = f"{f['objeto'][0]}.{f['objeto'][1]}"
+        lineas.append(f"FILTRO: {o} desde {f['a']} hasta {f['b']}" if f["tipo"] == "desde_hasta" else
+                      f"FILTRO: {o} entre {f['a']} y {f['b']}" if f["tipo"] == "entre" else f"FILTRO: {o} = {f['a']}")
+    if plan["orden"]:
+        lineas.append(f"ORDEN: {plan['orden']}")
+    if plan["limite"]:
+        lineas.append(f"LIMITE: {plan['limite']}")
+    return "\n".join(lineas)
 
 
 # Compilación ------------------------------------------------------------------------------------------------------

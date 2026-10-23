@@ -108,7 +108,7 @@ class AdapterTests(unittest.TestCase):
         self.addCleanup(fake.close)
         inf, lab, _, _ = self.mision(fake)
         self.assertEqual((inf["estado"], inf["nivel"], inf["verificada_por_el_coordinador"]),
-                         ("completa", "verificada", True))
+                         ("completa", "incierta", False))
         self.assertEqual(inf["respuesta"]["estructurada"]["grupo"], [self.verdad["preguntas"]["Q1"]["respuesta"]])
         self.assertEqual(len(fake.requests), inf["costo"]["llamadas"])
         cuerpo = fake.requests[0]
@@ -195,12 +195,13 @@ class ExperimentTests(unittest.TestCase):
         plan = EX.preparar(exp, base=base, servidor=self.fabrica(base), log=lambda *_: None)
         self.assertEqual(oct(os.stat(exp / "juez" / "verdad.json").st_mode & 0o777), "0o600")
         guion = ["--modelo", "guion", "--guion", "competente"]
-        with self.assertRaisesRegex(EX.ErrorExperimento, "M2 necesita la memoria de M1 COMPLETA"):
+        with self.assertRaisesRegex(EX.ErrorExperimento, "M2 no está habilitada: M1 no terminó completa \\(estado: sin "
+                                                         "ejecutar\\)"):
             EX.mision(exp, "M2", guion, servidor=self.fabrica(base), log=lambda *_: None)
         m1 = EX.mision(exp, "M1", guion, servidor=self.fabrica(base), log=lambda *_: None)
         self.assertEqual((m1["estado"], m1["coordinador"]["nivel"], m1["coordinador"]["verificada"],
                           m1["juez"]["correcta"], m1["juez"]["confirmacion_falsa"]),
-                         ("completa", "verificada", True, True, False))
+                         ("completa", "incierta", False, True, False))
         self.assertEqual(m1["fugas"], [])
         with self.assertRaisesRegex(EX.ErrorExperimento, "M1 ya se ejecutó en esta carpeta \\(estado: completa\\)"):
             EX.mision(exp, "M1", guion, servidor=self.fabrica(base), log=lambda *_: None)
@@ -242,7 +243,7 @@ class ExperimentTests(unittest.TestCase):
                       (exp / "resumen.md").read_text())
         with self.assertRaisesRegex(EX.ErrorExperimento, "M1 ya se ejecutó en esta carpeta \\(estado: interrumpida\\)"):
             EX.mision(exp, "M1", ["--modelo", "guion"], servidor=self.fabrica(base), log=lambda *_: None)
-        with self.assertRaisesRegex(EX.ErrorExperimento, "estado actual: interrumpida"):
+        with self.assertRaisesRegex(EX.ErrorExperimento, "M1 no terminó completa \\(estado: interrumpida\\)"):
             EX.mision(exp, "M2", ["--modelo", "guion"], servidor=self.fabrica(base), log=lambda *_: None)
 
     def test_an_agent_that_fails_to_start_is_an_error_not_an_interruption(self):

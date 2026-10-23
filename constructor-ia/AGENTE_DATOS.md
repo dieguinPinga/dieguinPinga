@@ -511,3 +511,103 @@ misma memoria. Para revisar M1, mandar:
 - de `memoria_m1_m2/misiones/<misión>/`: `llamadas.jsonl`, `decisiones.jsonl` e `informe.json`.
 
 M2 y M2′ (`bash $E agente 60 --mision M2` y `--mision M2p`) quedan para después de revisar M1.
+
+---
+
+## 13. Fase 2b: lo que enseñó la primera M1 real y su corrección (2026-10-23, sin inferencias)
+
+### La primera M1 con Qwen3 4B (carpeta original `agente-fase2`, conservada)
+
+- **Resultado:** completa, en **abstención**. 5 llamadas (M1×2, M2, M3×2), sin fugas ni interrupciones.
+- **Reproducción:** con las respuestas reales, los 5 prompts salen idénticos byte a byte a los de la VivoBook.
+- **Fichas:** las 6 de M1 fueron correctas.
+
+Problemas:
+1. **M3 escribió la medida en la línea fija** («MEDIR: suma …» en vez de «MEDIDA: suma …»). La retroalimentación
+   («falta MEDIDA») no citaba la respuesta ni mostraba la forma correcta.
+2. **M2 omitió `pedidos`**, la única tabla con la fecha de las ventas. El coordinador solo comprobaba existencia y
+   conexión, así que M3 nunca vio una columna de fecha y omitió el período.
+3. **Hallazgo adicional:** con las fichas que escribe Qwen, «vendió» y «unidades» no tienen respaldo en el esquema. El
+   guion de la fase 1 sobrestimaba ese respaldo.
+
+### Corrección (aprobada por Diego y ChatGPT)
+
+- **Requisitos por regla, antes de avanzar** (`requisitos.py`). De la pregunta se deducen el período (intervalo
+  exacto), el orden, el límite (singular → 1; un número explícito → ese número) y la entidad. **Nunca se inventan.**
+  Si la regla no puede determinarlos sin ambigüedad, la misión se abstiene pidiendo una **aclaración**, sin llamar a M2.
+  Ejemplos de esos casos:
+  - un mes sin año;
+  - varios períodos;
+  - «la semana pasada»;
+  - mayor y menor a la vez;
+  - «más de 100»;
+  - varios resultados sin decir cuántos.
+- **Cobertura después de M2.** Si la pregunta pide un período, una entidad o una medida y las tablas elegidas no lo
+  cubren, M2 se rechaza ANTES de pasar a M3. La retroalimentación lista las columnas que sí lo cubren en tablas
+  conectadas, sustentadas por el esquema y las relaciones comprobadas: todas, en orden alfabético y sin preferencia
+  (el señuelo también aparece).
+- **M3:**
+  - **sin la línea fija** `MEDIR: agregado`;
+  - **formato armado con las columnas reales** de las tablas elegidas: todas las de cada rol, en orden alfabético
+    (`<una de: a | b | c>`), sin elegir ninguna;
+  - **requisitos explícitos**: el FILTRO del período con sus fechas exactas, el ORDEN y el LIMITE.
+- **Normalizaciones de forma, registradas y nunca de contenido:**
+  - `MEDIR: suma t.c` sin una línea MEDIDA se lee como MEDIDA. `MEDIR: suma` sin columna sigue siendo inválido, y una
+    MEDIR distinta de la MEDIDA es una ambigüedad;
+  - una columna sin tabla se completa solo si es única entre las tablas elegidas;
+  - ORDEN y LIMITE ausentes se completan con lo que la regla dedujo. Si no coinciden con la pregunta, S2 falla.
+- **Requisitos del plan antes de ejecutar.** Si falta el FILTRO del período o AGRUPAR, el plan se rechaza sin ejecutar
+  SQL.
+- **Retroalimentación que enseña:** cita las líneas de la respuesta anterior, dice qué falló y cómo corregirlo.
+- **«Verificada» no se apoya solo en interpretaciones del modelo.** En S3 y S4, un término respaldado solo por una ficha
+  escrita por Qwen queda «no verificable» y la respuesta queda **incierta**. Respaldan el esquema o el glosario
+  vinculado en respuestas verificadas; un vínculo solo declarado no respalda. «Verificada» sigue siendo alcanzable
+  cuando el esquema respalda los términos y no hay una tabla alternativa con igual respaldo.
+- **Habilitación de M2 en el laboratorio.** M2 exige que M1:
+  - haya terminado completa;
+  - haya dado una respuesta (verificada o incierta, no abstención);
+  - sea **correcta según el juez**, sin confirmación falsa.
+
+  El criterio queda en `plan.json`. Lo aplica el orquestador; **el veredicto del juez y su verdad no llegan a los
+  prompts ni a la memoria del agente** (hay pruebas que lo verifican).
+- **Sin cambios:** S7 (por pedido, queda para otra revisión), el Explorador 0.4.8, el Investigador 0.5, el laboratorio
+  y los servicios.
+
+### Pruebas (sin inferencias)
+
+`tests/test_agente_requisitos.py` (10), con las respuestas REALES de M1 (`tests/datos/llamadas-M1-fase2.jsonl`):
+- **Prompts de M1:** reproducidos idénticos a los de la VivoBook, con las mismas fichas.
+- **M2 real** (`lineas_pedido, productos`): rechazada por cobertura, con `pedidos.fecha` y `pedidos_borrador.creado`
+  como alternativas neutrales. Repetida, se rechaza de nuevo y **no se llega a M3**.
+- **M3 reales:** `MEDIR: suma` sigue rechazada por contenido, con la cita. `MEDIR: suma lineas_pedido.cantidad` se
+  normaliza (queda registrado), y la falta del FILTRO se detecta antes de ejecutar, con la corrección exacta.
+- **Prompt nuevo de M3:** sin la línea fija; requisitos y opciones completas en orden alfabético.
+- **Guion `qwen_m1`** (imita los errores reales y sigue la retroalimentación): correcta e incierta, con 6 llamadas; la
+  consulta aprendida se guarda en forma canónica.
+- **Guion `qwen_m1_terco`:** abstención sin llegar a M3 y sin confirmación falsa.
+- **Pregunta sin año:** se pide una aclaración y no se eligen tablas.
+- **Criterio de M2:** abstención, incorrecta, confirmación falsa e interrumpida bloquean; correcta (verificada o
+  incierta) habilita. Una M1 en abstención bloquea M2 en el orquestador, y el veredicto no aparece en la memoria.
+
+Se ajustaron las expectativas de las pruebas de las fases 1 y 2: lo que antes era «verificada» solo por la ficha ahora
+es «incierta». Se agregaron pruebas de que «verificada» se alcanza con respaldo del esquema o del glosario verificado,
+y de que el límite se controla contra la pregunta.
+
+**Lo que esto no demuestra:** que Qwen elija bien las tablas o escriba bien M3 con los prompts nuevos. Eso lo dice la
+próxima corrida real.
+
+### Próxima corrida en la VivoBook (carpeta NUEVA; la original queda intacta)
+
+```bash
+cd ~/src/dieguinPinga && git pull --ff-only
+C=~/constructor-ia-piloto/data/laboratorio/agente-fase2-b
+bash $E huellas antes
+bash $E agente0 --preparar --carpeta $C
+bash $E agente0 --comprobar --carpeta $C
+bash $E agente 60 --mision M1 --carpeta $C
+bash $E agente0 --estado --carpeta $C
+bash $E huellas despues && bash $E comparar
+```
+
+Si M1 da una respuesta correcta según el juez, el orquestador habilita M2 (`bash $E agente 60 --mision M2 --carpeta $C`)
+y después M2′ (`--mision M2p`). Si no, M2 queda bloqueada con el motivo.

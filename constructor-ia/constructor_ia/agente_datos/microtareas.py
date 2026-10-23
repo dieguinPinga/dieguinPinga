@@ -255,19 +255,62 @@ def conectadas(tablas: list[str], rels: list[dict]) -> bool:
 
 # M3 — formular la consulta ----------------------------------------------------------------------------------------
 
-FORMATO_M3 = ("Respondé con UNA de estas dos formas (preferí MEDIR):\n"
-              "MEDIR: agregado\nMEDIDA: <conteo | conteo t.c | distintos t.c | suma t.c | promedio t.c | maximo t.c | "
-              "minimo t.c>   (la medida puede multiplicar dos columnas: suma t.a * t.b)\n"
-              "AGRUPAR: <t.c> (opcional)\nFILTRO: <t.c desde AAAA-MM-DD hasta AAAA-MM-DD>   (incluye desde, EXCLUYE "
-              "hasta)   o   <t.c = valor>   (opcional, una línea por filtro)\nORDEN: <mayor | menor> (opcional)\n"
-              "LIMITE: <N> (opcional)\n"
-              "o bien:\nSQL: <una sola sentencia SELECT de lectura>\n"
-              "Además, por cada palabra importante de la pregunta:\nINTERPRETA: <palabra> = <tabla.columna o "
-              "expresión>\nEl coordinador escribe los JOIN siguiendo las relaciones comprobadas.")
+FUNCIONES_M3 = "suma, conteo, promedio, maximo, minimo, distintos"
+CAMPOS_RESPUESTA = re.compile(r"^\s*\**\s*(MEDIR|MEDIDA|AGRUPAR|FILTRO|ORDEN|LIMITE|SQL|INTERPRETA)\s*\**\s*:", re.I)
+
+
+def _opciones(cols: list[str]) -> str:
+    return "<una de: " + " | ".join(cols) + ">" if cols else "<tabla.columna>"
+
+
+def formato_m3(req: dict, tablas: list[str], fichas: dict) -> str:
+    """Formato de M3 sin líneas fijas: los ejemplos usan las columnas reales de las tablas elegidas, TODAS las de cada
+    rol y en orden alfabético (no se elige ninguna por el modelo), y los requisitos que salen de la pregunta."""
+    from . import requisitos as RQ
+    med = RQ.columnas_por_rol(tablas, fichas, "medida")
+    tiempo = RQ.columnas_por_rol(tablas, fichas, "tiempo")
+    grupos = sorted(RQ.columnas_por_rol(tablas, fichas, "texto") + RQ.columnas_por_rol(tablas, fichas, "categoria")
+                    + RQ.columnas_por_rol(tablas, fichas, "identificador") + RQ.columnas_por_rol(tablas, fichas,
+                                                                                                 "referencia"))
+    lineas = ["Requisitos que el coordinador dedujo de la pregunta, por regla (los vuelve a comprobar):"]
+    p = req.get("periodo")
+    if p:
+        lineas.append(f"- período {p['texto']}: FILTRO OBLIGATORIO sobre una columna de tiempo, con estas fechas "
+                      f"exactas: «FILTRO: {_opciones(tiempo)} desde {p['desde']:%Y-%m-%d} hasta {p['hasta']:%Y-%m-%d}»")
+    if req.get("orden"):
+        lineas.append(f"- pide el {req['orden']}: «ORDEN: {req['orden']}»"
+                      + (f" y «LIMITE: {req['limite']}»" if req.get("limite") else "")
+                      + " (si no los escribís, el coordinador los completa por esta regla)")
+    if req.get("entidad"):
+        lineas.append(f"- pregunta por «{req['entidad']}»: AGRUPAR OBLIGATORIO")
+    if len(lineas) == 1:
+        lineas.append("- ninguno (la pregunta no pide período, orden ni entidad)")
+    lineas += ["", "Respondé con estas líneas, una por campo, sin texto fuera de ellas:",
+               f"MEDIDA: <función> <tabla.columna>   (funciones: {FUNCIONES_M3}; «conteo» puede ir sin columna; dos "
+               "columnas se multiplican con *)",
+               f"   columnas de medida de las tablas elegidas (orden alfabético, sin preferencia): {', '.join(med) or '—'}",
+               f"   forma: MEDIDA: suma {_opciones(med)}",
+               f"AGRUPAR: {_opciones(grupos)}" + ("" if req.get("entidad") else "   (opcional)"),
+               f"FILTRO: {_opciones(tiempo)} desde AAAA-MM-DD hasta AAAA-MM-DD   (incluye desde, EXCLUYE hasta)"
+               + ("" if p else "   (opcional)"),
+               "ORDEN: <mayor | menor>" + ("" if req.get("orden") else "   (opcional)"),
+               "LIMITE: <N>" + ("" if req.get("limite") else "   (opcional)"),
+               "INTERPRETA: <palabra de la pregunta> = <tabla.columna>   (una línea por palabra importante)",
+               "Usá siempre «tabla.columna». El coordinador escribe los JOIN siguiendo las relaciones comprobadas.",
+               "Si no se puede expresar así, en lugar de esas líneas: SQL: <una sola sentencia SELECT de lectura>"]
+    return "\n".join(lineas)
+
+
+def retro_m3(respuesta: str, motivo: str, correccion: str | None = None) -> str:
+    """Retroalimentación que enseña: cita lo que el modelo escribió, dice qué falló y cómo corregirlo."""
+    citadas = [ln.strip() for ln in (respuesta or "").splitlines() if CAMPOS_RESPUESTA.match(ln)][:8]
+    return ("Tu respuesta fue:\n" + ("\n".join(f"    {X.clip_cell(x, 160)}" for x in citadas) or "    (sin líneas "
+                                     "reconocibles)") + f"\n  Se rechazó: {motivo}"
+            + (f"\n  Para corregirla: {correccion}" if correccion else ""))
 
 
 def prompt_m3(pregunta: str, tablas: list[str], schema: dict, fichas: dict, perfiles: dict, rels: list[dict],
-              recuerdos: dict, retro: list[str]) -> list:
+              recuerdos: dict, retro: list[str], req: dict | None = None) -> list:
     bloques = []
     for t in tablas:
         f = fichas.get(t)
@@ -284,11 +327,11 @@ def prompt_m3(pregunta: str, tablas: list[str], schema: dict, fichas: dict, perf
     if retro:
         partes.append(("coordinador", "\nINTENTOS ANTERIORES DE ESTA MISIÓN (rechazados por el coordinador):\n"
                                       + "\n".join(f"- {r}" for r in retro) + "\n"))
-    partes.append(("coordinador", "\n" + FORMATO_M3))
+    partes.append(("coordinador", "\n" + formato_m3(req or {}, tablas, fichas)))
     return partes
 
 
-def parsear_m3(texto: str) -> dict:
+def parsear_m3(texto: str, resolver=None) -> dict:
     sqls = list(dict.fromkeys(v for v in _campos(texto, "SQL") if v))
     bloque = re.search(r"```sql\s*(.*?)```", texto, re.S | re.I)
     if bloque and bloque.group(1).strip() not in sqls:
@@ -305,12 +348,10 @@ def parsear_m3(texto: str) -> dict:
             interpreta[k.strip(" «»\"'").lower()] = o.strip()
     if tiene_medir:
         try:
-            plan = MD.parsear(texto)
+            plan = MD.parsear(texto, resolver)
         except MD.Aclaracion as e:
             raise Rechazo(str(e), "valores distintos" in str(e))
-        bloque_txt = "\n".join(ln.strip() for ln in texto.splitlines()
-                               if re.match(r"^\s*\**\s*(MEDIR|MEDIDA|AGRUPAR|FILTRO|ORDEN|LIMITE)\s*\**\s*:", ln, re.I))
-        return {"tipo": "medir", "plan": plan, "texto": bloque_txt, "interpreta": interpreta}
+        return {"tipo": "medir", "plan": plan, "texto": MD.texto_canonico(plan), "interpreta": interpreta}
     if sqls:
         return {"tipo": "sql", "sql": sqls[0].rstrip(";"), "interpreta": interpreta}
     raise Rechazo("falta MEDIR o SQL")

@@ -109,6 +109,45 @@ class MedirTests(unittest.TestCase):
         self.assertEqual(s1["estado"], "ok")
 
 
+class VerifiedOnlyWithSchemaSupportTests(unittest.TestCase):
+    """«Verificada» exige respaldo del esquema (o del glosario verificado): una ficha del modelo no alcanza."""
+
+    def setUp(self):
+        self.c = MD.compilar(MD.parsear("MEDIDA: suma ventas.unidades\nAGRUPAR: articulos.titulo\n"
+                                        "FILTRO: ordenes.momento desde 2026-03-01 hasta 2026-04-01\nORDEN: mayor\n"
+                                        "LIMITE: 1"), esquema_falso(), RELS)
+        self.perfiles = {"articulos": {"filas": 5, "columnas": {"titulo": {"distintos": 5}}}}
+        self.fichas = {"ventas": {"id": 1, "fila": "unidades vendidas de un artículo", "roles": {"unidades": {"rol": "medida"}}},
+                       "ordenes": {"id": 2, "fila": "una orden", "roles": {"momento": {"rol": "tiempo"}}},
+                       "articulos": {"id": 3, "fila": "un artículo", "roles": {"titulo": {"rol": "texto"}}}}
+
+    def test_schema_support_verifies(self):
+        cheq = VE.semantica("¿Qué artículo tiene más unidades en marzo de 2026?", self.c, esquema_falso(), self.fichas,
+                            [], self.perfiles, {"limite": 1})
+        self.assertEqual(VE.nivel(cheq)[0], "verificada", cheq)
+
+    def test_ficha_only_support_stays_uncertain(self):
+        cheq = {x["id"]: x for x in VE.semantica("¿Qué artículo vendió más en marzo de 2026?", self.c, esquema_falso(),
+                                                 self.fichas, [], self.perfiles, {"limite": 1})}
+        self.assertEqual(cheq["S4_terminos"]["estado"], "no_verificable")
+        self.assertIn("respaldados solo por una ficha del modelo: «vend…»", cheq["S4_terminos"]["detalle"])
+        self.assertEqual(VE.nivel(list(cheq.values()))[0], "incierta")
+        glos = [{"id": 7, "raiz": "vend", "objeto": "ventas.unidades", "origen": "verificada", "misiones": ["M0"]}]
+        cheq = VE.semantica("¿Qué artículo vendió más en marzo de 2026?", self.c, esquema_falso(), self.fichas, glos,
+                            self.perfiles, {"limite": 1})
+        self.assertEqual(VE.nivel(cheq)[0], "verificada", "un término del glosario VERIFICADO sí respalda")
+        glos[0]["origen"] = "declarada"
+        cheq = VE.semantica("¿Qué artículo vendió más en marzo de 2026?", self.c, esquema_falso(), self.fichas, glos,
+                            self.perfiles, {"limite": 1})
+        self.assertEqual(VE.nivel(cheq)[0], "incierta", "un vínculo solo declarado por el modelo no respalda")
+
+    def test_limit_is_checked_against_the_question(self):
+        cheq = {x["id"]: x for x in VE.semantica("¿Qué artículo tiene más unidades en marzo de 2026?", self.c,
+                                                 esquema_falso(), self.fichas, [], self.perfiles, {"limite": 3})}
+        self.assertEqual(cheq["S2_intencion"]["estado"], "falla")
+        self.assertIn("la pregunta pide 3 resultado(s) y la consulta devuelve 1", cheq["S2_intencion"]["detalle"])
+
+
 class Res:
     def __init__(self, columns, rows, status="ok", truncated=False):
         self.columns, self.rows, self.status, self.truncated, self.error = columns, rows, status, truncated, ""
@@ -300,12 +339,15 @@ class EndToEndTests(unittest.TestCase):
         # M1 — proceso A, memoria vacía.
         m1 = self.mision(lab, cx, Q1)
         j1 = J.evaluar(m1, verdad, "Q1")
-        self.assertEqual((m1["nivel"], j1["correcta"], j1["confirmacion_falsa"]), ("verificada", True, False))
+        self.assertEqual((m1["nivel"], j1["correcta"], j1["confirmacion_falsa"]), ("incierta", True, False),
+                         "correcta, pero «vendió» y «unidades» solo tienen el respaldo de una ficha del modelo")
         self.assertEqual(m1["costo"]["por_microtarea"], {"M1": 2, "M2": 1, "M3": 1, "M4": 1})
         self.assertEqual(sorted(m1["nuevo"]["tablas_perfiladas"]), sorted(G.calcular_verdad(
             G.generar_filas())["tablas"]))
         cheq = {c["id"]: c for c in m1["chequeos"]}
-        self.assertTrue(all(c["estado"] == "ok" for c in m1["chequeos"]), m1["chequeos"])
+        self.assertTrue(all(c["estado"] == "ok" for c in m1["chequeos"] if c["id"] != "S4_terminos"), m1["chequeos"])
+        self.assertEqual(cheq["S4_terminos"]["estado"], "no_verificable")
+        self.assertIn("respaldados solo por una ficha del modelo: «vend…», «unid…»", cheq["S4_terminos"]["detalle"])
         self.assertIn("interpretación del modelo", cheq["S4_terminos"]["respaldo"], "el respaldo débil se informa")
         # Reinicio: el proceso A terminó; la memoria en disco está íntegra.
         mem = Memoria(lab / "agente.db")
@@ -336,7 +378,7 @@ class EndToEndTests(unittest.TestCase):
         G.cambiar_esquema(self.srv, "b1_e2e")
         m3 = self.mision(lab, cx, Q1)
         j3 = J.evaluar(m3, verdad, "Q1")
-        self.assertEqual((m3["nivel"], j3["correcta"]), ("verificada", True))
+        self.assertEqual((m3["nivel"], j3["correcta"]), ("incierta", True))
         self.assertEqual(m3["nuevo"]["tablas_perfiladas"], ["productos"], "solo se vuelve a medir la tabla cambiada")
         self.assertEqual(m3["nuevo"]["fichas_nuevas"], ["productos"], "solo se vuelve a describir la tabla cambiada")
         self.assertEqual(m3["costo"]["por_microtarea"], {"M1": 1, "M4": 1})
@@ -364,7 +406,7 @@ class EndToEndTests(unittest.TestCase):
         self.mision(lab, cx, Q1)
         self.srv.sql("ALTER TABLE pedidos_borrador DROP COLUMN cliente_id;", database="b1_rel")
         b = self.mision(lab, cx, Q1)
-        self.assertEqual((b["nivel"], J.evaluar(b, verdad, "Q1")["correcta"]), ("verificada", True))
+        self.assertEqual((b["nivel"], J.evaluar(b, verdad, "Q1")["correcta"]), ("incierta", True))
         mem = Memoria(lab / "agente.db")
         vig = {(r["tabla"], r["columna"]) for r in mem.relaciones("b1_rel")}
         mem.cerrar()
@@ -382,7 +424,7 @@ class EndToEndTests(unittest.TestCase):
         a = self.mision(lab, cx, Q1)
         G.agregar_datos(self.srv, "b1_datos")
         b = self.mision(lab, cx, Q1)
-        self.assertEqual((b["nivel"], J.evaluar(b, verdad, "Q1")["correcta"]), ("verificada", True))
+        self.assertEqual((b["nivel"], J.evaluar(b, verdad, "Q1")["correcta"]), ("incierta", True))
         self.assertEqual(sorted(b["nuevo"]["tablas_perfiladas"]), ["lineas_pedido", "pedidos"])
         self.assertEqual(b["nuevo"]["fichas_nuevas"], [])
         self.assertEqual(b["costo"]["por_microtarea"], {"M4": 1}, "consulta aprendida: se vuelve a ejecutar y "
@@ -437,7 +479,7 @@ class NegativeTests(unittest.TestCase):
     def test_inclusive_datetime_filter_is_rejected_and_explained(self):
         inf, reglas, _, _ = self.correr(Q1, "fecha_inclusiva")
         self.assertIn("rechazada_semantica", reglas)
-        self.assertEqual((inf["nivel"], J.evaluar(inf, self.verdad, "Q1")["correcta"]), ("verificada", True))
+        self.assertEqual((inf["nivel"], J.evaluar(inf, self.verdad, "Q1")["correcta"]), ("incierta", True))
         self.assertEqual(inf["costo"]["por_microtarea"]["M3"], 2)
         inf, reglas, _, mem = self.correr(Q1, "terco")
         self.assertEqual(inf["nivel"], "abstencion")
@@ -451,6 +493,16 @@ class NegativeTests(unittest.TestCase):
         self.assertIn("los JOIN multiplicaron filas", " ".join(inf["dudas_o_motivos"]))
         self.assertEqual(reglas.count("rechazada_tecnica"), 2)
 
+    def test_schema_support_counts_but_an_equal_alternative_keeps_it_uncertain(self):
+        """«cantidad» está en el nombre de la columna medida (respaldo del ESQUEMA), pero pedidos_borrador también tiene
+        «cantidad»: la elección entre ventas y borradores depende de una interpretación, así que sigue incierta."""
+        inf, _, _, _ = self.correr("¿Qué producto tiene la mayor cantidad en marzo de 2026?", "competente")
+        cheq = {c["id"]: c for c in inf["chequeos"]}
+        self.assertEqual((cheq["S4_terminos"]["estado"], cheq["S5_alternativas"]["estado"], inf["nivel"]),
+                         ("ok", "no_verificable", "incierta"))
+        self.assertIn("«cant…»: esquema", cheq["S4_terminos"]["respaldo"])
+        self.assertIn("pedidos_borrador", cheq["S5_alternativas"]["detalle"])
+
     def test_free_sql_cannot_be_fully_verified(self):
         inf, _, _, _ = self.correr(Q1, "sql_libre")
         self.assertEqual(inf["nivel"], "incierta")
@@ -460,7 +512,7 @@ class NegativeTests(unittest.TestCase):
     def test_ambiguous_answer_is_rejected_without_choosing(self):
         inf, reglas, _, _ = self.correr(Q1, "ambiguo")
         self.assertIn("m2_rechazada_ambigua", reglas)
-        self.assertEqual(inf["nivel"], "verificada")
+        self.assertEqual(inf["nivel"], "incierta")
 
     def test_an_unreadable_learned_query_falls_back_to_the_normal_path(self):
         lab = Path(tempfile.mkdtemp(dir=self.d))
@@ -468,7 +520,7 @@ class NegativeTests(unittest.TestCase):
         mem.db.execute("UPDATE mem_consultas SET medir_texto = 'MEDIDA: rara x'")
         inf, reglas, _, _ = self.correr(Q1, "competente", lab=lab)
         self.assertIn("consulta_aprendida_rechazada", reglas)
-        self.assertEqual((inf["nivel"], inf["costo"]["por_microtarea"]), ("verificada", {"M2": 1, "M3": 1, "M4": 1}))
+        self.assertEqual((inf["nivel"], inf["costo"]["por_microtarea"]), ("incierta", {"M2": 1, "M3": 1, "M4": 1}))
 
     def test_over_privileged_account_blocks_the_mission_before_any_call(self):
         self.srv.sql("CREATE USER 'sobrado'@'localhost' IDENTIFIED VIA mysql_native_password USING "

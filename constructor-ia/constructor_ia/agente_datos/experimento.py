@@ -13,7 +13,10 @@ Carpeta del experimento (una por corrida; no se mezcla ni se reutiliza):
 Reglas (no hay reanudación todavía):
 - una ranura se ejecuta UNA vez por carpeta: si ya tiene estado (también interrumpida, error o «en_curso» de un
   proceso que murió), no se repite ni se continúa, y se informa. Para otra corrida: otra carpeta y --preparar;
-- M2 exige M1 COMPLETA; M1 y M2′ exigen una memoria nueva (inexistente);
+- M2 exige que M1 haya dado una RESPUESTA CORRECTA según el juez (completa, no abstención, correcta y sin confirmación
+  falsa), no solo que haya terminado: se quiere comprobar la memoria después de una misión exitosa. El juez controla
+  la progresión del experimento, pero su verdad y sus veredictos nunca llegan al agente (ni a sus prompts ni a su
+  memoria). M1 y M2′ exigen una memoria nueva (inexistente);
 - en cada misión la base B1 se vuelve a crear desde la semilla en un MariaDB privado nuevo y su huella tiene que ser
   IDÉNTICA a la del plan: M2 y M2′ usan exactamente los mismos datos que M1;
 - una misión interrumpida queda «interrumpida», sin veredicto del juez: nunca se confunde con una completa.
@@ -39,6 +42,8 @@ from . import juez as J
 VERSION_EXPERIMENTO = "agente de datos fase 2 v1"
 BASE = "b1_lab"
 TABLAS = ("categorias", "productos", "clientes", "pedidos", "lineas_pedido", "pedidos_borrador")
+CRITERIO_M2 = ("M1 completa, con respuesta (verificada o incierta, no abstención), correcta según el juez y sin "
+               "confirmación falsa")
 RANURAS = {"M1": {"pregunta": "Q1", "memoria": "memoria_m1_m2", "requiere": None, "memoria_nueva": True},
            "M2": {"pregunta": "Q2", "memoria": "memoria_m1_m2", "requiere": "M1", "memoria_nueva": False},
            "M2p": {"pregunta": "Q2", "memoria": "memoria_m2p", "requiere": None, "memoria_nueva": True}}
@@ -101,7 +106,8 @@ def preparar(carpeta: Path, *, semilla: int = G.SEMILLA, base: str = BASE, servi
     os.chmod(carpeta / "juez" / "verdad.json", 0o600)
     plan = {"version": VERSION_EXPERIMENTO, "agente": VERSION, "semilla": semilla, "base": base,
             "preguntas": {r: G.PREGUNTAS[x["pregunta"]] for r, x in RANURAS.items()},
-            "ranuras": RANURAS, "huella_datos": huella, "creado": time.strftime("%Y-%m-%d %H:%M:%S")}
+            "ranuras": RANURAS, "criterio_para_M2": CRITERIO_M2, "huella_datos": huella,
+            "creado": time.strftime("%Y-%m-%d %H:%M:%S")}
     _escribir(carpeta / "plan.json", plan)
     _escribir(carpeta / "estado.json", {})
     log(f"Preparada {carpeta}: base {base} (semilla {semilla}), {sum(x['filas'] for x in huella.values())} filas en "
@@ -165,9 +171,10 @@ def mision(carpeta: Path, ranura: str, modelo_args: list[str], *, servidor=_serv
             + ("; el proceso no llegó a cerrarla: cuenta como interrumpida" if e == "en_curso" else "")
             + "). Sin reanudación: no se repite ni se continúa. Para otra corrida, preparar una carpeta nueva.")
     r = RANURAS[ranura]
-    if r["requiere"] and estado.get(r["requiere"], {}).get("estado") != "completa":
-        raise ErrorExperimento(f"{ranura} necesita la memoria de {r['requiere']} COMPLETA (estado actual: "
-                               f"{estado.get(r['requiere'], {}).get('estado', 'sin ejecutar')})")
+    if r["requiere"]:
+        no = habilitacion(carpeta, r["requiere"], estado)
+        if no:
+            raise ErrorExperimento(f"{ranura} no está habilitada: {no}. Criterio: {CRITERIO_M2}")
     lab = carpeta / r["memoria"]
     if r["memoria_nueva"] and lab.exists():
         raise ErrorExperimento(f"{ranura} necesita una memoria nueva y {lab} ya existe")
@@ -238,6 +245,25 @@ def mision(carpeta: Path, ranura: str, modelo_args: list[str], *, servidor=_serv
     _escribir(carpeta / "estado.json", estado)
     (carpeta / "resumen.md").write_text(resumen(carpeta))
     return res
+
+
+def habilitacion(carpeta: Path, previa: str, estado: dict) -> str | None:
+    """Motivo por el que la ranura previa NO habilita la siguiente (None = habilita). Lo decide el orquestador con
+    el veredicto del juez; nada de esto se le pasa al agente."""
+    e = estado.get(previa, {}).get("estado", "sin ejecutar")
+    if e != "completa":
+        return f"{previa} no terminó completa (estado: {e})"
+    res = _leer(carpeta / "resultados" / f"{previa}.json")
+    if res is None:
+        return f"no está el resultado de {previa}"
+    nivel = res["coordinador"]["nivel"]
+    if nivel not in ("verificada", "incierta"):
+        return f"{previa} terminó completa pero sin respuesta (nivel: {nivel})"
+    if res["juez"].get("confirmacion_falsa"):
+        return f"{previa} es una CONFIRMACIÓN FALSA (verificada por el coordinador, incorrecta según el juez): analizar"
+    if res["juez"].get("correcta") is not True:
+        return f"la respuesta de {previa} es incorrecta según el juez (nivel del coordinador: {nivel})"
+    return None
 
 
 def resumen(carpeta: Path) -> str:

@@ -34,3 +34,16 @@ como regresión de las decisiones del coordinador v1.3.4 (no predice cómo respo
 | 1 | 17 | `DIAGNOSTICO: 17` (`validas = 1`) y, en la «CORRECCIÓN FINAL», `DIAGNOSTICO: 12` (`leidas = r.filas.__len__()`) |
 | 2 | 17 | `DIAGNOSTICO: 17`, `cobertura["validas"] = 14803` (un número copiado de la evidencia) |
 | 3 | 15 | `DIAGNOSTICO: 15`, `cobertura["invalidas"] = 1643` (un número copiado de la evidencia) |
+
+## `llamadas-M1-fase2.jsonl`
+
+Es el `llamadas.jsonl` **real** de la primera misión M1 del agente de datos con Qwen3 4B en la VivoBook (fase 2;
+carpeta `agente-fase2`): 5 llamadas (M1×2, M2, M3×2), con prompts por partes, respuestas crudas, semillas, tokens,
+tiempos y memoria. Tiene solo datos sintéticos (base B1). Lo usa `tests/test_agente_requisitos.py` como regresión.
+
+| llamada | respuesta (resumen) |
+|---|---|
+| M1 (2) | fichas correctas de las 6 tablas |
+| M2 | `TABLAS: lineas_pedido, productos` (omite `pedidos`, la única con la fecha de las ventas) |
+| M3 (1.ª) | `MEDIR: suma` / `AGRUPAR: producto_id` (sin columna ni tabla) |
+| M3 (2.ª) | `MEDIR: suma lineas_pedido.cantidad` / `AGRUPAR: lineas_pedido.producto_id` (sin FILTRO, ORDEN ni LIMITE) |
