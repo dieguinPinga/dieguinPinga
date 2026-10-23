@@ -13,6 +13,8 @@
 #   ciclo [minutos] --defectos dir --ids … --limite-llamadas N — Ciclo con Qwen (v1.3.4), protegido como el ensayo.
 #   sugerencias0 --tanda 1|2|control — experimento de sugerencias SIN modelo: compara los prompts; no detiene nada.
 #   sugerencias [minutos] --tanda 1|2|control — experimento de sugerencias con Qwen, protegido como el ensayo.
+#   agente0 --preparar | --comprobar | --estado — agente de datos SIN modelo (base sintética privada); no detiene nada.
+#   agente [minutos] --mision M1|M2|M2p — agente de datos con Qwen, protegido como el ensayo.
 #   forense carpeta [--salida f.md] — SOLO LECTURA: análisis forense de una Etapa 1 terminada (sin modelo).
 #   revisar [carpeta]      — SOLO LECTURA: resultados, prompts, respuestas crudas y autoría del último ensayo.
 #   comparar               — SOLO LECTURA: huellas antes contra después.
@@ -117,6 +119,12 @@ cmd_sugerencias() {
   local limite="${1:-45}"
   shift || true   # --tanda 1, 2 o control (plan fijo; una llamada por defecto y condición)
   ejecutar_guardado "$limite" laboratorio-sugerencias --yes "$@"
+}
+
+cmd_agente() {
+  local limite="${1:-60}"
+  shift || true   # --mision M1 (después M2 y M2p); una sola vez por carpeta
+  ejecutar_guardado "$limite" laboratorio-agente --yes "$@"
 }
 
 ejecutar_guardado() {
@@ -224,8 +232,11 @@ case "${1:-}" in
   ciclo) shift; cmd_ciclo "$@" ;;
   sugerencias0) shift; bash "$PILOTO_SH" laboratorio-sugerencias --yes --solo-prompts "$@" ;;
   sugerencias) shift; cmd_sugerencias "$@" ;;
+  agente0) shift; case " $* " in *" --mision "*) die "agente0 no ejecuta misiones: usar «agente [minutos] --mision …»" ;; esac
+           bash "$PILOTO_SH" laboratorio-agente --yes "$@" ;;
+  agente) shift; cmd_agente "$@" ;;
   forense) shift; bash "$PILOTO_SH" laboratorio-eleccion-forense "$@" ;;
   revisar) shift; cmd_revisar "$@" ;;
   comparar) cmd_comparar ;;
-  *) sed -n '2,22p' "$0"; exit 2 ;;
+  *) sed -n '2,24p' "$0"; exit 2 ;;
 esac

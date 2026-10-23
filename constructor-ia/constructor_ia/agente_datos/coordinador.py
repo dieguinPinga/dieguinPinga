@@ -13,6 +13,13 @@ F8 informe
 Regla de decisión: hasta 2 intentos por microtarea con el motivo del rechazo; una falla técnica o semántica vuelve
 a M3 con el motivo; agotados los intentos o el presupuesto de llamadas, la misión se ABSTIENE (no es un fracaso
 oculto: el informe dice por qué).
+
+Estado de la misión (distinto del NIVEL de la respuesta):
+- completa: el circuito llegó a un resultado (verificada, incierta o abstención por verificación o presupuesto);
+- interrumpida: el ENTORNO cortó la misión (Ollama, guardia de memoria, Ctrl-C): no hay resultado y no debe leerse
+  como una abstención del agente. No hay reanudación: una misión interrumpida no se continúa;
+- error: falla del coordinador (por ejemplo, un pedido que no entra en el contexto) o del cartógrafo;
+- bloqueada: la conexión no pasó la verificación de solo lectura (no se llamó al modelo).
 """
 from __future__ import annotations
 
@@ -38,6 +45,14 @@ class SinPresupuesto(RuntimeError):
     pass
 
 
+class Interrumpida(RuntimeError):
+    """El entorno cortó la misión (Ollama, memoria, Ctrl-C). No es una respuesta del modelo."""
+
+
+class ContextoExcedido(RuntimeError):
+    """Un pedido no entra en el contexto del modelo: falla del coordinador, no se llama."""
+
+
 def _j(v) -> str:
     return json.dumps(v, ensure_ascii=False, default=str)
 
@@ -56,9 +71,15 @@ class Coordinador:
             fh.write(_j({"etapa": etapa, "regla": regla, "porque": porque, "datos": datos}) + "\n")
         self.log(f"  [{etapa}] {regla}: {porque}")
 
+    def _cabe(self, partes: list) -> bool:
+        cabe = getattr(self.modelo, "cabe", None)
+        return cabe is None or cabe("".join(t for _, t in partes))
+
     def _pedir(self, tipo: str, partes: list) -> str:
         if self.llamadas >= self.max_llamadas:
             raise SinPresupuesto(f"se agotó el presupuesto de {self.max_llamadas} llamadas al modelo")
+        if not self._cabe(partes):
+            raise ContextoExcedido(f"el pedido {tipo} no entra en el contexto del modelo con la reserva de respuesta")
         # La semilla depende de la pregunta, la microtarea y su número de pedido: la misma microtarea de la misma
         # pregunta usa la misma semilla con memoria o sin ella (comparaciones pareadas).
         n = self.por_tipo.get(tipo, 0)
@@ -67,12 +88,23 @@ class Coordinador:
         semilla = int(hashlib.sha256(f"{self.pnorm}|{tipo}|{n}".encode()).hexdigest(), 16) % 2 ** 31
         texto = "".join(t for _, t in partes)
         t0 = time.monotonic()
-        resp, call = self.modelo.pedir(f"agente:{tipo}", texto, json_out=False, corto=True, seed=semilla)
+        try:
+            resp, call = self.modelo.pedir(f"agente:{tipo}", texto, json_out=False, corto=True, seed=semilla)
+        except (Interrumpida, ContextoExcedido) as e:
+            with open(self.carpeta / "llamadas.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(_j({"mision": self.mid, "tipo": tipo, "semilla": semilla, "partes": partes,
+                             "respuesta": None, "ms": int((time.monotonic() - t0) * 1000),
+                             "llamada": {"resultado": type(e).__name__, "error": str(e)[:300]}}) + "\n")
+            raise
         with open(self.carpeta / "llamadas.jsonl", "a", encoding="utf-8") as fh:
             fh.write(_j({"mision": self.mid, "tipo": tipo, "semilla": semilla, "partes": partes, "respuesta": resp,
                          "ms": int((time.monotonic() - t0) * 1000), "llamada": call}) + "\n")
+        for k, v in (("prompt", "tokens_prompt"), ("generados", "tokens_generados"), ("modelo_ms", "reloj_ms")):
+            self.tokens[k] += int((call or {}).get(v) or 0)
+        if (call or {}).get("resultado") == "truncada":
+            self.truncadas += 1
         if resp is None:
-            raise SinPresupuesto(f"el modelo no respondió ({(call or {}).get('error', 'sin detalle')})")
+            raise Interrumpida(f"el modelo no respondió ({(call or {}).get('error', 'sin detalle')})")
         return resp
 
     def _run(self, sql: str, herramienta: str, pregunta: str = ""):
@@ -87,6 +119,7 @@ class Coordinador:
         self.carpeta.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.pregunta, self.pnorm = pregunta, TX.normalizar_pregunta(pregunta)
         self.llamadas, self.consultas, self.por_tipo = 0, 0, {}
+        self.tokens, self.truncadas = {"prompt": 0, "generados": 0, "modelo_ms": 0}, 0
         self.uso_memoria = {"mediciones_reutilizadas": [], "relaciones_reutilizadas": 0, "fichas_reutilizadas": [],
                             "glosario_mostrado": [], "consulta_aprendida": None}
         self.nuevo = {"tablas_perfiladas": [], "relaciones_medidas": 0, "fichas_nuevas": [], "terminos": []}
@@ -107,7 +140,15 @@ class Coordinador:
             return self._cerrar("completa", "abstencion", None, [str(e)], [], t0)
         except CA.ErrorCartografo as e:
             self.mem.fallo(self.conexion, self.mid, "cartografo", str(e))
-            return self._cerrar("error", "abstencion", None, [f"cartógrafo: {e}"], [], t0)
+            return self._cerrar("error", "sin_resultado", None, [f"cartógrafo: {e}"], [], t0)
+        except ContextoExcedido as e:
+            self.mem.fallo(self.conexion, self.mid, "contexto", str(e))
+            self._decidir("fin", "error_contexto", str(e))
+            return self._cerrar("error", "sin_resultado", None, [str(e)], [], t0)
+        except (Interrumpida, KeyboardInterrupt) as e:
+            motivo = str(e) or "interrumpida por el operador (Ctrl-C o límite de tiempo)"
+            self._decidir("fin", "interrumpida", f"{motivo}: SIN resultado; no es una abstención del agente")
+            return self._cerrar("interrumpida", "sin_resultado", None, [motivo], [], t0)
 
     # F0 y F1 --------------------------------------------------------------------------------------------------
     def _recordar_y_descubrir(self):
@@ -198,12 +239,21 @@ class Coordinador:
         if self.uso_memoria["fichas_reutilizadas"]:
             self._decidir("F2", "fichas_vigentes", "se reutilizan las fichas de "
                                                    + ", ".join(self.uso_memoria["fichas_reutilizadas"]))
-        for i in range(0, len(pendientes), LOTE_M1):
-            lote = [{"tabla": t, "t": self.schema["tablas"][t], "perfil": self.perfiles[t],
+        def lote_de(tablas):
+            return [{"tabla": t, "t": self.schema["tablas"][t], "perfil": self.perfiles[t],
                      "muestra": self.perfiles[t].get("_muestra"), "evidencia": f"P{self.perfiles[t]['consulta_id']}"}
-                    for t in pendientes[i:i + LOTE_M1]]
+                    for t in tablas]
+        i = 0
+        while i < len(pendientes):
+            maximo = n = min(LOTE_M1, len(pendientes) - i)
+            while n > 1 and not self._cabe(MT.prompt_m1(lote_de(pendientes[i:i + n]), self.rels)):
+                n -= 1          # el lote no entra en el contexto: menos tablas por pedido
+            lote = lote_de(pendientes[i:i + n])
+            i += n
             nombres = [x["tabla"] for x in lote]
-            self._decidir("F2", "describir", f"M1 para {', '.join(nombres)}: sin ficha vigente para su estructura")
+            self._decidir("F2", "describir", f"M1 para {', '.join(nombres)}: sin ficha vigente para su estructura"
+                          + (f" (lote reducido de {maximo} a {n} tablas para entrar en el contexto)" if n < maximo
+                             else ""))
             retro = ""
             for intento in range(INTENTOS):
                 partes = MT.prompt_m1(lote, self.rels)
@@ -408,13 +458,20 @@ class Coordinador:
                 self.nuevo["terminos"].append(f"{TX.raiz(k)}→{v[:40]} (declarada)")
 
     def _cerrar(self, estado: str, nivel: str, respuesta, dudas: list[str], chequeos: list[dict], t0) -> dict:
+        decisiones = self.mem.decisiones(self.mid)
         informe = {"version": VERSION, "mision": self.mid, "conexion": self.conexion, "pregunta": self.pregunta,
-                   "estado": estado, "nivel": nivel, "respuesta": respuesta, "dudas_o_motivos": dudas,
-                   "chequeos": chequeos, "uso_de_memoria": self.uso_memoria, "nuevo": self.nuevo,
+                   "modelo": getattr(self.modelo, "nombre", "?"), "estado": estado, "nivel": nivel,
+                   "verificada_por_el_coordinador": nivel == "verificada", "respuesta": respuesta,
+                   "dudas_o_motivos": dudas, "chequeos": chequeos, "uso_de_memoria": self.uso_memoria,
+                   "nuevo": self.nuevo,
                    "costo": {"llamadas": self.llamadas, "por_microtarea": self.por_tipo,
                              "consultas": self.consultas + getattr(getattr(self, "cart", None), "consultas", 0),
+                             "tokens": self.tokens, "respuestas_truncadas": self.truncadas,
                              "segundos": round(time.monotonic() - t0, 2)},
-                   "decisiones": len(self.mem.decisiones(self.mid))}
+                   "rechazos": [f"{d['etapa']} {d['regla']}: {d['porque'][:200]}" for d in decisiones
+                                if "rechazada" in d["regla"]],
+                   "interrupciones_del_entorno": list(getattr(self.modelo, "interrupciones", [])),
+                   "decisiones": len(decisiones)}
         self.mem.terminar_mision(self.mid, estado, nivel, informe)
         (self.carpeta / "informe.json").write_text(_j(informe))
         (self.carpeta / "informe.md").write_text(markdown(informe))

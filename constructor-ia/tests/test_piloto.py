@@ -428,6 +428,23 @@ class StagesScriptTests(unittest.TestCase):
         self.assertIn("piloto laboratorio-ciclo --yes --sin-modelo --defectos b servicio=active", log)
         self.assertNotIn("systemd-run", log)
 
+    def test_data_agent_mission_is_guarded_and_agente0_stops_nothing(self):
+        rc, estado, log, out = self.correr("cuelga", senal="SIGINT", orden=("agente",), limite="20",
+                                           extra=("--mision", "M1"))
+        self.assertEqual(estado, "active", (out, log))
+        self.assertIn("piloto laboratorio-agente --yes --mision M1 servicio=inactive", log)
+        self.assertIn("piloto: limpieza", log)
+        self.assertIn("start constructor-ia.service", log)
+        for etapa in ("--preparar", "--comprobar", "--estado"):
+            rc, estado, log, out = self.correr("ok", orden=("agente0",), limite=None, extra=(etapa,))
+            self.assertEqual((rc, estado), (0, "active"))
+            self.assertIn(f"piloto laboratorio-agente --yes {etapa} servicio=active", log)
+            self.assertNotIn("stop constructor-ia.service", log)
+            self.assertNotIn("systemd-run", log)
+        rc, estado, log, out = self.correr("ok", orden=("agente0",), limite=None, extra=("--mision", "M1"))
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("piloto laboratorio-agente", log, "agente0 no ejecuta misiones")
+
     def test_suggestion_experiment_is_guarded_and_prompts_only_stops_nothing(self):
         rc, estado, log, out = self.correr("cuelga", senal="SIGINT", orden=("sugerencias",), limite="20",
                                            extra=("--tanda", "1"))

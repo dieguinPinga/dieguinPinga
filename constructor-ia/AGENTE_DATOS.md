@@ -416,3 +416,98 @@ Falta, antes de usar Qwen:
 
 Con eso, en la VivoBook: M1, reinicio, M2 y M2′ con Qwen y un presupuesto de llamadas por misión, sobre una base
 sintética en el MariaDB privado.
+
+---
+
+## 12. Fase 2: Qwen3 4B en la VivoBook — preparación (2026-10-23, sin inferencias)
+
+### Qué se agregó
+
+| Pieza | Qué hace |
+|---|---|
+| `agente_datos/qwen.py` | **Adaptador** para M1–M4. Reutiliza sin cambios `protocolo.Modelo` con los parámetros del piloto (temperatura 0.2, `num_ctx` 4096, `keep_alive` 0s, respuesta corta de hasta 768 tokens, plazo de 900 s) y la envoltura V2 (guardia de memoria de 3900 MiB antes de cada llamada, control de contexto con la reserva de respuesta). Una falla de Ollama se reintenta una vez y, si se repite, la misión queda **interrumpida**. La guardia de memoria también la interrumpe. Un pedido que no entra en el contexto es un **error** del coordinador, y no se envía |
+| `coordinador.py` | **Estado** de la misión separado del **nivel** de la respuesta: `completa`, `interrumpida`, `error` o `bloqueada`. Una misión interrumpida no tiene nivel (`sin_resultado`) y nunca cuenta como abstención. Si M1 no entra en el contexto, el lote baja de 3 tablas a 2 o 1. Registra tokens (entrada, generados y tiempo del modelo), respuestas truncadas, rechazos e interrupciones del entorno |
+| `__main__.py` | `--modelo qwen` con sus parámetros. Ctrl-C, SIGTERM o la muerte del orquestador cierran la misión como interrumpida y dejan su informe. Códigos de salida: 0 completa, 3 error o bloqueada, 4 interrumpida |
+| `experimento.py` | El orquestador: `preparar`, `comprobar`, `mision` y `resumen` (ver abajo) |
+| `cli.py` | `laboratorio-agente --preparar \| --comprobar \| --mision M1\|M2\|M2p \| --estado` |
+| `scripts/piloto_etapas.sh` | `agente0` (sin modelo; no detiene nada; no acepta `--mision`) y `agente [minutos] --mision …`, protegido como `ciclo`: detiene SOLO constructor-ia, arma el temporizador de respaldo y lo restaura siempre |
+
+### Cómo garantiza las condiciones
+
+- **Juez aparte.** La verdad oculta (`juez/verdad.json`, 0600) la genera `--preparar` y solo la lee el
+  orquestador DESPUÉS de la misión. El agente corre en **otro proceso**, que no recibe la verdad ni su ruta. Al
+  final se auditan el canario y las descripciones de la verdad en su memoria, sus registros y su conexión.
+- **Mismos datos sintéticos.** En cada misión, B1 se vuelve a crear desde la semilla en un MariaDB privado NUEVO
+  (sin red, desechable). Su huella (CHECKSUM y filas de cada tabla) tiene que ser idéntica a la del plan; si no, no
+  se ejecuta y no se marca ninguna ranura.
+- **Memoria.** M1 empieza con una memoria vacía (`memoria_m1_m2`). M2 usa esa misma memoria y exige que M1 haya
+  terminado **completa**. M2′ empieza con otra memoria vacía (`memoria_m2p`).
+- **Sin duplicaciones silenciosas.** Cada ranura se ejecuta una sola vez por carpeta:
+  - una ranura completa, interrumpida, con error o que quedó «en_curso» (porque el proceso murió) no se repite ni se
+    continúa;
+  - un proceso del agente que falla sin dejar informe y sin que nadie lo haya interrumpido (por ejemplo, porque no
+    arrancó) queda como **error**, no como interrumpida;
+  - el mensaje dice por qué;
+  - para otra corrida: otra carpeta y `--preparar`.
+- **Sin agentes huérfanos.** Si el orquestador muere, el proceso del agente recibe SIGTERM, cierra la misión como
+  interrumpida y no sigue llamando a Ollama después de que el script protegido restauró el servicio.
+- **Registro.** Por misión, en la memoria del agente: `llamadas.jsonl` (prompts por partes, respuesta cruda,
+  semilla, tokens, tiempo y memoria), `decisiones.jsonl` (reglas, rechazos y su motivo), `informe.json`/`.md`
+  y `explore_queries` en `agente.db` (cada consulta). En la carpeta del experimento:
+  - `resultados/<R>.json`, con el **nivel del coordinador** (verificada o incierta) y el **veredicto del juez**
+    (correcta, confirmación falsa, error declarado) **separados**;
+  - `registros/<R>.err`, lo que escribió el agente en vivo;
+  - `resumen.md`.
+
+### Limitación conocida: no hay reanudación
+
+Una misión interrumpida (corte de Ollama, guardia de memoria, límite de tiempo, Ctrl-C) **no se continúa**:
+- queda registrada como interrumpida, sin veredicto;
+- su ranura no se puede volver a correr en esa carpeta;
+- si fue M1, M2 queda bloqueada (su memoria sería parcial).
+
+Para repetir: `agente0 --preparar --carpeta <otra>` y usar `--carpeta <otra>` en cada comando. La comparación M2 contra
+M2′ solo es válida dentro de una misma carpeta (mismos datos y misma memoria de M1).
+
+### Pruebas (sin inferencias)
+
+`tests/test_agente_fase2.py` (12). Usa un Ollama SIMULADO por HTTP que responde con el guion, así se prueban el
+cliente real, el modelo del laboratorio, la guardia V2 y el control de contexto. Comprueba:
+- **adaptador:** los parámetros del piloto y la guardia; la misión completa por HTTP (opciones enviadas, semilla por
+  pedido, tokens registrados, todos los pedidos de B1 dentro de `num_ctx` 4096 con la reserva);
+- **interrupciones:** dos fallas de Ollama → interrumpida sin respuesta ni consulta aprendida; un contexto demasiado
+  chico → error sin enviar nada; Ctrl-C durante una llamada → código 4 e informe interrumpido; un orquestador muerto
+  con kill -9 → el agente huérfano cierra su misión;
+- **orquestador:** M1, M2 y M2′ con los mismos datos y los veredictos separados (M2 y M2′: correctas para el juez,
+  inciertas para el coordinador); M1 no se repite; M2 bloqueada si M1 no está completa o quedó interrumpida; una
+  ranura «en_curso» de un proceso muerto cuenta como interrumpida; datos distintos frenan antes de marcar nada; la
+  comprobación sin modelo (incluida la de Ollama solo con `/api/tags`, sin inferencias).
+
+Además se probó el camino real de la VivoBook en este entorno (`scripts/piloto.sh`, MariaDB privado verdadero, modelo
+de guion): `--preparar`, `--comprobar`, M1 (verificada y correcta), M1 repetida (rechazada), M2 y M2′ (inciertas y
+correctas). Eso destapó un límite real: si la carpeta es muy profunda, el socket del MariaDB privado supera los 107
+bytes. Ahora se usa una carpeta temporal corta cuando hace falta; en la VivoBook la ruta por omisión entra.
+
+### Procedimiento en la VivoBook: SOLO M1
+
+Desde el checkout aparte (`E=~/src/dieguinPinga/constructor-ia/scripts/piloto_etapas.sh`):
+
+```bash
+cd ~/src/dieguinPinga && git fetch origin claude/constructor-ia-0.7-piloto-microtareas \
+  && git checkout claude/constructor-ia-0.7-piloto-microtareas && git pull --ff-only
+bash $E huellas antes
+bash $E agente0 --comprobar      # SIN modelo, no detiene nada: MariaDB privado, solo lectura, escritura rechazada,
+                                 # misión de prueba con el guion en otro proceso, juez, fugas y /api/tags de Ollama
+bash $E agente0 --preparar       # base B1 + verdad oculta + huella (una sola vez por carpeta)
+bash $E agente0 --comprobar      # otra vez: ahora también confirma que los datos son idénticos a los del plan
+bash $E agente 60 --mision M1    # PROTEGIDO: detiene solo constructor-ia, temporizador de respaldo, lo restaura siempre
+bash $E agente0 --estado
+bash $E huellas despues && bash $E comparar
+```
+
+Todo queda en `~/constructor-ia-piloto/data/laboratorio/agente-fase2/`. **No borrar la carpeta**: M2 usará esa
+misma memoria. Para revisar M1, mandar:
+- `resumen.md`, `resultados/M1.json` y `registros/M1.err`;
+- de `memoria_m1_m2/misiones/<misión>/`: `llamadas.jsonl`, `decisiones.jsonl` e `informe.json`.
+
+M2 y M2′ (`bash $E agente 60 --mision M2` y `--mision M2p`) quedan para después de revisar M1.

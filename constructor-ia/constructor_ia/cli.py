@@ -1029,6 +1029,71 @@ def cmd_lab_suggestions(args) -> int:
     return 0 if res["corrida"] in ("completa", "solo_prompts") else 3
 
 
+def cmd_lab_agent(args) -> int:
+    """Agente de datos, fase 2 (AGENTE_DATOS.md): --preparar, --comprobar (sin modelo), --mision M1|M2|M2p, --estado.
+    Solo bases sintéticas en un MariaDB privado; la verdad la lee el juez, nunca el proceso del agente."""
+    from .agente_datos import experimento as EX
+    from .laboratorio import privado
+
+    cfg = _cfg(args)
+    carpeta = Path(args.carpeta) if args.carpeta else cfg.data_dir / "laboratorio" / "agente-fase2"
+    if args.estado:
+        print(EX.resumen(carpeta) if (carpeta / "plan.json").exists() else f"{carpeta} no está preparada.")
+        return 0
+    if not args.yes:
+        print("Agregue --yes: crea un MariaDB privado y desechable (sin red, no toca el MariaDB instalado ni ninguna "
+              "base productiva).", file=sys.stderr)
+        return 2
+    faltan = privado.disponible()
+    if faltan:
+        print(f"No se puede crear el MariaDB privado: faltan {', '.join(faltan)}.", file=sys.stderr)
+        return 2
+    log = lambda m: print(m, flush=True)  # noqa: E731
+    try:
+        if args.preparar:
+            EX.preparar(carpeta, log=log)
+            return 0
+        if args.comprobar:
+            inf = EX.comprobar(carpeta_plan=carpeta if (carpeta / "plan.json").exists() else None,
+                               ollama_url=cfg.ollama_url, modelo=args.nombre_modelo, log=log)
+            print("RESULTADO: " + ("ENTORNO Y AISLAMIENTO OK (sin inferencias)" if inf["ok"] else "HAY FALLAS"))
+            return 0 if inf["ok"] else 1
+        if args.guion:
+            modelo_args = ["--modelo", "guion", "--guion", args.guion]
+        else:
+            if _servicio_activo():
+                print("El servicio constructor-ia está activo: deténgalo para no competir por Ollama CPU (usar el "
+                      "comando protegido «agente» de scripts/piloto_etapas.sh).", file=sys.stderr)
+                return 2
+            from .ollama import OllamaClient, OllamaError
+            try:
+                if args.nombre_modelo not in OllamaClient(cfg.ollama_url).tags():
+                    print(f"El modelo {args.nombre_modelo} no está instalado en {cfg.ollama_url} (no se descarga).",
+                          file=sys.stderr)
+                    return 2
+            except OllamaError as e:
+                print(f"Ollama CPU no responde en {cfg.ollama_url}: {e}", file=sys.stderr)
+                return 1
+            modelo_args = ["--modelo", "qwen", "--ollama-url", cfg.ollama_url, "--nombre-modelo", args.nombre_modelo,
+                           "--num-ctx", str(args.num_ctx), "--keep-alive", args.keep_alive,
+                           "--memoria-minima-mb", str(args.memoria_minima_mb)]
+        modelo_args += ["--max-llamadas", str(args.max_llamadas)]
+        print(f"{EX.VERSION_EXPERIMENTO}: {args.mision} en {carpeta}; modelo {modelo_args[1]}"
+              + (f" {args.nombre_modelo}, num_ctx={args.num_ctx}, keep_alive={args.keep_alive}, memoria mínima "
+                 f"{args.memoria_minima_mb} MiB" if not args.guion else f" ({args.guion}, SIN inferencias)")
+              + f"; hasta {args.max_llamadas} llamadas.", flush=True)
+        res = EX.mision(carpeta, args.mision, modelo_args, log=log)
+    except (EX.ErrorExperimento, privado.ServidorNoDisponible) as e:
+        print(f"No se ejecutó: {e}", file=sys.stderr)
+        return 2
+    print((carpeta / "resumen.md").read_text())
+    print(f"Resultado de {args.mision}: estado {res['estado']} · coordinador {res['coordinador']['nivel']} · juez "
+          f"{'sin veredicto' if res['juez'].get('correcta') is None else ('correcta' if res['juez']['correcta'] else 'incorrecta')}"
+          f" · confirmación falsa: {'SÍ' if res['juez'].get('confirmacion_falsa') else 'no'}. Detalle en "
+          f"{carpeta / 'resultados' / (args.mision + '.json')}")
+    return 0 if res["estado"] == "completa" else 3
+
+
 def cmd_lab_pilot_review(args) -> int:
     from .laboratorio.piloto import informe as PI
 
@@ -1270,6 +1335,23 @@ def main(argv=None) -> int:
     a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
     a.add_argument("--yes", action="store_true")
     a.set_defaults(fn=cmd_lab_cycle)
+    a = sub.add_parser("laboratorio-agente",
+                       help="Agente de datos, fase 2: --preparar, --comprobar (sin modelo), --mision M1|M2|M2p, --estado")
+    g = a.add_mutually_exclusive_group(required=True)
+    g.add_argument("--preparar", action="store_true", help="base sintética B1, verdad oculta y huella de los datos")
+    g.add_argument("--comprobar", action="store_true",
+                   help="SIN inferencias: MariaDB privado, solo lectura, datos idénticos, misión de prueba con guion")
+    g.add_argument("--mision", choices=["M1", "M2", "M2p"], help="una misión (una sola vez por carpeta)")
+    g.add_argument("--estado", action="store_true", help="resumen de la carpeta (solo lectura)")
+    a.add_argument("--carpeta", help="carpeta del experimento (por omisión, <datos>/laboratorio/agente-fase2)")
+    a.add_argument("--guion", help="usar el modelo de guion con este perfil (pruebas SIN inferencias)")
+    a.add_argument("--nombre-modelo", dest="nombre_modelo", default="qwen3:4b-instruct")
+    a.add_argument("--num-ctx", dest="num_ctx", type=int, default=4096)
+    a.add_argument("--keep-alive", dest="keep_alive", default="0s")
+    a.add_argument("--memoria-minima-mb", dest="memoria_minima_mb", type=int, default=3900)
+    a.add_argument("--max-llamadas", dest="max_llamadas", type=int, default=8)
+    a.add_argument("--yes", action="store_true")
+    a.set_defaults(fn=cmd_lab_agent)
     a = sub.add_parser("laboratorio-sugerencias",
                        help="Experimento de sugerencias (ciclo v1.3.4): «localizador» contra «evidencia», plan fijo")
     a.add_argument("--tanda", required=True, choices=["1", "2", "control"],

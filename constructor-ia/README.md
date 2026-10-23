@@ -82,7 +82,9 @@ correcciones y archivos finales. Pensado para la ASUS VivoBook S15 X510UF
 - **Agente de datos** (fase 1, sin Qwen; `constructor_ia/agente_datos/`): explorador autónomo de bases MariaDB con
   memoria persistente (`agente.db`), conducido por un coordinador, con el modelo en microtareas, verificación técnica y
   semántica separadas, vigencia del esquema distinta de la de los datos, y juez con verdad oculta en el laboratorio.
-  Ver [AGENTE_DATOS.md](AGENTE_DATOS.md).
+  Ver [AGENTE_DATOS.md](AGENTE_DATOS.md). Fase 2 (preparada, sin inferencias todavía): adaptador de Qwen con los
+  parámetros y la guardia del piloto, `laboratorio-agente` (`--preparar`, `--comprobar`, `--mision M1|M2|M2p`) y los
+  comandos `agente0`/`agente` de `scripts/piloto_etapas.sh`.
 
 ## Proyectos que evolucionan (v0.4.0)
 
