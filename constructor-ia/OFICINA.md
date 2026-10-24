@@ -2196,6 +2196,126 @@ python3 -m constructor_ia oficina reparar-coordinado-9 --corrida $R --carpeta $L
     --autorizo-inferencia-remota                         # hasta 2 diagnósticos + 3 propuestas + 3 revisiones
 ```
 
+## Experimento 7.10: planificación causal antes de programar (implementado, SIN inferencias)
+
+**Contexto (7.9):** Gemma identificó la causa y rechazó dos parches defectuosos, pero Qwen agotó sus tres intentos.
+
+**Objetivo:** comprobar si separar la planificación de la implementación permite que Qwen repare a partir del
+diagnóstico autónomo de Gemma.
+
+**Qué es:** `oficina reparar-coordinado-10` (`oficina/reparacion_coordinada_10.py`), un orquestador propio. El ciclo
+cambia de forma (plan → revisión del plan → parche), así que no usa el bucle del 7.6, pero reutiliza sus piezas:
+- el diagnóstico, la discrepancia observable y la retroalimentación del 7.8;
+- el formato de revisión del 7.9;
+- la validación y aplicación de parches, la normalización de sangría, el caso sintético, los ejemplos visibles, la
+  batería y la auditoría.
+
+No modifica ningún módulo anterior, salvo el CLI.
+
+### Roles (dos modelos; cada rol, una invocación independiente)
+
+1. **Diagnosticadora (gemma):** como en el 7.8 y el 7.9.
+2. **Planificador (qwen, `SISTEMA_PLANIFICADOR`):** un plan JSON, **sin código**, con:
+   - el estado incorrecto;
+   - la operación que lo produce;
+   - el comportamiento a cambiar;
+   - el comportamiento a preservar;
+   - las líneas a modificar, copiadas del código, cada una con su porqué;
+   - desde el ciclo 2, `cambio_respecto_del_anterior`.
+
+   **Validación:** campos completos y al menos una línea que exista dentro de las zonas.
+3. **Revisora del plan (gemma, `SISTEMA_REVISORA_PLAN`):** decide si el plan elimina la causa y preserva el
+   comportamiento.
+   - Responde con decisión, justificación causal y crítica, el mismo esquema del 7.9. No propone su propia solución.
+   - **Si rechaza:** la crítica llega **íntegra** al planificador. Cada ciclo admite como máximo 2 planes.
+   - **Si la revisión es inválida:** no decide; se sigue y deciden las comprobaciones deterministas, pero no cuenta
+     como aprobación.
+4. **Programador (qwen):** un parche JSON que implementa el **plan aprobado**, que se le muestra completo.
+5. **Coordinador:**
+   - valida y aplica el parche sobre una copia, con normalización de sangría;
+   - mide si el parche es **coherente con el plan**, es decir, si toca las líneas planificadas;
+   - prueba el caso sintético y los ejemplos visibles, y ejecuta la batería una sola vez.
+
+   La aprobación de un plan no prueba nada ni evita ninguna comprobación.
+
+### Ciclos
+
+Como máximo **3 ciclos** de plan → revisión → parche, y **2400 s** para todo.
+- **Si el parche falla:** el ciclo siguiente planifica con la **discrepancia observable** del 7.8 (o el motivo del
+  rechazo del parche) y el plan anterior, y tiene que explicar qué cambia.
+- **Repeticiones:** se detectan planes repetidos (misma huella, sin contar la explicación del cambio) y parches
+  repetidos. Un plan repetido se le señala al planificador; un parche que se repite **después del aviso** detiene la
+  corrida.
+- **Auditoría:** se revisa cada pedido. Nunca se envían casos ocultos, la referencia, el defecto ni la causa del
+  equipo.
+
+### Medición (`informe.json`, `medicion`)
+
+**Por pasos:**
+- diagnóstico correcto;
+- plan causal correcto;
+- revisión del plan correcta;
+- parche coherente con el plan;
+- parche aplicado;
+- caso sintético corregido;
+- batería independiente 9/9.
+
+**Conteos:**
+- aprobaciones incorrectas de planes;
+- rechazos injustificados de planes;
+- fallos de implementación: un plan correcto aprobado cuyo parche no corrigió el caso;
+- planes repetidos;
+- parches repetidos.
+
+«Correcto» para el diagnóstico y el plan es una evaluación **posterior e indicativa** del texto: no llega a ningún
+modelo, no decide nada y conviene confirmarla leyendo.
+
+**Éxito:** diagnóstico correcto, plan **aprobado por la revisora**, parche aplicado, caso corregido y 9/9, sin fugas.
+Se clasifica como «diagnóstico, planificación, revisión e implementación automáticos coordinados».
+
+**Registro:**
+- `diagnostico-K/`;
+- `ciclo-N/plan-K/`: pedido, respuesta y plan;
+- `ciclo-N/revision-plan-K/`;
+- `ciclo-N/parche/`: pedido, respuesta, `parche.json` con la coherencia, `solucion.py` y `retroalimentacion.md`;
+- `informe.json`: llamadas con rol, tokens y segundos.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_coordinada_10.py` (14). Demuestran la **arquitectura** con respuestas simuladas, **no**
+la capacidad de los modelos.
+1. Un plan que no elimina la causa se rechaza.
+2. Un plan que rompe un comportamiento correcto se rechaza.
+3. Un plan correcto se aprueba.
+4. La crítica llega íntegra a Qwen.
+5. El parche recibe el plan aprobado completo, y se mide la coherencia (un parche sobre otra línea no es coherente).
+6. Un parche incorrecto no pasa aunque el plan esté aprobado (se cuenta como fallo de implementación), y la batería
+   decide.
+7. Una reparación correcta da 9/9 con las siete mediciones en «sí».
+8. No hay fugas, y la revisora del plan no recibe resultados de pruebas.
+9. Se detectan planes y parches repetidos; un parche repetido después del aviso detiene la corrida.
+10. El 7.8 y el 7.9 siguen funcionando.
+
+Además: validación del plan, prompts sin la solución, límites (3 ciclos × 2 planes), revisión inválida, presupuesto y
+CLI.
+
+Suite completa: 761 pruebas, OK (927 s).
+
+### Preparación sin inferencias (VivoBook)
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_coordinada_10 tests.test_oficina_reparacion_coordinada_9 \
+    tests.test_oficina_reparacion_coordinada_8 tests.test_oficina_reparacion_coordinada                 # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-coordinada-7-10                                              # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-coordinado-10 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                     # no infiere ni escribe
+# Corrida real, solo con autorización: ... reparar-coordinado-10 ... --autorizo-inferencia-remota
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

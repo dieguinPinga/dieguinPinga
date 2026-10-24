@@ -1217,7 +1217,7 @@ def cmd_oficina(args) -> int:
         return _oficina_sonda_comprension(args, cfg, carpeta)
     if args.accion == "reparar-guiado":
         return _oficina_reparacion_guiada(args, cfg, carpeta)
-    if args.accion in ("reparar-coordinado", "reparar-coordinado-8", "reparar-coordinado-9"):
+    if args.accion in ("reparar-coordinado", "reparar-coordinado-8", "reparar-coordinado-9", "reparar-coordinado-10"):
         return _oficina_reparacion_coordinada(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
@@ -1607,6 +1607,7 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     from .oficina import reparacion_coordinada as RC
     from .oficina import reparacion_coordinada_8 as RC8
     from .oficina import reparacion_coordinada_9 as RC9
+    from .oficina import reparacion_coordinada_10 as RC10
     from .oficina import reparacion_guiada as RGD
     from .oficina import revision_existente as RE
     from .oficina.misiones_programacion import MISIONES
@@ -1614,9 +1615,11 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
 
     ocho = args.accion == "reparar-coordinado-8"          # experimento 7.8 (preservación de comportamiento)
     nueve = args.accion == "reparar-coordinado-9"         # experimento 7.9 (revisión crítica de parches)
-    nombre = "7.9" if nueve else "7.8" if ocho else "7.7"
-    mod = RC9 if nueve else RC8 if ocho else RC
-    print(f"{RC9.VERSION_9 if nueve else RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}: corrida {args.corrida}, "
+    diez = args.accion == "reparar-coordinado-10"         # experimento 7.10 (planificación causal)
+    nombre = "7.10" if diez else "7.9" if nueve else "7.8" if ocho else "7.7"
+    mod = RC10 if diez else RC9 if nueve else RC8 if ocho else RC
+    print(f"{RC10.VERSION_10 if diez else RC9.VERSION_9 if nueve else RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}"
+          f": corrida {args.corrida}, "
           "diagnosticadora "
           f"{args.diagnosticador_modelo}, "
           f"programador {args.modelo}")
@@ -1663,7 +1666,7 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
         return 3
     if not args.autorizo_inferencia_remota:
         if args.mostrar_pedido:
-            pedir = RC8.mensajes_diagnostico if (ocho or nueve) else RC.mensajes_diagnostico
+            pedir = RC8.mensajes_diagnostico if (ocho or nueve or diez) else RC.mensajes_diagnostico
             print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in pedir(f, disc)))
         print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta "
               f"{RC.MAX_DIAGNOSTICOS} diagnósticos y {RGD.MAX_INTENTOS} parches).")
@@ -1679,7 +1682,24 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     for d in inf["diagnosticos"]:
         print(f"  diagnóstico {d['intento']}: {'válido' if d['valido'] else 'inválido · ' + str(d.get('motivo'))}"
               f" · {d.get('tokens_generados')} tokens · {d.get('segundos')} s" + (" · CORTADA" if d.get("cortada") else ""))
-    for i in (inf["reparacion"] or {}).get("intentos", []):
+    for c in inf.get("ciclos", []):                      # 7.10
+        for p in c["planes"]:
+            rv = p.get("revision") or {}
+            print(f"  ciclo {c['ciclo']} · plan {p['plan']}: " + ("válido" if p["valido"] else f"inválido · {p.get('motivo')}")
+                  + (f" · revisora: {rv.get('decision') or 'sin decisión válida'}" if p["valido"] else "")
+                  + (f" · repite {p['repite_el_plan']}" if p.get("repite_el_plan") else ""))
+        pa = c.get("parche")
+        if pa:
+            print(f"  ciclo {c['ciclo']} · parche: " + ("aplicado" if pa["aplicado"] else f"rechazado · {pa.get('motivo')}")
+                  + (" · sangría normalizada" if "parche_normalizado" in pa else "")
+                  + (f" · coherente con el plan: {'sí' if pa['coherencia_con_el_plan']['coherente'] else 'no'}"
+                     if pa.get("coherencia_con_el_plan") else "")
+                  + (f" · discrepancia {pa['discrepancia_sintetica']}" if pa.get("discrepancia_sintetica") else ""))
+    if "medicion" in inf:
+        for k, v in inf["medicion"].items():
+            if k != "nota":
+                print(f"  {k}: {v if not isinstance(v, bool) else ('sí' if v else 'no')}")
+    for i in (inf.get("reparacion") or {}).get("intentos", []):
         print(f"  parche {i['intento']}: {i['estado']}" + (f" · {i['motivo']}" if i.get("motivo") else "")
               + (" · sangría normalizada" if i.get("sangria_normalizada") else "")
               + (f" · discrepancia {i['discrepancia_sintetica']}" if i.get("discrepancia_sintetica") else "")
@@ -1690,7 +1710,7 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
         print(f"  revisora: {cc['detecciones_correctas']} detecciones correctas · {cc['aprobaciones_incorrectas']} "
               f"aprobaciones incorrectas · {cc['rechazos_de_parches_observablemente_correctos']} rechazos de parches "
               f"observablemente correctos · {cc['revisiones_invalidas']} revisiones inválidas")
-    for k, v in inf["criterios"].items():
+    for k, v in inf.get("criterios", {}).items():
         print(f"  criterio {k}: {'sí' if v else 'no'}")
     print(f"Experimento {nombre}: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'}"
           + (f" ({inf['clasificacion']})" if inf.get("clasificacion") else "") + f" · {inf['motivo']} · registro en {destino}")
@@ -1963,7 +1983,10 @@ def main(argv=None) -> int:
                                                    "retroalimentación (sin --autorizo-inferencia-remota no infiere)"),
                           ("reparar-coordinado-9", "experimento 7.9: como el 7.8, con una revisión crítica de cada "
                                                    "parche por gemma (otra invocación) antes de las comprobaciones "
-                                                   "(sin --autorizo-inferencia-remota no infiere)")):
+                                                   "(sin --autorizo-inferencia-remota no infiere)"),
+                          ("reparar-coordinado-10", "experimento 7.10: diagnóstico (gemma), plan (qwen), revisión del "
+                                                    "plan (gemma) y parche (qwen) por ciclos (sin "
+                                                    "--autorizo-inferencia-remota no infiere)")):
         o = osub.add_parser(nombre, help=ayuda)
         o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
         o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")
