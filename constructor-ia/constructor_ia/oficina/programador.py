@@ -103,10 +103,16 @@ class Programador:
         self.latido_s, self.cliente_para, self.log = latido_s, cliente_para, log
         self.revisor = revisor          # oficina.revisor.ConfigRevisor o None (sin revisor)
 
-    def _taller(self, trabajador: dict, modelo: str) -> Taller:
+    def _taller(self, trabajador: dict, modelo: str, mision: str | None = None) -> Taller:
         cliente = self.cliente_para(trabajador) if self.cliente_para else None
+        revisor = self.revisor
+        if revisor is not None and revisor.hipotesis_verificables and mision in MISIONES:
+            from . import contraste as CT
+            from .misiones_programacion import VALIDADORES
+            fabrica, referencia = MISIONES[mision]
+            revisor = dataclasses.replace(revisor, contraste=CT.desde_mision(fabrica, referencia, VALIDADORES[mision]))
         return Taller(self.carpeta, self.cfg, self.executor, trabajador["url"], modelo_remoto(modelo), cliente,
-                      revisor=self.revisor)
+                      revisor=revisor)
 
     def atender(self, trabajador: dict) -> dict | None:
         """Toma UNA tarea de programación para ese trabajador y la lleva hasta la propuesta (o la falla)."""
@@ -115,7 +121,7 @@ class Programador:
                             roles=["programador"]) if trabajador.get("disponible_ahora") else None
         if t is None:
             return None
-        taller = self._taller(trabajador, t["modelo"])
+        taller = self._taller(trabajador, t["modelo"], t["carga"].get("mision"))
         try:
             return self._ejecutar(t, trabajador, taller)
         finally:

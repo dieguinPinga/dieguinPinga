@@ -274,3 +274,83 @@ REFERENCIA_CONCILIAR = '''def conciliar_movimientos(movimientos, saldos_iniciale
 
 MISIONES = {"resumen_ventas": (mision_resumen_ventas, REFERENCIA),
             "conciliar_movimientos": (mision_conciliar_movimientos, REFERENCIA_CONCILIAR)}
+
+
+# Validadores de ESTRUCTURA para casos sintéticos del revisor (experimento 6). Se derivan del contrato público de
+# cada misión, sin cambiarlo: aceptan solo entradas con la forma que el contrato describe y de tamaño mínimo. Que el
+# caso tenga sentido lo decide además la referencia (si la referencia no lo procesa, el caso queda fuera del
+# contrato). Devuelven None si el caso es válido, o el motivo.
+
+_FECHA = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}$")
+MAX_ELEMENTOS_SINTETICOS = 12
+
+
+def _entero(x):
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _dic_productos(x, nombre):
+    if x is None:
+        return None
+    if not isinstance(x, dict) or len(x) > MAX_ELEMENTOS_SINTETICOS:
+        return f"«{nombre}» tiene que ser un diccionario {{producto: entero}} o None"
+    if not all(isinstance(k, str) and _entero(v) for k, v in x.items()):
+        return f"«{nombre}»: cada producto es un texto y cada valor, un entero"
+    return None
+
+
+def _argumentos(args, kwargs, nombres):
+    if not isinstance(args, list) or not isinstance(kwargs, dict):
+        return None, "«args» tiene que ser una lista y «kwargs», un diccionario"
+    if len(args) > len(nombres) or set(kwargs) - set(nombres):
+        return None, f"la función recibe a lo sumo: {', '.join(nombres)}"
+    valores = dict(zip(nombres, args))
+    if set(valores) & set(kwargs):
+        return None, "un argumento aparece dos veces (posicional y por nombre)"
+    valores.update(kwargs)
+    if nombres[0] not in valores:
+        return None, f"falta el argumento «{nombres[0]}»"
+    return valores, None
+
+
+def validar_conciliar(args, kwargs) -> str | None:
+    v, error = _argumentos(args, kwargs, ("movimientos", "saldos_iniciales", "conteo_fisico"))
+    if error:
+        return error
+    movs = v["movimientos"]
+    if not isinstance(movs, list) or not 1 <= len(movs) <= MAX_ELEMENTOS_SINTETICOS:
+        return f"«movimientos» tiene que ser una lista de 1 a {MAX_ELEMENTOS_SINTETICOS} movimientos (caso mínimo)"
+    for i, m in enumerate(movs, 1):
+        if not isinstance(m, dict):
+            return f"movimiento {i}: tiene que ser un diccionario"
+        if not _entero(m.get("id")) or not isinstance(m.get("fecha"), str) or not _FECHA.match(m["fecha"]):
+            return f"movimiento {i}: «id» entero y «fecha» 'AAAA-MM-DD'"
+        if not isinstance(m.get("producto"), str) or not isinstance(m.get("tipo"), str):
+            return f"movimiento {i}: «producto» y «tipo» son textos"
+        if m["tipo"] == "anulacion":
+            if set(m) != {"id", "fecha", "producto", "tipo", "anula"}:
+                return f"movimiento {i}: una anulación tiene exactamente id, fecha, producto, tipo y anula"
+        elif set(m) != {"id", "fecha", "producto", "tipo", "cantidad"}:
+            return f"movimiento {i}: un ingreso o egreso tiene exactamente id, fecha, producto, tipo y cantidad"
+    return _dic_productos(v.get("saldos_iniciales"), "saldos_iniciales") or \
+        _dic_productos(v.get("conteo_fisico"), "conteo_fisico")
+
+
+def validar_resumen(args, kwargs) -> str | None:
+    v, error = _argumentos(args, kwargs, ("ventas", "desde", "hasta"))
+    if error:
+        return error
+    ventas = v["ventas"]
+    if not isinstance(ventas, list) or len(ventas) > MAX_ELEMENTOS_SINTETICOS:
+        return f"«ventas» tiene que ser una lista de a lo sumo {MAX_ELEMENTOS_SINTETICOS} ventas"
+    for i, x in enumerate(ventas, 1):
+        if not (isinstance(x, list) and len(x) == 5 and _entero(x[0]) and isinstance(x[1], str) and _FECHA.match(x[1])
+                and isinstance(x[2], str) and _entero(x[3]) and _entero(x[4])):
+            return f"venta {i}: [id entero, fecha 'AAAA-MM-DD', producto, cantidad entera, precio_unitario entero]"
+    for k in ("desde", "hasta"):
+        if v.get(k) is not None and not (isinstance(v[k], str) and _FECHA.match(v[k])):
+            return f"«{k}» tiene que ser 'AAAA-MM-DD' o None"
+    return None
+
+
+VALIDADORES = {"resumen_ventas": validar_resumen, "conciliar_movimientos": validar_conciliar}

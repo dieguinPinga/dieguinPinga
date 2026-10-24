@@ -66,12 +66,25 @@ SISTEMA_REVISOR = (
     '"hipotesis_secundarias": [{"descripcion": "<...>", "propiedad_a_cambiar": "<...>"}]}')
 
 
+# Experimento 6 (opcional): además de la hipótesis, un caso sintético mínimo para contrastarla en el sandbox.
+SISTEMA_CASO = (
+    "\nAdemás, para que la hipótesis se pueda comprobar, agregá al JSON un CASO SINTÉTICO MÍNIMO construido SOLO "
+    "desde el contrato (no conocés las pruebas ocultas): una entrada pequeña donde, si tu hipótesis es correcta, el "
+    "código del programador devuelve algo distinto de lo que pide el contrato. Formato:\n"
+    '"caso_sintetico": {"args": [<argumentos posicionales en JSON>], "kwargs": {<argumentos por nombre>}, '
+    '"que_deberia_pasar": "<qué pide el contrato para esa entrada, en palabras>"}\n'
+    "El coordinador lo ejecuta con una implementación de referencia y con el código del programador: si dan "
+    "distinto, la hipótesis queda confirmada; si dan igual, queda sin confirmar.")
+
+
 @dataclass
 class ConfigRevisor:
     modelo: ModelConfig
     max_revisiones: int = 2
     max_segundos: float = 1200.0       # tiempo total de revisión por misión
     max_caracteres: int = 2500         # lo que llega al programador
+    hipotesis_verificables: bool = False   # experimento 6: pedir y contrastar un caso sintético
+    contraste: object = None           # contraste.Contraste de la misión en curso (lo completa el Programador)
 
 
 def debe_revisar(historial: list[dict], ventana: int = VENTANA) -> tuple[bool, str]:
@@ -92,7 +105,7 @@ def debe_revisar(historial: list[dict], ventana: int = VENTANA) -> tuple[bool, s
                   f"{', '.join(str(h['n']) for h in ultimos)}")
 
 
-def mensajes(descripcion: str, spec: dict, codigo: str, feedback: str) -> list[dict]:
+def mensajes(descripcion: str, spec: dict, codigo: str, feedback: str, con_caso: bool = False) -> list[dict]:
     numerado = "\n".join(f"{i:3d}| {ln}" for i, ln in enumerate((codigo or "").splitlines(), 1))
     usuario = (f"CONTRATO DE LA MISIÓN:\n{descripcion}\n\n{prompts._sig(spec)}\n\n"
                f"Ejemplos visibles:\n{prompts._examples(spec, 3000) or '(sin ejemplos visibles)'}\n\n"
@@ -100,7 +113,8 @@ def mensajes(descripcion: str, spec: dict, codigo: str, feedback: str) -> list[d
                f"texto después de «| »):\n{numerado}\n\n"
                f"FEEDBACK AUTORIZADO DE LAS PRUEBAS (los casos ocultos no muestran sus datos):\n{feedback}\n\n"
                "Buscá la causa y respondé con el JSON pedido.")
-    return [{"role": "system", "content": SISTEMA_REVISOR}, {"role": "user", "content": usuario}]
+    return [{"role": "system", "content": SISTEMA_REVISOR + (SISTEMA_CASO if con_caso else "")},
+            {"role": "user", "content": usuario}]
 
 
 _BLOQUE = re.compile(r"```.*?(```|$)", re.S)
@@ -157,17 +171,28 @@ def interpretar(texto: str, codigo: str = "") -> dict:
                    for x in (d.get("hipotesis_secundarias") or [])[:MAX_SECUNDARIAS]
                    if isinstance(x, dict) and _limpio(x.get("descripcion"))]
     return {"principal": principal, "hechos": hechos, "secundarias": secundarias,
-            "citas_verificadas": sum(c["verificada"] for c in citas), "citas_total": len(citas)}
+            "citas_verificadas": sum(c["verificada"] for c in citas), "citas_total": len(citas),
+            "caso_sintetico": d.get("caso_sintetico")}     # sin interpretar: lo valida el coordinador
 
 
 INICIO = "════ DIAGNÓSTICO DEL REVISOR — rol distinto; NO es un resultado de pruebas ════"
 FIN = "════ FIN DEL DIAGNÓSTICO DEL REVISOR ════"
 
 
-def texto_para_programador(diag: dict, limite: int) -> str:
+ESTADOS_HIPOTESIS = {
+    "confirmada": "CONFIRMADA por un caso sintético ejecutado por el coordinador (ver la evidencia)",
+    "refutada": "NO CONFIRMADA: en el caso sintético del revisor tu código ya hace lo que pide el contrato; no es un "
+                "defecto demostrado y la causa puede ser otra",
+    "inconclusa": "SIN CONTRASTAR (el caso sintético no se pudo usar); tomala solo como hipótesis",
+}
+
+
+def texto_para_programador(diag: dict, limite: int, estado: str | None = None) -> str:
     p = diag["principal"]
     l = [INICIO,
          f"HIPÓTESIS PRINCIPAL (confianza {p['confianza']}) — regla del contrato: {p['regla_del_contrato'] or '—'}"]
+    if estado in ESTADOS_HIPOTESIS:
+        l.append(f"ESTADO DE LA HIPÓTESIS: {ESTADOS_HIPOTESIS[estado]}")
     verif = [c["texto"] for c in p["citas"] if c["verificada"]]
     no_verif = [c["texto"] for c in p["citas"] if not c["verificada"]]
     if verif:
@@ -197,7 +222,7 @@ def texto_para_programador(diag: dict, limite: int) -> str:
 def revisar(ollama, gate, cfg: ConfigRevisor, descripcion: str, spec: dict, codigo: str, feedback: str,
             cancel) -> dict:
     """Una llamada al revisor. Nunca lanza por fallas del revisor: devuelve {'ok': False, 'motivo': …}."""
-    msgs = mensajes(descripcion, spec, codigo, feedback)
+    msgs = mensajes(descripcion, spec, codigo, feedback, con_caso=cfg.hipotesis_verificables)
     t0 = time.monotonic()
     reg = {"modelo": cfg.modelo.name, "mensajes": msgs, "ok": False}
     try:

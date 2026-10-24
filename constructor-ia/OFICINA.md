@@ -785,6 +785,108 @@ python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --
 - el historial de `mejor/resumen.json`: `tipo_de_cambio` de cada intento, para ver si edita o reescribe;
 - `retroalimentacion.md`: el bloque delimitado y, si corresponde, el seguimiento.
 
+## Experimento 6: hipótesis verificables (implementado, SIN inferencias; opcional)
+
+**Contexto:** en la quinta experiencia, `conciliar_movimientos` quedó en 8/9 durante cuatro intentos. El revisor
+intervino dos veces, pero sus diagnósticos no fueron atendidos ni identificaron bien la causa (confundir un
+movimiento inexistente con una anulación aplicada).
+
+**Idea:** el revisor no solo señala, también **propone un caso sintético mínimo**, construido solo desde el contrato
+público, donde su hipótesis predice una discrepancia. El coordinador lo **contrasta** en el sandbox. Se activa con
+`programar … --revisor --hipotesis-verificables`; sin la opción, todo es igual que antes.
+
+### Circuito (`oficina/contraste.py`)
+
+1. **Pedido al revisor:** el prompt agrega (`SISTEMA_CASO`) el campo `caso_sintetico` con `args`, `kwargs` y
+   `que_deberia_pasar`. Recibe lo mismo que antes: contrato, código numerado y feedback autorizado. Nada de los casos
+   ocultos.
+2. **Validez del caso:**
+   - forma JSON y tamaño máximo;
+   - estructura según el contrato, con un validador por misión en `misiones_programacion.VALIDADORES`, derivado del
+     contrato sin modificarlo: claves exactas de cada movimiento, fechas `AAAA-MM-DD`, argumentos permitidos y a lo
+     sumo 12 elementos.
+3. **Salvaguarda:** si la entrada coincide **exactamente** con la de un caso oculto, no se ejecuta ni se revela nada,
+   y queda inconclusa.
+4. **Contraste en el sandbox** (Bubblewrap, seccomp y los mismos límites):
+   - primero con la **implementación de referencia autorizada**: si no procesa el caso, el caso queda fuera del
+     contrato (inconclusa), y su salida es lo que el contrato pide;
+   - después con el **código del programador** (el punto de partida del próximo intento).
+5. **Clasificación:**
+   - **confirmada:** el programa devuelve algo distinto (o lanza una excepción);
+   - **refutada:** devuelve lo mismo, así que la hipótesis queda **sin confirmar** y no se presenta como un defecto;
+   - **inconclusa:** caso inválido, privado, salida demasiado grande o fallo del sandbox.
+6. **Lo que recibe el programador:**
+   - el diagnóstico del revisor, con una línea «ESTADO DE LA HIPÓTESIS: CONFIRMADA / NO CONFIRMADA / SIN CONTRASTAR»;
+   - si está confirmada, un bloque aparte, **«EVIDENCIA VERIFICADA POR EL COORDINADOR (caso sintético del revisor; NO
+     es una prueba oculta)»**, con el caso, lo que pide el contrato (salida de la referencia), lo que devolvió su
+     código, las claves distintas y la propiedad incumplida.
+
+   El caso sintético es público (lo escribió el revisor) y nunca reemplaza a la evaluación.
+7. **Evaluación:** el evaluador central sigue ejecutando la **batería original de nueve casos**, sin cambios.
+
+### Métricas de cada revisión (`intento-N/revision.json`)
+
+| Métrica | Dónde |
+|---|---|
+| hipótesis propuesta | `contraste.hipotesis` y `diagnostico.principal` |
+| caso sintético | `contraste.caso` |
+| validez según el contrato | `contraste.validez` (válido o no, y motivo) |
+| resultado de la referencia y del programa | `contraste.referencia` y `contraste.programa` (estado y salida) |
+| hipótesis confirmada, refutada o inconclusa | `contraste.resultado` y `contraste.motivo` |
+| ¿se modificó la propiedad señalada? | `efecto.atencion` (las líneas citadas cambiaron) y `efecto.tipo_de_cambio` |
+| ¿la corrección eliminó la discrepancia sintética? | `efecto.discrepancia_sintetica`: eliminada, persiste o inconclusa (se vuelve a contrastar el intento siguiente) |
+| ¿mejoró, se mantuvo o empeoró en los casos originales? | `efecto.originales`, con `aprobados_base` y `aprobados` |
+
+`programar` imprime el resultado del contraste y el efecto de cada revisión.
+
+### Límites y riesgos
+
+- Un caso sintético por revisión y las mismas 2 revisiones por misión: a lo sumo dos consultas a la referencia
+  por misión, cada una sobre un caso mínimo escrito por el revisor.
+- La referencia de una misión le dice al programador la respuesta correcta para **ese** caso público. Es un oráculo
+  acotado, no un acceso a las pruebas ocultas. Por eso existen la salvaguarda de coincidencia exacta y el tamaño
+  máximo. Una coincidencia **parcial** con un caso oculto no se detecta, y está permitida: el revisor nunca vio esos
+  datos.
+- Validez: el validador comprueba la forma, y la referencia comprueba que el caso se pueda procesar. Si una misión
+  no tiene validador, el contraste no se activa.
+- La salida comparable está limitada a lo que reporta el arnés (400 caracteres). Una salida más grande deja el
+  contraste inconcluso.
+
+Pruebas: `tests/test_oficina_hipotesis.py` (11), con revisores y programadores simulados y el sandbox real.
+- **Contraste:**
+  - discrepancia real → confirmada (anulación de una anulación: contrato `anulacion_de_anulacion`, programa
+    `anulacion_inexistente`);
+  - sin discrepancia → refutada, también con la referencia;
+  - 7 casos fuera del contrato → inconclusos y nunca ejecutados con el programa;
+  - una entrada igual a un caso oculto no se ejecuta ni se revela;
+  - una referencia que no procesa el caso, o una salida demasiado grande → inconclusa;
+  - un programa que lanza una excepción → confirmada.
+- **Ciclo:**
+  - una hipótesis confirmada llega como evidencia separada y el pedido al revisor no tiene datos ocultos. El
+    programador corrige: atendida, discrepancia eliminada, originales que mejoran a 9/9, y la verificación central
+    la acepta con la batería original;
+  - una hipótesis refutada se presenta como «NO CONFIRMADA» y sin evidencia;
+  - un caso inválido queda «SIN CONTRASTAR»;
+  - una discrepancia ignorada se mide (no atendida, persiste, se mantuvo) y se conserva la mejor versión;
+  - sin la opción, nada cambia.
+
+Suite completa: 598 pruebas, OK (656 s).
+
+### Sexta experiencia (cuando la autoricen)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_hipotesis tests.test_oficina_revisor tests.test_oficina_autocorreccion \
+    tests.test_oficina_conciliar tests.test_oficina_programacion       # 50 pruebas, sin inferencias
+C=~/constructor-ia-piloto/data/oficina-programacion-6
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta --mision conciliar_movimientos
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
+    --autorizo-inferencia-remota --revisor --hipotesis-verificables
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

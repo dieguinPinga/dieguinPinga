@@ -214,9 +214,24 @@ class MotorConRevisor(MotorConMemoria):
                                                                       default=str), "revision", n)
         self._event(mid, "revision", f"Revisor antes del intento {n}: {reg['estado']}"
                     + (f" ({reg['motivo']})" if reg.get("motivo") else "") + f" · {criterio}")
-        if reg["estado"] == "hecha":
-            return report + "\n\n" + RV.texto_para_programador(reg["diagnostico"], cfg.max_caracteres)
-        return report
+        if reg["estado"] != "hecha":
+            return report
+        estado = None
+        if cfg.hipotesis_verificables and cfg.contraste is not None:
+            from . import contraste as CT
+            caso, motivo = CT.leer_caso(reg["diagnostico"].get("caso_sintetico"))
+            reg["contraste"] = CT.contrastar(self.executor, cfg.contraste, base_code, caso, motivo)
+            reg["contraste"]["hipotesis"] = reg["diagnostico"]["principal"]["propiedad_a_cambiar"]
+            estado = reg["contraste"]["resultado"]
+            self.files.save(mid, f"intento-{n}/revision.json", json.dumps(reg, ensure_ascii=False, indent=2,
+                                                                          default=str), "revision", n)
+            self._event(mid, "revision", f"Hipótesis del revisor {estado}: {reg['contraste']['motivo']}")
+        texto = RV.texto_para_programador(reg["diagnostico"], cfg.max_caracteres, estado)
+        if estado == "confirmada":
+            from . import contraste as CT
+            texto += "\n\n" + CT.texto_para_programador(reg["contraste"], cfg.contraste.funcion,
+                                                         reg["diagnostico"]["principal"]["propiedad_a_cambiar"])
+        return report + "\n\n" + texto
 
     def _registrar(self, mid, n, spec, description, st, out, base_n):
         super()._registrar(mid, n, spec, description, st, out, base_n)
@@ -238,6 +253,18 @@ class MotorConRevisor(MotorConMemoria):
             "citas_cambiadas": len(citas) - len(persisten),
             "persisten_casos": sorted(set(e["fallidos_todos"]) & set(
                 next((h["fallidos_todos"] for h in st["historial"] if h["n"] == e["base"]), [])))}
+        base_puntaje = next((h["puntaje"] for h in st["historial"] if h["n"] == e["base"]), None)
+        if base_puntaje is not None:
+            rev["efecto"]["originales"] = ("mejoró" if e["puntaje"] > base_puntaje else
+                                           "empeoró" if e["puntaje"] < base_puntaje else "se mantuvo")
+            rev["efecto"]["aprobados_base"] = base_puntaje
+        ct = rev.get("contraste")
+        if ct and ct["resultado"] == "confirmada" and e["codigo"] is not None and self.revisor.contraste is not None:
+            from . import contraste as CT
+            otra = CT.contrastar(self.executor, self.revisor.contraste, e["codigo"], ct["caso"], None)
+            rev["efecto"]["discrepancia_sintetica"] = ("eliminada" if otra["resultado"] == "refutada" else
+                                                       "persiste" if otra["resultado"] == "confirmada" else
+                                                       "inconclusa")
         self.files.save(mid, f"intento-{n}/revision.json", json.dumps(rev, ensure_ascii=False, indent=2, default=str),
                         "revision", n)
         self._event(mid, "revision", f"Efecto de la revisión en el intento {n}: {rev['efecto']['atencion']} · "
