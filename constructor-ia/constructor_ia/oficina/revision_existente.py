@@ -34,6 +34,7 @@ import difflib
 import hashlib
 import io
 import json
+import re
 import threading
 import time
 import tokenize
@@ -97,7 +98,11 @@ class ConfigExperimento:
     mision: str = "conciliar_movimientos"
     max_revisiones: int = 2
     max_reparaciones: int = 3
-    max_segundos: float = 2400.0       # tiempo total de inferencia (revisor + programador)
+    max_segundos: float = 2400.0       # tiempo total de inferencia (revisor + programador, con su diagnóstico)
+    variante: str = "7.1"              # "7.1": reparación directa · "7.2": diagnóstico del programador y reparación
+
+VARIANTES = {"7.1": "reparación directa con retroalimentación específica",
+             "7.2": "diagnóstico previo del programador (etapa A) y reparación (etapa B), con la retroalimentación del 7.1"}
 
 
 def huella(codigo: str | None) -> str | None:
@@ -181,7 +186,8 @@ def preparar(executor, mision: str, codigo: str | None = None, defecto: str | No
 
 
 def mensajes_reparacion(descripcion: str, spec: dict, codigo: str, diagnostico: str, evidencia: str, aviso: str,
-                        budget: int, historial: list[str] | None = None, base_n: int = 0) -> list[dict]:
+                        budget: int, historial: list[str] | None = None, base_n: int = 0,
+                        propio: str = "") -> list[dict]:
     """Pedido al PROGRAMADOR: el contrato, los ejemplos visibles, el código, el diagnóstico y la evidencia del caso
     sintético (en un reintento, el resultado concreto de su último intento y el historial). Ningún resultado de la
     batería."""
@@ -194,9 +200,103 @@ def mensajes_reparacion(descripcion: str, spec: dict, codigo: str, diagnostico: 
                f"{diagnostico}\n\n{evidencia}\n\n"
                + ("TUS REPARACIONES ANTERIORES (todas en el caso del revisor; no repitas un cambio que ya probaste):\n"
                   + "\n".join(f"- {h}" for h in historial) + "\n\n" if historial else "")
+               + (f"{propio}\n\n" if propio else "")         # solo la variante 7.2 (etapa B)
                + (f"AVISO DEL COORDINADOR:\n{aviso}\n\n" if aviso else "")
-               + "Corregí el programa y devolvé el archivo completo en un único bloque ```python.")
+               + PEDIDO_DE_CODIGO)
     return [{"role": "system", "content": prompts.BUILDER_SYSTEM}, {"role": "user", "content": usuario}]
+
+
+PEDIDO_DE_CODIGO = "Corregí el programa y devolvé el archivo completo en un único bloque ```python."
+
+
+# Experimento 7.2: DIAGNÓSTICO PREVIO del programador ----------------------------------------------------------------
+# Etapa A: con el MISMO material que el pedido de reparación del 7.1 (contrato, ejemplos, código, diagnóstico del
+# revisor, evidencia o resultado de su último intento, historial y avisos), el programador responde solo un
+# diagnóstico estructurado, sin código. Etapa B: el pedido de reparación del 7.1 más su propio diagnóstico. Los
+# modelos, los límites, el defecto, la retroalimentación (etapa C) y los criterios no cambian; cada iteración A+B
+# cuenta como UN intento de reparación y las dos inferencias entran en el presupuesto de tiempo.
+
+SISTEMA_DIAGNOSTICO_PROGRAMADOR = (
+    "Sos el PROGRAMADOR del equipo. Antes de corregir el código, hacé tu propio diagnóstico. En esta etapa NO "
+    "escribas el programa: solo analizá.\n"
+    "Usá el contrato, el código actual, el diagnóstico del revisor y el caso comprobado por el coordinador. Seguí la "
+    "entrada del caso paso a paso por el código e identificá la causa concreta.\n"
+    "Respondé SOLO con un objeto JSON con esta forma:\n"
+    '{"causa": "<causa concreta del defecto>", "elementos": ["<variable, estructura o condición involucrada, copiada '
+    'del código>"], "modificacion": "<qué vas a cambiar en el código, en palabras>", "justificacion": "<por qué ese '
+    'cambio hace que el caso dé lo que pide el contrato>", "efectos_secundarios": ["<qué otra regla del contrato '
+    'podría verse afectada>"]}\n'
+    "Sin bloques de código ni el programa completo: como mucho, fragmentos cortos del código actual dentro de los "
+    "textos.")
+PEDIDO_DE_DIAGNOSTICO = "Hacé tu diagnóstico y respondé solo con el JSON pedido, sin código."
+CAMPOS_DIAGNOSTICO = ("causa", "elementos", "modificacion", "justificacion", "efectos_secundarios")
+MAX_CAMPO_DIAGNOSTICO = 600
+MAX_ELEMENTOS = 6
+
+
+def mensajes_diagnostico(*a, **k) -> list[dict]:
+    """Etapa A: el mismo material que mensajes_reparacion, otro sistema y otro pedido final."""
+    msgs = mensajes_reparacion(*a, **k)
+    usuario = msgs[1]["content"]
+    assert usuario.endswith(PEDIDO_DE_CODIGO)
+    return [{"role": "system", "content": SISTEMA_DIAGNOSTICO_PROGRAMADOR},
+            {"role": "user", "content": usuario[:-len(PEDIDO_DE_CODIGO)] + PEDIDO_DE_DIAGNOSTICO}]
+
+
+def interpretar_diagnostico(texto: str, codigo: str, funcion: str) -> dict:
+    """Valida el diagnóstico de la etapa A. ValueError si es inválido o incompleto. Los «elementos» se comprueban
+    contra el código (como las citas del revisor): es lo verificable del diagnóstico."""
+    t = (texto or "").strip()
+    if re.search(rf"\bdef\s+{re.escape(funcion)}\s*\(", t):
+        raise ValueError("incluyó el programa: en esta etapa solo va el diagnóstico")
+    m = re.search(r"\{.*\}", t, re.S)
+    if not m:
+        raise ValueError("la respuesta no contiene un objeto JSON")
+    try:
+        d = json.loads(m.group(0))
+    except ValueError as e:
+        raise ValueError(f"JSON ilegible: {e}") from None
+    if not isinstance(d, dict):
+        raise ValueError("la respuesta no es un objeto JSON")
+    faltan = [c for c in CAMPOS_DIAGNOSTICO if c not in d]
+    if faltan:
+        raise ValueError("faltan campos: " + ", ".join(faltan))
+    out = {}
+    for c in ("causa", "modificacion", "justificacion"):
+        out[c] = RV._limpio(d[c], MAX_CAMPO_DIAGNOSTICO) if isinstance(d[c], str) else ""
+        if not out[c]:
+            raise ValueError(f"«{c}» vacío o no es un texto")
+    elementos = d["elementos"] if isinstance(d["elementos"], list) else [d["elementos"]]
+    elementos = [RV._limpio(e, RV.MAX_CITA) for e in elementos if isinstance(e, str) and e.strip()][:MAX_ELEMENTOS]
+    if not elementos:
+        raise ValueError("«elementos» tiene que nombrar al menos una variable, estructura o condición")
+    efectos = d["efectos_secundarios"]
+    efectos = [efectos] if isinstance(efectos, str) else efectos if isinstance(efectos, list) else None
+    if efectos is None:
+        raise ValueError("«efectos_secundarios» tiene que ser una lista (puede estar vacía)")
+    out["elementos"] = [{"texto": e, "en_el_codigo": RV.cita_en_codigo(e, codigo)} for e in elementos]
+    out["efectos_secundarios"] = [RV._limpio(e, MAX_CAMPO_DIAGNOSTICO) for e in efectos
+                                  if isinstance(e, str) and e.strip()][:MAX_ELEMENTOS]
+    out["elementos_en_el_codigo"] = sum(e["en_el_codigo"] for e in out["elementos"])
+    return out
+
+
+def texto_diagnostico_propio(diag: dict | None, motivo: str | None = None) -> str:
+    """Etapa B: el diagnóstico del programador, tal como lo escribió (validado y saneado), o por qué no se usa."""
+    if diag is None:
+        return ("════ TU DIAGNÓSTICO (etapa previa) ════\nTu diagnóstico no se pudo usar"
+                + (f" ({motivo})" if motivo else "") + ".\n════ FIN DE TU DIAGNÓSTICO ════")
+    l = ["════ TU DIAGNÓSTICO (etapa previa; lo escribiste vos y el coordinador no lo verificó) ════",
+         f"Causa: {diag['causa']}",
+         "Elementos involucrados: " + "; ".join(f"«{e['texto']}»" + ("" if e["en_el_codigo"] else
+                                                                     " (no aparece literalmente en el código)")
+                                               for e in diag["elementos"]),
+         f"Modificación propuesta: {diag['modificacion']}",
+         f"Justificación: {diag['justificacion']}",
+         "Posibles efectos secundarios: " + ("; ".join(diag["efectos_secundarios"]) or "ninguno indicado"),
+         "Implementá esa modificación si sigue siendo correcta, respetando el contrato.",
+         "════ FIN DE TU DIAGNÓSTICO ════"]
+    return "\n".join(l)
 
 
 # Experimento 7.1: retroalimentación ESPECÍFICA entre intentos del programador ----------------------------------------
@@ -456,27 +556,53 @@ class Experimento:
                     if ct else ""))
         return rev
 
-    def _programar(self, n: int, msgs: list[dict], cancel):
+    def _programar(self, n: int, msgs: list[dict], cancel, etapa: str = "reparacion"):
+        """Una inferencia del programador. etapa «reparacion» (código; pedido.json y respuesta.md) o «diagnostico»
+        (7.2, etapa A: JSON sin las reglas de concisión del código; diagnostico_pedido.json y
+        diagnostico_respuesta.txt). Cada una queda registrada por separado en el consumo."""
+        diag = etapa == "diagnostico"
         self.pedidos.append(msgs)
-        self._guardar(f"reparacion-{n}/pedido.json", msgs)
+        self._guardar(f"reparacion-{n}/{'diagnostico_pedido.json' if diag else 'pedido.json'}", msgs)
         t0 = time.monotonic()
+        base = {"rol": "programador", "etapa": etapa, "reparacion": n, "modelo": self.cfg.programador.name}
         try:
             self.gate.acquire("programador", cancel)
             try:
-                gen = self.cliente_programador.chat(self.cfg.programador, msgs, cancel)
+                if diag:
+                    gen = self.cliente.chat(self.cfg.programador, msgs, cancel, fmt="json")
+                else:
+                    gen = self.cliente_programador.chat(self.cfg.programador, msgs, cancel)
             finally:
                 self.gate.release()
         except (OllamaError, OSError) as e:
-            self.llamadas.append({"rol": "programador", "reparacion": n, "modelo": self.cfg.programador.name,
-                                  "segundos": round(time.monotonic() - t0, 1), "tokens_prompt": None,
-                                  "tokens_generados": None, "fin": None, "cortada": None, "error": str(e)})
+            self.llamadas.append(dict(base, segundos=round(time.monotonic() - t0, 1), tokens_prompt=None,
+                                      tokens_generados=None, fin=None, cortada=None, error=str(e)))
             return None, str(e)
-        self.llamadas.append({"rol": "programador", "reparacion": n, "modelo": self.cfg.programador.name,
-                              "segundos": round(time.monotonic() - t0, 1), "tokens_prompt": gen.prompt_tokens,
-                              "tokens_generados": gen.eval_tokens, "fin": gen.done_reason,
-                              "cortada": bool(gen.truncated), "error": None})
-        self._guardar(f"reparacion-{n}/respuesta.md", gen.text)
+        self.llamadas.append(dict(base, segundos=round(time.monotonic() - t0, 1), tokens_prompt=gen.prompt_tokens,
+                                  tokens_generados=gen.eval_tokens, fin=gen.done_reason, cortada=bool(gen.truncated),
+                                  error=None))
+        self._guardar(f"reparacion-{n}/{'diagnostico_respuesta.txt' if diag else 'respuesta.md'}", gen.text)
         return gen, None
+
+    def _diagnosticar(self, n: int, base: str, material: tuple, cancel) -> tuple[dict, str]:
+        """Etapa A (7.2). Devuelve (registro, texto para la etapa B). Un diagnóstico inválido no detiene nada: la
+        etapa B sigue con el mismo material y el motivo."""
+        msgs = mensajes_diagnostico(*material[0], **material[1])
+        gen, error = self._programar(n, msgs, cancel, etapa="diagnostico")
+        if gen is None:
+            reg = {"valido": False, "motivo": f"sin respuesta: {error}"}
+        else:
+            try:
+                reg = {"valido": True, "motivo": None,
+                       **interpretar_diagnostico(gen.text, base, self.contraste.funcion)}
+            except ValueError as e:
+                reg = {"valido": False, "motivo": str(e) + (" (respuesta cortada por el límite de tokens)"
+                                                            if gen.truncated else "")}
+        self._guardar(f"reparacion-{n}/diagnostico.json", reg)
+        self.log(f"  diagnóstico {n}: " + ("válido · " + f"{reg['elementos_en_el_codigo']}/{len(reg['elementos'])} "
+                                           "elementos en el código" if reg["valido"] else f"inválido · {reg['motivo']}"))
+        texto = texto_diagnostico_propio(reg if reg["valido"] else None, reg["motivo"])
+        return reg, texto
 
     def _visibles(self, codigo: str) -> dict:
         spec = dict(self.spec, cases=[c for c in self.spec["cases"] if c.get("visible", True)])
@@ -495,6 +621,7 @@ class Experimento:
         self._guardar("inicial/solucion.py", inicial)
         self._guardar("inicial/preparacion.json", {k: v for k, v in prep.items() if k != "codigo_inicial"})
         inf = {"experimento": VERSION_EXPERIMENTO, "mision": self.cfg.mision, "inicio": time.time(),
+               "variante": {"id": self.cfg.variante, "descripcion": VARIANTES[self.cfg.variante]},
                "limites": {"max_revisiones": self.cfg.max_revisiones, "max_reparaciones": self.cfg.max_reparaciones,
                            "max_segundos": self.cfg.max_segundos, "num_predict_programador": self.cfg.programador.num_predict,
                            "num_predict_revisor": self.cfg.revisor.num_predict},
@@ -538,10 +665,26 @@ class Experimento:
             if (motivo := self._sin_tiempo()):
                 inf["detenido"] = motivo
                 break
-            msgs = mensajes_reparacion(self.descripcion, self.spec, base, diagnostico, evidencia, aviso, budget,
-                                       historial, base_n)
-            gen, error = self._programar(n, msgs, cancel)
+            material = ((self.descripcion, self.spec, base, diagnostico, evidencia, aviso, budget, historial, base_n),
+                        {})
             rep = {"intento": n, "base": base_n}
+            propio = ""
+            if self.cfg.variante == "7.2":
+                # Etapa A: diagnóstico propio. Cuenta dentro del MISMO intento y del mismo presupuesto de tiempo.
+                rep["diagnostico_propio"], propio = self._diagnosticar(n, base, material, cancel)
+                if (motivo := self._sin_tiempo()):
+                    inf["reparaciones"].append(rep)
+                    rep.update(estado="sin_tiempo", detalle=motivo)
+                    inf["detenido"] = motivo
+                    break
+                if rep["diagnostico_propio"]["motivo"] and ("contactar" in rep["diagnostico_propio"]["motivo"]
+                                                            or "no disponible" in rep["diagnostico_propio"]["motivo"]):
+                    inf["reparaciones"].append(rep)
+                    rep.update(estado="sin_respuesta", detalle=rep["diagnostico_propio"]["motivo"])
+                    inf["detenido"] = f"el trabajador no responde: {rep['diagnostico_propio']['motivo']}"
+                    break
+            msgs = mensajes_reparacion(*material[0], propio=propio)
+            gen, error = self._programar(n, msgs, cancel)
             inf["reparaciones"].append(rep)
             if gen is None:
                 rep.update(estado="sin_respuesta", detalle=error)
@@ -645,8 +788,17 @@ class Experimento:
             r["tokens_generados"] += ll["tokens_generados"] or 0
             r["cortadas"] += bool(ll["cortada"])
             r["errores"] += bool(ll["error"])
-        inf["consumo"] = {"llamadas": self.llamadas, "por_rol": por_rol, "total_llamadas": len(self.llamadas),
-                          "segundos": round(self._segundos(), 1)}
+        por_etapa = {}
+        for ll in self.llamadas:
+            if ll["rol"] == "programador":
+                e = por_etapa.setdefault(ll.get("etapa", "reparacion"), {"llamadas": 0, "segundos": 0.0,
+                                                                         "tokens_prompt": 0, "tokens_generados": 0})
+                e["llamadas"] += 1
+                e["segundos"] = round(e["segundos"] + (ll["segundos"] or 0), 1)
+                e["tokens_prompt"] += ll["tokens_prompt"] or 0
+                e["tokens_generados"] += ll["tokens_generados"] or 0
+        inf["consumo"] = {"llamadas": self.llamadas, "por_rol": por_rol, "programador_por_etapa": por_etapa,
+                          "total_llamadas": len(self.llamadas), "segundos": round(self._segundos(), 1)}
         inf["fin"] = time.time()
         self._guardar("informe.json", inf)
         return inf

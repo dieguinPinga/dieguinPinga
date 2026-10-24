@@ -1226,6 +1226,108 @@ Para comparar con la corrida anterior, mirá `reparacion-N/retroalimentacion.md`
 `$L/experimento-7/corrida-*/`. Usá en `--modelo` el nombre exacto con el que Qwen figura en `ollama list` del
 trabajador.
 
+## Experimento 7.2: diagnóstico previo a la reparación (implementado, SIN inferencias)
+
+**Contexto:** en el 7.1, Gemma encontró el defecto, pero Qwen 2.5 Coder 7B devolvió dos veces el programa original,
+aun con evidencia concreta. **Hipótesis:** separar el razonamiento causal de la generación de código mejora la
+reparación.
+
+**Variante seleccionable:** `oficina revisar-existente … --variante 7.2`. Por omisión es `7.1`, que funciona
+exactamente igual que antes (lo comprueban las pruebas). `oficina programar` no cambia.
+
+### Qué se mantiene constante (para comparar arquitecturas)
+
+- Los modelos, `num_ctx`, `num_predict`, plazos y temperatura.
+- El defecto, el revisor, el contraste, la verificación final y los criterios de éxito.
+- El texto del pedido de reparación: en 7.2 es el mismo pedido del 7.1 más un bloque con el diagnóstico propio. Ningún
+  prompt existente se modificó.
+- `--max-reparaciones`: cada iteración A+B cuenta como **un** intento, no se agregan intentos para compensar la etapa
+  nueva.
+- `--max-segundos`: las dos inferencias de cada iteración entran en el mismo presupuesto, revisado antes de A y otra
+  vez antes de B.
+
+### Etapas de cada intento
+
+- **A. Diagnóstico** (`SISTEMA_DIAGNOSTICO_PROGRAMADOR`, salida JSON):
+  - **Recibe** el **mismo material** que el pedido de reparación del 7.1 (contrato, ejemplos visibles, código actual,
+    diagnóstico del revisor, evidencia del caso o resultado de su último intento, historial y avisos). Solo cambian
+    el sistema y la última línea: «Hacé tu diagnóstico y respondé solo con el JSON pedido, sin código».
+  - **Responde:** `causa`, `elementos` (variables, estructuras o condiciones copiadas del código),
+    `modificacion`, `justificacion` y `efectos_secundarios`.
+  - **Validación** (`interpretar_diagnostico`):
+    - los cinco campos son obligatorios, con textos no vacíos y al menos un elemento;
+    - si incluye el programa (`def <función>(`), es inválido;
+    - se quitan los bloques de código;
+    - cada elemento se comprueba contra el código (`en_el_codigo`), igual que las citas del revisor.
+  - **Si es inválido**, no se reintenta ni se suma un intento: la etapa B sigue con «Tu diagnóstico no se pudo usar
+    (motivo)».
+- **B. Reparación:** el pedido del 7.1 (las reglas de concisión de siempre) más el bloque «TU DIAGNÓSTICO (etapa
+  previa; lo escribiste vos y el coordinador no lo verificó)», con causa, elementos (marcando los que no están en el
+  código), modificación, justificación y efectos secundarios. El coordinador ejecuta, contrasta y verifica como antes.
+- **C. Retroalimentación:** la del 7.1 sin cambios:
+  - salida esperada y obtenida, clave por clave;
+  - diff entre versiones;
+  - mismo programa o misma salida;
+  - historial;
+  - corte cuando no aparece información nueva.
+
+  El resultado alimenta el diagnóstico (A) del intento siguiente.
+
+### Información y registro
+
+- **Sin filtraciones:** ni casos ocultos, ni referencia, ni defecto. La auditoría revisa también los pedidos de
+  diagnóstico.
+- **Archivos por intento** (`reparacion-N/`): `diagnostico_pedido.json`, `diagnostico_respuesta.txt` y
+  `diagnostico.json` (validez, motivo y campos), además de `pedido.json`, `respuesta.md`, `solucion.py`,
+  `reparacion.json` (con `diagnostico_propio`) y `retroalimentacion.md`.
+- **`informe.json`:**
+  - `variante` (id y descripción);
+  - cada llamada con `etapa` (`diagnostico` o `reparacion`), tokens, segundos y motivo de fin;
+  - `consumo.programador_por_etapa`, con los totales separados.
+
+### Pruebas
+
+`tests/test_oficina_diagnostico_previo.py` (11), sin inferencias, con revisor y programador simulados y el sandbox
+real:
+- **Diagnósticos:** uno válido se sanea y sus elementos se comprueban contra el código. Los inválidos o
+  incompletos se rechazan con su motivo: sin JSON, faltan campos, causa vacía, sin elementos, efectos que no son una
+  lista, o con el programa adentro.
+- **Mismo material:** la etapa A recibe el mismo material que la B, y sin la variante el pedido es exactamente el del
+  7.1.
+- **Diagnóstico válido y reparación válida:**
+  - la etapa B es el pedido del 7.1 más el diagnóstico;
+  - es un solo intento;
+  - el registro y el consumo quedan separados por etapa;
+  - no hay filtraciones.
+- **Diagnóstico inválido:** no suma intentos y la reparación sigue con el motivo.
+- **Reparación que no elimina la discrepancia:** su resultado alimenta el diagnóstico siguiente.
+- **Repetición del programa:** corta como en el 7.1.
+- **Presupuesto:** el diagnóstico cuenta dentro del presupuesto, que se agota entre A y B.
+- **Compatibilidad:** la variante por omisión se comporta como el 7.1.
+- **CLI:** `--variante 7.2`, identificada en pantalla y en el informe.
+
+Suite completa: 638 pruebas, OK (718 s).
+
+### Ejecutar el experimento 7.2 (carpeta NUEVA; mismos modelos, defecto y límites que el 7.1)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_diagnostico_previo tests.test_oficina_retroalimentacion \
+    tests.test_oficina_revision_existente                                # 33 pruebas, sin inferencias
+L=~/constructor-ia-piloto/data/oficina-revision-7-2
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.2      # preparación, sin inferencias
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.2 --autorizo-inferencia-remota
+```
+
+Con los límites por omisión (2 revisiones, 3 reparaciones, 2400 s), la variante 7.2 hace a lo sumo 2 + 3 × 2 = 8
+inferencias, contra 5 en el 7.1, dentro del mismo presupuesto de tiempo.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

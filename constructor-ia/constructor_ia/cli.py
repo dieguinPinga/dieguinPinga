@@ -1383,7 +1383,7 @@ def _oficina_revision_existente(args, cfg, carpeta) -> int:
     def paso(nombre, ok, detalle):
         pasos.append(ok)
         print(f"[{'OK' if ok else 'FALLA'}] {nombre}: {detalle}")
-    print(f"{RE.VERSION_EXPERIMENTO}: misión {args.mision}"
+    print(f"{RE.VERSION_EXPERIMENTO} · variante {args.variante} ({RE.VARIANTES[args.variante]}): misión {args.mision}"
           + (f", código inicial {args.codigo}" if args.codigo else ", código inicial: referencia de la misión")
           + (f", defecto controlado «{args.defecto}»" if args.defecto else ", sin defecto controlado"))
     previos = [x for x in ("taller.db", "taller") if (carpeta / x).exists()]
@@ -1440,7 +1440,7 @@ def _oficina_revision_existente(args, cfg, carpeta) -> int:
         programador=PG.modelo_remoto(args.modelo),
         revisor=PG.modelo_remoto(args.revisor_modelo or args.modelo, num_predict=1024, timeout_s=600),
         mision=args.mision, max_revisiones=args.max_revisiones, max_reparaciones=args.max_reparaciones,
-        max_segundos=args.max_segundos)
+        max_segundos=args.max_segundos, variante=args.variante)
     print(f"[INFO] corrida en {destino}: hasta {conf.max_revisiones} revisiones y {conf.max_reparaciones} "
           f"reparaciones, {conf.max_segundos:.0f} s de inferencia")
     inf = RE.Experimento(destino, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]), conf).correr(prep)
@@ -1451,7 +1451,8 @@ def _oficina_revision_existente(args, cfg, carpeta) -> int:
     if inf.get("detenido"):
         print(f"Detenido: {inf['detenido']}")
     for ll in inf["consumo"]["llamadas"]:
-        print(f"  {ll['rol']}: {ll['tokens_prompt']} tokens de entrada · {ll['tokens_generados']} generados · "
+        print(f"  {ll['rol']}" + (f" ({ll['etapa']} {ll['reparacion']})" if ll.get("etapa") else "")
+              + f": {ll['tokens_prompt']} tokens de entrada · {ll['tokens_generados']} generados · "
               f"{ll['segundos']} s" + (" · CORTADA" if ll["cortada"] else "") + (f" · {ll['error']}" if ll["error"] else ""))
     for nombre, ok in inf["criterios"].items():
         print(f"  criterio {nombre}: {'sí' if ok else 'no'}")
@@ -1694,6 +1695,8 @@ def main(argv=None) -> int:
     o.add_argument("--max-reparaciones", dest="max_reparaciones", type=int, default=3)
     o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0,
                    help="tiempo total de inferencia (revisor + programador)")
+    o.add_argument("--variante", choices=["7.1", "7.2"], default="7.1",
+                   help="7.1: reparación directa (por omisión) · 7.2: diagnóstico previo del programador y reparación")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")
