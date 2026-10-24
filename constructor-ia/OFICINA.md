@@ -377,6 +377,104 @@ python3 -m constructor_ia oficina cola --carpeta $C
 
 **Lo que esta etapa no demuestra:** que Gemma resuelva la misión. Eso lo dice la primera corrida autorizada.
 
+### Primera ejecución real (Diego y ChatGPT)
+
+Gemma 12B en `rampern` resolvió `resumen_ventas` en el **primer intento**: 7/7 pruebas, 670 tokens y 64,2 s. La
+verificación central independiente también aprobó.
+
+## Segunda misión: `conciliar_movimientos` (preparada, SIN inferencias)
+
+Se agrega al catálogo (`oficina/misiones_programacion.py`) sin tocar el motor. Usa el mismo circuito: `Engine`,
+Bubblewrap + seccomp, el informe de fallos existente (`prompts.failure_report`), hasta **4 intentos**, la verificación
+central por reejecución y el registro de cada intento. No tiene fallos artificiales: los reintentos, si los hay, salen
+de la dificultad real de la misión.
+
+### Contrato
+
+`conciliar_movimientos(movimientos, saldos_iniciales=None, conteo_fisico=None)`.
+
+**Entrada:**
+- `movimientos`: diccionarios de dos formas:
+  - ingreso o egreso: `{"id", "fecha" 'AAAA-MM-DD', "producto", "tipo": "ingreso"|"egreso", "cantidad"}`;
+  - anulación: `{"id", "fecha", "producto", "tipo": "anulacion", "anula": <id>}`. Su producto se ignora: vale el del
+    movimiento anulado.
+- `saldos_iniciales` y `conteo_fisico`: `{producto: entero}`, o `None`.
+- No se modifica la entrada.
+
+**Proceso:**
+- En orden de `(fecha, id)`, sin importar el orden de la lista.
+- Cada movimiento se aplica o se ignora. Si se ignora, genera una inconsistencia con el **primer** motivo que
+  corresponda, revisados en este orden:
+  1. `id_duplicado`;
+  2. `tipo_desconocido`;
+  3. `cantidad_invalida` (cantidad que no es un entero mayor que 0), o `saldo_insuficiente` si un egreso dejaría el
+     saldo negativo;
+  4. para anulaciones:
+     - `anulacion_inexistente` (no hay un movimiento aplicado anterior con ese id);
+     - `anulacion_de_anulacion`;
+     - `anulacion_repetida`;
+     - `saldo_insuficiente`, si revertir dejaría el saldo negativo.
+- Una anulación revierte por completo el efecto del movimiento anulado.
+
+**Salida:**
+- `saldos`: los productos de `saldos_iniciales` o de algún movimiento aplicado;
+- `movimientos_aplicados`;
+- `inconsistencias`: `[{"id", "motivo"}]`, en el orden de proceso;
+- `conciliacion`: `None` sin conteo; si hay conteo, `{producto: conteo − saldo}`, solo con las diferencias distintas
+  de 0 (un producto que falta en uno de los dos lados vale 0).
+
+### Casos (resultados escritos a mano)
+
+| Caso | Qué ejercita | Resultado |
+|---|---|---|
+| V1 (visible) | ingreso, egreso, anulación del egreso, saldo inicial y conteo | Arroz 12 y Yerba 5; 4 aplicados; conciliación `{"Yerba": -1}` |
+| V2 (visible) | egreso sin saldo | Aceite 2; 1 aplicado; `saldo_insuficiente` (id 2) |
+| H1 | lista vacía | todo vacío; conciliación `None` |
+| H2 | solo saldos y conteo: un saldo en 0 y un producto solo en el conteo | Arroz 3 y Fideos 0; conciliación `{"Sal": 2}` |
+| H3 | lista desordenada; la anulación es anterior, por fecha, al egreso que anula | Arroz 3; 3 aplicados; `anulacion_inexistente` |
+| H4 | revertir un ingreso ya vendido, una anulación repetida, una anulación de anulación y una anulación posterior válida | Yerba 0; 4 aplicados; 3 inconsistencias; conciliación `{}` |
+| H5 | id duplicado, cantidades 0, −2 y `"4"`, tipo desconocido, anulación de un movimiento ignorado | Sal 5; 1 aplicado; 6 inconsistencias |
+| H6 | varios productos desordenados, egreso hasta 0 exacto, conteo con un producto sin saldo | Arroz 9, Aceite 2 y Fideos 0; 9 aplicados; conciliación `{"Aceite": -1, "Yerba": 2}` |
+| H7 | el mismo día manda el id, no el tipo (el egreso id 1 va antes que el ingreso id 2) | Sal 5; `saldo_insuficiente` (id 1) |
+
+La **solución de referencia** (`REFERENCIA_CONCILIAR`) es código nuestro, independiente de los valores escritos a
+mano. `comprobar-programacion` la ejecuta en el sandbox y tiene que aprobar 9/9 antes de cualquier inferencia. El
+modelo ve el contrato, los 2 casos visibles y el aviso «Además hay 7 casos ocultos». Si un caso oculto falla, el
+informe dice cuál falló, pero no su valor esperado ni sus argumentos.
+
+Pruebas: `tests/test_oficina_conciliar.py` (7).
+- **Referencia:**
+  - coincide con los 9 resultados escritos a mano y no modifica la entrada;
+  - aprueba 9/9 en el sandbox real.
+- **Cobertura:** cubren los 7 motivos del contrato.
+- **Errores típicos,** escritos a mano solo para validar las pruebas (nunca se le dan al modelo): procesar en el orden
+  de la lista, no controlar el saldo, incluir las diferencias en 0 y anular movimientos ignorados. Cada uno falla en
+  al menos un caso oculto, sin que el informe revele el esperado.
+- **Prompt:** no contiene productos, fechas ni motivos propios de los casos ocultos.
+- **Ciclo existente:** recorre la misión y la verifica centralmente, 9/9.
+- **CLI:** comprobar y encolar sin inferencias.
+
+Suite completa con esta misión: 568 pruebas, OK (654 s).
+
+### Ejecutar la segunda misión en la VivoBook (cuando lo autoricen)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_conciliar tests.test_oficina_programacion     # 20 pruebas, sin inferencias
+C=~/constructor-ia-piloto/data/oficina-programacion-2              # carpeta NUEVA (la de la primera misión queda intacta)
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta --mision conciliar_movimientos
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
+    --autorizo-inferencia-remota
+python3 -m constructor_ia oficina cola --carpeta $C
+```
+
+`comprobar-programacion` tiene que dar todo `[OK]`, con la referencia en 9/9. `programar` imprime cada intento
+(estado, casos, tokens y segundos) y la verificación central. El registro completo queda en `$C/taller.db` y
+`$C/taller/`.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
