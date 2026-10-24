@@ -1217,7 +1217,7 @@ def cmd_oficina(args) -> int:
         return _oficina_sonda_comprension(args, cfg, carpeta)
     if args.accion == "reparar-guiado":
         return _oficina_reparacion_guiada(args, cfg, carpeta)
-    if args.accion in ("reparar-coordinado", "reparar-coordinado-8"):
+    if args.accion in ("reparar-coordinado", "reparar-coordinado-8", "reparar-coordinado-9"):
         return _oficina_reparacion_coordinada(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
@@ -1606,14 +1606,18 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     from .oficina import remoto as RM
     from .oficina import reparacion_coordinada as RC
     from .oficina import reparacion_coordinada_8 as RC8
+    from .oficina import reparacion_coordinada_9 as RC9
     from .oficina import reparacion_guiada as RGD
     from .oficina import revision_existente as RE
     from .oficina.misiones_programacion import MISIONES
     from .sandbox.executor import Executor
 
     ocho = args.accion == "reparar-coordinado-8"          # experimento 7.8 (preservación de comportamiento)
-    nombre = "7.8" if ocho else "7.7"
-    print(f"{RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}: corrida {args.corrida}, diagnosticadora "
+    nueve = args.accion == "reparar-coordinado-9"         # experimento 7.9 (revisión crítica de parches)
+    nombre = "7.9" if nueve else "7.8" if ocho else "7.7"
+    mod = RC9 if nueve else RC8 if ocho else RC
+    print(f"{RC9.VERSION_9 if nueve else RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}: corrida {args.corrida}, "
+          "diagnosticadora "
           f"{args.diagnosticador_modelo}, "
           f"programador {args.modelo}")
     try:
@@ -1659,17 +1663,17 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
         return 3
     if not args.autorizo_inferencia_remota:
         if args.mostrar_pedido:
-            pedir = RC8.mensajes_diagnostico if ocho else RC.mensajes_diagnostico
+            pedir = RC8.mensajes_diagnostico if (ocho or nueve) else RC.mensajes_diagnostico
             print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in pedir(f, disc)))
         print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta "
               f"{RC.MAX_DIAGNOSTICOS} diagnósticos y {RGD.MAX_INTENTOS} parches).")
         return 0
     try:
-        destino = (RC8.carpeta if ocho else RC.carpeta)(carpeta, Path(args.corrida))
+        destino = mod.carpeta(carpeta, Path(args.corrida))
     except RC.ErrorCoordinada as e:
         print(f"oficina: {e}", file=sys.stderr)
         return 2
-    inf = (RC8.correr if ocho else RC.correr)(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]),
+    inf = mod.correr(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]),
                     PG.modelo_remoto(args.diagnosticador_modelo, num_predict=RE.NUM_PREDICT_REVISOR, timeout_s=600),
                     PG.modelo_remoto(args.modelo), max_segundos=args.max_segundos)
     for d in inf["diagnosticos"]:
@@ -1678,7 +1682,14 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     for i in (inf["reparacion"] or {}).get("intentos", []):
         print(f"  parche {i['intento']}: {i['estado']}" + (f" · {i['motivo']}" if i.get("motivo") else "")
               + (" · sangría normalizada" if i.get("sangria_normalizada") else "")
-              + (f" · discrepancia {i['discrepancia_sintetica']}" if i["estado"] == "aplicado" else ""))
+              + (f" · discrepancia {i['discrepancia_sintetica']}" if i.get("discrepancia_sintetica") else "")
+              + (f" · revisora: {(i['revision'] or {}).get('decision') or 'sin decisión válida'}"
+                 if "revision" in i else ""))
+    if "capacidad_critica_de_la_revisora" in inf:
+        cc = inf["capacidad_critica_de_la_revisora"]
+        print(f"  revisora: {cc['detecciones_correctas']} detecciones correctas · {cc['aprobaciones_incorrectas']} "
+              f"aprobaciones incorrectas · {cc['rechazos_de_parches_observablemente_correctos']} rechazos de parches "
+              f"observablemente correctos · {cc['revisiones_invalidas']} revisiones inválidas")
     for k, v in inf["criterios"].items():
         print(f"  criterio {k}: {'sí' if v else 'no'}")
     print(f"Experimento {nombre}: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'}"
@@ -1949,7 +1960,10 @@ def main(argv=None) -> int:
                                                  "--autorizo-inferencia-remota no infiere)"),
                           ("reparar-coordinado-8", "experimento 7.8: como el 7.7, con el comportamiento a preservar "
                                                    "diagnosticado por gemma y la diferencia observable como "
-                                                   "retroalimentación (sin --autorizo-inferencia-remota no infiere)")):
+                                                   "retroalimentación (sin --autorizo-inferencia-remota no infiere)"),
+                          ("reparar-coordinado-9", "experimento 7.9: como el 7.8, con una revisión crítica de cada "
+                                                   "parche por gemma (otra invocación) antes de las comprobaciones "
+                                                   "(sin --autorizo-inferencia-remota no infiere)")):
         o = osub.add_parser(nombre, help=ayuda)
         o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
         o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")

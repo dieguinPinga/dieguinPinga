@@ -2098,6 +2098,104 @@ python3 -m constructor_ia oficina reparar-coordinado-8 --corrida $R --carpeta $L
     --autorizo-inferencia-remota                       # hasta 2 diagnósticos + 3 parches
 ```
 
+## Experimento 7.9: revisión crítica de parches entre agentes (implementado, SIN inferencias)
+
+**Contexto (7.8):**
+- Gemma diagnosticó bien la causa.
+- Qwen propuso tres veces `if ref is None:` → `if ref is None or ref['tipo'] == 'anulacion':`. Los parches se
+  aplicaban y la discrepancia seguía.
+
+**Objetivo:** comprobar si una revisión independiente de Gemma detecta errores causales en los parches de Qwen y lo
+ayuda a corregirlos antes de la verificación final.
+
+**Qué es:** el experimento `oficina reparar-coordinado-9` (`oficina/reparacion_coordinada_9.py`), que reutiliza el
+recorrido del 7.8.
+- En `reparacion_guiada.correr` solo se agrega el punto de extensión opcional `revision` (por omisión, sin revisión),
+  y `reparacion_coordinada` lo pasa.
+- El 7.5 al 7.8 no cambian y sus pruebas pasan.
+
+### Roles (dos modelos; Gemma en dos invocaciones separadas)
+
+1. **Diagnosticadora (gemma):** como en el 7.8.
+2. **Programador (qwen):** propone un parche. El coordinador lo valida y lo aplica sobre una copia, con la
+   normalización de la sangría. Un parche inválido se rechaza ahí y no llega a revisión.
+3. **Revisora (gemma, otra invocación, `SISTEMA_REVISORA`):**
+   - **Recibe:**
+     - el contrato y los ejemplos visibles;
+     - el código **original** (las zonas);
+     - el diagnóstico;
+     - el parche aplicado, con su justificación y la diferencia resultante.
+   - **No recibe ningún resultado de pruebas:** ni el caso sintético sobre el parche, ni los ejemplos, ni la batería.
+   - **Responde** un JSON: `decision` («aprobar» o «rechazar»), `elimina_la_causa`, `preserva_comportamiento`,
+     `justificacion_causal` y, si rechaza, `critica`. Sin código.
+   - Una respuesta inválida queda registrada como revisión inválida y no se inventa una decisión.
+4. **Coordinador:**
+   - **Si rechaza:** la crítica llega **íntegra** al intento siguiente de Qwen, como «REVISIÓN DE TU PARCHE… (otra
+     IA, la revisora; NO es un resultado de pruebas): RECHAZADO».
+   - **Si aprueba, o la revisión es inválida:** siguen las comprobaciones deterministas de siempre (caso sintético,
+     ejemplos visibles y la batería una sola vez). **La aprobación no garantiza nada.**
+
+**Límites:** 2 diagnósticos, 3 propuestas de Qwen (cada una con, como máximo, una revisión) y 2400 s para todo,
+contando también las revisiones. La auditoría de fugas revisa también el pedido a la revisora.
+
+### Capacidad crítica (`informe.json`, `capacidad_critica_de_la_revisora`)
+
+Cada decisión se compara con lo **observable**: el caso sintético y los ejemplos visibles sobre el parche, que se
+calculan siempre aunque no se le muestren a nadie. Si se ejecutó, también con la **batería**. Se cuentan:
+- **detecciones correctas:** rechazó un parche que no cumple lo observable;
+- **aprobaciones incorrectas:** aprobó un parche que no cumple lo observable o que no pasó la batería;
+- **rechazos de parches observablemente correctos;**
+- **revisiones inválidas.**
+
+### Criterio de éxito
+
+Los cuatro criterios del 7.7 y el 7.8, más `5_revisora_aprueba_el_parche_verificado`: Gemma diagnostica, Qwen
+propone, Gemma revisa y aprueba, y la batería da 9/9.
+
+Se clasifica como «diagnóstico, reparación y revisión crítica automáticos coordinados», más «(con normalización de la
+sangría)» si correspondió. Las corridas van a `experimento-7-9/`. Cada revisión queda en
+`reparacion/intento-N/revision.json` (pedido, respuesta literal, decisión y campos) y cada crítica en
+`retroalimentacion.md`.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_coordinada_9.py` (12), con respuestas simuladas y el sandbox real.
+1. **Parche que no modifica la causa** (el del 7.8): la revisora lo rechaza y se cuenta como detección correcta.
+2. **Parche que rompe un comportamiento a preservar** (invierte la condición; rompe un ejemplo visible): rechazado y
+   detectado.
+3. **La crítica llega íntegra** al intento siguiente, y lo registrado es lo enviado.
+4. **Una aprobación no evita la validación:**
+   - aprobar el parche que invierte la condición se registra como aprobación incorrecta, y Qwen recibe la
+     discrepancia;
+   - aprobar un parche que pasa lo observable pero no la batería no es éxito.
+5. **Tres propuestas incorrectas** terminan sin éxito: 7 pedidos, 3 detecciones.
+6. **Una reparación correcta**, sin ninguna causa escrita, aprueba 9/9 con los cinco criterios.
+7. **Sin fugas:** la revisora no recibe resultados de pruebas.
+8. **El 7.8 y el 7.7 siguen funcionando** (sin revisión).
+
+Además:
+- **Rechazo injustificado:** se registra el rechazo de un parche correcto.
+- **Revisión inválida:** deciden las comprobaciones deterministas, pero no hay éxito.
+- **Interpretación de la decisión** y **CLI**.
+
+Suite completa: 747 pruebas, OK (915 s).
+
+### Preparación sin inferencias y corrida real independiente
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_coordinada_9 tests.test_oficina_reparacion_coordinada_8 \
+    tests.test_oficina_reparacion_coordinada tests.test_oficina_normalizacion_sangria                  # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-coordinada-7-9                                                 # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-coordinado-9 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                     # preparación: no infiere ni escribe
+python3 -m constructor_ia oficina reparar-coordinado-9 --corrida $R --carpeta $L --trabajador pulenta \
+    --autorizo-inferencia-remota                         # hasta 2 diagnósticos + 3 propuestas + 3 revisiones
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

@@ -261,7 +261,7 @@ def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, prog
         f2["pedido"] = aj["pedido"]
     rep = RGD.correr(destino / "reparacion", f2, executor, cliente, gate, programador,
                      max_segundos=max(0.0, max_segundos - segundos), cancel=cancel, normalizar=True,
-                     retroalimentacion=aj.get("retroalimentacion"))
+                     retroalimentacion=aj.get("retroalimentacion"), revision=aj.get("revision"))
     inf["reparacion"] = {k: rep[k] for k in ("intentos", "llamadas", "verificacion", "criterios", "exito", "motivo",
                                              "clasificacion", "auditoria_de_fugas")}
     # ¿El programador recibió ESE diagnóstico? (comprobado sobre lo que efectivamente se envió)

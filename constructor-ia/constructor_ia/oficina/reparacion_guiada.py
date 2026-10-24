@@ -216,9 +216,14 @@ def carpeta_de_reparacion(carpeta: Path, corrida: Path, experimento: str = "expe
 
 
 def correr(destino: Path, f: dict, executor, cliente, gate, modelo, max_segundos: float = 2400.0,
-           cancel: threading.Event | None = None, normalizar: bool = False, retroalimentacion=None) -> dict:
+           cancel: threading.Event | None = None, normalizar: bool = False, retroalimentacion=None,
+           revision=None) -> dict:
     """retroalimentacion (opcional, 7.8): función que arma el aviso para el intento siguiente cuando un parche se
-    aplica pero no corrige el defecto; por omisión, la retroalimentación del 7.1 de siempre."""
+    aplica pero no corrige el defecto; por omisión, la retroalimentación del 7.1 de siempre.
+    revision (opcional, 7.9): función que revisa un parche YA validado y aplicado por el coordinador; devuelve
+    {"decision": "aprobar" | "rechazar" | None, "aviso": texto para el intento siguiente si rechaza, "registro": …,
+    "segundos": …}. Un rechazo pasa al intento siguiente sin verificar; una aprobación (o None) sigue con las
+    comprobaciones deterministas de siempre. Por omisión, sin revisión."""
     destino = Path(destino)
 
     def guardar(rel, contenido):
@@ -242,7 +247,7 @@ def correr(destino: Path, f: dict, executor, cliente, gate, modelo, max_segundos
            "verificacion": None, "exito": False, "motivo": None, "inicio": time.time()}
     claves, aviso, pedidos = [], "", []
     for n in range(1, MAX_INTENTOS + 1):
-        usados = sum(ll["segundos"] or 0 for ll in inf["llamadas"])
+        usados = sum(ll["segundos"] or 0 for ll in inf["llamadas"] + inf.get("llamadas_revision", []))
         if usados >= max_segundos:
             inf["motivo"] = f"límite de tiempo de inferencia ({usados:.0f} s de {max_segundos:.0f} s)"
             break
@@ -309,6 +314,18 @@ def correr(destino: Path, f: dict, executor, cliente, gate, modelo, max_segundos
                   sangria_normalizada="parche_normalizado" in reg,
                   discrepancia_sintetica=disc, visibles={k: vis[k] for k in ("ok", "aprobados", "total")},
                   repite_el_intento=reg.get("repite_el_intento"))
+        if revision is not None:
+            rv = revision(n=n, f=f, parche=reg.get("parche_normalizado") or {k: reg[k] for k in ("cambios",
+                                                                                                 "justificacion")},
+                          original=codigo, nuevo=nuevo)
+            inf.setdefault("llamadas_revision", []).append({"intento": n, "segundos": rv.get("segundos") or 0})
+            it["revision"] = rv["registro"]
+            guardar(f"intento-{n}/revision.json", rv["registro"])
+            if rv.get("decision") == "rechazar":
+                it["estado"] = "rechazado_por_revisora"
+                aviso = rv["aviso"]
+                guardar(f"intento-{n}/retroalimentacion.md", aviso)
+                continue
         if disc == "eliminada" and vis["ok"]:
             ver = RE._bateria(executor, nuevo, m)
             inf["verificacion"] = dict(ver, intento=n)
