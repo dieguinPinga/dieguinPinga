@@ -1327,6 +1327,9 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
         for i in inf["intentos"]:
             print(f"  intento {i['n']}: {i['test_status']} {i['passed']}/{i['total']} · {i['eval_tokens']} tokens · "
                   f"{(i['gen_ms'] or 0) / 1000:.1f} s" + (f" · {i['error'][:120]}" if i["error"] else ""))
+        if inf.get("mejor"):
+            print(f"  mejor versión conservada: intento {inf['mejor']['intento']} "
+                  f"({inf['mejor']['aprobados']}/{inf['mejor']['total']})")
         if r["resultado"] == "propuesta":
             ok, detalle = PG.verificar(cola, carpeta, cfg, ex, r["tarea"])
             print(f"Verificación central: {'ACEPTADA' if ok else 'RECHAZADA'} — {detalle}")

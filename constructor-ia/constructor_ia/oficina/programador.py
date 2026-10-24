@@ -29,11 +29,11 @@ from pathlib import Path
 
 from ..config import ModelConfig
 from ..db import Database
-from ..engine import Engine
 from ..events import EventBus
 from ..files import FileStore
 from ..missions import Missions
 from . import remoto as RM
+from .autocorreccion import MotorConMemoria
 from .cola import ArriendoInvalido, Cola
 from .misiones_programacion import MISIONES
 
@@ -65,8 +65,8 @@ class Taller:
         self.files = FileStore(self.db, self.cfg.missions_dir)
         self.executor = executor
         self.url = url
-        self.engine = Engine(self.cfg, self.db, self.bus, self.missions, self.files,
-                             cliente or RM.ClienteRemoto(url), RM.compuerta(url), executor)
+        self.engine = MotorConMemoria(self.cfg, self.db, self.bus, self.missions, self.files,
+                                      cliente or RM.ClienteRemoto(url), RM.compuerta(url), executor)
 
     def cerrar(self):
         self.db.close()
@@ -82,8 +82,11 @@ def informe_mision(taller: Taller, mid: str) -> dict:
         "SELECT n, started_at, finished_at, gen_ms, prompt_tokens, eval_tokens, done_reason, syntax_ok, test_status, "
         "passed, failed, total, error FROM attempts WHERE mission_id=? ORDER BY n", (mid,))]
     final = taller.files.read_rel(mid, "final/solucion.py")
+    mejor = json.loads(taller.files.read_rel(mid, "mejor/resumen.json") or "null")
     return {"mision_taller": mid, "estado": m["state"], "intento_final": m["final_attempt"], "error": m["error"],
             "huella_final": _huella(final), "intentos": intentos,
+            "mejor": None if mejor is None else {k: mejor[k] for k in ("intento", "aprobados", "total")}
+            | {"huella": _huella(taller.files.read_rel(mid, "mejor/solucion.py"))},
             "tokens": {"prompt": sum(i["prompt_tokens"] or 0 for i in intentos),
                        "generados": sum(i["eval_tokens"] or 0 for i in intentos)},
             "segundos_modelo": round(sum(i["gen_ms"] or 0 for i in intentos) / 1000, 1)}
@@ -159,7 +162,8 @@ class Programador:
                 self.cola.entregar(t["id"], t["token"], {"mision_taller": mid, "estado": estado,
                                                          "intento_final": inf["intento_final"],
                                                          "huella_final": inf["huella_final"],
-                                                         "tokens": inf["tokens"], "segundos_modelo": inf["segundos_modelo"]})
+                                                         "tokens": inf["tokens"], "segundos_modelo": inf["segundos_modelo"],
+                                                         "mejor": inf["mejor"]})
                 return {"tarea": t["id"], "resultado": "propuesta", "informe": inf}
             nuevo = self.cola.fallar(t["id"], t["token"], f"misión {estado}: {inf['error']}")
             return {"tarea": t["id"], "resultado": f"falla_de_entorno → {nuevo}", "informe": inf}
@@ -194,7 +198,7 @@ def _verificar(taller: Taller, t: dict, p: dict) -> tuple[bool, str]:
     if m is None:
         return False, "la propuesta no apunta a una misión del taller"
     if m["state"] != "aprobada" or p.get("estado") != "aprobada":
-        return False, f"la misión terminó «{m['state']}» sin superar las pruebas en sus intentos"
+        return False, f"la misión terminó «{m['state']}» sin superar las pruebas en sus intentos" + _mejor(taller, t, mid)
     codigo = taller.files.read_rel(mid, "final/solucion.py")
     if codigo is None or _huella(codigo) != p.get("huella_final"):
         return False, "el código final no coincide con la huella entregada"
@@ -208,6 +212,22 @@ def _verificar(taller: Taller, t: dict, p: dict) -> tuple[bool, str]:
         return False, f"la reejecución independiente no aprobó: {r.get('passed')}/{r.get('total')}"
     return True, (f"reejecución independiente aprobada ({r['passed']}/{r['total']} casos, incluidos los ocultos); "
                   f"misión {mid} aprobada en el intento {m['final_attempt']}")
+
+
+def _mejor(taller: Taller, t: dict, mid: str) -> str:
+    """Reejecuta, de forma independiente, la mejor versión conservada de una misión que no aprobó (informativo:
+    una misión solo se acepta si pasa todas las pruebas)."""
+    codigo = taller.files.read_rel(mid, "mejor/solucion.py")
+    resumen = json.loads(taller.files.read_rel(mid, "mejor/resumen.json") or "null")
+    if codigo is None or resumen is None:
+        return ""
+    fabrica, _ = MISIONES[t["carga"]["mision"]]
+    mision = fabrica()
+    res = taller.executor.run(codigo, mision["spec"], mision["tests_py"])
+    r = res.result or {}
+    return (f"; mejor versión conservada: intento {resumen['intento']} ({resumen['aprobados']}/{resumen['total']}); "
+            f"reejecución independiente: {r.get('passed')}/{r.get('total')}" if res.status == "ok" else
+            f"; mejor versión conservada: intento {resumen['intento']}; reejecución: {res.status}")
 
 
 def comprobar_mision(executor, nombre: str = "resumen_ventas") -> dict:

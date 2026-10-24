@@ -475,6 +475,99 @@ python3 -m constructor_ia oficina cola --carpeta $C
 (estado, casos, tokens y segundos) y la verificación central. El registro completo queda en `$C/taller.db` y
 `$C/taller/`.
 
+## Autocorrección: auditoría y mejoras, después de la segunda misión real
+
+**Resultado real de `conciliar_movimientos`:**
+- 4 intentos de Gemma 12B: 8/9, 0/9, 8/9 y 8/9; verificación central rechazada;
+- en tres intentos falló solo el caso 6: `anulacion_de_anulacion` clasificada como `anulacion_inexistente`;
+- Gemma detectó la contradicción en sus comentarios, pero no corrigió la implementación.
+
+### Qué recibía el modelo (auditoría de `engine.py` y `prompts.py`)
+
+| Intento | Recibía | Se ocultaba |
+|---|---|---|
+| 1 | contrato, firma, 2 ejemplos visibles y «Además hay 7 casos ocultos» | los casos ocultos |
+| 2 a 4 | contrato (no se recortaba: 2.254 caracteres, contra un límite de 4.755), ejemplos, el **último** código y `failure_report` | argumentos, valores esperados y salida de cada caso oculto |
+
+Para un caso oculto que falla, `failure_report` dice solamente `Caso oculto caso 6: fallo`.
+
+**Por qué no se corrigió:**
+1. El informe no decía **qué** parte del resultado estaba mal: el modelo tenía que adivinar entre todo el contrato.
+2. El motor siempre corrige a partir del **último** código. Después del 0/9 del intento 2, el intento 3 partió de esa
+   versión rota y no de la de 8/9.
+3. Nada señalaba que el mismo caso fallaba intento tras intento.
+
+(La causa exacta del 0/9 está en `intento-2/resultado.json` de la corrida, en la VivoBook.)
+
+### Mejoras (generales; nada específico de una misión)
+
+Están en `oficina/autocorreccion.py`, `MotorConMemoria`: una subclase del `Engine` original que solo usa la oficina.
+No cambian `engine.py` ni `prompts.py`, el sandbox, la validación, la aprobación (todas las pruebas, con resultado
+firmado) ni la verificación central.
+
+1. **Pistas seguras para los casos ocultos fallidos:**
+   - las **claves de primer nivel** del resultado con un valor incorrecto, solo si ese nombre ya figura en el
+     contrato y solo si el caso espera un diccionario. Por ejemplo: «claves con valor incorrecto: 'inconsistencias'
+     (el resto está bien)»;
+   - si devolvió claves que el contrato no pide, o algo que no es un diccionario;
+   - **qué ejercita** el caso: una categoría que escribe el autor de la misión (campo `categoria`) y que describe la
+     regla del contrato en juego, sin valores. Se muestra solo cuando ese caso falla.
+
+   Nunca se muestran valores esperados, argumentos ni la salida del caso. Si la salida vino recortada, no hay pista
+   de claves.
+2. **Mejor versión conservada:**
+   - el puntaje de un intento es la cantidad de casos aprobados (0 si no se pudo ejecutar);
+   - la mejor versión es la de mayor puntaje; en un empate, la primera;
+   - cada intento conserva su código y su resultado, así que **nada se reemplaza ni se borra**;
+   - al terminar, la mejor queda en `mejor/solucion.py` y `mejor/resumen.json`, con el historial de puntajes y de la
+     base de cada intento.
+3. **Control de regresiones:** si el último intento aprobó **menos** casos que el mejor, el siguiente parte de la
+   mejor versión, con su informe y un aviso explícito: «ATENCIÓN, REGRESIÓN: tu intento 2 aprobó 0 de 9 casos, MENOS
+   que el intento 1 (8 de 9)… abajo va la del intento 1 como punto de partida». Con el mismo puntaje se sigue desde
+   el último.
+4. **Estancamiento:** se avisa si un caso oculto falló en varios intentos y sigue fallando en la base («las
+   correcciones anteriores no cambiaron la regla responsable…»), o si el código es idéntico a uno anterior.
+5. **Verificación final:**
+   - una misión solo se acepta si algún intento pasa **todas** las pruebas, y el coordinador la vuelve a ejecutar;
+   - si no aprueba, la verificación central igual reejecuta la mejor versión conservada e informa su puntaje
+     independiente (por ejemplo, «mejor versión conservada: intento 1 (8/9); reejecución independiente: 8/9»), y la
+     rechaza.
+6. **Trazabilidad:** lo que se le envió al modelo en cada reintento queda en `intento-N/retroalimentacion.md`, con su
+   punto de partida. `programar` imprime la mejor versión conservada.
+
+Las dos misiones tienen ahora la `categoria` de cada caso oculto. Las corridas históricas no se tocan: el código que
+produjo Gemma sigue en su carpeta, sin cambios.
+
+Pruebas: `tests/test_oficina_autocorreccion.py` (6), con un Ollama falso y el sandbox real.
+- **Pistas:**
+  - solo nombres del contrato y la categoría, sin valores, productos ni fechas;
+  - nunca nombres que no estén en el contrato;
+  - claves de más, resultado que no es un diccionario, salida recortada y casos visibles.
+- **Simulación pedida:** el intento 1 da 8/9 (el mismo tipo de error de Gemma), el 2 empeora a 0/9 y el 3 recibe el
+  aviso de regresión y el código del intento 1, no el del 2. El 3 aprueba 9/9, la verificación central acepta y el
+  código de cada intento se conserva tal cual.
+- **Sin éxito:** la mejor versión (intento 1, 8/9) queda conservada, después de cada regresión se vuelve a partir de
+  ella, y la verificación central la reejecuta (8/9) y rechaza.
+- **Estancamiento:** código idéntico y caso persistente señalados; un empate no es una regresión.
+
+Suite completa: 574 pruebas, OK (670 s).
+
+### Próxima prueba real (VivoBook contra Gemma 12B en rampern)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_autocorreccion tests.test_oficina_conciliar tests.test_oficina_programacion
+C=~/constructor-ia-piloto/data/oficina-programacion-3              # carpeta NUEVA; las corridas anteriores quedan intactas
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta --mision conciliar_movimientos
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
+    --autorizo-inferencia-remota
+```
+
+Lo que el modelo recibió en cada reintento queda en `$C/taller/missions/<misión>/intento-N/retroalimentacion.md`.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

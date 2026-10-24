@@ -46,21 +46,24 @@ CHICO = [[1, "2026-03-01", "Arroz", 2, 2], [2, "2026-03-02", "Aceite", 1, 10], [
 EMPATE = [[1, "2026-04-01", "Yerba", 2, 5], [2, "2026-04-02", "Fideos", 10, 1], [3, "2026-04-03", "Arroz", 5, 2]]
 
 
-def _caso(args, visible, kwargs=None):
+def _caso(args, visible, kwargs=None, categoria=None):
     c = {"args": args, "expect": _resumen(*args, **(kwargs or {})), "visible": visible}
     if kwargs:
         c["kwargs"] = kwargs
+    if categoria:
+        c["categoria"] = categoria      # qué regla del contrato ejercita (sin valores); ver oficina/autocorreccion.py
     return c
 
 
 def mision_resumen_ventas(max_intentos: int = 4) -> dict:
     casos = [_caso([CHICO], True),                                           # visibles: ejemplos chicos
              _caso([[]], True),
-             _caso([REGISTROS], False),                                       # ocultos: los 20 registros
-             _caso([REGISTROS], False, {"desde": "2026-03-01", "hasta": "2026-03-10"}),
-             _caso([REGISTROS], False, {"desde": "2026-03-20"}),
-             _caso([REGISTROS], False, {"desde": "2026-04-01"}),
-             _caso([EMPATE], False)]                                          # empate de importe: Arroz y Yerba 10
+             _caso([REGISTROS], False, categoria="totales y agrupación por producto sin filtro de fechas"),
+             _caso([REGISTROS], False, {"desde": "2026-03-01", "hasta": "2026-03-10"},
+                   "filtro con «desde» y «hasta», ambos días incluidos"),
+             _caso([REGISTROS], False, {"desde": "2026-03-20"}, "filtro solo con «desde», incluyendo ese día"),
+             _caso([REGISTROS], False, {"desde": "2026-04-01"}, "filtro que no deja ninguna venta"),
+             _caso([EMPATE], False, categoria="desempate de «mas_unidades» y «mas_importe»")]
     return {"title": "Almacén: resumen_ventas", "description": DESCRIPCION,
             "spec": {"mode": "funcion", "function": "resumen_ventas", "cases": casos},
             "tests_py": "", "max_attempts": max_intentos}
@@ -186,10 +189,25 @@ def casos_conciliar() -> list[dict]:
     return c
 
 
+# Qué regla del contrato ejercita cada caso oculto, en el orden de casos_conciliar() (sin valores ni datos). La
+# autocorrección (oficina/autocorreccion.py) se lo muestra al modelo solo cuando ese caso falla.
+CATEGORIAS_CONCILIAR = {
+    2: "entrada vacía",
+    3: "saldos iniciales y conteo sin movimientos",
+    4: "orden de proceso por (fecha, id) y anulaciones que apuntan a un movimiento todavía no procesado",
+    5: "anulaciones: revertir dejando saldo negativo, anular dos veces y anular una anulación; precedencia de motivos",
+    6: "validación: id repetido, cantidades inválidas, tipo desconocido y anulación de un movimiento ignorado",
+    7: "varios productos, saldo exacto en 0 y conciliación con productos que faltan de un lado",
+    8: "orden de proceso dentro del mismo día",
+}
+
+
 def mision_conciliar_movimientos(max_intentos: int = 4) -> dict:
     casos = []
-    for args, kwargs, esperado, visible in casos_conciliar():
+    for i, (args, kwargs, esperado, visible) in enumerate(casos_conciliar()):
         caso = {"args": args, "expect": esperado, "visible": visible}
+        if not visible and i in CATEGORIAS_CONCILIAR:
+            caso["categoria"] = CATEGORIAS_CONCILIAR[i]
         if kwargs:
             caso["kwargs"] = kwargs
         casos.append(caso)
