@@ -1130,6 +1130,102 @@ El resultado sale por pantalla:
 Todo el detalle queda en `$L/experimento-7/corrida-*/informe.json`. Para partir de un archivo propio, agregá
 `--codigo archivo.py`; con `--defecto`, el defecto se aplica sobre ese archivo.
 
+## Experimento 7.1: retroalimentación específica al programador (implementado, SIN inferencias)
+
+**Corrida analizada:** `corrida-20261024-013359`, con Gemma 12B de revisor y Qwen 2.5 Coder 7B de programador.
+- El revisor encontró el defecto (anulaciones no registradas) y el coordinador demostró la discrepancia.
+- Qwen hizo tres reparaciones ejecutables y casi idénticas; ninguna eliminó la discrepancia.
+- Entre intentos solo recibía «todavía no cumple», sin el resultado concreto de cada reparación.
+
+**Cambio:** solo la retroalimentación entre intentos del programador en `oficina revisar-existente`. No cambian los
+contratos, `oficina programar`, el revisor, el contraste ni la verificación.
+
+### Qué recibe ahora tras una reparación ejecutable que no elimina la discrepancia
+
+1. **El mismo caso sintético** se ejecuta otra vez sobre la nueva versión, en el sandbox.
+2. **Resultado concreto** (bloque «RESULTADO DE TU INTENTO N EN EL CASO DEL REVISOR (caso sintético; NO es una
+   prueba oculta)»):
+   - la salida que pide el contrato y la salida real de su intento;
+   - si lanzó una excepción o no terminó, lo dice.
+3. **Claves distintas:** «SIGUE DISTINTA en 'inconsistencias'. Ya coinciden: …», con el detalle de cada clave:
+   - en las listas, qué elementos **faltan** y cuáles **sobran**;
+   - en los diccionarios, qué subclaves difieren;
+   - en los demás valores, el del contrato y el suyo.
+4. **Qué cambió:** el diff unificado de su código respecto de su punto de partida, sin comentarios ni líneas vacías
+   («QUÉ CAMBIASTE respecto de la versión inicial (+2 / -0 líneas)…»), o «nada». Es solo descriptivo: no se le
+   muestra la referencia ni se le propone una solución. La única guía es de método: seguir la entrada por su código
+   y ver si las líneas cambiadas se ejecutan.
+5. **Repeticiones:**
+   - **«REPETICIÓN»:** el intento es el **mismo programa**, con el mismo árbol sintáctico, que una versión ya probada
+     (solo cambian espacios o comentarios).
+   - **«SIN EFECTO EN ESTE CASO»:** devuelve **la misma salida** que una versión ya probada, es decir, el cambio no
+     afecta a esa entrada.
+   - **Historial** («TUS REPARACIONES ANTERIORES»): una línea por intento, con el tamaño del cambio, las claves
+     distintas y las repeticiones. Así cada pedido trae información nueva.
+   - **Corte:** si después de un aviso de repetición vuelve a entregar un programa ya probado, el coordinador se
+     detiene. Otro pedido no traería información nueva, así que no se gastan más inferencias.
+6. **Separación:**
+   - Todo sale del caso sintético (público), de los ejemplos visibles y del propio código del programador. La
+     batería oculta solo se usa en la preparación y en la verificación final.
+   - La auditoría de fugas sigue revisando cada pedido.
+   - El bloque nuevo reemplaza a la evidencia de la versión inicial, y el pedido indica de qué versión parte
+     («Versión actual de solucion.py (tu intento N)»).
+
+### Registro
+
+- **`reparacion-N/retroalimentacion.md`:** exactamente el bloque que recibió el pedido siguiente.
+- **`reparacion-N/reparacion.json`:** suma estos campos:
+  - `claves_distintas`;
+  - `cambio` (líneas agregadas y quitadas, o sin cambios);
+  - `mismo_programa_que`;
+  - `misma_salida_que` (0 es la versión inicial).
+- Los pedidos y las respuestas siguen en `pedido.json` y `respuesta.md`.
+
+### Pruebas
+
+`tests/test_oficina_retroalimentacion.py` (7), con revisor y programador simulados y el sandbox real:
+- **Comparación de salidas:** clave por clave, con los elementos que faltan y sobran.
+- **Programa y diff:** «mismo programa» ignora el formato y los comentarios, pero no la lógica; el diff lo refleja.
+- **Excepciones:** una excepción se informa como salida no comparable.
+- **Ciclo completo:** una reparación casi idéntica, como las de Qwen, recibe:
+  - su salida real y la del contrato, clave por clave;
+  - su diff;
+  - «sin efecto en este caso»;
+  - el historial.
+
+  La siguiente, el mismo programa reformateado, recibe «REPETICIÓN». Ningún pedido se repite, y no hay datos
+  ocultos ni el defecto.
+- **Corte:** repetir después del aviso detiene la corrida sin otra inferencia.
+- **Ejemplos visibles:** una reparación que arregla el caso pero rompe un ejemplo visible recibe solo evidencia
+  pública.
+- **Registro:** lo guardado es exactamente lo que se envió.
+
+`test_oficina_revision_existente.py` se adaptó al texto nuevo.
+
+Suite completa: 628 pruebas, OK (701 s).
+
+### Repetir el experimento 7 con la retroalimentación nueva (laboratorio NUEVO)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_retroalimentacion tests.test_oficina_revision_existente \
+    tests.test_oficina_estabilizacion tests.test_oficina_hipotesis tests.test_oficina_revisor   # 54, sin inferencias
+L=~/constructor-ia-piloto/data/oficina-revision-7-1                   # carpeta nueva: la corrida anterior no se toca
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b                            # preparación, sin inferencias
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --autorizo-inferencia-remota
+```
+
+Para comparar con la corrida anterior, mirá `reparacion-N/retroalimentacion.md` y `reparacion.json`
+(`claves_distintas`, `cambio`, `mismo_programa_que`, `misma_salida_que`) en
+`$L/experimento-7/corrida-*/`. Usá en `--modelo` el nombre exacto con el que Qwen figura en `ollama list` del
+trabajador.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

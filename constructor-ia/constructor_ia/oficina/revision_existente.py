@@ -17,7 +17,9 @@ Recorrido (un coordinador, los mismos dos roles y el mismo modelo; nada nuevo):
    solo lo que pasó con SU caso.
 3. PROGRAMADOR: solo con una discrepancia demostrada. Recibe el contrato, los ejemplos visibles, el código, el
    diagnóstico y la evidencia del caso sintético. Nada de los casos ocultos. Hasta max_reparaciones intentos; entre
-   intentos, solo la evidencia pertinente: su respuesta cortada o inválida, el caso sintético y los ejemplos visibles.
+   intentos, solo la evidencia pertinente: su respuesta cortada o inválida, los ejemplos visibles y (experimento 7.1)
+   el resultado CONCRETO de su intento en el caso sintético: salida real y salida del contrato clave por clave, el
+   cambio de código respecto de su punto de partida, repeticiones (mismo programa o misma salida) y el historial.
 4. VERIFICACIÓN INDEPENDIENTE: cuando un intento elimina la discrepancia y cumple los ejemplos visibles, el
    coordinador lo ejecuta UNA vez contra la batería completa. Su resultado nunca vuelve a los modelos.
 
@@ -27,10 +29,14 @@ criterios de éxito.
 """
 from __future__ import annotations
 
+import ast
+import difflib
 import hashlib
+import io
 import json
 import threading
 import time
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -175,18 +181,171 @@ def preparar(executor, mision: str, codigo: str | None = None, defecto: str | No
 
 
 def mensajes_reparacion(descripcion: str, spec: dict, codigo: str, diagnostico: str, evidencia: str, aviso: str,
-                        budget: int) -> list[dict]:
+                        budget: int, historial: list[str] | None = None, base_n: int = 0) -> list[dict]:
     """Pedido al PROGRAMADOR: el contrato, los ejemplos visibles, el código, el diagnóstico y la evidencia del caso
-    sintético. Ningún resultado de la batería."""
+    sintético (en un reintento, el resultado concreto de su último intento y el historial). Ningún resultado de la
+    batería."""
+    origen = "la versión inicial" if not base_n else f"tu intento {base_n}"
     usuario = (f"Tarea:\n{prompts.clip(descripcion, budget // 4)}\n\n{prompts._sig(spec)}\n\n"
                f"Ejemplos:\n{prompts._examples(spec, budget // 6) or '(sin ejemplos visibles)'}\n\n"
-               f"Versión actual de solucion.py:\n```python\n{prompts.clip(codigo, budget // 3)}```\n\n"
-               "Un revisor de código examinó esta versión y el coordinador comprobó su caso en un entorno aislado. "
-               "No hay otros resultados de pruebas.\n\n"
+               f"Versión actual de solucion.py ({origen}):\n```python\n{prompts.clip(codigo, budget // 3)}```\n\n"
+               "Un revisor de código examinó la versión inicial y el coordinador comprobó su caso en un entorno "
+               "aislado. No hay otros resultados de pruebas.\n\n"
                f"{diagnostico}\n\n{evidencia}\n\n"
+               + ("TUS REPARACIONES ANTERIORES (todas en el caso del revisor; no repitas un cambio que ya probaste):\n"
+                  + "\n".join(f"- {h}" for h in historial) + "\n\n" if historial else "")
                + (f"AVISO DEL COORDINADOR:\n{aviso}\n\n" if aviso else "")
                + "Corregí el programa y devolvé el archivo completo en un único bloque ```python.")
     return [{"role": "system", "content": prompts.BUILDER_SYSTEM}, {"role": "user", "content": usuario}]
+
+
+# Experimento 7.1: retroalimentación ESPECÍFICA entre intentos del programador ----------------------------------------
+# Cuando una reparación se ejecuta pero no elimina la discrepancia, el programador recibe el resultado concreto de SU
+# intento en el caso sintético (salida real y salida que pide el contrato, clave por clave), el cambio de código que
+# hizo respecto de su punto de partida y si repitió un programa o una salida ya probados. Todo sale del caso
+# sintético (público) y del código del propio programador: nunca de la batería oculta.
+
+MAX_JSON_RETRO = 700
+MAX_VALOR_CLAVE = 300
+MAX_DIFF = 1600
+
+
+def _json(v, limite: int = MAX_JSON_RETRO) -> str:
+    return prompts.clip(v if isinstance(v, str) else json.dumps(v, ensure_ascii=False), limite)
+
+
+def programa(codigo: str | None) -> str | None:
+    """Huella del PROGRAMA (árbol sintáctico): iguala versiones que solo difieren en espacios o comentarios."""
+    if codigo is None:
+        return None
+    try:
+        return hashlib.sha256(ast.dump(ast.parse(codigo)).encode()).hexdigest()
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return huella(codigo)
+
+
+def comparar_salidas(esperado, obtenido) -> dict:
+    """Qué claves de la salida siguen distintas y, para listas, qué elementos faltan o sobran."""
+    if not isinstance(esperado, dict) or not isinstance(obtenido, dict):
+        return {"comparable": False, "distintas": [], "coinciden": [], "detalle": {}}
+    distintas = [k for k in esperado if k not in obtenido or obtenido[k] != esperado[k]]
+    sobran = [k for k in obtenido if k not in esperado]
+    detalle = {}
+    for k in distintas:
+        e, o = esperado[k], obtenido.get(k, "<falta la clave>")
+        d = {"contrato": e, "tu_intento": o}
+        if isinstance(e, list) and isinstance(o, list):
+            d["faltan"] = [x for x in e if x not in o]
+            d["sobran"] = [x for x in o if x not in e]
+        elif isinstance(e, dict) and isinstance(o, dict):
+            d["subclaves_distintas"] = sorted({str(s) for s in set(e) | set(o) if e.get(s) != o.get(s)})
+        detalle[k] = d
+    return {"comparable": True, "distintas": distintas + sobran, "coinciden": [k for k in esperado
+                                                                               if k not in distintas],
+            "sobran_claves": sobran, "detalle": detalle}
+
+
+def _lineas_de_codigo(codigo: str) -> list[str]:
+    """Las líneas tal como las escribió el programador, sin comentarios, sin espacios finales ni líneas vacías."""
+    cortes = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(codigo).readline):
+            if tok.type == tokenize.COMMENT:
+                cortes[tok.start[0]] = tok.start[1]
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass
+    lineas = [ln[:cortes.get(i, len(ln))].rstrip() for i, ln in enumerate(codigo.splitlines(), 1)]
+    return [ln for ln in lineas if ln.strip()]
+
+
+def cambio_de_codigo(anterior: str, nuevo: str) -> dict:
+    """Diferencia unificada entre el punto de partida y el intento, sin comentarios ni líneas vacías. Si los dos son
+    el mismo programa (mismo árbol sintáctico), no hay cambios."""
+    if programa(anterior) == programa(nuevo):
+        diff = []
+    else:
+        diff = list(difflib.unified_diff(_lineas_de_codigo(anterior), _lineas_de_codigo(nuevo), "version_anterior.py",
+                                         "tu_intento.py", n=1, lineterm=""))
+    agregadas = sum(1 for x in diff if x.startswith("+") and not x.startswith("+++"))
+    quitadas = sum(1 for x in diff if x.startswith("-") and not x.startswith("---"))
+    return {"lineas_agregadas": agregadas, "lineas_quitadas": quitadas,
+            "diff": prompts.clip("\n".join(diff), MAX_DIFF), "sin_cambios": not diff}
+
+
+def _nombre(n: int) -> str:
+    return "la versión inicial" if n == 0 else f"tu intento {n}"
+
+
+def texto_retroalimentacion(n: int, base_n: int, funcion: str, caso: dict, esperado, cand: dict, comp: dict,
+                            cambio: dict, mismo_programa: list[int], misma_salida: list[int],
+                            discrepancia: str) -> str:
+    """El resultado CONCRETO del intento n en el caso sintético. Describe lo observado; no propone la solución."""
+    l = [f"════ RESULTADO DE TU INTENTO {n} EN EL CASO DEL REVISOR (caso sintético; NO es una prueba oculta) ════",
+         f"Caso: {funcion}({_llamada(caso)})",
+         f"Salida que pide el contrato: {_json(esperado)}"]
+    if cand.get("ejecucion") == "completa" and not cand.get("salida_recortada"):
+        l.append(f"Salida de tu intento {n}: {_json(cand['salida'])}")
+    else:
+        l.append(f"Tu intento {n} no devolvió una salida comparable: {cand.get('ejecucion')}"
+                 + (f" — {_json(cand.get('salida') or cand.get('detalle'), 400)}"
+                    if cand.get("salida") or cand.get("detalle") else ""))
+    if discrepancia == "eliminada":
+        l.append("RESULTADO: en este caso tu intento ya devuelve lo que pide el contrato.")
+    elif comp["comparable"]:
+        l.append("RESULTADO: SIGUE DISTINTA en " + ", ".join(f"'{k}'" for k in comp["distintas"])
+                 + (". Ya coinciden: " + ", ".join(f"'{k}'" for k in comp["coinciden"]) if comp["coinciden"] else "")
+                 + ".")
+        for k in comp["distintas"]:
+            d = comp["detalle"].get(k)
+            if d is None:
+                l.append(f"  - '{k}': tu intento devuelve esta clave y el contrato no la pide")
+            elif "faltan" in d:
+                l.append(f"  - '{k}': falta {_json(d['faltan'], MAX_VALOR_CLAVE)} · sobra "
+                         f"{_json(d['sobran'], MAX_VALOR_CLAVE)}")
+            elif "subclaves_distintas" in d:
+                l.append(f"  - '{k}': difieren {', '.join(repr(s) for s in d['subclaves_distintas'][:8])} · contrato "
+                         f"{_json(d['contrato'], MAX_VALOR_CLAVE)} · tu intento {_json(d['tu_intento'], MAX_VALOR_CLAVE)}")
+            else:
+                l.append(f"  - '{k}': contrato {_json(d['contrato'], MAX_VALOR_CLAVE)} · tu intento "
+                         f"{_json(d['tu_intento'], MAX_VALOR_CLAVE)}")
+    if mismo_programa:
+        l.append(f"REPETICIÓN: tu intento {n} es el MISMO programa que "
+                 + " y ".join(_nombre(k) for k in mismo_programa)
+                 + " (solo cambian espacios o comentarios). Repetirlo no aporta información nueva.")
+    elif misma_salida and discrepancia != "eliminada":
+        l.append(f"SIN EFECTO EN ESTE CASO: tu intento {n} devuelve exactamente la misma salida que "
+                 + " y ".join(_nombre(k) for k in misma_salida)
+                 + ": el código que cambiaste no modifica el resultado para esta entrada.")
+    if cambio["sin_cambios"]:
+        l.append(f"QUÉ CAMBIASTE respecto de {_nombre(base_n)}: nada (sin contar comentarios).")
+    else:
+        l.append(f"QUÉ CAMBIASTE respecto de {_nombre(base_n)} (+{cambio['lineas_agregadas']} / "
+                 f"-{cambio['lineas_quitadas']} líneas, sin comentarios):\n{cambio['diff']}")
+    if discrepancia != "eliminada":
+        l.append("Para evaluarlo: seguí esta entrada paso a paso por tu código y fijate si las líneas que cambiaste "
+                 "llegan a ejecutarse y qué valor dejan en las claves que siguen distintas.")
+    l.append("════ FIN DEL RESULTADO ════")
+    return "\n".join(l)
+
+
+def linea_de_historial(n: int, base_n: int, comp: dict | None, cambio: dict | None, mismo_programa: list[int],
+                       misma_salida: list[int], discrepancia: str | None, problema: str | None = None) -> str:
+    if problema:
+        return f"intento {n}: no se pudo ejecutar ({problema[:160]})"
+    partes = [f"intento {n} (desde {_nombre(base_n)}): "
+              + ("sin cambios de código" if cambio["sin_cambios"] else
+                 f"+{cambio['lineas_agregadas']}/-{cambio['lineas_quitadas']} líneas")]
+    if discrepancia == "eliminada":
+        partes.append("el caso ya da lo que pide el contrato")
+    elif comp and comp["comparable"]:
+        partes.append("el caso sigue distinto en " + ", ".join(f"'{k}'" for k in comp["distintas"]))
+    else:
+        partes.append("el caso no dio una salida comparable")
+    if mismo_programa:
+        partes.append("mismo programa que " + " y ".join(_nombre(k) for k in mismo_programa))
+    elif misma_salida and discrepancia != "eliminada":
+        partes.append("misma salida que " + " y ".join(_nombre(k) for k in misma_salida))
+    return "; ".join(partes)
 
 
 def _llamada(caso: dict) -> str:
@@ -370,11 +529,17 @@ class Experimento:
         evidencia = CT.texto_para_programador(ct, self.contraste.funcion, propiedad)
         budget = prompts.budget_chars(self.cfg.programador.num_ctx, self.cfg.programador.num_predict)
         base, base_n, aviso, candidato = inicial, 0, "", None
+        esperado = ct["referencia"]["salida"]
+        # Versiones ya probadas (la inicial es la 0): su programa y su salida en el caso sintético.
+        versiones = [{"n": 0, "programa": programa(inicial), "salida": ct["candidato"]["salida"]}]
+        historial: list[str] = []
+        avisado_de_repeticion = False
         for n in range(1, self.cfg.max_reparaciones + 1):
             if (motivo := self._sin_tiempo()):
                 inf["detenido"] = motivo
                 break
-            msgs = mensajes_reparacion(self.descripcion, self.spec, base, diagnostico, evidencia, aviso, budget)
+            msgs = mensajes_reparacion(self.descripcion, self.spec, base, diagnostico, evidencia, aviso, budget,
+                                       historial, base_n)
             gen, error = self._programar(n, msgs, cancel)
             rep = {"intento": n, "base": base_n}
             inf["reparaciones"].append(rep)
@@ -397,34 +562,50 @@ class Experimento:
             if problemas:
                 rep.update(estado="no_ejecutable", detalle="; ".join(problemas)[:500])
                 aviso = f"Tu intento {n} no se pudo usar:\n" + "\n".join(problemas)
+                historial.append(linea_de_historial(n, base_n, None, None, [], [], None, problemas[0]))
                 self.log(f"  reparación {n}: no ejecutable · {rep['detalle'][:160]}")
                 self._guardar(f"reparacion-{n}/reparacion.json", rep)
                 continue
             otra = CT.contrastar(self.executor, self.contraste, codigo, ct["caso"], None)
             vis = self._visibles(codigo)
+            disc = {"no_observada": "eliminada", "demostrada": "persiste"}.get(otra["discrepancia"], "inconclusa")
+            cand = otra["candidato"] or {"ejecucion": otra["discrepancia"], "salida": None, "detalle": otra["motivo"]}
+            salida = cand.get("salida") if cand.get("ejecucion") == "completa" else None
+            comp = comparar_salidas(esperado, salida)
+            cambio = cambio_de_codigo(base, codigo)
+            prog = programa(codigo)
+            mismo_programa = [v["n"] for v in versiones if v["programa"] == prog]
+            misma_salida = [v["n"] for v in versiones if salida is not None and v["salida"] == salida]
+            retro = texto_retroalimentacion(n, base_n, self.contraste.funcion, ct["caso"], esperado, cand, comp,
+                                            cambio, mismo_programa, misma_salida, disc)
             rep.update(estado="ejecutada", contraste=otra, visibles={k: vis[k] for k in ("ok", "aprobados", "total")},
-                       discrepancia_sintetica={"no_observada": "eliminada", "demostrada": "persiste"}.get(
-                           otra["discrepancia"], "inconclusa"))
+                       discrepancia_sintetica=disc, claves_distintas=comp["distintas"],
+                       cambio={k: v for k, v in cambio.items() if k != "diff"}, mismo_programa_que=mismo_programa,
+                       misma_salida_que=misma_salida)
             self._guardar(f"reparacion-{n}/reparacion.json", rep)
+            self._guardar(f"reparacion-{n}/retroalimentacion.md", retro)
             self.log(f"  reparación {n}: modificó {'sí' if rep['modifico'] else 'no'} · discrepancia sintética "
-                     f"{rep['discrepancia_sintetica']} · ejemplos visibles {vis['aprobados']}/{vis['total']}")
-            if rep["discrepancia_sintetica"] == "eliminada" and vis["ok"]:
+                     f"{disc} · claves distintas {comp['distintas']} · ejemplos visibles "
+                     f"{vis['aprobados']}/{vis['total']}"
+                     + (f" · mismo programa que {mismo_programa}" if mismo_programa else "")
+                     + (f" · misma salida que {misma_salida}" if misma_salida else ""))
+            if disc == "eliminada" and vis["ok"]:
                 candidato = (n, codigo)
                 break
-            avisos = []
-            if rep["discrepancia_sintetica"] == "persiste":
-                evidencia = CT.texto_para_programador(otra, self.contraste.funcion, propiedad)
-                avisos.append(f"Tu intento {n} todavía no cumple el contrato en el caso del revisor (abajo, la "
-                              "evidencia con lo que devolvió).")
-            elif rep["discrepancia_sintetica"] == "inconclusa":
-                avisos.append(f"Tu intento {n} no dio una salida comparable en el caso del revisor ("
-                              f"{(otra['candidato'] or {}).get('ejecucion')}).")
-            else:
-                avisos.append(f"Tu intento {n} ya cumple el contrato en el caso del revisor.")
-            if not vis["ok"]:
-                avisos.append("Pero no cumple los ejemplos visibles del contrato:\n" + vis["informe"])
-            aviso = "\n".join(avisos)
+            historial.append(linea_de_historial(n, base_n, comp, cambio, mismo_programa, misma_salida, disc))
+            if mismo_programa and avisado_de_repeticion:
+                # Ya se le había mostrado una repetición y volvió a repetir: otro pedido no traería información nueva.
+                inf["detenido"] = (f"el intento {n} repitió un programa ya probado después del aviso de repetición: "
+                                   "no se gastan más inferencias sin información nueva")
+                break
+            avisado_de_repeticion = avisado_de_repeticion or bool(mismo_programa)
+            # Lo que se le muestra ahora es el resultado de SU intento (reemplaza la evidencia de la versión inicial).
+            evidencia = retro
+            aviso = "" if vis["ok"] else ("Tu intento " + str(n) + " no cumple los ejemplos visibles del contrato:\n"
+                                          + vis["informe"])
             if vis["ejecutable"]:
+                if not mismo_programa:
+                    versiones.append({"n": n, "programa": prog, "salida": salida})
                 base, base_n = codigo, n
 
         # 4. Verificación independiente ----------------------------------------------------------------------------

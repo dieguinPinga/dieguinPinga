@@ -210,7 +210,8 @@ class RecorridoTests(Base):
         self.assertEqual(reps[1]["discrepancia_sintetica"], "persiste")
         segundo, tercero = (fake.requests[i]["messages"][1]["content"] for i in (2, 3))
         self.assertIn("se cortó al llegar al límite de 2048 tokens", segundo)
-        self.assertIn("todavía no cumple el contrato en el caso del revisor", tercero)
+        self.assertIn("RESULTADO DE TU INTENTO 2 EN EL CASO DEL REVISOR", tercero)
+        self.assertIn("REPETICIÓN: tu intento 2 es el MISMO programa que la versión inicial", tercero)
         self.assertEqual(inf["consumo"]["por_rol"]["programador"]["cortadas"], 1)
         self.assertEqual(inf["verificacion"]["intento"], 3)
 
