@@ -77,6 +77,47 @@ SISTEMA_CASO = (
     "distinto, la hipótesis queda confirmada; si dan igual, queda sin confirmar.")
 
 
+# Experimento 7 (oficina/revision_existente.py): el MISMO rol revisa una solución existente por su cuenta, sin
+# estancamiento previo ni resultados de pruebas: solo el contrato público y el código.
+SISTEMA_REVISOR_AUTONOMO = (
+    "Sos el REVISOR DE CÓDIGO de un equipo. Te dan el contrato de una función y una implementación existente. "
+    "No hay resultados de pruebas: revisala vos, comparando cada regla del contrato con el código, y buscá un DEFECTO "
+    "FUNCIONAL, es decir, una entrada válida según el contrato para la que el código devuelve algo distinto de lo "
+    "que el contrato pide.\n"
+    "Método: (1) elegí UNA hipótesis principal, la más probable, fundada en una regla del contrato; (2) anclala en "
+    "condiciones o líneas CONCRETAS del código, copiándolas LITERALMENTE (el coordinador comprueba que existan); "
+    "(3) describí la secuencia causal paso a paso: qué condición se evalúa, qué estado falta o es incorrecto en ese "
+    "momento, y qué rama del contrato resulta inaccesible o se toma en lugar de otra; (4) decí qué PROPIEDAD del "
+    "código tiene que cambiar, sin escribir el código corregido.\n"
+    "Separá HECHOS (lo que se ve en el código, con citas) de HIPÓTESIS. Como máximo dos hipótesis secundarias. NO "
+    "escribas código corregido ni bloques de código; no apruebes nada.\n"
+    "Respondé SOLO con un objeto JSON con esta forma:\n"
+    '{"hipotesis_principal": {"regla_del_contrato": "<regla en juego>", "citas_del_codigo": ["<fragmento literal '
+    'del código>"], "secuencia_causal": ["<paso 1>", "<paso 2>", "..."], "rama_inaccesible": "<qué rama o motivo del '
+    'contrato no se alcanza o se reemplaza por otro>", "propiedad_a_cambiar": "<qué propiedad del código cambiar>", '
+    '"confianza": "alta | media | baja"}, "hechos": ["<hecho observable en el código>"], '
+    '"hipotesis_secundarias": [{"descripcion": "<...>", "propiedad_a_cambiar": "<...>"}], '
+    '"caso_sintetico": {"args": [<argumentos posicionales en JSON>], "kwargs": {<argumentos por nombre>}, '
+    '"que_deberia_pasar": "<qué pide el contrato para esa entrada, en palabras>"}}\n'
+    "El caso sintético es OBLIGATORIO: una entrada MÍNIMA, construida solo desde el contrato, donde según tu "
+    "hipótesis el código devuelve algo distinto de lo que pide el contrato. El coordinador la ejecuta en un entorno "
+    "aislado con una implementación de referencia y con este código. Si las salidas difieren, queda demostrado que "
+    "el código no cumple el contrato en esa entrada (la causa sigue siendo tu hipótesis); si coinciden, tu hipótesis "
+    "no tiene respaldo en ese caso.")
+
+
+def mensajes_autonomos(descripcion: str, spec: dict, codigo: str, nota: str = "") -> list[dict]:
+    """Pedido del experimento 7: contrato, firma, ejemplos visibles y el código numerado. Ningún resultado de pruebas."""
+    numerado = "\n".join(f"{i:3d}| {ln}" for i, ln in enumerate((codigo or "").splitlines(), 1))
+    usuario = (f"CONTRATO DE LA MISIÓN:\n{descripcion}\n\n{prompts._sig(spec)}\n\n"
+               f"Ejemplos visibles:\n{prompts._examples(spec, 3000) or '(sin ejemplos visibles)'}\n\n"
+               "CÓDIGO EXISTENTE A REVISAR (solucion.py; los números de línea NO son parte del código: al citar, copiá "
+               f"solo el texto después de «| »):\n{numerado}\n\n"
+               + (f"NOTA DEL COORDINADOR:\n{nota}\n\n" if nota else "")
+               + "Revisalo y respondé con el JSON pedido, con el caso sintético.")
+    return [{"role": "system", "content": SISTEMA_REVISOR_AUTONOMO}, {"role": "user", "content": usuario}]
+
+
 @dataclass
 class ConfigRevisor:
     modelo: ModelConfig
@@ -221,9 +262,10 @@ def texto_para_programador(diag: dict, limite: int, estado: str | None = None) -
 
 
 def revisar(ollama, gate, cfg: ConfigRevisor, descripcion: str, spec: dict, codigo: str, feedback: str,
-            cancel) -> dict:
-    """Una llamada al revisor. Nunca lanza por fallas del revisor: devuelve {'ok': False, 'motivo': …}."""
-    msgs = mensajes(descripcion, spec, codigo, feedback, con_caso=cfg.hipotesis_verificables)
+            cancel, msgs: list[dict] | None = None) -> dict:
+    """Una llamada al revisor. Nunca lanza por fallas del revisor: devuelve {'ok': False, 'motivo': …}.
+    msgs: un pedido ya armado (experimento 7, mensajes_autonomos); por omisión, el de siempre."""
+    msgs = msgs or mensajes(descripcion, spec, codigo, feedback, con_caso=cfg.hipotesis_verificables)
     t0 = time.monotonic()
     reg = {"modelo": cfg.modelo.name, "mensajes": msgs, "ok": False}
     try:
@@ -238,7 +280,7 @@ def revisar(ollama, gate, cfg: ConfigRevisor, descripcion: str, spec: dict, codi
         reg.update(motivo=f"el revisor no respondió: {e}", segundos=round(time.monotonic() - t0, 1))
         return reg
     reg.update(respuesta=gen.text, segundos=round(time.monotonic() - t0, 1), tokens_prompt=gen.prompt_tokens,
-               tokens_generados=gen.eval_tokens, cortada=bool(gen.truncated))
+               tokens_generados=gen.eval_tokens, cortada=bool(gen.truncated), fin=gen.done_reason)
     try:
         reg["diagnostico"] = interpretar(gen.text, codigo)
         reg["ok"] = True

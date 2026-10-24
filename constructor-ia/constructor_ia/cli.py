@@ -1211,6 +1211,8 @@ def cmd_oficina(args) -> int:
         return 0 if r["ok"] else 1
     if args.accion in ("comprobar-programacion", "encolar-programacion", "programar"):
         return _oficina_programacion(args, cfg, carpeta)
+    if args.accion == "revisar-existente":
+        return _oficina_revision_existente(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
         try:
@@ -1364,6 +1366,100 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
     finally:
         reg.cerrar()
         cola.cerrar()
+
+
+def _oficina_revision_existente(args, cfg, carpeta) -> int:
+    """Experimento 7 (OFICINA.md): sin --autorizo-inferencia-remota solo PREPARA y comprueba (sin inferencias ni
+    escribir nada); con la autorización, corre el recorrido revisor → contraste → programador → verificación en
+    <carpeta>/experimento-7/corrida-<fecha>/."""
+    from .oficina import programador as PG
+    from .oficina import registro as RG
+    from .oficina import remoto as RM
+    from .oficina import revision_existente as RE
+    from .sandbox.executor import Executor
+
+    pasos = []
+
+    def paso(nombre, ok, detalle):
+        pasos.append(ok)
+        print(f"[{'OK' if ok else 'FALLA'}] {nombre}: {detalle}")
+    print(f"{RE.VERSION_EXPERIMENTO}: misión {args.mision}"
+          + (f", código inicial {args.codigo}" if args.codigo else ", código inicial: referencia de la misión")
+          + (f", defecto controlado «{args.defecto}»" if args.defecto else ", sin defecto controlado"))
+    previos = [x for x in ("taller.db", "taller") if (carpeta / x).exists()]
+    paso("laboratorio aislado", not previos, f"{carpeta}" + (f" tiene «{previos[0]}» de un experimento anterior: "
+                                                             "usá una carpeta nueva" if previos else ""))
+    codigo = None
+    if args.codigo:
+        try:
+            codigo = Path(args.codigo).read_text()
+        except OSError as e:
+            print(f"oficina: no se pudo leer {args.codigo}: {e}", file=sys.stderr)
+            return 2
+    reg = RG.Registro(carpeta / "oficina.db")
+    try:
+        try:
+            t = reg.comprobar(args.trabajador)
+            paso("trabajador (identidad, modelos, latido; sin inferencias)", t["disponible_ahora"],
+                 f"{t['estado']} · {t['motivo']}")
+        except RG.ErrorRegistro as e:
+            t = None
+            paso("trabajador", False, str(e))
+    finally:
+        reg.cerrar()
+    modelos = {args.modelo, args.revisor_modelo or args.modelo}
+    if t:
+        for m in sorted(modelos):
+            elegido, motivo = RM.elegir({"modelo": m, "permiso": "inferencia"}, [t])
+            paso(f"planificador ({m})", elegido is not None, motivo)
+    ex = Executor(cfg)
+    ex.self_test()
+    paso("sandbox (autodiagnóstico de aislamiento, sin código de la IA)", ex.enabled,
+         ex.disabled_reason if not ex.enabled else "bwrap, seccomp y límites verificados")
+    prep = None
+    if ex.enabled:
+        try:
+            prep = RE.preparar(ex, args.mision, codigo, args.defecto)
+        except RE.ErrorExperimento as e:
+            paso("solución inicial", False, str(e))
+        if prep:
+            r = prep["referencia"]
+            paso("referencia de la misión contra la batería completa", r["ok"], f"{r['aprobados']}/{r['total']}")
+            paso("solución inicial con un defecto funcional verificable (el resultado no llega a los modelos)",
+                 prep["defecto_verificable"], prep["motivo"])
+    if not args.autorizo_inferencia_remota or not all(pasos):
+        print("Preparación " + ("completa: listo para autorizar el experimento 7 con --autorizo-inferencia-remota."
+                                if all(pasos) else "con FALLAS: no se envía ninguna inferencia."))
+        return 0 if all(pasos) else 3
+    try:
+        destino = RE.carpeta_de_corrida(carpeta)
+    except RE.ErrorExperimento as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    conf = RE.ConfigExperimento(
+        programador=PG.modelo_remoto(args.modelo),
+        revisor=PG.modelo_remoto(args.revisor_modelo or args.modelo, num_predict=1024, timeout_s=600),
+        mision=args.mision, max_revisiones=args.max_revisiones, max_reparaciones=args.max_reparaciones,
+        max_segundos=args.max_segundos)
+    print(f"[INFO] corrida en {destino}: hasta {conf.max_revisiones} revisiones y {conf.max_reparaciones} "
+          f"reparaciones, {conf.max_segundos:.0f} s de inferencia")
+    inf = RE.Experimento(destino, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]), conf).correr(prep)
+    ver = inf.get("verificacion")
+    if ver:
+        print(f"Verificación independiente del intento {ver['intento']}: {ver['aprobados']}/{ver['total']} "
+              + ("APROBADA" if ver["ok"] else "NO aprobada"))
+    if inf.get("detenido"):
+        print(f"Detenido: {inf['detenido']}")
+    for ll in inf["consumo"]["llamadas"]:
+        print(f"  {ll['rol']}: {ll['tokens_prompt']} tokens de entrada · {ll['tokens_generados']} generados · "
+              f"{ll['segundos']} s" + (" · CORTADA" if ll["cortada"] else "") + (f" · {ll['error']}" if ll["error"] else ""))
+    for nombre, ok in inf["criterios"].items():
+        print(f"  criterio {nombre}: {'sí' if ok else 'no'}")
+    a = inf["auditoria_de_fugas"]
+    print(f"  auditoría de fugas: {'sin fugas' if a['sin_fugas'] else 'FUGAS: ' + ', '.join(a['hallazgos'])} "
+          f"({a['pedidos_revisados']} pedidos, {a['marcas_buscadas']} marcas)")
+    print(f"Experimento 7: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'} · registro completo en {destino / 'informe.json'}")
+    return 0 if inf["exito"] else 1
 
 
 def main(argv=None) -> int:
@@ -1584,6 +1680,21 @@ def main(argv=None) -> int:
         o.add_argument("--hipotesis-verificables", dest="hipotesis_verificables", action="store_true",
                        help="experimento 6: el revisor propone un caso sintético que el coordinador contrasta")
         o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
+    o = osub.add_parser("revisar-existente", help="experimento 7: el revisor examina una solución existente, "
+                                                  "el coordinador contrasta su caso y el programador repara (sin "
+                                                  "--autorizo-inferencia-remota solo prepara, sin inferencias)")
+    o.add_argument("--carpeta", required=True, help="laboratorio propio (no la carpeta de un experimento anterior)")
+    o.add_argument("--trabajador", required=True)
+    o.add_argument("--modelo", default="gemma4:12b")
+    o.add_argument("--revisor-modelo", dest="revisor_modelo", help="modelo del revisor (por omisión, el mismo)")
+    o.add_argument("--mision", default="conciliar_movimientos")
+    o.add_argument("--codigo", help="archivo Python con la solución inicial (por omisión, la referencia de la misión)")
+    o.add_argument("--defecto", help="defecto controlado a introducir (ver OFICINA.md, «Experimento 7»)")
+    o.add_argument("--max-revisiones", dest="max_revisiones", type=int, default=2)
+    o.add_argument("--max-reparaciones", dest="max_reparaciones", type=int, default=3)
+    o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0,
+                   help="tiempo total de inferencia (revisor + programador)")
+    o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")
     o.add_argument("--modelo", default="gemma4:12b")

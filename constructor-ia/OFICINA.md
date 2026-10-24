@@ -974,6 +974,162 @@ python3 -m unittest tests.test_oficina_estabilizacion tests.test_oficina_hipotes
     tests.test_oficina_autocorreccion tests.test_oficina_conciliar tests.test_oficina_programacion   # 58 pruebas
 ```
 
+## Experimento 7: revisión autónoma de una solución existente (implementado, SIN inferencias)
+
+**Objetivo:** demostrar que el revisor puede descubrir **por su cuenta** un defecto funcional con una hipótesis
+verificable, y que el programador puede corregirlo con ese diagnóstico.
+
+**Diferencia con los experimentos anteriores:** el revisor no espera un estancamiento ni recibe resultados de
+pruebas. Revisa un código existente solo con el contrato público.
+
+Es una modalidad aparte (`oficina revisar-existente`, módulo `oficina/revision_existente.py`). `oficina programar`,
+el motor, los roles, los modelos, el sandbox y las pruebas ocultas no cambian.
+
+### Recorrido
+
+0. **Preparación, sin inferencias ni escritura:**
+   - **Solución inicial:** un archivo Python existente (`--codigo`) o la referencia de la misión.
+   - **Defecto controlado opcional** (`--defecto`, catálogo `DEFECTOS`): un reemplazo textual exacto, que tiene que
+     aparecer una sola vez.
+   - **Limpieza:** se quitan los comentarios de línea completa.
+   - **Comprobación:** el coordinador ejecuta la referencia y la solución inicial contra la batería completa.
+     - Si la solución inicial aprueba todo, o no carga, no hay un defecto funcional verificable y no se gasta
+       ninguna inferencia.
+     - El nombre y la explicación del defecto, y el resultado de esa batería, quedan solo en el registro.
+1. **Revisor:** el mismo rol, con un pedido autónomo (`revisor.SISTEMA_REVISOR_AUTONOMO` y `mensajes_autonomos`).
+   - **Recibe:** el contrato, la firma, los ejemplos visibles y el código numerado. Ningún resultado de pruebas.
+   - **Devuelve:** la hipótesis causal de siempre, con citas que el coordinador comprueba, y un caso sintético
+     **obligatorio**.
+2. **Contraste:** el mismo de la estabilización.
+   - **Validación:** el caso se valida contra el contrato. Si coincide con la entrada de un caso oculto, no se
+     ejecuta.
+   - **Ejecución:** se corre en el sandbox con la referencia y con el candidato.
+   - **Resultado:** queda registrado por separado:
+     - la ejecución y la salida de cada uno;
+     - la discrepancia (demostrada, no observada o inconclusa);
+     - la hipótesis causal, que con una discrepancia queda «compatible, no demostrada».
+   - **Si no hay discrepancia:** el revisor puede volver a intentar (`--max-revisiones`, 2 por omisión). Recibe una
+     nota que dice solo qué pasó con **su** caso. Un caso igual a uno oculto se informa como «elegí otra entrada»,
+     sin decir por qué.
+3. **Programador:** solo si la discrepancia quedó demostrada.
+   - **Recibe:** el contrato, los ejemplos visibles, el código, el diagnóstico y la evidencia («DEMOSTRADO… / NO
+     DEMOSTRADO: la causa…»), con las reglas de concisión. Ningún dato de la batería.
+   - **Intentos:** hasta `--max-reparaciones` (3).
+   - **Entre intentos, solo evidencia pertinente:**
+     - su respuesta cortada o inválida;
+     - el caso sintético de nuevo, con lo que devolvió;
+     - el informe de los ejemplos visibles, que son públicos.
+   - **Punto de partida:** el último intento que se pudo ejecutar.
+4. **Verificación independiente:** cuando un intento elimina la discrepancia y cumple los ejemplos visibles, el
+   coordinador lo ejecuta **una sola vez** contra la batería completa. Ese resultado nunca vuelve a un modelo.
+
+### Defectos controlados (`--defecto`)
+
+| Misión | Defecto | Qué rompe (no llega a los modelos) |
+|---|---|---|
+| conciliar_movimientos | `anulaciones_no_registradas` | anular una anulación da `anulacion_inexistente` |
+| conciliar_movimientos | `orden_solo_por_fecha` | dentro del mismo día manda el orden de la lista, no el id |
+| conciliar_movimientos | `saldo_cero_rechazado` | un saldo que llega exactamente a 0 se rechaza |
+| resumen_ventas | `hasta_excluido` | el día «hasta» queda afuera |
+| resumen_ventas | `desempate_invertido` | en un empate gana el último alfabéticamente |
+
+Todos pasan los ejemplos visibles, fallan la batería y tienen un caso mínimo del contrato que los demuestra (lo
+comprueban las pruebas).
+
+### Criterios de éxito (`informe.json`, `criterios`)
+
+1. `1_defecto_funcional_verificable`: la solución inicial carga y falla la batería independiente.
+2. `2_caso_reproduce_discrepancia_real`: un caso del revisor demostró una discrepancia con la referencia.
+3. `3_programador_modifico_la_solucion`: un intento devolvió código distinto de su punto de partida (sin contar los
+   comentarios).
+4. `4_discrepancia_eliminada_y_verificacion_independiente`: el intento verificado elimina la discrepancia y aprueba
+   la batería completa.
+
+`exito` exige los cuatro criterios **y** una auditoría de fugas limpia. La auditoría busca, en cada pedido enviado a
+un modelo:
+- el nombre y la explicación del defecto;
+- las entradas, las salidas esperadas y las categorías de los casos ocultos.
+
+Un dato oculto que también es público (por ejemplo, igual a un ejemplo visible) no cuenta.
+
+### Registro (`<carpeta>/experimento-7/corrida-<fecha>/`)
+
+- **`inicial/`:** `solucion.py` y `preparacion.json`, con el origen, las huellas, el defecto y la batería inicial.
+- **`revision-N/`:** `pedido.json`, `respuesta.txt` y `revision.json`, con el diagnóstico y el contraste.
+- **`reparacion-N/`:** `pedido.json`, `respuesta.md`, `solucion.py` y `reparacion.json`, con el contraste nuevo, los
+  ejemplos visibles y si modificó el código.
+- **`final/solucion.py`.**
+- **`informe.json`:** los límites, cada revisión y reparación, la verificación y los criterios. También el consumo:
+  cada llamada con su rol, segundos, tokens de entrada y generados, motivo de fin y si se cortó, con totales por rol.
+
+### Límites
+
+- **Revisiones y reparaciones:** 2 y 3 por omisión.
+- **Tiempo de inferencia:** `--max-segundos`, 2400 por omisión, revisado antes de cada llamada.
+- **Tokens:** 2048 para el programador y 1024 para el revisor, con los mismos plazos por llamada que `programar`.
+- **Sandbox:** el mismo de siempre.
+- **Laboratorio aislado:** la carpeta no puede tener `taller.db` ni `taller/`, que son de los experimentos 1 a 6b.
+  Cada corrida va a una subcarpeta nueva y nada se sobrescribe.
+
+**Riesgo conocido:** la referencia responde el caso sintético del revisor, igual que en el experimento 6: es un
+oráculo acotado a casos públicos y mínimos. La batería completa solo se usa al preparar y al verificar.
+
+### Pruebas
+
+`tests/test_oficina_revision_existente.py` (15), con revisor y programador simulados y el sandbox real:
+- **Catálogo:** cada defecto pasa los ejemplos visibles, falla la batería y tiene un caso del contrato que lo
+  demuestra.
+- **Preparación:**
+  - rechaza una solución sin defecto sin inferir, y también defectos desconocidos o inaplicables;
+  - un programa que no carga no cuenta como defecto funcional;
+  - un archivo existente entra sin sus comentarios.
+- **Laboratorio:** nunca se reutiliza una carpeta anterior.
+- **Recorrido completo:** éxito en los cuatro criterios.
+  - El revisor recibe solo el contrato y el código.
+  - El programador recibe el diagnóstico y la evidencia separada, sin la batería, sin el defecto y sin datos
+    ocultos.
+  - Quedan el registro y el consumo.
+- **Revisor:**
+  - una segunda oportunidad con la nota de su propio caso;
+  - sin discrepancia demostrada, nunca se llama al programador;
+  - un caso igual a uno oculto no se ejecuta ni se revela.
+- **Reparación:**
+  - una respuesta cortada y otra sin cambios reciben solo la evidencia pertinente;
+  - eliminar la discrepancia no alcanza: la batería decide, una sola vez;
+  - se respetan los límites de reparaciones y de tiempo.
+- **Otras:** `resumen_ventas` con un defecto controlado; la auditoría de fugas detecta el defecto y los datos
+  ocultos; el CLI prepara sin inferir ni escribir, corre con autorización y rechaza la carpeta de un experimento
+  anterior sin tocarla.
+
+Suite completa: 621 pruebas, OK (668 s).
+
+### Ejecutar el experimento 7 (cuando lo autoricen)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_revision_existente tests.test_oficina_estabilizacion \
+    tests.test_oficina_hipotesis tests.test_oficina_revisor            # 47 pruebas, sin inferencias
+L=~/constructor-ia-piloto/data/oficina-revision-7                     # laboratorio NUEVO (no el 6 ni el 6b)
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+# 1) Preparación: comprueba trabajador, sandbox y defecto; NO infiere ni escribe la corrida.
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas
+# 2) Experimento: a lo sumo 2 revisiones + 3 reparaciones (5 inferencias) y 2400 s de inferencia.
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas --autorizo-inferencia-remota
+```
+
+El resultado sale por pantalla:
+- la verificación independiente;
+- el consumo de cada llamada;
+- los cuatro criterios;
+- la auditoría de fugas;
+- `Experimento 7: ÉXITO` o `SIN ÉXITO`, que también es el código de salida (0 o 1).
+
+Todo el detalle queda en `$L/experimento-7/corrida-*/informe.json`. Para partir de un archivo propio, agregá
+`--codigo archivo.py`; con `--defecto`, el defecto se aplica sobre ese archivo.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
