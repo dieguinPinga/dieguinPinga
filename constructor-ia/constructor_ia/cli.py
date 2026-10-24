@@ -1213,6 +1213,8 @@ def cmd_oficina(args) -> int:
         return _oficina_programacion(args, cfg, carpeta)
     if args.accion == "revisar-existente":
         return _oficina_revision_existente(args, cfg, carpeta)
+    if args.accion == "sondear-comprension":
+        return _oficina_sonda_comprension(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
         try:
@@ -1464,6 +1466,62 @@ def _oficina_revision_existente(args, cfg, carpeta) -> int:
     return 0 if inf["exito"] else 1
 
 
+def _oficina_sonda_comprension(args, cfg, carpeta) -> int:
+    """Experimento 7.4 (OFICINA.md): UNA pregunta de comprensión al programador sobre una corrida terminada. Sin
+    --autorizo-inferencia-remota solo comprueba y muestra el pedido (no infiere ni escribe)."""
+    from .oficina import programador as PG
+    from .oficina import registro as RG
+    from .oficina import remoto as RM
+    from .oficina import sonda_comprension as SC
+
+    print(f"{SC.VERSION_SONDA}: corrida {args.corrida}, modelo {args.modelo}")
+    try:
+        f = SC.fuentes(Path(args.corrida))
+    except SC.ErrorSonda as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    msgs = SC.mensajes(f)
+    print(f"[OK] fuentes (solo lectura): misión {f['mision']}, revisión {f['revision']} con la discrepancia "
+          f"demostrada, zonas {', '.join(f'{a}–{b}' for a, b in f['zonas'])}")
+    print(f"[INFO] pedido: {sum(len(m['content']) for m in msgs)} caracteres; sin código pedido, sin evidencia de "
+          "la batería ni el defecto")
+    reg = RG.Registro(carpeta / "oficina.db")
+    try:
+        t = reg.comprobar(args.trabajador)
+    except RG.ErrorRegistro as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 3
+    finally:
+        reg.cerrar()
+    elegido, motivo = RM.elegir({"modelo": args.modelo, "permiso": "inferencia"}, [t])
+    print(f"[{'OK' if elegido else 'FALLA'}] trabajador y planificador: {motivo}")
+    if not elegido:
+        return 3
+    if not args.autorizo_inferencia_remota:
+        if args.mostrar_pedido:
+            print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in msgs))
+        print("Preparación completa: listo para autorizar la sonda con --autorizo-inferencia-remota.")
+        return 0
+    try:
+        destino = SC.carpeta_de_sonda(carpeta, Path(args.corrida))
+        r = SC.correr(destino, f, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]), PG.modelo_remoto(args.modelo))
+    except SC.ErrorSonda as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    m = r["metadatos"]
+    if not r["ok"]:
+        print(f"La inferencia falló: {m.get('error')}")
+        return 1
+    ev = r["evaluacion"]
+    print(f"Respuesta: {m['tokens_generados']} tokens · {m['segundos']} s · fin {m['fin']}"
+          + (" · CORTADA" if m["cortada"] else ""))
+    for k in ("identifica_ausencia_en_aplicados", "observa_que_la_referida_no_esta", "explica_ref_none",
+              "cita_la_condicion", "contiene_codigo", "propone_cambios", "solo_parafrasis_del_revisor"):
+        print(f"  {k}: {'sí' if ev[k] else 'no'}")
+    print(f"Evaluación automática e indicativa; leé {destino / 'respuesta.txt'}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="constructor-ia", description=f"Constructor IA {VERSION}")
     p.add_argument("--config", help="Ruta del config.toml")
@@ -1699,6 +1757,16 @@ def main(argv=None) -> int:
     o.add_argument("--variante", choices=["7.1", "7.2", "7.3"], default="7.1",
                    help="7.1: reparación directa (por omisión) · 7.2: diagnóstico previo del programador y reparación "
                         "· 7.3: parches mínimos sobre zonas autorizadas")
+    o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
+    o = osub.add_parser("sondear-comprension", help="experimento 7.4: pregunta de comprensión causal al programador "
+                                                    "sobre una corrida terminada (sin código ni parches; sin "
+                                                    "--autorizo-inferencia-remota no infiere)")
+    o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente (solo lectura)")
+    o.add_argument("--carpeta", required=True, help="laboratorio propio para la sonda (no la corrida)")
+    o.add_argument("--trabajador", required=True)
+    o.add_argument("--modelo", default="qwen2.5-coder:7b")
+    o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true",
+                   help="sin inferencia: imprime el pedido completo")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")

@@ -1632,6 +1632,102 @@ Suite completa: 677 pruebas, OK (764 s).
 Repetir 7.3b en un laboratorio nuevo (por ejemplo `oficina-revision-7-3c`) con los mismos comandos de la sección
 anterior.
 
+## Experimento 7.4: sonda de comprensión causal (implementado, SIN inferencias; diagnóstico, no reparación)
+
+**Contexto (7.3c):**
+- Gemma diagnosticó bien el defecto.
+- El coordinador habilitó las zonas 27–37 y 41–46.
+- Qwen generó tres veces un parche incorrecto.
+
+**Pregunta:** ¿`qwen2.5-coder:7b` entiende la **causa** cuando recibe las dos zonas?
+
+**Qué es:** una prueba independiente, `oficina sondear-comprension` (`oficina/sonda_comprension.py`). No toca el
+coordinador, `revisar-existente`, los parches ni la corrida original, y no lleva a ninguna reparación.
+
+### Recorrido
+
+1. **Fuentes, solo lectura**, de una corrida terminada de `revisar-existente` (`--corrida`):
+   - `inicial/solucion.py`;
+   - `inicial/preparacion.json`;
+   - la primera `revision-N/revision.json` con la discrepancia **demostrada**;
+   - las zonas de `reparacion-1/reparacion.json`.
+
+   Se registran las huellas de esos archivos. La sonda escribe en un laboratorio aparte (`--carpeta`, nunca dentro
+   de la corrida).
+2. **Pedido** (`SISTEMA_SONDA` y `PREGUNTAS`), en prosa:
+   - **Contenido:**
+     - el contrato;
+     - las dos zonas con el contexto de solo lectura, con el mismo formato que en el 7.3;
+     - los campos del diagnóstico de Gemma: regla, citas comprobadas, secuencia causal, rama inaccesible, propiedad
+       señalada y hechos.
+   - **Preguntas:**
+     - qué ocurre, paso a paso, cuando una anulación referencia a otra anulación ya aplicada;
+     - por qué no se alcanza `ref["tipo"] == "anulacion"`.
+   - **No incluye:**
+     - pedido de código ni de parches;
+     - las instrucciones de reparación del 7.1 («QUÉ HACER…»);
+     - la evidencia del caso sintético;
+     - datos de la batería;
+     - el defecto ni la referencia;
+     - la rúbrica de evaluación.
+
+   La auditoría de fugas revisa el pedido y, si encuentra algo, no se envía.
+3. **Inferencia:** una sola, con la infraestructura remota existente (`ClienteRemoto` con lista blanca y compuerta
+   por destino) y los parámetros del programador (`num_ctx` 8192, `num_predict` 2048, temperatura 0.2).
+4. **Registro** en `<carpeta>/experimento-7-4/sonda-<fecha>/`:
+   - `origen.json`: fuentes, huellas, zonas y auditoría;
+   - `pedido.json`;
+   - `respuesta.txt`: literal;
+   - `metadatos.json`: modelo, opciones, tokens, tiempos, motivo de fin y si se cortó;
+   - `evaluacion.json`.
+5. **Evaluación separada** (`evaluar`), automática e **indicativa**: requiere leer `respuesta.txt`.
+   - `identifica_ausencia_en_aplicados`: alguna oración dice que las anulaciones aplicadas no se registran (no se
+     guardan, no se agregan…) en `aplicados`, o atribuye la falta a la condición `tipo != "anulacion"`;
+   - `observa_que_la_referida_no_esta`: alguna oración dice que la anulación referida no está, sin explicar por qué;
+   - `explica_ref_none` y `cita_la_condicion`;
+   - `contiene_codigo` y `propone_cambios`, que violan la consigna;
+   - `solo_parafrasis_del_revisor`, porque el diagnóstico de Gemma ya contiene la causa y la sonda mide si Qwen la
+     explica, no si la descubre.
+
+### Pruebas
+
+`tests/test_oficina_sonda_comprension.py` (10), sin inferencias. La corrida de origen se genera con el 7.3 simulado.
+- **Evaluación:**
+  - una explicación causal se identifica y una equivocada no;
+  - observar la ausencia se separa de explicar su causa;
+  - se marcan el código, la propuesta de cambios y la paráfrasis.
+- **Fuentes:** las zonas reales 27–37 y 41–46, y el diagnóstico demostrado.
+- **Pedido:** tiene las zonas, el diagnóstico y las preguntas, y nada de lo prohibido.
+- **Inferencia y registro:**
+  - una sola inferencia, con el modelo y las opciones de siempre;
+  - la respuesta literal y los metadatos quedan guardados;
+  - lo registrado es lo enviado;
+  - la corrida original no cambia (huellas).
+- **Respuesta cortada:** se registra y se evalúa igual.
+- **Rechazos:**
+  - escribir dentro de la corrida;
+  - un laboratorio con `taller.db`;
+  - una corrida 7.1, que no tiene zonas;
+  - una corrida sin discrepancia demostrada.
+- **CLI:** la preparación no infiere ni escribe; con autorización hace una inferencia.
+
+Suite completa: 687 pruebas, OK (814 s).
+
+### Ejecutar en la VivoBook (con autorización explícita)
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_sonda_comprension                 # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-sonda-7-4
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina sondear-comprension --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                                     # preparación: muestra el pedido, no infiere
+python3 -m constructor_ia oficina sondear-comprension --corrida $R --carpeta $L --trabajador pulenta \
+    --autorizo-inferencia-remota                                         # UNA inferencia
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
