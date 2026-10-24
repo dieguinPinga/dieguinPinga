@@ -6,7 +6,10 @@ parche es un dato (texto original exacto → texto de reemplazo) y la única ope
 
 1. LOCALIZACIÓN (`localizar`), solo con información permitida y análisis estático:
    - anclas: las citas del revisor que el coordinador comprobó en el código, y las líneas con literales de texto que
-     aparecen en la diferencia del caso sintético (salida de la referencia y del candidato para ESE caso público);
+     aparecen en la diferencia del caso sintético (salida de la referencia y del candidato para ESE caso público).
+     Una cita se ubica con el MISMO criterio con que se verificó (revisor.cita_en_codigo: texto normalizado), en la
+     ventana mínima de líneas consecutivas que la contiene: una cita de varias líneas ancla todas sus líneas. Cada
+     cita queda registrada con sus líneas o con el motivo por el que no ancló nada (corrección A del 7.3);
    - cada ancla se lleva a su sentencia en el árbol sintáctico; si su bloque tiene menos de MIN_HERMANAS
      sentencias, se sube a la sentencia que lo contiene; la zona es esa sentencia con hasta HERMANAS vecinas antes y
      después (se achica hasta caber en MAX_LINEAS_ZONA);
@@ -28,6 +31,8 @@ import re
 from .. import codeextract, prompts
 
 HERMANAS = 2
+MAX_VENTANA_CITA = 6       # líneas consecutivas en las que se busca una cita (revisor acepta citas de hasta 2 líneas,
+                           # pero una cita escrita en una línea puede abarcar varias líneas del código)
 MIN_HERMANAS = 3
 MAX_LINEAS_ZONA = 30
 MAX_LINEAS_ZONAS = 80
@@ -81,15 +86,35 @@ def _norm(t: str) -> str:
     return " ".join(t.split())
 
 
-def anclas(codigo: str, citas: list[str], literales: list[str]) -> list[dict]:
-    """Líneas del código que anclan la localización: citas comprobadas y literales de la evidencia sintética."""
-    lineas = codigo.splitlines()
+def lineas_de_cita(codigo: str, cita: str) -> list[int]:
+    """Líneas (1..n) donde aparece la cita, con el criterio de revisor.cita_en_codigo (espacios normalizados): para
+    cada aparición, la ventana MÍNIMA de líneas consecutivas cuyo texto unido la contiene. Así una cita de varias
+    líneas ancla todas ellas, y una de una línea se comporta como antes (todas las líneas que la contienen)."""
+    n = _norm(cita)
+    if not n:
+        return []
+    lineas = [_norm(x) for x in codigo.splitlines()]
+    for w in range(1, MAX_VENTANA_CITA + 1):
+        encontradas = []
+        for i in range(len(lineas) - w + 1):
+            if n in " ".join(x for x in lineas[i:i + w] if x):
+                encontradas.extend(range(i + 1, i + w + 1))
+        if encontradas:
+            return sorted(set(encontradas))
+    return []
+
+
+def anclas(codigo: str, citas: list[str], literales: list[str], registro: list | None = None) -> list[dict]:
+    """Líneas del código que anclan la localización: citas comprobadas y literales de la evidencia sintética.
+    registro (opcional) recibe, por cada cita, sus líneas o el motivo por el que no ancló."""
     out = []
     for c in citas:
-        n = _norm(c)
-        for i, ln in enumerate(lineas, 1):
-            if n and n in _norm(ln):
-                out.append({"linea": i, "origen": "cita del revisor", "texto": c})
+        ls = lineas_de_cita(codigo, c)
+        if registro is not None:
+            registro.append({"texto": c, "verificada": True, "lineas": ls,
+                             "motivo": None if ls else f"no se ubicó en {MAX_VENTANA_CITA} líneas consecutivas"})
+        for i in ls:
+            out.append({"linea": i, "origen": "cita del revisor", "texto": c})
     try:
         tree = ast.parse(codigo)
     except SyntaxError:
@@ -125,10 +150,16 @@ def literales_de_la_diferencia(comp: dict | None) -> list[str]:
     return sorted(set(out))
 
 
-def localizar(codigo: str, funcion: str, citas: list[str], literales: list[str]) -> dict:
-    """{"zonas": [(a, b)], "anclas": [...], "metodo": ...}. Determinista y sin pruebas ocultas."""
+def localizar(codigo: str, funcion: str, citas: list[str], literales: list[str],
+              citas_no_verificadas: list[str] = ()) -> dict:
+    """{"zonas": [(a, b)], "anclas": [...], "citas": [...], "metodo": ...}. Determinista y sin pruebas ocultas.
+    «citas» registra cada cita del revisor: las verificadas con sus líneas (o por qué no anclaron) y las no
+    verificadas como descartadas."""
     tree = ast.parse(codigo)
-    an = anclas(codigo, citas, literales)
+    registro: list[dict] = []
+    an = anclas(codigo, citas, literales, registro)
+    registro += [{"texto": c, "verificada": False, "lineas": [], "motivo": "no verificada: no aparece en el código"}
+                 for c in citas_no_verificadas]
     rangos = sorted(z for z in (_zona(tree, a["linea"]) for a in an) if z)
     unidas: list[list[int]] = []
     for a, b in rangos:
@@ -143,11 +174,12 @@ def localizar(codigo: str, funcion: str, citas: list[str], literales: list[str])
         zonas.append((a, b))
         total += b - a + 1
     if zonas:
-        return {"zonas": zonas, "anclas": an, "metodo": "anclas (citas comprobadas y evidencia sintética)"}
+        return {"zonas": zonas, "anclas": an, "citas": registro,
+                "metodo": "anclas (citas comprobadas y evidencia sintética)"}
     fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == funcion),
               None)
     a, b = (fn.lineno, fn.end_lineno) if fn else (1, len(codigo.splitlines()))
-    return {"zonas": [(a, b)], "anclas": an, "metodo": "sin anclas: la función completa"}
+    return {"zonas": [(a, b)], "anclas": an, "citas": registro, "metodo": "sin anclas: la función completa"}
 
 
 def contexto_de_lectura(codigo: str, funcion: str, zonas: list[tuple[int, int]]) -> list[int]:

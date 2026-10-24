@@ -696,6 +696,8 @@ class Experimento:
         avisado_de_repeticion = False
         # 7.3: anclas permitidas para localizar (citas comprobadas del revisor y la diferencia del caso sintético).
         citas = [c["texto"] for c in demostrada["diagnostico"]["principal"]["citas"] if c["verificada"]]
+        citas_no_verificadas = [c["texto"] for c in demostrada["diagnostico"]["principal"]["citas"]
+                                if not c["verificada"]]
         comp_base = comparar_salidas(esperado, ct["candidato"]["salida"])
         parches: list[dict] = []
         for n in range(1, self.cfg.max_reparaciones + 1):
@@ -721,8 +723,10 @@ class Experimento:
                     inf["detenido"] = f"el trabajador no responde: {rep['diagnostico_propio']['motivo']}"
                     break
             if self.cfg.variante == "7.3":
-                loc = PA.localizar(base, self.contraste.funcion, citas, PA.literales_de_la_diferencia(comp_base))
-                rep["localizacion"] = {"zonas": loc["zonas"], "anclas": loc["anclas"], "metodo": loc["metodo"]}
+                loc = PA.localizar(base, self.contraste.funcion, citas, PA.literales_de_la_diferencia(comp_base),
+                                   citas_no_verificadas)
+                rep["localizacion"] = {"zonas": loc["zonas"], "anclas": loc["anclas"], "citas": loc["citas"],
+                                       "metodo": loc["metodo"]}
                 msgs = PA.mensajes_parche(self.descripcion, self.spec, base, loc, diagnostico, evidencia, aviso, budget,
                                           historial, base_n)
                 gen, error = self._programar(n, msgs, cancel, etapa="parche")

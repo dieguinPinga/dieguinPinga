@@ -1450,6 +1450,80 @@ python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pu
     --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.3 --autorizo-inferencia-remota
 ```
 
+## Experimento 7.3 — corrección A del localizador (citas multilínea)
+
+**Origen:** en la corrida real `corrida-20261024-031338`, el coordinador autorizó solo las líneas 27–37, no la zona
+41–46 (el registro en `aplicados`), aunque Gemma señalaba la línea 44.
+
+**Defecto encontrado en `f66aab9`:** la verificación y la ubicación de las citas usaban criterios distintos.
+- `revisor.interpretar` acepta citas de hasta 2 líneas y las verifica con `cita_en_codigo`, que normaliza el código
+  **entero**.
+- `parches.anclas` buscaba cada cita dentro de **una sola línea**.
+
+Por eso una cita verificada de las líneas 44–45 se descartaba en silencio, y solo quedaban los literales de la
+diferencia sintética (líneas 29 y 32 → zona 27–37).
+
+**Corrección A** (lo único que cambia):
+- **`parches.lineas_de_cita`:** ubica la cita con el mismo criterio de la verificación, en la ventana **mínima** de
+  líneas consecutivas que la contiene (hasta 6). Una cita de varias líneas ancla todas sus líneas; una de una línea
+  se comporta igual que antes.
+- **`localizar`:** devuelve `citas`, un registro auditable de cada cita del revisor:
+  - las verificadas, con sus líneas o con el motivo por el que no anclaron;
+  - las no verificadas, como descartadas.
+- **`revision_existente`:** pasa también las citas no verificadas, y guarda `localizacion.citas` en
+  `reparacion-N/reparacion.json`.
+
+**Lo que no cambia:** no hay relación entre lectura y escritura (B) ni referencias «línea N» del texto causal (C).
+Los literales, `_zona`, los límites, los modelos y las demás variables siguen iguales.
+
+**Pruebas:** `tests/test_oficina_localizador.py` (8). Contra el código de `f66aab9`, las dos que reproducen el
+defecto fallan con `[(27, 37)] != [(27, 37), (41, 46)]`.
+- **Cita verificada de dos líneas:** ahora ancla las líneas 44–45 y la zona 41–46.
+- **Texto de una línea que abarca dos del código:** también se ubica.
+- **Citas de una línea:** se comportan como antes.
+- **Citas no verificadas, o que ya no están:** nunca anclan y quedan registradas con el motivo.
+- **Mismo criterio:** la ubicación coincide con la verificación en todas las líneas y pares de líneas del código.
+- **Sin B:** con solo los literales, la zona sigue siendo 27–37.
+- **Recorrido simulado:** cita de dos líneas y parche estilo Qwen sobre la línea 43. Antes se rechazaba por caer
+  fuera de zona; ahora se aplica y aprueba 9/9.
+
+Suite completa: 659 pruebas, OK (744 s).
+
+### Comprobar la corrida real (solo lectura, en la VivoBook)
+
+```bash
+cd <worktree>/constructor-ia && git pull --ff-only
+C=~/constructor-ia-piloto/data/oficina-revision-7-3/experimento-7/corrida-20261024-031338
+python3 - "$C" 2 <<'PY'
+import json, sys
+from pathlib import Path
+from constructor_ia.oficina import parches as PA
+c, nrev = Path(sys.argv[1]), sys.argv[2]
+codigo = (c / "inicial/solucion.py").read_text()
+rev = json.loads((c / f"revision-{nrev}/revision.json").read_text())
+p = rev["diagnostico"]["principal"]
+loc = json.loads((c / "reparacion-1/reparacion.json").read_text()).get("localizacion", {})
+print("zonas registradas:", loc.get("zonas"), "· anclas:", [(a["linea"], a["origen"]) for a in loc.get("anclas", [])])
+norm = lambda t: " ".join(t.split())
+for x in p["citas"]:
+    t = x["texto"]
+    antes = [i for i, ln in enumerate(codigo.splitlines(), 1) if norm(t) and norm(t) in norm(ln)]
+    nuevo = PA.lineas_de_cita(codigo, t) if x["verificada"] else "—"
+    print(f"cita {t!r}\n   verificada={x['verificada']} · líneas con f66aab9={antes} · líneas con la corrección A={nuevo}")
+for k, v in (("secuencia_causal", p["secuencia_causal"]), ("rama_inaccesible", p["rama_inaccesible"]),
+             ("propiedad_a_cambiar", p["propiedad_a_cambiar"]), ("hechos", rev["diagnostico"]["hechos"])):
+    s = json.dumps(v, ensure_ascii=False)
+    if "aplicados" in s or "44" in s:
+        print(f"menciona aplicados/44 en {k}: {s[:300]}")
+PY
+```
+
+**Cómo leer el resultado:**
+- **A explica la pérdida:** alguna cita está `verificada=True`, con `líneas con f66aab9=[]` y con 44 o 45 en `líneas
+  con la corrección A`. Corresponde repetir 7.3 en una carpeta nueva.
+- **A no la explica:** la línea 44 o `aplicados` aparecen solo en las líneas «menciona …», o en citas con
+  `verificada=False`. Corresponde investigar B (o C) antes de repetir.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
