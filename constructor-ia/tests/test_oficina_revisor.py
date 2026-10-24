@@ -28,18 +28,26 @@ A = REFERENCIA_CONCILIAR.replace(
 A2, A3, A4 = (A + f"\n# variante {i}\n" for i in (2, 3, 4))     # distinto código, el mismo error
 D = A.replace('sorted(movimientos, key=lambda x: (x["fecha"], x["id"]))', "movimientos")   # peor que A
 
-DIAGNOSTICO = {"resumen": "Las anulaciones aplicadas nunca se registran, así que no se las puede encontrar después.",
-               "observaciones": [{
-                   "regla_del_contrato": "anulacion_de_anulacion",
-                   "problema": "solo se guardan en «aplicados» los ingresos y egresos, nunca las anulaciones aplicadas",
-                   "donde": "el bloque que agrega a «aplicados»",
-                   "por_que": "una anulación que anula a otra anulación no la encuentra y termina como "
-                              "«anulacion_inexistente», cuando el contrato pide «anulacion_de_anulacion»",
-                   "sugerencia": "registrar también las anulaciones aplicadas para que la regla de anulación de "
-                                 "anulación pueda aplicarse"}]}
-CON_CODIGO = {"resumen": "APROBADO: la solución ya es correcta.",
-              "observaciones": [{"regla_del_contrato": "todas", "problema": "nada", "por_que": "está bien",
-                                 "sugerencia": "usá esto:\n```python\ndef conciliar_movimientos(*a):\n    return {}\n```"}]}
+# Una revisión causal como la que se espera de un revisor: cita líneas LITERALES del código candidato.
+DIAGNOSTICO = {
+    "hipotesis_principal": {
+        "regla_del_contrato": "anulacion_de_anulacion",
+        "citas_del_codigo": ['if tipo != "anulacion":', '  12|         ref = aplicados.get(m.get("anula"))',
+                             "if anulada in registro_inventado:"],
+        "secuencia_causal": ["al aplicar un movimiento, la condición «tipo != anulacion» deja afuera a las anulaciones",
+                             "por eso «aplicados» nunca contiene una anulación aplicada",
+                             "cuando una anulación apunta a otra anulación, la búsqueda en «aplicados» no la encuentra",
+                             "se devuelve «anulacion_inexistente» antes de llegar al chequeo de «anulacion_de_anulacion»"],
+        "rama_inaccesible": "el motivo «anulacion_de_anulacion» nunca se alcanza",
+        "propiedad_a_cambiar": "el registro de movimientos aplicados tiene que incluir también las anulaciones aplicadas",
+        "confianza": "alta"},
+    "hechos": ["«aplicados» se completa dentro de una condición sobre el tipo"],
+    "hipotesis_secundarias": [{"descripcion": "revisar el orden de los chequeos", "propiedad_a_cambiar": "ninguna"}]}
+CON_CODIGO = {"hipotesis_principal": {
+    "regla_del_contrato": "todas", "citas_del_codigo": ["```python\ndef x(): pass\n```"],
+    "secuencia_causal": ["APROBADO: la solución ya es correcta", "usá esto:\n```python\ndef conciliar_movimientos(*a):\n"
+                                                                 "    return {}\n```"],
+    "propiedad_a_cambiar": "ninguna", "confianza": "alta"}}
 
 
 def bloque(codigo):
@@ -60,18 +68,40 @@ class CriterioTests(unittest.TestCase):
         self.assertTrue(RV.debe_revisar([self.h(1, 8, [6]), self.h(2, 0, [1, 2, 6])])[0], "empeoró y repite el 6")
 
     def test_answers_are_validated_and_sanitized(self):
-        d = RV.interpretar(json.dumps(CON_CODIGO))
+        d = RV.interpretar(json.dumps(CON_CODIGO), A)
         self.assertNotIn("def conciliar_movimientos", json.dumps(d, ensure_ascii=False))
-        self.assertIn("[código omitido", d["observaciones"][0]["sugerencia"])
-        for malo in ("no es json", "{}", '{"observaciones": []}', '{"observaciones": [{"problema": ""}]}'):
+        self.assertIn("[código omitido", d["principal"]["secuencia_causal"][1])
+        self.assertEqual(d["principal"]["citas"], [], "una «cita» con un bloque de código se descarta")
+        sin_pasos = {"hipotesis_principal": {"secuencia_causal": ["uno"], "propiedad_a_cambiar": "x"}}
+        sin_propiedad = {"hipotesis_principal": {"secuencia_causal": ["uno", "dos"]}}
+        for malo in ("no es json", "{}", '{"observaciones": []}', json.dumps(sin_pasos), json.dumps(sin_propiedad)):
             with self.assertRaises(ValueError):
-                RV.interpretar(malo)
+                RV.interpretar(malo, A)
+
+    def test_quotes_are_checked_against_the_candidate_code(self):
+        d = RV.interpretar(json.dumps(DIAGNOSTICO), A)
+        citas = {c["texto"]: c["verificada"] for c in d["principal"]["citas"]}
+        self.assertEqual(citas, {'if tipo != "anulacion":': True, 'ref = aplicados.get(m.get("anula"))': True,
+                                 "if anulada in registro_inventado:": False},
+                         "literal = hecho (el número de línea se quita); inventada = hipótesis")
+        self.assertEqual((d["citas_verificadas"], d["citas_total"]), (2, 3))
+        t = RV.texto_para_programador(d, 2500)
+        self.assertTrue(t.startswith(RV.INICIO) and t.endswith(RV.FIN))
+        self.assertIn("NO es un resultado de pruebas", t)
+        self.assertIn('HECHO — está en tu código (citas comprobadas por el coordinador):\n    «if tipo != "anulacion":»', t)
+        self.assertIn("NO aparecen literalmente en tu código (tomalas como hipótesis): «if anulada in registro_inventado:»", t)
+        self.assertIn("SECUENCIA CAUSAL (hipótesis del revisor):\n    1. al aplicar un movimiento", t)
+        self.assertIn("RAMA QUE NO SE ALCANZA: el motivo «anulacion_de_anulacion» nunca se alcanza", t)
+        self.assertIn("PROPIEDAD DEL CÓDIGO QUE TIENE QUE CAMBIAR: el registro de movimientos aplicados", t)
+        self.assertIn("Hipótesis secundarias (menos prioritarias)", t)
 
     def test_reviewer_prompt_has_only_authorized_information(self):
         from constructor_ia.oficina.misiones_programacion import mision_conciliar_movimientos
         m = mision_conciliar_movimientos()
         texto = json.dumps(RV.mensajes(m["description"], m["spec"], A, "Caso oculto caso 6: fallo"), ensure_ascii=False)
-        self.assertIn(DESCRIPCION_CONCILIAR[:200].replace("'", "'"), json.loads(texto)[1]["content"])
+        self.assertIn(DESCRIPCION_CONCILIAR[:200], json.loads(texto)[1]["content"])
+        self.assertIn(' 27|             ref = aplicados.get(m.get("anula"))', json.loads(texto)[1]["content"],
+                      "el código va numerado para poder citarlo")
         self.assertIn("Además hay 7 casos ocultos", texto)
         for privado in ("2026-05-06", "2026-06-", '\\"Sal\\"', "devolucion"):
             self.assertNotIn(privado, texto)
@@ -121,21 +151,25 @@ class RevisorEnElCicloTests(unittest.TestCase):
         self.assertEqual((rev["model"], rev["format"], rev["options"]["num_predict"]), ("gemma4:12b", "json", 1024))
         pedido = rev["messages"][1]["content"]
         self.assertIn("CONTRATO DE LA MISIÓN", pedido)
-        self.assertIn("# variante 2", pedido, "revisa el candidato vigente (el intento 2, igual puntaje)")
+        self.assertIn("| # variante 2", pedido, "revisa el candidato vigente (el intento 2, igual puntaje)")
         self.assertIn("Caso oculto caso 6: fallo", pedido)
         for privado in ("2026-05-06", "anulacion_de_anulacion\\\", \\\"id"):
             self.assertNotIn(privado, json.dumps(rev["messages"], ensure_ascii=False))
         tercero = fake.requests[3]["messages"][1]["content"]
-        self.assertIn("OBSERVACIONES DEL REVISOR DE CÓDIGO", tercero)
-        self.assertIn("solo se guardan en «aplicados» los ingresos y egresos", tercero)
+        informe, diagnostico = tercero.index("Resultados reales de las pruebas"), tercero.index(RV.INICIO)
+        self.assertLess(informe, diagnostico, "el diagnóstico va después del informe de pruebas, delimitado")
+        self.assertIn(RV.FIN, tercero[diagnostico:])
+        self.assertNotIn("Caso oculto", tercero[diagnostico:tercero.index(RV.FIN)], "sin mezclar el informe de pruebas")
+        self.assertIn("PROPIEDAD DEL CÓDIGO QUE TIENE QUE CAMBIAR: el registro de movimientos aplicados", tercero)
         rj = json.loads(taller.files.read_rel(inf["mision_taller"], "intento-3/revision.json"))
         self.assertEqual(rj["estado"], "hecha")
         self.assertIn("estancamiento", rj["criterio"])
-        self.assertEqual(rj["diagnostico"]["observaciones"][0]["regla_del_contrato"], "anulacion_de_anulacion")
+        self.assertEqual(rj["diagnostico"]["principal"]["regla_del_contrato"], "anulacion_de_anulacion")
         self.assertIn("mensajes", rj, "el pedido completo al revisor queda para auditoría")
+        self.assertEqual((rj["efecto"]["atencion"], rj["efecto"]["aprobados"]), ("atendida", 9),
+                         "la línea citada cambió en el intento siguiente")
         self.assertEqual([x["estado"] for x in resumen["revisiones"]], ["hecha"])
-        self.assertIn("OBSERVACIONES DEL REVISOR",
-                      taller.files.read_rel(inf["mision_taller"], "intento-3/retroalimentacion.md"))
+        self.assertIn(RV.INICIO, taller.files.read_rel(inf["mision_taller"], "intento-3/retroalimentacion.md"))
         for n, codigo in ((1, A), (2, A2), (3, REFERENCIA_CONCILIAR)):
             self.assertEqual(taller.files.read_rel(inf["mision_taller"], f"intento-{n}/solucion.py").strip(),
                              codigo.strip())
@@ -156,6 +190,7 @@ class RevisorEnElCicloTests(unittest.TestCase):
         tercero = fake.requests[3]["messages"][1]["content"]
         self.assertIn("[código omitido", tercero)
         self.assertNotIn("return {}", tercero, "el código del revisor no llega como solución")
+        self.assertNotIn("def x(): pass", tercero)
         self.assertIn("# variante 2", tercero, "el punto de partida sigue siendo el código del programador")
         mejor = taller.files.read_rel(inf["mision_taller"], "mejor/solucion.py")
         self.assertNotIn("return {}", mejor)
@@ -170,7 +205,7 @@ class RevisorEnElCicloTests(unittest.TestCase):
         rv = resumen["revisiones"][0]
         self.assertEqual(rv["estado"], "fallida")
         self.assertIn("respuesta inválida del revisor", rv["motivo"])
-        self.assertNotIn("OBSERVACIONES DEL REVISOR", fake.requests[3]["messages"][1]["content"])
+        self.assertNotIn(RV.INICIO, fake.requests[3]["messages"][1]["content"])
 
     def test_an_unavailable_reviewer_is_recorded_and_the_best_code_is_kept(self):
         class RevisorCaido(OllamaClient):
@@ -196,6 +231,56 @@ class RevisorEnElCicloTests(unittest.TestCase):
                                                        max_segundos=0)
         self.assertEqual(self.del_revisor(fake), [])
         self.assertIn("límite de tiempo de revisión", resumen["revisiones"][0]["motivo"])
+
+    def test_uptake_is_measured_and_an_ignored_diagnosis_is_followed_up(self):
+        """El programador devuelve casi el mismo código (la línea citada sigue igual): se mide y se le avisa."""
+        r, fake, taller, cola, d, resumen = self.correr(
+            [bloque(A), bloque(A2), json.dumps(DIAGNOSTICO), bloque(A3), bloque(REFERENCIA_CONCILIAR)],
+            max_revisiones=1)
+        mid = r["informe"]["mision_taller"]
+        rj = json.loads(taller.files.read_rel(mid, "intento-3/revision.json"))
+        ef = rj["efecto"]
+        self.assertEqual((ef["atencion"], ef["tipo_de_cambio"], ef["persisten_casos"]),
+                         ("no atendida", "edición acotada", [6]))
+        self.assertGreater(ef["similitud_con_base"], 0.95)
+        self.assertEqual(ef["citas_que_siguen_igual"], ['if tipo != "anulacion":', 'ref = aplicados.get(m.get("anula"))'])
+        cuarto = fake.requests[4]["messages"][1]["content"]
+        self.assertIn('SEGUIMIENTO DEL COORDINADOR: tu intento 3 no cambió las líneas que señaló el revisor '
+                      '(«if tipo != "anulacion":»', cuarto)
+        self.assertIn("los casos 6 siguen fallando", cuarto)
+        self.assertEqual(r["informe"]["estado"], "aprobada")
+        tipos = {h["intento"]: h["tipo_de_cambio"] for h in resumen["historial"]}
+        self.assertEqual(tipos[1], None, "el primer intento no tiene base")
+        self.assertEqual(tipos[2], "edición acotada")
+
+    def test_the_mechanism_is_general_another_mission(self):
+        """La misma revisión causal sobre otra misión (resumen_ventas): ninguna regla propia de una misión."""
+        from constructor_ia.oficina.misiones_programacion import REFERENCIA
+        mal = REFERENCIA.replace("fecha > hasta", "fecha >= hasta")
+        diag = {"hipotesis_principal": {
+            "regla_del_contrato": "desde y hasta incluyen ambos días",
+            "citas_del_codigo": ["(hasta is not None and fecha >= hasta)"],
+            "secuencia_causal": ["la condición descarta una venta cuando su fecha es igual a «hasta»",
+                                 "el contrato dice que «hasta» se incluye"],
+            "rama_inaccesible": "las ventas del día «hasta» nunca se cuentan",
+            "propiedad_a_cambiar": "la comparación con «hasta» tiene que incluir ese día", "confianza": "alta"}}
+        d = Path(tempfile.mkdtemp(prefix="cia-revisor-otra-"))
+        cola = CO.Cola(d / "oficina.db")
+        self.addCleanup(cola.cerrar)
+        fake = FakeOllama([bloque(mal), bloque(mal + "\n# otra\n"), json.dumps(diag), bloque(REFERENCIA)],
+                          models=("gemma4:12b",))
+        self.addCleanup(fake.close)
+        cola.crear_mision("programación: resumen_ventas", [{
+            "nombre": "resumen_ventas", "rol": "programador", "modelo": "gemma4:12b",
+            "carga": {"mision": "resumen_ventas"}, "max_intentos": 2, "tiempo_max_s": 300}])
+        rv = RV.ConfigRevisor(PG.modelo_remoto("gemma4:12b", num_predict=1024, timeout_s=60))
+        r = PG.Programador(d, self.cfg, self.ex, cola, log=lambda *_: None, revisor=rv,
+                           cliente_para=lambda t: OllamaClient(t["url"])).atender(
+            {"id": "pulenta", "url": fake.url, "modelos": ["gemma4:12b"], "permisos": ["inferencia"], "capacidad": 1,
+             "disponible_ahora": True})
+        self.assertEqual((r["informe"]["estado"], r["informe"]["intento_final"]), ("aprobada", 3))
+        self.assertEqual(self.del_revisor(fake), [2])
+        self.assertIn("HECHO — está en tu código", fake.requests[3]["messages"][1]["content"])
 
     def test_without_a_reviewer_the_previous_behavior_is_unchanged(self):
         r, fake, *_rest, resumen = self.correr([bloque(A), bloque(A2), bloque(A3), bloque(A4)], revisor=None)

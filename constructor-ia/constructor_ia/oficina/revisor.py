@@ -2,7 +2,11 @@
 
 Un rol separado del programador, con su propio prompt, su propia llamada de inferencia (puede ser el mismo modelo
 en otra sesión) y su propio registro. Interviene SOLO cuando el programador se estanca; examina el contrato y el
-código candidato, y devuelve un diagnóstico estructurado que se agrega al siguiente pedido del programador.
+código candidato, y devuelve una revisión CAUSAL (quinta experiencia): UNA hipótesis principal anclada en citas
+literales del código (el coordinador comprueba que existan: eso es un HECHO), la secuencia causal (condición
+evaluada → estado que falta o es incorrecto → rama del contrato que no se alcanza), la PROPIEDAD del código que
+tiene que cambiar, hechos separados de hipótesis y a lo sumo dos hipótesis secundarias. El programador lo recibe en
+un bloque delimitado, separado del informe de pruebas.
 
 Qué recibe (solo información autorizada, la misma que ya puede ver el programador):
 - el contrato completo de la misión, la firma y los ejemplos VISIBLES;
@@ -34,22 +38,32 @@ from ..config import ModelConfig
 from ..ollama import Cancelled, OllamaError
 
 VENTANA = 2
-MAX_OBSERVACIONES = 6
+MAX_HECHOS = 4
+MAX_SECUNDARIAS = 2
+MAX_PASOS = 6
 MAX_CAMPO = 400
-CAMPOS = ("regla_del_contrato", "problema", "donde", "por_que", "sugerencia")
+MAX_CITA = 200
 
+# Revisión CAUSAL (quinta experiencia): una hipótesis principal, anclada en citas LITERALES del código candidato
+# (que el coordinador comprueba mecánicamente), con la secuencia causal, la rama que no se alcanza y la PROPIEDAD del
+# código que tiene que cambiar, sin escribir la solución. Hechos (verificables) separados de hipótesis.
 SISTEMA_REVISOR = (
     "Sos el REVISOR DE CÓDIGO de un equipo. Otro programador escribió una función Python que no pasa todas las "
-    "pruebas, y lleva varios intentos sin mejorar. Tu trabajo es leer críticamente el CONTRATO y el CÓDIGO y "
-    "encontrar por qué el código no cumple el contrato. No repitas el informe de pruebas: buscá contradicciones "
-    "entre el código y el contrato, ramas que nunca se ejecutan, estados que no se registran o se registran tarde, "
-    "chequeos en un orden distinto del pedido y casos que el código confunde entre sí.\n"
-    "Reglas: NO escribas el código corregido ni bloques de código; describí qué lógica revisar y por qué. No "
-    "apruebes nada: las pruebas deciden. Respondé SOLO con un objeto JSON con esta forma:\n"
-    '{"resumen": "<una frase>", "observaciones": [{"regla_del_contrato": "<qué regla del contrato está en juego>", '
-    '"problema": "<qué hace mal el código>", "donde": "<función, variable o rama>", "por_que": "<por qué viola el '
-    'contrato>", "sugerencia": "<qué cambiar, en palabras>"}]}\n'
-    f"Entre 1 y {MAX_OBSERVACIONES} observaciones, las más importantes primero.")
+    "pruebas y lleva varios intentos sin mejorar. Buscá la CAUSA, no repitas el informe de pruebas.\n"
+    "Método: (1) elegí UNA hipótesis principal, la más probable, fundada en una regla del contrato; (2) anclala en "
+    "condiciones o líneas CONCRETAS del código, copiándolas LITERALMENTE (el coordinador comprueba que existan); "
+    "(3) describí la secuencia causal paso a paso: qué condición se evalúa, qué estado falta o es incorrecto en ese "
+    "momento, y qué rama del contrato resulta inaccesible o se toma en lugar de otra; (4) decí qué PROPIEDAD del "
+    "código tiene que cambiar (por ejemplo, «el registro X tiene que incluir también Y» o «la condición A tiene que "
+    "evaluarse antes que B»), sin escribir el código corregido.\n"
+    "Separá HECHOS (lo que se ve en el código, con citas) de HIPÓTESIS. Como máximo dos hipótesis secundarias, "
+    "solo si son importantes. NO escribas código corregido ni bloques de código; no apruebes nada.\n"
+    "Respondé SOLO con un objeto JSON con esta forma:\n"
+    '{"hipotesis_principal": {"regla_del_contrato": "<regla en juego>", "citas_del_codigo": ["<fragmento literal '
+    'del código>"], "secuencia_causal": ["<paso 1>", "<paso 2>", "..."], "rama_inaccesible": "<qué rama o motivo del '
+    'contrato no se alcanza o se reemplaza por otro>", "propiedad_a_cambiar": "<qué propiedad del código cambiar>", '
+    '"confianza": "alta | media | baja"}, "hechos": ["<hecho observable en el código>"], '
+    '"hipotesis_secundarias": [{"descripcion": "<...>", "propiedad_a_cambiar": "<...>"}]}')
 
 
 @dataclass
@@ -79,19 +93,36 @@ def debe_revisar(historial: list[dict], ventana: int = VENTANA) -> tuple[bool, s
 
 
 def mensajes(descripcion: str, spec: dict, codigo: str, feedback: str) -> list[dict]:
+    numerado = "\n".join(f"{i:3d}| {ln}" for i, ln in enumerate((codigo or "").splitlines(), 1))
     usuario = (f"CONTRATO DE LA MISIÓN:\n{descripcion}\n\n{prompts._sig(spec)}\n\n"
                f"Ejemplos visibles:\n{prompts._examples(spec, 3000) or '(sin ejemplos visibles)'}\n\n"
-               f"CÓDIGO CANDIDATO (solucion.py):\n```python\n{codigo}```\n\n"
+               "CÓDIGO CANDIDATO (solucion.py; los números de línea NO son parte del código: al citar, copiá solo el "
+               f"texto después de «| »):\n{numerado}\n\n"
                f"FEEDBACK AUTORIZADO DE LAS PRUEBAS (los casos ocultos no muestran sus datos):\n{feedback}\n\n"
-               "Revisá el código contra el contrato y respondé con el JSON pedido.")
+               "Buscá la causa y respondé con el JSON pedido.")
     return [{"role": "system", "content": SISTEMA_REVISOR}, {"role": "user", "content": usuario}]
 
 
 _BLOQUE = re.compile(r"```.*?(```|$)", re.S)
 
 
-def interpretar(texto: str) -> dict:
-    """Valida y SANEA la respuesta: descarta bloques de código y recorta campos. ValueError si es inválida."""
+def _limpio(v, limite=MAX_CAMPO) -> str:
+    return _BLOQUE.sub("[código omitido: el revisor no escribe la solución]", str(v or "")).strip()[:limite]
+
+
+def _norm(t: str) -> str:
+    return " ".join(t.split())
+
+
+def cita_en_codigo(cita: str, codigo: str) -> bool:
+    """Una cita es un HECHO si aparece literalmente en el código (ignorando espacios repetidos)."""
+    c = _norm(cita)
+    return bool(c) and c in _norm(codigo)
+
+
+def interpretar(texto: str, codigo: str = "") -> dict:
+    """Valida y SANEA la respuesta causal: descarta bloques de código, recorta campos y comprueba las citas contra el
+    código candidato. ValueError si es inválida."""
     t = (texto or "").strip()
     m = re.search(r"\{.*\}", t, re.S)
     if not m:
@@ -100,34 +131,67 @@ def interpretar(texto: str) -> dict:
         d = json.loads(m.group(0))
     except ValueError as e:
         raise ValueError(f"JSON ilegible: {e}") from None
-    obs = d.get("observaciones") if isinstance(d, dict) else None
-    if not isinstance(obs, list) or not obs:
-        raise ValueError("falta la lista «observaciones»")
-    limpias = []
-    for o in obs[:MAX_OBSERVACIONES]:
-        if not isinstance(o, dict):
-            continue
-        c = {k: _BLOQUE.sub("[código omitido: el revisor no escribe la solución]", str(o.get(k) or "")).strip()[:MAX_CAMPO]
-             for k in CAMPOS}
-        if c["problema"] and (c["sugerencia"] or c["por_que"]):
-            limpias.append(c)
-    if not limpias:
-        raise ValueError("ninguna observación tiene «problema» y «sugerencia» o «por_que»")
-    resumen = _BLOQUE.sub("", str(d.get("resumen") or "")).strip()[:MAX_CAMPO]
-    return {"resumen": resumen, "observaciones": limpias}
+    hp = d.get("hipotesis_principal") if isinstance(d, dict) else None
+    if not isinstance(hp, dict):
+        raise ValueError("falta «hipotesis_principal»")
+    pasos = [_limpio(x) for x in (hp.get("secuencia_causal") or []) if isinstance(x, str) and x.strip()][:MAX_PASOS]
+    propiedad = _limpio(hp.get("propiedad_a_cambiar"))
+    if len(pasos) < 2:
+        raise ValueError("la secuencia causal necesita al menos 2 pasos")
+    if not propiedad:
+        raise ValueError("falta «propiedad_a_cambiar»")
+    citas = []
+    for c in (hp.get("citas_del_codigo") or [])[:3]:
+        if not isinstance(c, str) or c.strip().count("\n") > 1 or "```" in c:
+            continue                       # una cita es un fragmento corto (1 o 2 líneas), nunca un programa
+        c = re.sub(r"^\s*\d+\|", "", c.strip()).strip()[:MAX_CITA]
+        if c:
+            citas.append({"texto": c, "verificada": cita_en_codigo(c, codigo)})
+    confianza = str(hp.get("confianza") or "").strip().lower()
+    principal = {"regla_del_contrato": _limpio(hp.get("regla_del_contrato")), "citas": citas,
+                 "secuencia_causal": pasos, "rama_inaccesible": _limpio(hp.get("rama_inaccesible")),
+                 "propiedad_a_cambiar": propiedad, "confianza": confianza if confianza in ("alta", "media", "baja")
+                 else "sin indicar"}
+    hechos = [_limpio(x) for x in (d.get("hechos") or []) if isinstance(x, str) and x.strip()][:MAX_HECHOS]
+    secundarias = [{"descripcion": _limpio(x.get("descripcion")), "propiedad_a_cambiar": _limpio(x.get("propiedad_a_cambiar"))}
+                   for x in (d.get("hipotesis_secundarias") or [])[:MAX_SECUNDARIAS]
+                   if isinstance(x, dict) and _limpio(x.get("descripcion"))]
+    return {"principal": principal, "hechos": hechos, "secundarias": secundarias,
+            "citas_verificadas": sum(c["verificada"] for c in citas), "citas_total": len(citas)}
+
+
+INICIO = "════ DIAGNÓSTICO DEL REVISOR — rol distinto; NO es un resultado de pruebas ════"
+FIN = "════ FIN DEL DIAGNÓSTICO DEL REVISOR ════"
 
 
 def texto_para_programador(diag: dict, limite: int) -> str:
-    lineas = ["OBSERVACIONES DEL REVISOR DE CÓDIGO (otro rol leyó tu código contra el contrato; puede equivocarse: "
-              "vos decidís qué cambiar, y las pruebas deciden si está bien):"]
-    if diag["resumen"]:
-        lineas.append(f"Resumen: {diag['resumen']}")
-    for i, o in enumerate(diag["observaciones"], 1):
-        lineas.append(f"{i}. [{o['regla_del_contrato'] or 'contrato'}] {o['problema']}"
-                      + (f" — dónde: {o['donde']}" if o["donde"] else "")
-                      + (f" — por qué: {o['por_que']}" if o["por_que"] else "")
-                      + (f" — revisar: {o['sugerencia']}" if o["sugerencia"] else ""))
-    return prompts.clip("\n".join(lineas), limite)
+    p = diag["principal"]
+    l = [INICIO,
+         f"HIPÓTESIS PRINCIPAL (confianza {p['confianza']}) — regla del contrato: {p['regla_del_contrato'] or '—'}"]
+    verif = [c["texto"] for c in p["citas"] if c["verificada"]]
+    no_verif = [c["texto"] for c in p["citas"] if not c["verificada"]]
+    if verif:
+        l.append("HECHO — está en tu código (citas comprobadas por el coordinador):")
+        l += [f"    «{c}»" for c in verif]
+    if no_verif:
+        l.append("Citas del revisor que NO aparecen literalmente en tu código (tomalas como hipótesis): "
+                 + "; ".join(f"«{c}»" for c in no_verif))
+    l.append("SECUENCIA CAUSAL (hipótesis del revisor):")
+    l += [f"    {i}. {paso}" for i, paso in enumerate(p["secuencia_causal"], 1)]
+    if p["rama_inaccesible"]:
+        l.append(f"RAMA QUE NO SE ALCANZA: {p['rama_inaccesible']}")
+    l.append(f"PROPIEDAD DEL CÓDIGO QUE TIENE QUE CAMBIAR: {p['propiedad_a_cambiar']}")
+    if diag["hechos"]:
+        l.append("Otros hechos señalados por el revisor: " + " · ".join(diag["hechos"]))
+    if diag["secundarias"]:
+        l.append("Hipótesis secundarias (menos prioritarias): " + " · ".join(
+            f"{s['descripcion']}" + (f" (cambiar: {s['propiedad_a_cambiar']})" if s["propiedad_a_cambiar"] else "")
+            for s in diag["secundarias"]))
+    l.append("QUÉ HACER: partí de tu versión anterior, ubicá las líneas citadas y cambiá esa propiedad conservando lo "
+             "que ya funciona. Si no estás de acuerdo con el diagnóstico, decilo en una línea fuera del bloque de "
+             "código. Las pruebas deciden si está bien.")
+    cuerpo = prompts.clip("\n".join(l), max(500, limite - len(FIN) - 1))
+    return cuerpo + "\n" + FIN
 
 
 def revisar(ollama, gate, cfg: ConfigRevisor, descripcion: str, spec: dict, codigo: str, feedback: str,
@@ -150,7 +214,7 @@ def revisar(ollama, gate, cfg: ConfigRevisor, descripcion: str, spec: dict, codi
     reg.update(respuesta=gen.text, segundos=round(time.monotonic() - t0, 1), tokens_prompt=gen.prompt_tokens,
                tokens_generados=gen.eval_tokens, cortada=bool(gen.truncated))
     try:
-        reg["diagnostico"] = interpretar(gen.text)
+        reg["diagnostico"] = interpretar(gen.text, codigo)
         reg["ok"] = True
     except ValueError as e:
         reg["motivo"] = f"respuesta inválida del revisor: {e}"

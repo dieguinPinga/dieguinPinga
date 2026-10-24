@@ -25,6 +25,7 @@ Lo que se le envió al modelo en cada reintento queda en «intento-N/retroalimen
 """
 from __future__ import annotations
 
+import difflib
 import json
 
 from ..engine import Engine
@@ -69,6 +70,14 @@ def pistas(spec: dict, resultado: dict | None, descripcion: str) -> dict[int, li
     return out
 
 
+def similitud(base: str | None, nuevo: str | None) -> tuple[float | None, str | None]:
+    """Cuánto se parece un intento a su punto de partida (0 a 1) y una etiqueta: ¿edita o reescribe?"""
+    if base is None or nuevo is None:
+        return None, None
+    r = round(difflib.SequenceMatcher(None, base, nuevo, autojunk=False).ratio(), 3)
+    return r, ("edición acotada" if r >= 0.85 else "cambios amplios" if r >= 0.5 else "reescritura")
+
+
 def _texto_pistas(p: dict[int, list[str]]) -> str:
     if not p:
         return ""
@@ -93,7 +102,9 @@ class MotorConMemoria(Engine):
                 self.files.save(mid, "mejor/resumen.json", json.dumps(
                     {"intento": m["n"], "aprobados": m["puntaje"], "total": m["total"], "estado_mision": estado,
                      "historial": [{"intento": h["n"], "aprobados": h["puntaje"], "total": h["total"],
-                                    "base": h.get("base"), "identico_a": h.get("identico_a")} for h in st["historial"]],
+                                    "base": h.get("base"), "identico_a": h.get("identico_a"),
+                                    "similitud_con_base": h.get("similitud_con_base"),
+                                    "tipo_de_cambio": h.get("tipo_de_cambio")} for h in st["historial"]],
                      "revisiones": [{k: v for k, v in r.items() if k not in ("mensajes", "respuesta")}
                                     for r in st.get("revisiones", [])]},
                     ensure_ascii=False, indent=2), "mejor", m["n"])
@@ -134,6 +145,8 @@ class MotorConMemoria(Engine):
                                       if not c.get("ok") and not c.get("visible")),
                    "fallidos_todos": sorted(c["n"] for c in (resultado or {}).get("cases", []) if not c.get("ok")),
                    "ejecutado": ejecutado}
+        base_codigo = next((h["codigo"] for h in st["historial"] if h["n"] == base_n), None)
+        entrada["similitud_con_base"], entrada["tipo_de_cambio"] = similitud(base_codigo, codigo)
         for c in entrada["fallidos"]:
             st["fallas"].setdefault(c, []).append(n)
         st["historial"].append(entrada)
@@ -177,6 +190,7 @@ class MotorConRevisor(MotorConMemoria):
         cfg = self.revisor
         if cfg is None:
             return report
+        report = report + self._seguimiento(st)
         si, criterio = RV.debe_revisar([h for h in st["historial"] if h["ejecutado"]])
         if not si:
             return report
@@ -203,6 +217,53 @@ class MotorConRevisor(MotorConMemoria):
         if reg["estado"] == "hecha":
             return report + "\n\n" + RV.texto_para_programador(reg["diagnostico"], cfg.max_caracteres)
         return report
+
+    def _registrar(self, mid, n, spec, description, st, out, base_n):
+        super()._registrar(mid, n, spec, description, st, out, base_n)
+        rev = next((r for r in reversed(st.get("revisiones", [])) if r["antes_del_intento"] == n
+                    and r["estado"] == "hecha"), None)
+        if rev is None:
+            return
+        e = st["historial"][-1]
+        citas = [c["texto"] for c in rev["diagnostico"]["principal"]["citas"] if c["verificada"]]
+        persisten = [c for c in citas if e["codigo"] is not None and _cita(c, e["codigo"])]
+        rev["efecto"] = {
+            "intento": n, "aprobados": e["puntaje"], "total": e["total"],
+            "similitud_con_base": e["similitud_con_base"], "tipo_de_cambio": e["tipo_de_cambio"],
+            "citas_verificadas": len(citas), "citas_que_siguen_igual": persisten,
+            # «atendida»: cambió al menos una de las líneas citadas (una corrección puede conservar otras líneas
+            # correctas); «no atendida»: todas siguen iguales.
+            "atencion": ("sin citas verificadas" if not citas else "no atendida" if len(persisten) == len(citas)
+                         else "atendida"),
+            "citas_cambiadas": len(citas) - len(persisten),
+            "persisten_casos": sorted(set(e["fallidos_todos"]) & set(
+                next((h["fallidos_todos"] for h in st["historial"] if h["n"] == e["base"]), [])))}
+        self.files.save(mid, f"intento-{n}/revision.json", json.dumps(rev, ensure_ascii=False, indent=2, default=str),
+                        "revision", n)
+        self._event(mid, "revision", f"Efecto de la revisión en el intento {n}: {rev['efecto']['atencion']} · "
+                    f"{e['tipo_de_cambio']} (similitud {e['similitud_con_base']}) · {e['puntaje']}/{e['total']}")
+
+    def _seguimiento(self, st) -> str:
+        """Aviso del COORDINADOR (no del revisor) si el último intento no tocó las líneas que señaló el revisor y el
+        problema sigue."""
+        ult = st["historial"][-1] if st["historial"] else None
+        rev = next((r for r in reversed(st.get("revisiones", [])) if r.get("efecto", {}).get("intento") == (ult or {}).get("n")),
+                   None)
+        if not rev or ult["puntaje"] >= ult["total"]:
+            return ""
+        ef = rev["efecto"]
+        if not ef["citas_que_siguen_igual"]:
+            return ""
+        return ("\n\nSEGUIMIENTO DEL COORDINADOR: tu intento " + str(ult["n"]) + " no cambió las líneas que señaló "
+                "el revisor (" + "; ".join(f"«{c}»" for c in ef["citas_que_siguen_igual"]) + ") y "
+                + (f"los casos {', '.join(map(str, ef['persisten_casos']))} siguen fallando" if ef["persisten_casos"]
+                   else "las pruebas siguen fallando")
+                + f". La propiedad que el revisor pidió cambiar era: {rev['diagnostico']['principal']['propiedad_a_cambiar']}")
+
+
+def _cita(cita: str, codigo: str) -> bool:
+    from .revisor import cita_en_codigo
+    return cita_en_codigo(cita, codigo)
 
 
 def prompts_chars() -> float:

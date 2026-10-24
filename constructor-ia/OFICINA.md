@@ -685,6 +685,106 @@ python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --
 **Para comparar con la experiencia 3:** el programador es el mismo y el coordinador también (`090a9ef` más el
 revisor). La única diferencia es la intervención del revisor ante el estancamiento.
 
+## Revisión causal (quinta experiencia)
+
+**Cuarta experiencia real** (`d118dae`, con revisor):
+- intentos: 0/9, 8/9, 8/9 y 8/9;
+- el revisor intervino antes del intento 4 y la verificación central rechazó;
+- el revisor señaló el problema solo en parte, con 4 observaciones de distinto peso;
+- el programador conservó el defecto: el código busca el id anulado en una estructura que registra ingresos y
+  egresos pero **no** las anulaciones aplicadas, así que devuelve `anulacion_inexistente` antes de llegar a
+  `anulacion_de_anulacion`.
+
+### Auditoría: ¿el programador usa las observaciones o reescribe desde cero?
+
+Hay un problema de arquitectura más profundo, que **no** se arregló ahora porque implica cambiar el núcleo (se
+propone para discutir):
+
+1. **El programador reescribe el archivo completo en cada intento.** El prompt de sistema del motor
+   (`prompts.BUILDER_SYSTEM`: «Escribes el archivo completo solucion.py») y el cierre del pedido de reparación
+   («Corrige el programa y devuelve el archivo completo») no tienen un modo de edición acotada. El modelo vuelve a
+   construir el programa desde su propia concepción, y un defecto de diseño (qué guarda una estructura) se reintroduce
+   aunque el diagnóstico sea correcto.
+2. **El diagnóstico quedaba enterrado.** Se agregaba dentro de la sección «Resultados reales de las pruebas (errores a
+   corregir)» de `prompts.repair`, mezclado con el informe de pruebas, y sin pedir nada concreto.
+3. **Con 4 intentos, el revisor llega tarde.** El criterio de estancamiento recién puede actuar antes del intento 3.
+   En la corrida real (0/9 → 8/9 era una mejora) actuó antes del 4: el programador tuvo **un** solo intento con la
+   revisión.
+
+**Propuestas de cambio mayor, para decidir:**
+- un pedido de reparación propio de la oficina, que pida editar lo señalado y conservar el resto, o directamente un
+  parche;
+- 5 o 6 intentos en las misiones con revisor.
+
+### Mejoras implementadas (generales; ninguna regla de una misión)
+
+1. **Revisión causal** (`SISTEMA_REVISOR` nuevo). El revisor tiene que:
+   - elegir **una hipótesis principal**, fundada en una regla del contrato;
+   - **citar literalmente** las condiciones o líneas del código (se le pasa numerado);
+   - describir la **secuencia causal**: condición evaluada → estado que falta o es incorrecto → rama que no se
+     alcanza;
+   - indicar la **propiedad del código que tiene que cambiar**, sin escribir código;
+   - separar hechos de hipótesis, con a lo sumo 2 hipótesis secundarias.
+2. **Hechos comprobados por el coordinador:** cada cita se busca literalmente en el código candidato (ignorando
+   espacios repetidos). Si está, es un **HECHO**; si no, se muestra como hipótesis. Una «cita» de más de 2 líneas o con
+   un bloque de código se descarta, igual que todo código del revisor.
+3. **Bloque separado del informe de pruebas:** el diagnóstico llega después del informe, entre `════ DIAGNÓSTICO DEL
+   REVISOR — rol distinto; NO es un resultado de pruebas ════` y `════ FIN DEL DIAGNÓSTICO DEL REVISOR ════`. Contiene
+   la hipótesis principal, los hechos citados, la secuencia causal, la rama que no se alcanza, la **propiedad a
+   cambiar** y la instrucción: «partí de tu versión anterior, ubicá las líneas citadas y cambiá esa propiedad
+   conservando lo que ya funciona».
+4. **Medición de uso:**
+   - **similitud con su base:** cada intento registra cuánto se parece a su punto de partida (`difflib`, 0 a 1), con
+     tres etiquetas: «edición acotada» (≥ 0,85), «cambios amplios» (≥ 0,5) o «reescritura». Queda en el historial de
+     `mejor/resumen.json`;
+   - **efecto de cada revisión:** queda en `revision.json` con el puntaje siguiente, la similitud, las citas que siguen
+     iguales, los casos que persisten y la atención: «atendida» si cambió al menos una línea citada, «no atendida» si
+     no cambió ninguna;
+   - `programar` imprime el efecto.
+5. **Seguimiento:** si el intento siguiente no tocó las líneas citadas y sigue fallando, el próximo pedido lleva un
+   aviso del **coordinador** (no del revisor): «tu intento N no cambió las líneas que señaló el revisor (…) y los
+   casos … siguen fallando. La propiedad que el revisor pidió cambiar era: …».
+
+**Sin cambios:**
+- el revisor no recibe valores esperados ni entradas ocultas;
+- los límites: 2 revisiones, 1.200 s, 1.024 tokens, contexto;
+- el sandbox, la mejor versión, la verificación central y `engine.py` / `prompts.py`.
+
+Pruebas: `tests/test_oficina_revisor.py`, ahora 13, con un Ollama falso y el sandbox real. Las nuevas o reescritas:
+- **Citas:** las literales se comprueban como hechos, aunque traigan número de línea; las inventadas quedan como
+  hipótesis; las que son código se descartan.
+- **Formato del bloque:** delimitado, hechos y secuencia causal, rama, propiedad y secundarias.
+- **Respuesta inválida:** sin secuencia de 2 pasos o sin propiedad, se rechaza.
+- **Ciclo completo:** el diagnóstico va después del informe, sin mezclarse. La revisión queda «atendida» (la línea
+  citada cambió) y el programa aprueba 9/9.
+- **Diagnóstico ignorado:** el programador devuelve casi el mismo código (similitud > 0,95), la revisión queda «no
+  atendida», con las dos citas iguales y el caso 6 persistente, y el siguiente pedido trae el SEGUIMIENTO DEL
+  COORDINADOR.
+- **Generalidad:** el mismo mecanismo funciona sobre `resumen_ventas`, con un error de «hasta» exclusivo citado y
+  corregido.
+
+Suite completa: 587 pruebas, OK (675 s).
+
+### Quinta experiencia real (VivoBook contra Gemma 12B en rampern)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_revisor tests.test_oficina_autocorreccion tests.test_oficina_conciliar \
+    tests.test_oficina_programacion                                   # 39 pruebas, sin inferencias
+C=~/constructor-ia-piloto/data/oficina-programacion-5               # carpeta NUEVA; las anteriores quedan intactas
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta --mision conciliar_movimientos
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
+    --autorizo-inferencia-remota --revisor
+```
+
+**Qué mirar:**
+- `revision.json`: citas verificadas, secuencia causal, propiedad y `efecto` (atendida o no, similitud);
+- el historial de `mejor/resumen.json`: `tipo_de_cambio` de cada intento, para ver si edita o reescribe;
+- `retroalimentacion.md`: el bloque delimitado y, si corresponde, el seguimiento.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

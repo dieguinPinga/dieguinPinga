@@ -1340,6 +1340,10 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
             print(f"  revisor antes del intento {rv['antes_del_intento']}: {rv['estado']}"
                   + (f" · {rv.get('tokens_generados')} tokens · {rv.get('segundos')} s" if rv["estado"] != "omitida" else "")
                   + (f" · {rv['motivo']}" if rv.get("motivo") else ""))
+            if rv.get("efecto"):
+                ef = rv["efecto"]
+                print(f"    efecto en el intento {ef['intento']}: {ef['atencion']} · {ef['tipo_de_cambio']} "
+                      f"(similitud {ef['similitud_con_base']}) · {ef['aprobados']}/{ef['total']}")
         if inf.get("mejor"):
             print(f"  mejor versión conservada: intento {inf['mejor']['intento']} "
                   f"({inf['mejor']['aprobados']}/{inf['mejor']['total']})")
