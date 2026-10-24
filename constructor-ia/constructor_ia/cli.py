@@ -1215,6 +1215,8 @@ def cmd_oficina(args) -> int:
         return _oficina_revision_existente(args, cfg, carpeta)
     if args.accion == "sondear-comprension":
         return _oficina_sonda_comprension(args, cfg, carpeta)
+    if args.accion == "reparar-guiado":
+        return _oficina_reparacion_guiada(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
         try:
@@ -1522,6 +1524,74 @@ def _oficina_sonda_comprension(args, cfg, carpeta) -> int:
     return 0
 
 
+def _oficina_reparacion_guiada(args, cfg, carpeta) -> int:
+    """Experimento 7.5 (OFICINA.md): parche mínimo con la causa explícita, a lo sumo 3 intentos. Sin
+    --autorizo-inferencia-remota solo comprueba y muestra el pedido (no infiere ni escribe)."""
+    from .oficina import programador as PG
+    from .oficina import registro as RG
+    from .oficina import remoto as RM
+    from .oficina import reparacion_guiada as RGD
+    from .oficina import revision_existente as RE
+    from .oficina.misiones_programacion import MISIONES
+    from .sandbox.executor import Executor
+
+    print(f"{RGD.VERSION_REPARACION}: corrida {args.corrida}, modelo {args.modelo}")
+    try:
+        f = RGD.preparar(Path(args.corrida))
+    except RGD.ErrorReparacion as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    print(f"[OK] fuentes (solo lectura): misión {f['mision']}, zonas {', '.join(f'{a}–{b}' for a, b in f['zonas'])}, "
+          "causa explícita del equipo")
+    pasos = []
+    ex = Executor(cfg)
+    ex.self_test()
+    pasos.append(ex.enabled)
+    print(f"[{'OK' if ex.enabled else 'FALLA'}] sandbox: " + ("bwrap, seccomp y límites verificados" if ex.enabled
+                                                             else ex.disabled_reason))
+    if ex.enabled:
+        fabrica, referencia = MISIONES[f["mision"]]
+        ref, ini = RE._bateria(ex, referencia, fabrica()), RE._bateria(ex, f["codigo"], fabrica())
+        pasos.append(ref["ok"] and not ini["ok"])
+        print(f"[{'OK' if pasos[-1] else 'FALLA'}] batería independiente: la referencia aprueba y el código defectuoso "
+              "no (el resultado no llega al modelo)")
+    reg = RG.Registro(carpeta / "oficina.db")
+    try:
+        t = reg.comprobar(args.trabajador)
+    except RG.ErrorRegistro as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 3
+    finally:
+        reg.cerrar()
+    elegido, motivo = RM.elegir({"modelo": args.modelo, "permiso": "inferencia"}, [t])
+    pasos.append(elegido is not None)
+    print(f"[{'OK' if elegido else 'FALLA'}] trabajador y planificador: {motivo}")
+    if not all(pasos):
+        return 3
+    if not args.autorizo_inferencia_remota:
+        if args.mostrar_pedido:
+            print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in RGD.mensajes(f)))
+        print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta {RGD.MAX_INTENTOS} "
+              "inferencias).")
+        return 0
+    try:
+        destino = RGD.carpeta_de_reparacion(carpeta, Path(args.corrida))
+    except RGD.ErrorReparacion as e:
+        print(f"oficina: {e}", file=sys.stderr)
+        return 2
+    inf = RGD.correr(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]), PG.modelo_remoto(args.modelo),
+                     max_segundos=args.max_segundos)
+    for i, ll in zip(inf["intentos"], inf["llamadas"]):
+        print(f"  intento {i['intento']}: {i['estado']}" + (f" · {i['motivo']}" if i.get("motivo") else "")
+              + (f" · discrepancia {i['discrepancia_sintetica']} · visibles {i['visibles']['aprobados']}/"
+                 f"{i['visibles']['total']}" if i["estado"] == "aplicado" else "")
+              + f" · {ll.get('tokens_generados')} tokens · {ll['segundos']} s" + (" · CORTADA" if ll.get("cortada") else ""))
+    for k, v in inf["criterios"].items():
+        print(f"  criterio {k}: {'sí' if v else 'no'}")
+    print(f"Experimento 7.5: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'} · {inf['motivo']} · registro en {destino}")
+    return 0 if inf["exito"] else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="constructor-ia", description=f"Constructor IA {VERSION}")
     p.add_argument("--config", help="Ruta del config.toml")
@@ -1767,6 +1837,16 @@ def main(argv=None) -> int:
     o.add_argument("--modelo", default="qwen2.5-coder:7b")
     o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true",
                    help="sin inferencia: imprime el pedido completo")
+    o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
+    o = osub.add_parser("reparar-guiado", help="experimento 7.5: parche mínimo con la causa explícita sobre las zonas "
+                                               "de una corrida 7.3 (a lo sumo 3 intentos; sin "
+                                               "--autorizo-inferencia-remota no infiere)")
+    o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
+    o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")
+    o.add_argument("--trabajador", required=True)
+    o.add_argument("--modelo", default="qwen2.5-coder:7b")
+    o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0)
+    o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")

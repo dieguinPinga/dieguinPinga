@@ -1728,6 +1728,95 @@ python3 -m constructor_ia oficina sondear-comprension --corrida $R --carpeta $L 
     --autorizo-inferencia-remota                                         # UNA inferencia
 ```
 
+## Experimento 7.5: capacidad real de reparación con la causa explícita (implementado, SIN inferencias)
+
+**Contexto (7.4):** Qwen identificó que `ref` es `None`, pero no lo conectó con la condición `tipo != "anulacion"`.
+
+**Pregunta:** ¿`qwen2.5-coder:7b` produce un parche mínimo y correcto si se le **da** la causa?
+
+**Qué es:** un experimento aislado, `oficina reparar-guiado` (`oficina/reparacion_guiada.py`), que reutiliza piezas
+existentes sin ampliar el coordinador:
+- las fuentes de solo lectura del 7.4;
+- el formato, la validación y la aplicación de parches del 7.3;
+- el contraste, la retroalimentación del 7.1 y la batería independiente.
+
+### Recorrido (a lo sumo 3 intentos)
+
+1. **Fuentes**, solo lectura, de la corrida 7.3c:
+   - el código defectuoso;
+   - las zonas del primer intento (27–37 y 41–46);
+   - el caso sintético demostrado por el revisor.
+
+   Se comprueba que las líneas clave de la causa estén dentro de las zonas.
+2. **Pedido** (`SISTEMA_PARCHE` del 7.3):
+   - **Contenido:** el contrato, los ejemplos visibles, las zonas y la **causa explícita** escrita por el equipo
+     (`CAUSAS`): las anulaciones válidas no quedan registradas en `aplicados` porque la escritura está condicionada
+     por `tipo != "anulacion"`.
+   - **Formato:** solo un parche JSON, nunca el programa completo.
+   - **No incluye:** casos ocultos, la referencia ni resultados de la batería.
+   - La auditoría de fugas revisa cada pedido antes de enviarlo.
+3. **Validación:** el parche se valida y se aplica sobre una copia del **mismo** código defectuoso en cada intento,
+   con coincidencia exacta, zonas y sintaxis, sin relajar ningún control. Un rechazo se registra con su motivo.
+4. **Si el parche se aplica:**
+   - **Primero:** el caso sintético y los ejemplos visibles.
+   - **Si los dos dan bien:** la batería independiente completa, una sola vez. Su resultado nunca vuelve al modelo.
+5. **Si falla:** el intento siguiente recibe solo evidencia permitida:
+   - el motivo del rechazo, o si repitió un parche;
+   - o el resultado de su parche en el caso sintético (retroalimentación del 7.1) y en los ejemplos visibles.
+
+   Después de 3 intentos, o si la batería falla, se detiene con el motivo.
+
+### Criterio de éxito (`informe.json`, `criterios`)
+
+Hacen falta las tres cosas, además de una auditoría limpia:
+- **Parche válido y aplicado.**
+- **Programa distinto del defectuoso.**
+- **Batería independiente completa aprobada (9/9).**
+
+**Fracaso:** si en 3 intentos no se cumple, el equipo deja de agregar ayudas específicas para este modelo y pasa a
+evaluar otro programador.
+
+### Registro (`<carpeta>/experimento-7-5/reparacion-<fecha>/`)
+
+- `intento-N/pedido.json` y `respuesta.txt` (literal);
+- `parche.json`: el parche, si se aplicó, las líneas y el motivo del rechazo;
+- `solucion.py`, solo si se aplicó;
+- `retroalimentacion.md`;
+- `informe.json`: intentos, llamadas (tokens, tiempos, motivo de fin, si se cortó), verificación, criterios,
+  auditoría y motivo.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_guiada.py` (9), sin inferencias, con la corrida de origen del 7.3 simulado y el
+sandbox real.
+- **Pedido:** tiene las zonas reales, la causa explícita y pide solo un parche, sin datos prohibidos.
+- **Preparación:** exige que las líneas de la causa estén en las zonas y que haya una causa escrita.
+- **Parche correcto:** pasa 9/9; la respuesta y el registro son literales y la corrida original queda intacta.
+- **Rechazos:** se registran y su motivo vuelve al modelo, incluido el parche repetido.
+- **Tres intentos fallidos:** se detiene con el motivo sin pedir un cuarto, y entre intentos recibe la
+  retroalimentación del caso.
+- **Batería independiente:** decide una sola vez y no vuelve al modelo.
+- **Otros:** respuesta cortada, presupuesto de tiempo y rechazo a escribir dentro de la corrida.
+- **CLI:** la preparación no infiere ni escribe, y comprueba que la referencia aprueba y el defectuoso no; con
+  autorización, una inferencia.
+
+Suite completa: 696 pruebas, OK (837 s).
+
+### Una prueba real desde la VivoBook (con autorización explícita)
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_guiada                 # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-reparacion-7-5
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                                     # preparación: no infiere ni escribe
+python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --trabajador pulenta \
+    --autorizo-inferencia-remota                                         # hasta 3 inferencias
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
