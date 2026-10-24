@@ -2542,6 +2542,149 @@ python3 -m constructor_ia oficina reparar-torneo-12 --corrida $R --carpeta $L --
     --mostrar-pedido                         # pedido de A y las seis estrategias; no infiere ni escribe
 ```
 
+## Experimento 7.13: evolución de seis candidatos independientes (implementado, SIN inferencias)
+
+Módulo `constructor_ia/oficina/reparacion_evolutiva_13.py`. Comando: `oficina reparar-evolutivo-13`. Reutiliza piezas
+del 7.6–7.12 sin modificarlas, ni a sus resultados.
+
+Los candidatos A–F del 7.12 (mismas estrategias y modelos) pasan a ser **líneas evolutivas** de hasta 3 generaciones.
+Cada línea tiene su propio historial y nunca ve nada de otra línea. Las inferencias son secuenciales.
+
+### Una generación
+
+1. **Hipótesis:** el paso previo de la estrategia (diagnóstico, localización o plan) o, sin paso previo, la
+   justificación del parche.
+2. **Parche** (el pedido del 7.12 más el historial propio de la línea).
+3. Se aplica sobre una **copia limpia del código original**, nunca sobre un intento anterior; se normaliza la sangría
+   como en el 7.6 si hace falta.
+4. Se validan zonas, sintaxis y sandbox.
+5. Se ejecutan las **pruebas de desarrollo**.
+6. Se arma el **feedback** por categoría.
+7. Se decide si seguir.
+
+Desde la segunda generación el parche tiene que traer `revision_de_la_hipotesis`: qué hipótesis anterior resultó
+incorrecta y qué cambia. Sin ese campo el parche se rechaza. El plan de F, además, tiene que traer
+`cambio_respecto_del_anterior`.
+
+**Categorías de feedback:**
+- `hipotesis_invalida`: el paso previo no se pudo usar.
+- `parche_invalido`: parche inválido o fuera de zona.
+- `error_de_ejecucion`: error de sintaxis o de ejecución.
+- `discrepancia_sintetica`: el caso sintético sigue fallando (con salida esperada, obtenida y claves distintas).
+- `regresion_visibles`: el caso queda bien pero falla algún ejemplo visible.
+- `supera_desarrollo`: pasa todas las pruebas de desarrollo; la línea se congela.
+- `programa_repetido`: el mismo programa (huella del AST) que otra generación de la **misma** línea. No se vuelve a
+  evaluar; dos repeticiones detienen la línea por falta de progreso.
+
+### Desarrollo separado de la batería final
+
+- **Pruebas de desarrollo:** el caso sintético y los ejemplos visibles del contrato. Son lo único que alimenta el
+  feedback.
+- **Batería final reservada:** los 9 casos. Nada de ella llega a los agentes. Corre recién cuando todas las líneas
+  quedaron congeladas, solo sobre la mejor solución de cada línea que supera el desarrollo, y una vez por programa
+  distinto.
+- Se registran las **huellas** de los dos conjuntos, el momento de la última inferencia y el de la primera ejecución
+  de la batería (`bateria_despues_de_la_ultima_inferencia`).
+
+### Selección
+
+**Mejor solución de cada línea** (determinista, solo con desarrollo), en este orden:
+1. caso sintético corregido;
+2. más ejemplos visibles aprobados;
+3. se ejecuta sin error;
+4. parche válido;
+5. menos líneas cambiadas (solo desempata);
+6. generación más temprana.
+
+Se conserva aunque las generaciones siguientes sean peores.
+
+**Ganadores:** con el criterio del 7.12 (caso corregido y 9/9 en la batería final), y su mismo desempate.
+
+### Presupuesto (documentado antes de ejecutar)
+
+Está en `presupuesto.json` y en `--mostrar-pedido`.
+
+| Límite | Valor |
+|---|---|
+| candidatos | 6 |
+| generaciones por candidato | 3 |
+| llamadas en total | 27 (3 × los 9 pasos del 7.12) |
+| parches | 18 |
+| tiempo de inferencia total | 3600 s (`--max-segundos`) |
+| tiempo por línea | 600 s |
+| tokens generados por línea | 12000 |
+| repeticiones de un programa propio por línea | 2 |
+
+La memoria y el tiempo de cada ejecución los limita el sandbox de la configuración (bwrap, seccomp, cgroups).
+
+Una línea que agota su tiempo o sus tokens se detiene **sin bloquear a las demás**. Los límites globales de tiempo y
+de llamadas detienen todo lo que falta.
+
+### Auditoría y registro
+
+**Carpetas por línea y generación (`candidato-X/generacion-N/`):**
+- `<etapa>/pedido.json` y `<etapa>/respuesta.txt` por cada etapa;
+- `generacion.json`: hipótesis, revisión de la hipótesis, parche y su normalización, huellas del programa y de la
+  solución, resultado de desarrollo, categoría y feedback;
+- `solucion.py`, si el parche se aplicó.
+
+**Por línea:** `candidato-X/linea.json` guarda llamadas, tiempos y tokens, el motivo de detención y la mejor solución
+con su motivo.
+
+**En `informe.json`:**
+- la tabla: candidato, estrategia, generaciones, programas distintos, categorías, mejor resultado de desarrollo,
+  batería final, detención y ganador o motivo de rechazo;
+- la auditoría de fugas del 7.12, sobre cada pedido antes de enviarlo y al final;
+- la **auditoría entre líneas**: ningún pedido de una línea contiene hipótesis, revisiones ni justificaciones de otra;
+- el orden batería/inferencias;
+- el consumo.
+
+El éxito exige ganadores y las tres auditorías limpias.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_evolutiva_13.py` (12), con respuestas simuladas y el sandbox real. Las respuestas
+simuladas son **salidas de modelo** ya usadas en las pruebas del 7.7–7.12; los pedidos los arma el módulo, y la
+auditoría comprueba que no llevan la causa, la referencia ni la batería.
+
+- **Independencia:** marcas únicas por línea y generación. Cada pedido contiene solo las de generaciones anteriores
+  de su propia línea, y la primera generación es el pedido del 7.12.
+- **Copia limpia:** el parche anterior no se arrastra y la huella del original no cambia.
+- **Categorías, mejor solución y ganadores:**
+  - A mejora en la generación 2;
+  - B no progresa;
+  - C supera el desarrollo y falla la batería;
+  - D sale de zona y después supera;
+  - E repite su programa;
+  - F supera en la primera.
+  - La batería corre una vez por programa y el desempate es determinista.
+- **La mejor solución se conserva** aunque las generaciones siguientes empeoren (fuera de zona, error de ejecución).
+- **Ciclos y duplicados:** un programa repetido no se reevalúa, se informa y detiene la línea.
+- **`revision_de_la_hipotesis` obligatoria**, y `cambio_respecto_del_anterior` en el plan de F.
+- **Feedback solo de desarrollo:** la batería corre después de la última inferencia (espía) y no hay fugas de casos
+  ocultos, causa ni referencia. También se comparan las huellas de los dos conjuntos.
+- **Auditoría entre líneas:** detecta una fuga plantada.
+- **Selección determinista:** unidades del puntaje y dos corridas iguales.
+- **Presupuesto:** valores; una línea que agota tokens o tiempo no frena a las demás; sin tiempo no hay inferencias
+  ni batería; límite global de llamadas.
+- **Regresiones:** el 7.12 y el 7.11 siguen funcionando.
+- **CLI:** preflight con presupuesto, huellas y estrategias, y una corrida simulada.
+
+Suite completa: en curso al momento de este commit (se registra en el siguiente).
+
+### Instalación en la VivoBook y preflight
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_evolutiva_13 tests.test_oficina_reparacion_torneo_12   # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-evolutivo-7-13                                                 # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-evolutivo-13 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido      # presupuesto, huellas, pedido de la generación 1 de A y estrategias; no infiere ni escribe
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

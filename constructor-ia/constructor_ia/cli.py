@@ -1218,7 +1218,7 @@ def cmd_oficina(args) -> int:
     if args.accion == "reparar-guiado":
         return _oficina_reparacion_guiada(args, cfg, carpeta)
     if args.accion in ("reparar-coordinado", "reparar-coordinado-8", "reparar-coordinado-9", "reparar-coordinado-10",
-                       "reparar-coordinado-11", "reparar-torneo-12"):
+                       "reparar-coordinado-11", "reparar-torneo-12", "reparar-evolutivo-13"):
         return _oficina_reparacion_coordinada(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
@@ -1611,6 +1611,7 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     from .oficina import reparacion_coordinada_10 as RC10
     from .oficina import reparacion_coordinada_11 as RC11
     from .oficina import reparacion_torneo_12 as RT12
+    from .oficina import reparacion_evolutiva_13 as RE13
     from .oficina import reparacion_guiada as RGD
     from .oficina import revision_existente as RE
     from .oficina.misiones_programacion import MISIONES
@@ -1621,9 +1622,10 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     diez = args.accion == "reparar-coordinado-10"         # experimento 7.10 (planificación causal)
     once = args.accion == "reparar-coordinado-11"         # experimento 7.11 (localización causal, revisión no bloqueante)
     doce = args.accion == "reparar-torneo-12"             # experimento 7.12 (torneo de seis candidatos)
-    nombre = "7.12" if doce else "7.11" if once else "7.10" if diez else "7.9" if nueve else "7.8" if ocho else "7.7"
-    mod = RT12 if doce else RC11 if once else RC10 if diez else RC9 if nueve else RC8 if ocho else RC
-    print(f"{RT12.VERSION_12 if doce else RC11.VERSION_11 if once else RC10.VERSION_10 if diez else RC9.VERSION_9 if nueve else RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}"
+    trece = args.accion == "reparar-evolutivo-13"         # experimento 7.13 (evolución de seis candidatos)
+    nombre = "7.13" if trece else "7.12" if doce else "7.11" if once else "7.10" if diez else "7.9" if nueve else "7.8" if ocho else "7.7"
+    mod = RE13 if trece else RT12 if doce else RC11 if once else RC10 if diez else RC9 if nueve else RC8 if ocho else RC
+    print(f"{RE13.VERSION_13 if trece else RT12.VERSION_12 if doce else RC11.VERSION_11 if once else RC10.VERSION_10 if diez else RC9.VERSION_9 if nueve else RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}"
           f": corrida {args.corrida}, "
           "diagnosticadora "
           f"{args.diagnosticador_modelo}, "
@@ -1671,7 +1673,18 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
         return 3
     if not args.autorizo_inferencia_remota:
         if args.mostrar_pedido:
-            if doce:
+            if trece:
+                # Presupuesto y huellas, documentados antes de ejecutar; el pedido de la primera generación de A.
+                print("--- presupuesto ---\n" + json.dumps(RE13.presupuesto(args.max_segundos), ensure_ascii=False,
+                                                         indent=2))
+                print("--- huellas de las pruebas (desarrollo y batería reservada) ---\n"
+                      + json.dumps(RE13.huellas_de_pruebas(f), ensure_ascii=False, indent=2))
+                print("\n".join(f"--- {m['role']} ---\n{m['content']}"
+                                for m in RE13.mensajes_primera_generacion(f, disc, RE13.ESTRATEGIAS[0])))
+                print("--- estrategias ---\n" + "\n".join(f"{e['letra']}: {e['nombre']} · "
+                                                         f"{' → '.join(f'{p}({m})' for p, m in e['pasos'])}"
+                                                         for e in RE13.ESTRATEGIAS))
+            elif doce:
                 # Preparación del torneo: el pedido de parche del candidato A (los demás comparten la misma base).
                 print("\n".join(f"--- {m['role']} ---\n{m['content']}"
                                 for m in RT12.mensajes_parche(f, disc, RT12.ESTRATEGIAS[0])))
@@ -1682,6 +1695,11 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
                 pedir = (RC11.mensajes_diagnostico if once else
                          RC8.mensajes_diagnostico if (ocho or nueve or diez) else RC.mensajes_diagnostico)
                 print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in pedir(f, disc)))
+        if trece:
+            print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta "
+                  f"{len(RE13.ESTRATEGIAS)} líneas × {RE13.MAX_GENERACIONES} generaciones, {RE13.MAX_LLAMADAS} "
+                  f"llamadas y {RE13.MAX_PARCHES} parches; la batería reservada no se ejecuta en la preparación).")
+            return 0
         print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta "
               f"{RC.MAX_DIAGNOSTICOS} diagnósticos y {RGD.MAX_INTENTOS} parches).")
         return 0
@@ -1693,6 +1711,22 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     inf = mod.correr(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]),
                     PG.modelo_remoto(args.diagnosticador_modelo, num_predict=RE.NUM_PREDICT_REVISOR, timeout_s=600),
                     PG.modelo_remoto(args.modelo), max_segundos=args.max_segundos)
+    if trece:
+        for fila in inf["tabla"]:
+            m = fila["mejor_desarrollo"]
+            bf = fila["bateria_final"]
+            print(f"  {fila['candidato']} {fila['estrategia']} · {fila['generaciones']} generaciones · "
+                  f"{fila['programas_distintos']} programas · {' → '.join(fila['categorias']) or '—'}"
+                  + (f" · mejor: generación {m['generacion']} (caso {'✓' if m.get('caso_corregido') else '✗'}, "
+                     f"visibles {m.get('visibles_aprobados') or 0}/{m.get('visibles_total') or '?'})" if m else "")
+                  + (f" · batería final {bf['aprobados']}/{bf['total']}" if bf else "")
+                  + f" · {fila['resultado']} · detenida: {fila['detenida']}")
+        print(f"  ganadores: {', '.join(inf['ganadores']) or '—'}"
+              + (f" · por desempate: {inf['ganador_por_desempate']}" if inf["ganador_por_desempate"] else "")
+              + f" · consumo: {inf['consumo']['llamadas']} llamadas, {inf['consumo']['segundos']} s, "
+                f"{inf['consumo']['tokens_generados']} tokens")
+        print(f"Experimento 7.13: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'} · {inf['motivo']} · registro en {destino}")
+        return 0 if inf["exito"] else 1
     if doce:
         for fila in inf["tabla"]:
             etapas = " ".join(("✓" if fila[k] else "✗" if fila[k] is False else "·") for k in RT12.ETAPAS)
@@ -2031,14 +2065,19 @@ def main(argv=None) -> int:
                                                     "--autorizo-inferencia-remota no infiere)"),
                           ("reparar-torneo-12", "experimento 7.12: torneo de seis candidatos independientes A–F "
                                                 "(gemma y qwen, estrategias distintas) evaluados por ejecución (sin "
-                                                "--autorizo-inferencia-remota no infiere)")):
+                                                "--autorizo-inferencia-remota no infiere)"),
+                          ("reparar-evolutivo-13", "experimento 7.13: evolución de seis candidatos independientes "
+                                                   "A–F (hasta 3 generaciones cada uno, pruebas de desarrollo "
+                                                   "separadas de la batería final reservada; sin "
+                                                   "--autorizo-inferencia-remota no infiere)")):
         o = osub.add_parser(nombre, help=ayuda)
         o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
         o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")
         o.add_argument("--trabajador", required=True)
         o.add_argument("--modelo", default="qwen2.5-coder:7b", help="programador")
         o.add_argument("--diagnosticador-modelo", dest="diagnosticador_modelo", default="gemma4:12b")
-        o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0)
+        o.add_argument("--max-segundos", dest="max_segundos", type=float,
+                       default=3600.0 if nombre == "reparar-evolutivo-13" else 2400.0)
         o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
         o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
