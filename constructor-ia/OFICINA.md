@@ -1817,6 +1817,95 @@ python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --tra
     --autorizo-inferencia-remota                                         # hasta 3 inferencias
 ```
 
+## Experimento 7.6: reparación automática con normalización segura de la sangría (implementado, SIN inferencias)
+
+**Contexto (7.5, verificado en la VivoBook):**
+- Qwen propuso tres veces `if tipo != "anulacion":` → `if True:` sin sangría, y los tres parches se rechazaron por
+  coincidencia literal.
+- Con la sangría original, el mismo parche aprueba 9/9, con la huella del código defectuoso `5b017882…f5a542`.
+
+**Objetivo:** repetir el 7.5 sin intervención humana durante la reparación.
+
+**Qué cambia:** solo la opción `--normalizar-sangria` de `oficina reparar-guiado` (`reparacion_guiada.py`,
+`normalizar_sangria`). Sin la opción, el 7.5 queda exactamente igual. El coordinador, `revisar-existente`, los
+parches del 7.3, el sandbox, los límites, la auditoría y la batería no cambian. Las inferencias siguen siendo 3 como
+máximo, sin datos ocultos.
+
+### Cuándo y cómo se normaliza (estrictamente de formato)
+
+1. **Disparador:** solo cuando `parches.aplicar` rechaza el parche porque un fragmento original **no aparece
+   literalmente**. Cualquier otro rechazo queda como está.
+2. **Por cambio:**
+   - si coincide literalmente una vez, no se toca;
+   - si coincide literalmente más de una vez, se rechaza por ambiguo.
+3. **Sin coincidencia literal:** se busca el fragmento comparando, línea por línea:
+   - el **contenido idéntico** después de la sangría: mismas comillas, operadores y expresiones;
+   - la **sangría relativa** idéntica entre sus líneas;
+   - las líneas vacías en el mismo lugar.
+4. **Se rechaza si:**
+   - no hay coincidencias: la normalización no corrige el contenido;
+   - hay **más de una** en todo el código: ambiguo;
+   - la única coincidencia está **fuera de las zonas autorizadas**;
+   - hay tabulaciones en la sangría;
+   - la primera línea del reemplazo tiene una sangría distinta de la del original, porque no se sabe cuánto
+     desplazarla;
+   - alguna línea quedaría con sangría negativa.
+5. **Desplazamiento:** el original y el reemplazo se desplazan la **misma** cantidad de espacios. El contenido de
+   cada línea no cambia.
+6. **Validación:** el parche normalizado pasa por **la misma** validación y aplicación de siempre: zonas,
+   superposición, sintaxis y que defina la función.
+7. **Registro** en `intento-N/parche.json`:
+   - el parche original tal cual (`cambios`);
+   - `rechazo_literal`;
+   - `parche_normalizado`;
+   - `normalizacion`: por cambio, líneas, desplazamiento y justificación.
+
+   En `informe.json`, cada intento tiene `sangria_normalizada` y `clasificacion` vale «reparación automática con
+   normalización de formato (sangría)» o «reparación autónoma». Las corridas van a `experimento-7-6/`.
+
+### Pruebas
+
+`tests/test_oficina_normalizacion_sangria.py` (17).
+- **Positivas:**
+  - la huella del código defectuoso coincide con la verificada en la VivoBook;
+  - el parche de Qwen solo recibe su sangría (una sola línea distinta);
+  - un fragmento multilínea conserva su estructura relativa y produce la referencia;
+  - un fragmento con sangría de más se desplaza hacia atrás;
+  - una coincidencia literal no se toca;
+  - el contenido nunca cambia.
+- **Negativas:**
+  - cambios lógicos (espacios internos, comillas, operador, acento) no se normalizan;
+  - fragmentos ambiguos;
+  - fragmentos fuera de zona;
+  - estructura relativa rota;
+  - tabulaciones;
+  - reemplazo con otra sangría;
+  - sangría negativa;
+  - un parche normalizado con sintaxis inválida sigue rechazado.
+- **Ciclo:**
+  - el parche de Qwen se normaliza, se aplica y aprueba 9/9 en la primera inferencia, sin intervención;
+  - sin la opción, el 7.5 sigue con tres rechazos;
+  - la normalización no corrige la lógica;
+  - los parches inseguros siguen rechazados;
+  - el CLI con preparación y ejecución.
+
+Suite completa: 713 pruebas, OK (834 s).
+
+### Verificar sin inferencias y después una corrida real independiente
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_normalizacion_sangria tests.test_oficina_reparacion_guiada   # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-reparacion-7-6                    # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --trabajador pulenta \
+    --normalizar-sangria --mostrar-pedido                                # preparación: no infiere ni escribe
+python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --trabajador pulenta \
+    --normalizar-sangria --autorizo-inferencia-remota                    # hasta 3 inferencias
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

@@ -1535,7 +1535,8 @@ def _oficina_reparacion_guiada(args, cfg, carpeta) -> int:
     from .oficina.misiones_programacion import MISIONES
     from .sandbox.executor import Executor
 
-    print(f"{RGD.VERSION_REPARACION}: corrida {args.corrida}, modelo {args.modelo}")
+    print(f"{RGD.VERSION_NORMALIZACION if args.normalizar_sangria else RGD.VERSION_REPARACION}: corrida "
+          f"{args.corrida}, modelo {args.modelo}")
     try:
         f = RGD.preparar(Path(args.corrida))
     except RGD.ErrorReparacion as e:
@@ -1575,20 +1576,23 @@ def _oficina_reparacion_guiada(args, cfg, carpeta) -> int:
               "inferencias).")
         return 0
     try:
-        destino = RGD.carpeta_de_reparacion(carpeta, Path(args.corrida))
+        destino = RGD.carpeta_de_reparacion(carpeta, Path(args.corrida),
+                                            "experimento-7-6" if args.normalizar_sangria else "experimento-7-5")
     except RGD.ErrorReparacion as e:
         print(f"oficina: {e}", file=sys.stderr)
         return 2
     inf = RGD.correr(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]), PG.modelo_remoto(args.modelo),
-                     max_segundos=args.max_segundos)
+                     max_segundos=args.max_segundos, normalizar=args.normalizar_sangria)
     for i, ll in zip(inf["intentos"], inf["llamadas"]):
         print(f"  intento {i['intento']}: {i['estado']}" + (f" · {i['motivo']}" if i.get("motivo") else "")
               + (f" · discrepancia {i['discrepancia_sintetica']} · visibles {i['visibles']['aprobados']}/"
                  f"{i['visibles']['total']}" if i["estado"] == "aplicado" else "")
+              + (" · sangría normalizada" if i.get("sangria_normalizada") else "")
               + f" · {ll.get('tokens_generados')} tokens · {ll['segundos']} s" + (" · CORTADA" if ll.get("cortada") else ""))
     for k, v in inf["criterios"].items():
         print(f"  criterio {k}: {'sí' if v else 'no'}")
-    print(f"Experimento 7.5: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'} · {inf['motivo']} · registro en {destino}")
+    print(f"Experimento {'7.6' if args.normalizar_sangria else '7.5'}: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'}"
+          + (f" ({inf['clasificacion']})" if inf.get("clasificacion") else "") + f" · {inf['motivo']} · registro en {destino}")
     return 0 if inf["exito"] else 1
 
 
@@ -1846,6 +1850,8 @@ def main(argv=None) -> int:
     o.add_argument("--trabajador", required=True)
     o.add_argument("--modelo", default="qwen2.5-coder:7b")
     o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0)
+    o.add_argument("--normalizar-sangria", dest="normalizar_sangria", action="store_true",
+                   help="experimento 7.6: si un parche no coincide literalmente, ajustar SOLO su sangría inicial")
     o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
