@@ -56,6 +56,7 @@ CAUSAS = {
         "lineas_clave": ['if tipo != "anulacion":', 'ref = aplicados.get(m.get("anula"))'],
     },
 }
+TITULO_CAUSA = "CAUSA DEL DEFECTO (confirmada por el equipo; no hace falta volver a diagnosticarla)"
 PEDIDO = ("Proponé el parche mínimo que corrige esa causa y respondé solo con el JSON pedido. No escribas el programa "
           "completo.")
 
@@ -92,7 +93,7 @@ def mensajes(f: dict, aviso: str = "") -> list[dict]:
                f"Ejemplos:\n{prompts._examples(spec, 3000) or '(sin ejemplos visibles)'}\n\n"
                "CÓDIGO ACTUAL de solucion.py: solo ves lo necesario para el parche. Los números de línea NO son parte "
                f"del código.\n\n{PA.texto_zonas(f['codigo'], spec['function'], {'zonas': f['zonas']})}\n\n"
-               f"CAUSA DEL DEFECTO (confirmada por el equipo; no hace falta volver a diagnosticarla):\n{f['causa']}\n\n"
+               f"{f.get('titulo_causa', TITULO_CAUSA)}:\n{f['causa']}\n\n"
                + (f"AVISO DEL COORDINADOR:\n{aviso}\n\n" if aviso else "")
                + PEDIDO)
     return [{"role": "system", "content": PA.SISTEMA_PARCHE}, {"role": "user", "content": usuario}]

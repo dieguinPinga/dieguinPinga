@@ -1906,6 +1906,109 @@ python3 -m constructor_ia oficina reparar-guiado --corrida $R --carpeta $L --tra
     --normalizar-sangria --autorizo-inferencia-remota                    # hasta 3 inferencias
 ```
 
+## Experimento 7.7: diagnóstico y reparación coordinados entre dos IA (implementado, SIN inferencias)
+
+**Contexto:** el 7.6 logró 9/9 en una inferencia real, pero con la **causa escrita por el equipo**.
+
+**Objetivo:** reemplazar esa causa por un diagnóstico generado automáticamente por Gemma.
+
+**Qué es:** el módulo `oficina reparar-coordinado` (`oficina/reparacion_coordinada.py`). Reutiliza el ciclo del 7.6
+**tal cual**: `reparacion_guiada.correr`, con la normalización de la sangría.
+- El único cambio en `reparacion_guiada.py` es que el rótulo de la causa es un parámetro (`titulo_causa`), con el de
+  siempre por omisión. El 7.5 y el 7.6 no cambian.
+- No cambian el coordinador general, `revisar-existente`, los parches, el sandbox, los límites, la auditoría ni la
+  batería.
+
+### Roles
+
+1. **Diagnosticadora (`gemma4:12b`, `num_predict` 2048, salida JSON):**
+   - **Recibe:**
+     - el contrato y los ejemplos visibles;
+     - las zonas de la corrida 7.3 de origen;
+     - la **discrepancia observable** del caso sintético, recalculada en el sandbox: la entrada, lo que pide el
+       contrato, lo que devuelve el código y qué falta o sobra.
+   - **No recibe:**
+     - la causa del equipo (`CAUSAS`);
+     - el diagnóstico anterior del revisor;
+     - el defecto ni la referencia;
+     - casos ocultos.
+
+     La auditoría de fugas revisa cada pedido.
+   - **Responde:** `causa`, `lineas_citadas`, `mecanismo` y `relacion_con_la_discrepancia`.
+   - **Validación:**
+     - los campos están completos y hay al menos 2 pasos de mecanismo;
+     - no incluye código;
+     - al menos una línea citada aparece **literalmente dentro de las zonas**.
+   - **Si el diagnóstico es insuficiente:** se registra el fallo y se le pide de nuevo, con el motivo, como máximo 2
+     veces. Si sigue siendo insuficiente, **el experimento se detiene**: nunca se sustituye por la causa conocida.
+2. **Programador (`qwen2.5-coder:7b`):** el ciclo del 7.6 con el diagnóstico de Gemma, rotulado «DIAGNÓSTICO DE LA
+   DIAGNOSTICADORA (otra IA; el coordinador comprobó que las líneas citadas existen en el código, NO que la causa sea
+   correcta)». Como máximo 3 parches JSON.
+3. **Coordinador determinista:**
+   - valida el diagnóstico y el parche;
+   - normaliza solo la sangría y aplica sobre una copia;
+   - prueba el caso sintético y los ejemplos visibles;
+   - ejecuta la batería independiente una sola vez.
+
+   Nada de eso vuelve a los modelos. El tiempo de las dos etapas comparte un mismo presupuesto (2400 s).
+
+### Criterios de éxito (`informe.json`)
+
+1. `1_diagnosticadora_identifica_la_causa`: evaluación **posterior y separada** del texto del diagnóstico
+   (`sonda_comprension.evaluar`: ¿dice que las anulaciones aplicadas no se registran en `aplicados`?). No decide nada
+   durante la corrida ni llega a ningún modelo.
+2. `2_programador_recibe_ese_diagnostico_y_genera_un_parche`: se comprueba sobre los `pedido.json` efectivamente
+   enviados.
+3. `3_coordinador_aplica_el_parche`.
+4. `4_bateria_independiente_completa`: 9/9.
+
+**Clasificación** si se cumplen los cuatro: «diagnóstico y reparación automáticos coordinados», con la aclaración
+«(con normalización de la sangría)» si correspondió. No es autonomía general.
+
+### Registro (`<carpeta>/experimento-7-7/reparacion-<fecha>/`)
+
+- `diagnostico-K/pedido.json`, `respuesta.txt` (literal) y `diagnostico.json` (validez, motivo, tokens, tiempos);
+- `reparacion/`: el registro completo del ciclo del 7.6;
+- `informe.json`: el diagnóstico usado (texto y huella), la comprobación de que llegó a cada pedido del programador,
+  la evaluación del diagnóstico, los criterios, la clasificación y el motivo.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_coordinada.py` (11), sin inferencias, con diagnosticadora y programador simulados y el
+sandbox real.
+- **Diagnóstico:** uno válido tiene sus citas comprobadas contra las zonas. Los insuficientes se rechazan con su
+  motivo: sin JSON, sin causa, un solo paso, sin relación, citas inexistentes o fuera de zona, o con el programa.
+- **Evaluación:** posterior y separada.
+- **Pedido a la diagnosticadora:** tiene la discrepancia observable y no tiene la causa del equipo, el diagnóstico
+  anterior, el defecto, la referencia ni datos ocultos.
+- **Integración positiva:**
+  - es **sin ninguna causa escrita** (`CAUSAS` vacío);
+  - el pedido del programador tiene la marca única de la respuesta de Gemma, y diagnósticos distintos llegan
+    distintos;
+  - aprueba 9/9.
+- **Diagnóstico insuficiente dos veces:** se detiene sin llamar al programador y sin sustituirlo.
+- **Segundo diagnóstico válido:** se usa ese.
+- **Causa equivocada:** no cuenta como éxito aunque el parche funcione.
+- **Otros:** tres parches fallidos, presupuesto y CLI.
+
+Suite completa: 724 pruebas, OK (855 s).
+
+### Verificar en la VivoBook y después correr
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_coordinada tests.test_oficina_normalizacion_sangria \
+    tests.test_oficina_reparacion_guiada                                    # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-coordinada-7-7                       # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-coordinado --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                     # preparación: muestra el pedido a Gemma; no infiere ni escribe
+python3 -m constructor_ia oficina reparar-coordinado --corrida $R --carpeta $L --trabajador pulenta \
+    --autorizo-inferencia-remota                         # hasta 2 diagnósticos + 3 parches
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
