@@ -2316,6 +2316,132 @@ python3 -m constructor_ia oficina reparar-coordinado-10 --corrida $R --carpeta $
 # Corrida real, solo con autorización: ... reparar-coordinado-10 ... --autorizo-inferencia-remota
 ```
 
+## Experimento 7.11: localización causal y revisión no bloqueante (implementado, SIN inferencias)
+
+**Contexto (7.10):** Gemma diagnosticó bien, Qwen produjo seis planes, Gemma rechazó los seis y no se llegó a ningún
+parche.
+
+**Qué es:** `oficina reparar-coordinado-11` (`oficina/reparacion_coordinada_11.py`), un orquestador propio. Reutiliza,
+sin modificarlas, piezas del 7.6 al 7.10:
+- la sesión, la auditoría y la revisión del plan del 7.10;
+- la discrepancia y la retroalimentación del 7.8;
+- la validación y aplicación de parches, la normalización de sangría, el contraste, los ejemplos visibles y la
+  batería.
+
+Los experimentos 7.5 a 7.10 no cambian. El CLI solo suma el comando.
+
+### 1. Localización causal (diagnosticadora, gemma)
+
+El JSON separa:
+- `origen_del_defecto`: la línea y la operación o condición que introduce el estado incorrecto;
+- `punto_de_manifestacion`: la línea donde ese estado produce el resultado observable;
+- `cadena_causal`: al menos 2 pasos;
+- `comportamiento_a_preservar`: invariantes del contrato.
+
+Origen y manifestación tienen que ser líneas que existan literalmente dentro de las zonas, y **distintas**. Si no,
+el diagnóstico es insuficiente; hay como máximo 2 diagnósticos y nunca se sustituye por nada nuestro.
+
+### 2. Plan concreto (planificador, qwen)
+
+**Contenido del plan:**
+- `estado_a_corregir`;
+- `intervenciones`: la línea del código y la acción, en palabras;
+- `por_que_elimina_la_causa`, en lugar de ocultar el síntoma;
+- `invariantes_preservados`;
+- después de un parche que falló, `cambio_respecto_del_anterior`.
+
+**Filtros antes de la revisión:**
+- **Plan descriptivo:** si no tiene una intervención concreta (una línea dentro de las zonas y una acción), se
+  rechaza sin gastar la revisión.
+- **Plan repetido:** si es la misma intervención que uno anterior, tampoco se revisa y se le pide otra. Dos planes son
+  la misma intervención si tienen las mismas líneas y las mismas palabras de acción, sin contar acentos, mayúsculas,
+  orden ni palabras vacías, y comparando por raíz («quitar», «quitando»). Así se detectan variantes de redacción.
+
+### 3. Revisión no bloqueante (revisora, gemma)
+
+- **Formato:** la revisora aprueba o rechaza con una crítica causal (el formato del 7.9 y el 7.10). La crítica llega
+  **íntegra** al planificador. Cada ciclo admite como máximo 2 planes.
+- **Si no se aprueba ninguno:** el coordinador implementa el **último plan válido, rechazado, bajo evaluación
+  experimental**, solo para comprobarlo en el sandbox. Queda registrado en `plan_a_implementar` y en el parche, y se
+  imprime.
+- **Lo que esa excepción no saltea:** la validación del parche, las zonas, la normalización, la copia, bwrap y
+  seccomp, el caso sintético, los ejemplos visibles, la batería y los límites.
+
+### 4. Verificación objetiva y criterio
+
+**El criterio principal es el comportamiento comprobado.** **Éxito** = parche aplicado, caso sintético corregido,
+batería 9/9 y auditoría limpia. La aprobación de Gemma no es éxito y su rechazo no es fracaso. Si el plan fue
+rechazado y la ejecución lo valida, la clasificación lo dice: «implementado bajo evaluación experimental».
+
+### 5. Medición (`informe.json`, `medicion`), separada por tipo de evidencia
+
+- **Demostrado por ejecución:**
+  - el plan preserva los invariantes (su implementación coherente aprobó la batería);
+  - el parche implementa el plan (coherencia de líneas);
+  - el parche se aplicó;
+  - el parche supera el caso sintético;
+  - la batería da 9/9.
+- **Posteriores deterministas aproximadas:** se calculan **después** y no llegan a ningún modelo.
+  - el diagnóstico identifica el origen y la manifestación;
+  - el plan propone una intervención causal concreta;
+  - el plan declara invariantes.
+
+  Las referencias son `origen` (las líneas que difieren entre el código defectuoso y la referencia, en 7.3c 44–45) y
+  `manifestacion` (la zona donde se emite el valor equivocado del caso sintético).
+- **Opinión del modelo:** la decisión de Gemma y si el plan se implementó bajo evaluación experimental.
+
+**Plan causal correcto** = apunta al origen **y** su implementación coherente aprobó la batería. Mencionar el defecto
+no alcanza, y un plan que no se pudo ejecutar no cuenta como correcto.
+
+**Desacuerdos entre la revisora y la ejecución:** se registran los casos «aprobó un plan cuya implementación falló» y
+«rechazó un plan cuya implementación aprobó la batería».
+
+### 6. Límites
+
+- 3 ciclos;
+- 2 planes por ciclo, como máximo 6 planes en total;
+- 3 parches;
+- 2400 s.
+
+Un parche que repite a otro después del aviso detiene la corrida. Cuenta como repetido el mismo texto (sin espacios
+finales) o un texto distinto que produce **el mismo programa**. La auditoría revisa cada pedido.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_coordinada_11.py` (16). Demuestran la arquitectura, no la capacidad de los modelos.
+- **Diagnóstico:** origen y manifestación separados (la misma línea se rechaza); los dos llegan al planificador y se
+  miden.
+- **Plan:** un plan concreto se acepta y uno descriptivo se rechaza sin revisión.
+- **Revisión:**
+  - un plan que confunde `vistos` con `aplicados` se rechaza, y la crítica llega íntegra;
+  - Gemma **rechaza un plan correcto**: se implementa bajo evaluación experimental, da 9/9 y queda registrado el
+    desacuerdo;
+  - Gemma **aprueba un plan incorrecto**: la ejecución lo desmiente, queda el desacuerdo, el plan no se cuenta como
+    correcto y el ciclo siguiente recibe la discrepancia.
+- **Controles:** un plan rechazado no saltea controles (un parche fuera de zona se rechaza igual), y tampoco con un
+  plan aprobado.
+- **Aislamiento:** no se filtran casos ocultos, referencias posteriores ni la batería; las revisiones no reciben
+  resultados de pruebas.
+- **Repeticiones:** planes repetidos (variante textual) y parches equivalentes (otro texto, el mismo programa).
+- **Otros:** límites, presupuesto, prompts sin la solución, y el 7.10 y el 7.9 siguen funcionando.
+- **CLI.**
+
+Suite completa: 777 pruebas, OK (954 s).
+
+### Actualizar la VivoBook y solo la preparación
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_coordinada_11 tests.test_oficina_reparacion_coordinada_10 \
+    tests.test_oficina_reparacion_coordinada_9                                                  # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-coordinada-7-11                                      # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-coordinado-11 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                      # no infiere ni escribe
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
