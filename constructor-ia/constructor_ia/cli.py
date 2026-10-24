@@ -1695,8 +1695,9 @@ def main(argv=None) -> int:
     o.add_argument("--max-reparaciones", dest="max_reparaciones", type=int, default=3)
     o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0,
                    help="tiempo total de inferencia (revisor + programador)")
-    o.add_argument("--variante", choices=["7.1", "7.2"], default="7.1",
-                   help="7.1: reparación directa (por omisión) · 7.2: diagnóstico previo del programador y reparación")
+    o.add_argument("--variante", choices=["7.1", "7.2", "7.3"], default="7.1",
+                   help="7.1: reparación directa (por omisión) · 7.2: diagnóstico previo del programador y reparación "
+                        "· 7.3: parches mínimos sobre zonas autorizadas")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")

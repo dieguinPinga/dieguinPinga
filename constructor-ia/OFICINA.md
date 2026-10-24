@@ -1328,6 +1328,128 @@ python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pu
 Con los límites por omisión (2 revisiones, 3 reparaciones, 2400 s), la variante 7.2 hace a lo sumo 2 + 3 × 2 = 8
 inferencias, contra 5 en el 7.1, dentro del mismo presupuesto de tiempo.
 
+## Experimento 7.3: reparación mediante parches mínimos (implementado, SIN inferencias)
+
+**Contexto:** en el 7.1 y el 7.2, Qwen 2.5 Coder 7B no reparó `conciliar_movimientos`, aunque Gemma encontró el
+defecto. En una prueba directa, con el defecto localizado y un pedido de parche mínimo, Qwen propuso registrar las
+anulaciones válidas en `aplicados`.
+
+**Pregunta:** ¿puede un modelo pequeño reparar con modificaciones localizadas en lugar de regenerar el archivo?
+
+**Variante:** `--variante 7.3`. Las variantes 7.1 (por omisión) y 7.2 no cambian, y `oficina programar` tampoco.
+
+**Lo único que cambia es la forma de reparar:**
+- **Iguales al 7.1:** los modelos, `num_ctx`, `num_predict`, temperatura, plazos, misión, defecto, revisor,
+  contraste, retroalimentación (diff, mismo programa o salida, historial, corte), verificación independiente,
+  criterios, auditoría, `--max-reparaciones` y `--max-segundos`.
+- **Un parche por intento:** cada parche es una inferencia y un intento de reparación.
+
+### Recorrido
+
+1. **Revisor y contraste:** como en el 7.1.
+2. **Localización** (`oficina/parches.py`, `localizar`). La hace el coordinador, sin pruebas ocultas, con:
+   - **anclas permitidas:**
+     - las citas del revisor que el coordinador comprobó en el código;
+     - las líneas con literales de texto que aparecen en la diferencia del caso sintético, sea en la salida que pide
+       el contrato o en la del candidato (por ejemplo `"anulacion_inexistente"`);
+   - **análisis estático** del árbol sintáctico: cada ancla se lleva a su sentencia. Si su bloque tiene menos de 3
+     sentencias, se sube al que la contiene. La zona es esa sentencia con hasta 2 vecinas antes y después, como
+     máximo 30 líneas por zona y 80 en total. Las zonas que se tocan se unen.
+   - **Sin anclas**, la zona es la función completa, y queda registrado.
+   - Se recalcula sobre el punto de partida de cada intento.
+3. **Programador** (`SISTEMA_PARCHE`, salida JSON):
+   - **Recibe** el mismo material que en el 7.1, pero en lugar del archivo ve:
+     - las **zonas autorizadas** numeradas;
+     - un contexto de **solo lectura**: la firma y las asignaciones de primer nivel de la función.
+   - **Responde** `{"cambios": [{"original", "reemplazo"}], "justificacion"}`, con 3 cambios como máximo.
+4. **Validación y aplicación determinista** (`interpretar_parche`, `aplicar`). Ninguna instrucción del modelo se
+   ejecuta: el parche es un dato y la única operación es reemplazar líneas en una **copia** del código. Se rechaza,
+   con el motivo, un parche que:
+   - no es JSON;
+   - no tiene cambios o tiene más de 3;
+   - tiene un original vacío;
+   - tiene un original que no aparece (se comparan líneas completas, ignorando solo los espacios finales) o aparece
+     varias veces;
+   - cambia líneas fuera de las zonas autorizadas;
+   - tiene cambios superpuestos;
+   - tiene un reemplazo igual al original, de más de 25 líneas o que reescribe la función;
+   - deja un resultado que no es Python válido o que ya no define la función.
+
+   Un parche rechazado consume su intento y no produce código.
+5. **Verificación:**
+   - **Primero, lo autorizado:** el caso sintético y los ejemplos visibles.
+   - **Después, la batería independiente:** si la discrepancia desaparece y los ejemplos visibles pasan, se ejecuta
+     la batería completa una sola vez.
+6. **Retroalimentación:** la del 7.1. Además, un parche **repetido** (misma huella, ignorando espacios finales) se
+   marca con «REPETICIÓN». Si se repite después del aviso, el coordinador se detiene. Un parche rechazado deja «Tu
+   parche fue rechazado: motivo».
+
+### Registro (`reparacion-N/`)
+
+- `pedido.json` y `respuesta.txt`;
+- `parche.json`: el parche, las zonas, si se aplicó, las líneas tocadas y el motivo de un rechazo;
+- `solucion.py`: el código parcheado, solo si se aplicó;
+- `reparacion.json`: `localizacion`, con zonas, anclas y método; `parche`; `parche_repetido_de`; y los campos del
+  7.1;
+- `retroalimentacion.md`.
+
+En `informe.json`, cada llamada del programador tiene `etapa: "parche"`.
+
+### Criterio de éxito
+
+Es el mismo de siempre: no basta con un parche distinto. El código parcheado tiene que eliminar la discrepancia **y**
+aprobar la batería independiente completa.
+
+### Pruebas
+
+`tests/test_oficina_parches.py` (13), sin inferencias, con revisor y programador simulados y el sandbox real:
+- **Localización:** con las citas comprobadas y los literales de la diferencia sintética; sin anclas, la función
+  completa.
+- **Parches válidos:**
+  - quitar la condición, o registrar las anulaciones como propuso Qwen;
+  - se aplican sobre una copia;
+  - se reconocen como repetidos aunque cambien los espacios finales.
+- **Parches inválidos**, con su motivo:
+  - sin JSON o sin la lista «cambios»;
+  - vacío, o con un original vacío;
+  - original inexistente, o que aparece varias veces;
+  - sintaxis inválida en el resultado;
+  - fuera de alcance;
+  - reemplazo igual al original;
+  - cambios superpuestos;
+  - más de 3 cambios;
+  - reescritura de la función.
+- **Ciclo:**
+  - un parche válido aprueba 9/9 en la verificación independiente;
+  - un parche rechazado recibe su motivo y consume un intento;
+  - un parche sin efecto recibe la retroalimentación del 7.1 y zonas nuevas;
+  - un parche repetido se detiene después del aviso, también si se repite sobre su propio resultado;
+  - el presupuesto también limita los parches;
+  - no hay filtraciones;
+  - las variantes 7.1 y 7.2 no usan parches.
+- **CLI:** `--variante 7.3`.
+
+Suite completa: 651 pruebas, OK (747 s).
+
+### Preflight y ejecución (carpeta NUEVA `oficina-revision-7-3`)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_parches tests.test_oficina_diagnostico_previo \
+    tests.test_oficina_retroalimentacion tests.test_oficina_revision_existente     # 46 pruebas, sin inferencias
+L=~/constructor-ia-piloto/data/oficina-revision-7-3
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+# preflight: trabajador, planificador, sandbox, referencia y defecto (sin inferencias, no escribe la corrida)
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.3
+# ejecución: como máximo 2 revisiones + 3 parches (5 inferencias), 2400 s
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.3 --autorizo-inferencia-remota
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

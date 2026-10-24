@@ -45,6 +45,7 @@ from .. import codeextract, prompts
 from ..config import ModelConfig
 from ..ollama import OllamaError
 from . import contraste as CT
+from . import parches as PA
 from . import revisor as RV
 from .autocorreccion import _ClienteConciso, sin_comentarios
 from .misiones_programacion import MISIONES, VALIDADORES
@@ -102,7 +103,9 @@ class ConfigExperimento:
     variante: str = "7.1"              # "7.1": reparación directa · "7.2": diagnóstico del programador y reparación
 
 VARIANTES = {"7.1": "reparación directa con retroalimentación específica",
-             "7.2": "diagnóstico previo del programador (etapa A) y reparación (etapa B), con la retroalimentación del 7.1"}
+             "7.2": "diagnóstico previo del programador (etapa A) y reparación (etapa B), con la retroalimentación del 7.1",
+             "7.3": "parches mínimos sobre zonas autorizadas, aplicados por el coordinador, con la retroalimentación "
+                    "del 7.1"}
 
 
 def huella(codigo: str | None) -> str | None:
@@ -561,6 +564,7 @@ class Experimento:
         (7.2, etapa A: JSON sin las reglas de concisión del código; diagnostico_pedido.json y
         diagnostico_respuesta.txt). Cada una queda registrada por separado en el consumo."""
         diag = etapa == "diagnostico"
+        json_ = etapa in ("diagnostico", "parche")        # respuestas JSON, sin las reglas de concisión del código
         self.pedidos.append(msgs)
         self._guardar(f"reparacion-{n}/{'diagnostico_pedido.json' if diag else 'pedido.json'}", msgs)
         t0 = time.monotonic()
@@ -568,7 +572,7 @@ class Experimento:
         try:
             self.gate.acquire("programador", cancel)
             try:
-                if diag:
+                if json_:
                     gen = self.cliente.chat(self.cfg.programador, msgs, cancel, fmt="json")
                 else:
                     gen = self.cliente_programador.chat(self.cfg.programador, msgs, cancel)
@@ -581,8 +585,37 @@ class Experimento:
         self.llamadas.append(dict(base, segundos=round(time.monotonic() - t0, 1), tokens_prompt=gen.prompt_tokens,
                                   tokens_generados=gen.eval_tokens, fin=gen.done_reason, cortada=bool(gen.truncated),
                                   error=None))
-        self._guardar(f"reparacion-{n}/{'diagnostico_respuesta.txt' if diag else 'respuesta.md'}", gen.text)
+        self._guardar(f"reparacion-{n}/" + ("diagnostico_respuesta.txt" if diag else "respuesta.txt" if json_
+                                            else "respuesta.md"), gen.text)
         return gen, None
+
+    def _aplicar_parche(self, n: int, texto: str, base: str, loc: dict, rep: dict,
+                        parches: list[dict]) -> tuple[str | None, list[str]]:
+        """7.3: valida y aplica el parche de forma determinista sobre una COPIA del código base. Devuelve (código
+        parcheado o None, problemas). Registra el parche, su aplicación y si repite uno anterior."""
+        reg = {"zonas": loc["zonas"], "aplicado": False}
+        try:
+            parche = PA.interpretar_parche(texto, self.contraste.funcion)
+            reg.update(parche)
+            k = PA.clave(parche)
+            previo = next((p["n"] for p in parches if p["clave"] == k), None)
+            parches.append({"n": n, "clave": k})
+            if previo is not None:
+                rep["parche_repetido_de"] = previo
+            codigo, aplicacion = PA.aplicar(base, parche, loc["zonas"], self.spec)
+            reg.update(aplicado=True, aplicacion=aplicacion)
+            problemas = []
+        except PA.ParcheRechazado as e:
+            codigo, problemas = None, [f"Tu parche fue rechazado: {e}"]
+            reg["motivo"] = str(e)
+        rep["parche"] = {k: v for k, v in reg.items() if k not in ("cambios", "justificacion")}
+        self._guardar(f"reparacion-{n}/parche.json", reg)
+        self.log(f"  parche {n}: " + ("aplicado · " + ", ".join(f"líneas {a['lineas'][0]}–{a['lineas'][1]}"
+                                                                 for a in reg["aplicacion"])
+                                      if reg["aplicado"] else f"rechazado · {reg['motivo']}")
+                 + (f" · repite el parche del intento {rep['parche_repetido_de']}"
+                    if rep.get("parche_repetido_de") else ""))
+        return codigo, problemas
 
     def _diagnosticar(self, n: int, base: str, material: tuple, cancel) -> tuple[dict, str]:
         """Etapa A (7.2). Devuelve (registro, texto para la etapa B). Un diagnóstico inválido no detiene nada: la
@@ -661,6 +694,10 @@ class Experimento:
         versiones = [{"n": 0, "programa": programa(inicial), "salida": ct["candidato"]["salida"]}]
         historial: list[str] = []
         avisado_de_repeticion = False
+        # 7.3: anclas permitidas para localizar (citas comprobadas del revisor y la diferencia del caso sintético).
+        citas = [c["texto"] for c in demostrada["diagnostico"]["principal"]["citas"] if c["verificada"]]
+        comp_base = comparar_salidas(esperado, ct["candidato"]["salida"])
+        parches: list[dict] = []
         for n in range(1, self.cfg.max_reparaciones + 1):
             if (motivo := self._sin_tiempo()):
                 inf["detenido"] = motivo
@@ -683,18 +720,29 @@ class Experimento:
                     rep.update(estado="sin_respuesta", detalle=rep["diagnostico_propio"]["motivo"])
                     inf["detenido"] = f"el trabajador no responde: {rep['diagnostico_propio']['motivo']}"
                     break
-            msgs = mensajes_reparacion(*material[0], propio=propio)
-            gen, error = self._programar(n, msgs, cancel)
+            if self.cfg.variante == "7.3":
+                loc = PA.localizar(base, self.contraste.funcion, citas, PA.literales_de_la_diferencia(comp_base))
+                rep["localizacion"] = {"zonas": loc["zonas"], "anclas": loc["anclas"], "metodo": loc["metodo"]}
+                msgs = PA.mensajes_parche(self.descripcion, self.spec, base, loc, diagnostico, evidencia, aviso, budget,
+                                          historial, base_n)
+                gen, error = self._programar(n, msgs, cancel, etapa="parche")
+            else:
+                msgs = mensajes_reparacion(*material[0], propio=propio)
+                gen, error = self._programar(n, msgs, cancel)
             inf["reparaciones"].append(rep)
             if gen is None:
                 rep.update(estado="sin_respuesta", detalle=error)
                 if "contactar" in error or "no disponible" in error:
                     inf["detenido"] = f"el trabajador no responde: {error}"
                     break
-                aviso = "La generación anterior falló. Respondé con el archivo completo, más corto."
+                aviso = ("La generación anterior falló. Respondé solo con el parche JSON." if self.cfg.variante == "7.3"
+                         else "La generación anterior falló. Respondé con el archivo completo, más corto.")
                 continue
-            codigo, nota_ext = codeextract.extract_code(gen.text)
-            problemas = [nota_ext] if codigo is None else codeextract.validate_code(codigo, self.spec)
+            if self.cfg.variante == "7.3":
+                codigo, problemas = self._aplicar_parche(n, gen.text, base, loc, rep, parches)
+            else:
+                codigo, nota_ext = codeextract.extract_code(gen.text)
+                problemas = [nota_ext] if codigo is None else codeextract.validate_code(codigo, self.spec)
             if gen.truncated:
                 problemas.insert(0, f"Tu respuesta se cortó al llegar al límite de {self.cfg.programador.num_predict} "
                                     "tokens y quedó incompleta: escribí una versión más corta, sin comentarios.")
@@ -708,6 +756,14 @@ class Experimento:
                 historial.append(linea_de_historial(n, base_n, None, None, [], [], None, problemas[0]))
                 self.log(f"  reparación {n}: no ejecutable · {rep['detalle'][:160]}")
                 self._guardar(f"reparacion-{n}/reparacion.json", rep)
+                if rep.get("parche_repetido_de"):
+                    if avisado_de_repeticion:
+                        inf["detenido"] = (f"el intento {n} repitió un parche ya probado después del aviso de "
+                                           "repetición: no se gastan más inferencias sin información nueva")
+                        break
+                    avisado_de_repeticion = True
+                    aviso += (f"\nREPETICIÓN: es el mismo parche que tu intento {rep['parche_repetido_de']}. Repetirlo "
+                              "no aporta información nueva.")
                 continue
             otra = CT.contrastar(self.executor, self.contraste, codigo, ct["caso"], None)
             vis = self._visibles(codigo)
@@ -736,6 +792,8 @@ class Experimento:
                 candidato = (n, codigo)
                 break
             historial.append(linea_de_historial(n, base_n, comp, cambio, mismo_programa, misma_salida, disc))
+            if rep.get("parche_repetido_de") and not mismo_programa:
+                mismo_programa = [rep["parche_repetido_de"]]        # 7.3: el mismo parche cuenta como repetición
             if mismo_programa and avisado_de_repeticion:
                 # Ya se le había mostrado una repetición y volvió a repetir: otro pedido no traería información nueva.
                 inf["detenido"] = (f"el intento {n} repitió un programa ya probado después del aviso de repetición: "
@@ -749,7 +807,7 @@ class Experimento:
             if vis["ejecutable"]:
                 if not mismo_programa:
                     versiones.append({"n": n, "programa": prog, "salida": salida})
-                base, base_n = codigo, n
+                base, base_n, comp_base = codigo, n, comp
 
         # 4. Verificación independiente ----------------------------------------------------------------------------
         if candidato is not None:
