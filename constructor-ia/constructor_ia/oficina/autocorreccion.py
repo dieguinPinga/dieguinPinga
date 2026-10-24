@@ -93,7 +93,9 @@ class MotorConMemoria(Engine):
                 self.files.save(mid, "mejor/resumen.json", json.dumps(
                     {"intento": m["n"], "aprobados": m["puntaje"], "total": m["total"], "estado_mision": estado,
                      "historial": [{"intento": h["n"], "aprobados": h["puntaje"], "total": h["total"],
-                                    "base": h.get("base"), "identico_a": h.get("identico_a")} for h in st["historial"]]},
+                                    "base": h.get("base"), "identico_a": h.get("identico_a")} for h in st["historial"]],
+                     "revisiones": [{k: v for k, v in r.items() if k not in ("mensajes", "respuesta")}
+                                    for r in st.get("revisiones", [])]},
                     ensure_ascii=False, indent=2), "mejor", m["n"])
             return estado
         finally:
@@ -104,11 +106,16 @@ class MotorConMemoria(Engine):
         base_n = None
         if n > 1 and st["ultimo"] is not None:
             last_code, report, base_n = self._preparar(st)
+            report = self._complementar(mid, n, st, description, spec, last_code, report, cancel)
             self.files.save(mid, f"intento-{n}/retroalimentacion.md",
                             f"Punto de partida: intento {base_n}\n\n{report}", "retroalimentacion", n)
         out = super()._attempt(mid, n, max_attempts, description, spec, tests_py, last_code, report, budget, cancel)
         self._registrar(mid, n, spec, description, st, out, base_n)
         return out
+
+    def _complementar(self, mid, n, st, description, spec, base_code, report, cancel) -> str:
+        """Punto de extensión: otros roles (el revisor) pueden agregar texto al feedback del próximo intento."""
+        return report
 
     # Interno ----------------------------------------------------------------------------------------------------
     def _registrar(self, mid, n, spec, description, st, out, base_n):
@@ -124,7 +131,9 @@ class MotorConMemoria(Engine):
                    "identico_a": next((h["n"] for h in st["historial"] if codigo is not None and h["codigo"] == codigo),
                                       None),
                    "fallidos": sorted(c["n"] for c in (resultado or {}).get("cases", [])
-                                      if not c.get("ok") and not c.get("visible"))}
+                                      if not c.get("ok") and not c.get("visible")),
+                   "fallidos_todos": sorted(c["n"] for c in (resultado or {}).get("cases", []) if not c.get("ok")),
+                   "ejecutado": ejecutado}
         for c in entrada["fallidos"]:
             st["fallas"].setdefault(c, []).append(n)
         st["historial"].append(entrada)
@@ -154,3 +163,48 @@ class MotorConMemoria(Engine):
                           "caso ejercita y comprobá que tu código la aplique tal cual, en el orden indicado.")
         informe = base["informe"] + ("\n\n" + "\n".join(avisos) if avisos else "")
         return base["codigo"], informe, base["n"]
+
+
+class MotorConRevisor(MotorConMemoria):
+    """MotorConMemoria + el rol REVISOR (oficina/revisor.py), que interviene solo ante un estancamiento."""
+
+    def __init__(self, *a, revisor=None, **k):
+        super().__init__(*a, **k)
+        self.revisor = revisor
+
+    def _complementar(self, mid, n, st, description, spec, base_code, report, cancel) -> str:
+        from . import revisor as RV
+        cfg = self.revisor
+        if cfg is None:
+            return report
+        si, criterio = RV.debe_revisar([h for h in st["historial"] if h["ejecutado"]])
+        if not si:
+            return report
+        revs = st.setdefault("revisiones", [])
+        reg = {"antes_del_intento": n, "criterio": criterio, "estado": "omitida"}
+        usados = sum(r.get("segundos", 0) for r in revs)
+        tam = sum(len(m["content"]) for m in RV.mensajes(description, spec, base_code or "", report))
+        if len([r for r in revs if r["estado"] != "omitida"]) >= cfg.max_revisiones:
+            reg["motivo"] = f"límite de {cfg.max_revisiones} revisiones por misión"
+        elif usados >= cfg.max_segundos:
+            reg["motivo"] = f"límite de tiempo de revisión ({usados:.0f} s de {cfg.max_segundos:.0f} s)"
+        elif base_code is None:
+            reg["motivo"] = "no hay código candidato para revisar"
+        elif tam / prompts_chars() > cfg.modelo.num_ctx - cfg.modelo.num_predict:
+            reg["motivo"] = "el pedido al revisor no entra en el contexto"
+        else:
+            r = RV.revisar(self.ollama, self.gate, cfg, description, spec, base_code, report, cancel)
+            reg.update({k: v for k, v in r.items() if k != "ok"}, estado="hecha" if r["ok"] else "fallida")
+        revs.append(reg)
+        self.files.save(mid, f"intento-{n}/revision.json", json.dumps(reg, ensure_ascii=False, indent=2,
+                                                                      default=str), "revision", n)
+        self._event(mid, "revision", f"Revisor antes del intento {n}: {reg['estado']}"
+                    + (f" ({reg['motivo']})" if reg.get("motivo") else "") + f" · {criterio}")
+        if reg["estado"] == "hecha":
+            return report + "\n\n" + RV.texto_para_programador(reg["diagnostico"], cfg.max_caracteres)
+        return report
+
+
+def prompts_chars() -> float:
+    from .. import prompts
+    return prompts.CHARS_PER_TOKEN

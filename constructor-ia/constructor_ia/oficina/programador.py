@@ -33,7 +33,7 @@ from ..events import EventBus
 from ..files import FileStore
 from ..missions import Missions
 from . import remoto as RM
-from .autocorreccion import MotorConMemoria
+from .autocorreccion import MotorConRevisor
 from .cola import ArriendoInvalido, Cola
 from .misiones_programacion import MISIONES
 
@@ -54,7 +54,7 @@ def modelo_remoto(nombre: str, **over) -> ModelConfig:
 class Taller:
     """El motor original con base y carpeta propias, y el cliente del destino elegido."""
 
-    def __init__(self, carpeta: Path, cfg, executor, url: str, modelo: ModelConfig, cliente=None):
+    def __init__(self, carpeta: Path, cfg, executor, url: str, modelo: ModelConfig, cliente=None, revisor=None):
         carpeta = Path(carpeta)
         self.cfg = dataclasses.replace(cfg, data_dir=carpeta / "taller", builder=modelo)
         self.cfg.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -65,8 +65,9 @@ class Taller:
         self.files = FileStore(self.db, self.cfg.missions_dir)
         self.executor = executor
         self.url = url
-        self.engine = MotorConMemoria(self.cfg, self.db, self.bus, self.missions, self.files,
-                                      cliente or RM.ClienteRemoto(url), RM.compuerta(url), executor)
+        # Sin revisor (None), MotorConRevisor se comporta exactamente como MotorConMemoria.
+        self.engine = MotorConRevisor(self.cfg, self.db, self.bus, self.missions, self.files,
+                                      cliente or RM.ClienteRemoto(url), RM.compuerta(url), executor, revisor=revisor)
 
     def cerrar(self):
         self.db.close()
@@ -96,14 +97,16 @@ class Programador:
     """Atiende tareas de programación de la cola con un trabajador del registro."""
 
     def __init__(self, carpeta: Path, cfg, executor, cola: Cola, *, latido_s: float = 30.0, cliente_para=None,
-                 log=print):
+                 log=print, revisor=None):
         self.carpeta, self.cfg, self.executor, self.cola = Path(carpeta), cfg, executor, cola
         self.cola.db.connect().executescript(ESQUEMA)
         self.latido_s, self.cliente_para, self.log = latido_s, cliente_para, log
+        self.revisor = revisor          # oficina.revisor.ConfigRevisor o None (sin revisor)
 
     def _taller(self, trabajador: dict, modelo: str) -> Taller:
         cliente = self.cliente_para(trabajador) if self.cliente_para else None
-        return Taller(self.carpeta, self.cfg, self.executor, trabajador["url"], modelo_remoto(modelo), cliente)
+        return Taller(self.carpeta, self.cfg, self.executor, trabajador["url"], modelo_remoto(modelo), cliente,
+                      revisor=self.revisor)
 
     def atender(self, trabajador: dict) -> dict | None:
         """Toma UNA tarea de programación para ese trabajador y la lleva hasta la propuesta (o la falla)."""

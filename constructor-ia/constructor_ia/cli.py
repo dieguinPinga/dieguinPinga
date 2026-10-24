@@ -1317,7 +1317,15 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
             print("oficina: «programar» envía inferencias al trabajador remoto y ejecuta en el sandbox el código que "
                   "genere. Agregá --autorizo-inferencia-remota para autorizarlo.", file=sys.stderr)
             return 2
-        prog = PG.Programador(carpeta, cfg, ex, cola)
+        revisor = None
+        if args.revisor:
+            from .oficina import revisor as RV
+            revisor = RV.ConfigRevisor(PG.modelo_remoto(args.revisor_modelo or args.modelo, num_predict=1024,
+                                                        timeout_s=600),
+                                       max_revisiones=args.max_revisiones, max_segundos=args.max_segundos_revision)
+            print(f"[INFO] revisor activado: {revisor.modelo.name}, hasta {revisor.max_revisiones} revisiones y "
+                  f"{revisor.max_segundos:.0f} s por misión; interviene solo ante un estancamiento")
+        prog = PG.Programador(carpeta, cfg, ex, cola, revisor=revisor)
         r = prog.atender(t)
         if r is None:
             print("No hay tareas de programación pendientes para este trabajador (usá «encolar-programacion»).")
@@ -1327,6 +1335,11 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
         for i in inf["intentos"]:
             print(f"  intento {i['n']}: {i['test_status']} {i['passed']}/{i['total']} · {i['eval_tokens']} tokens · "
                   f"{(i['gen_ms'] or 0) / 1000:.1f} s" + (f" · {i['error'][:120]}" if i["error"] else ""))
+        for rv in (json.loads(PG.Taller(carpeta, cfg, ex, t["url"], PG.modelo_remoto(args.modelo), cliente=object())
+                              .files.read_rel(inf["mision_taller"], "mejor/resumen.json") or "{}").get("revisiones") or []):
+            print(f"  revisor antes del intento {rv['antes_del_intento']}: {rv['estado']}"
+                  + (f" · {rv.get('tokens_generados')} tokens · {rv.get('segundos')} s" if rv["estado"] != "omitida" else "")
+                  + (f" · {rv['motivo']}" if rv.get("motivo") else ""))
         if inf.get("mejor"):
             print(f"  mejor versión conservada: intento {inf['mejor']['intento']} "
                   f"({inf['mejor']['aprobados']}/{inf['mejor']['total']})")
@@ -1551,6 +1564,10 @@ def main(argv=None) -> int:
         o.add_argument("--modelo", default="gemma4:12b")
         o.add_argument("--mision", default="resumen_ventas")
         o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
+        o.add_argument("--revisor", action="store_true", help="activa el rol revisor (solo ante un estancamiento)")
+        o.add_argument("--revisor-modelo", dest="revisor_modelo", help="modelo del revisor (por omisión, el mismo)")
+        o.add_argument("--max-revisiones", dest="max_revisiones", type=int, default=2)
+        o.add_argument("--max-segundos-revision", dest="max_segundos_revision", type=float, default=1200.0)
         o.add_argument("--carpeta", help="carpeta de la oficina (por omisión, <datos>/oficina)")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")

@@ -568,6 +568,123 @@ python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --
 
 Lo que el modelo recibió en cada reintento queda en `$C/taller/missions/<misión>/intento-N/retroalimentacion.md`.
 
+## Rol REVISOR DE CÓDIGO: PROGRAMADOR → REVISOR → PROGRAMADOR → EVALUADOR
+
+**Lo que motivó el rol:** la tercera experiencia real, con el coordinador `090a9ef`, dio 8/9 en los cuatro
+intentos. Fueron cuatro versiones distintas con el **mismo** error (una anulación de una anulación salía como
+`anulacion_inexistente`), pese a las pistas seguras. Hipótesis a investigar: un segundo rol que lea el código contra
+el contrato, aunque sea el mismo modelo en otra sesión, mejora la autocorrección.
+
+### Integración (auditoría: el punto más sencillo)
+
+`MotorConMemoria._attempt` ya decide qué recibe cada reintento. Se agregó solo:
+- un punto de extensión, `_complementar`, que por omisión no hace nada;
+- la subclase `MotorConRevisor`, que la oficina usa siempre: **sin revisor se comporta exactamente como antes**.
+
+No cambian `engine.py`, `prompts.py`, el sandbox, la aprobación por pruebas, la mejor versión conservada ni la
+verificación central. El revisor es el evaluador de nadie: evalúan las pruebas y el verificador.
+
+### El rol (`oficina/revisor.py`)
+
+**Prompt propio** (`SISTEMA_REVISOR`). Le pide buscar contradicciones entre el código y el contrato, ramas
+inalcanzables, estados que no se registran, chequeos en otro orden y casos confundidos, y prohíbe dos cosas: escribir
+el código corregido y aprobar. Responde en JSON (`format: json` de Ollama) con este esquema:
+
+```json
+{"resumen": "...", "observaciones": [{"regla_del_contrato": "...", "problema": "...", "donde": "...",
+                                     "por_que": "...", "sugerencia": "..."}]}
+```
+
+**Qué recibe** (solo información autorizada, la misma que ya ve el programador):
+- el contrato completo, la firma y los ejemplos visibles;
+- el código candidato (el punto de partida del próximo intento);
+- el feedback autorizado de ese candidato: informe, pistas seguras y avisos.
+
+Nunca recibe argumentos, valores esperados ni salidas de los casos ocultos.
+
+**Qué no puede hacer:**
+- escribir la solución: los bloques de código de su respuesta se reemplazan por «[código omitido…]»;
+- aprobar: decir «APROBADO» no aprueba nada;
+- reemplazar el código: el punto de partida sigue siendo el del programador.
+
+Sus observaciones llegan al programador como texto («puede equivocarse: vos decidís»), hasta 2.500 caracteres.
+
+**Cuándo interviene** (criterio general, `debe_revisar`; vale para cualquier misión):
+- antes del intento N (N > 1), si hay al menos 2 intentos ejecutados, el último **no superó** al mejor de los
+  anteriores, **y** un mismo caso (visible u oculto) falló en **cada uno** de los últimos 2 intentos;
+- si el programador mejora, o si fallan casos distintos, no interviene y no se gasta ninguna inferencia.
+
+Un intento que no llega a ejecutarse (por ejemplo, por un error de sintaxis) no tiene casos fallidos, así que no
+cuenta para el criterio.
+
+**Límites** (`ConfigRevisor`): una revisión omitida queda registrada con su motivo.
+- `max_revisiones` (2 por misión): las fallidas también cuentan;
+- `max_segundos` (1.200 s de revisión por misión);
+- `num_predict` 1.024 y plazo de 600 s por llamada;
+- el pedido tiene que entrar en el contexto del modelo.
+
+**Fallas del revisor:** si no responde o devuelve algo inválido, queda «fallida» con su motivo. El programador sigue
+con el feedback normal y la mejor versión no se toca.
+
+**Registro para auditoría:**
+- `intento-N/revision.json`: criterio, pedido completo, respuesta, diagnóstico saneado, tokens, segundos y estado
+  (hecha, fallida u omitida);
+- `intento-N/retroalimentacion.md`: lo que recibió el programador, incluidas las observaciones;
+- `mejor/resumen.json`: lista de revisiones;
+- el evento «revision» en el taller;
+- `programar` imprime cada revisión.
+
+**Uso:** `programar … --revisor [--revisor-modelo M] [--max-revisiones 2] [--max-segundos-revision 1200]`. Sin
+`--revisor`, todo funciona igual que antes.
+
+Pruebas: `tests/test_oficina_revisor.py` (10), con un Ollama falso y el sandbox real.
+- **Criterio:**
+  - 1 intento, mejora o casos distintos: no interviene;
+  - mismo caso sin mejora, o empeora y repite el caso: interviene.
+- **Respuesta:** se valida y se sanea (sin código); las inválidas se rechazan.
+- **Pedido:** contiene el contrato, el código y el feedback autorizado, pero nada de los casos ocultos.
+- **Simulación pedida:**
+  - el programador se estanca (8/9 y 8/9, con dos códigos distintos y el mismo error);
+  - el revisor interviene una vez, antes del intento 3, y señala que las anulaciones aplicadas no se registran;
+  - el programador recibe las observaciones y aprueba 9/9; la verificación central acepta;
+  - todos los registros y el código de cada intento se conservan.
+- **Sin estancamiento:** si el programador mejora, el revisor no se llama.
+- **Sin autoridad:** un revisor que dice «APROBADO» y escribe código no aprueba ni reemplaza nada. Su código se
+  omite, la misión falla y la mejor versión (8/9) se conserva y se reejecuta.
+- **Fallas:** respuesta inválida o revisor caído: se registra y el ciclo continúa con los 4 intentos.
+- **Límites:** con `max_revisiones=1` hay una sola llamada y la segunda queda omitida; `max_segundos=0`: ninguna
+  llamada.
+- **Compatibilidad:** sin revisor, las mismas 4 llamadas de siempre.
+
+Suite completa: 584 pruebas, OK (674 s).
+
+### Cuarta experiencia real (VivoBook contra Gemma 12B en rampern)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_revisor tests.test_oficina_autocorreccion tests.test_oficina_conciliar \
+    tests.test_oficina_programacion                                   # 36 pruebas, sin inferencias
+C=~/constructor-ia-piloto/data/oficina-programacion-4               # carpeta NUEVA; las anteriores quedan intactas
+python3 -m constructor_ia oficina registrar --carpeta $C --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajador pulenta --mision conciliar_movimientos
+python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
+python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
+    --autorizo-inferencia-remota --revisor
+```
+
+**Qué se espera:**
+- hasta 4 intentos del programador y, como máximo, 2 revisiones, cada una solo si hay estancamiento;
+- las llamadas son secuenciales en la notebook;
+- `programar` imprime cada intento, cada revisión (estado, tokens y segundos), la mejor versión y la verificación
+  central.
+
+**Dónde mirar:** `$C/taller/missions/<misión>/intento-N/revision.json` (qué vio y qué dijo el revisor) y
+`intento-N/retroalimentacion.md` (qué recibió el programador).
+
+**Para comparar con la experiencia 3:** el programador es el mismo y el coordinador también (`090a9ef` más el
+revisor). La única diferencia es la intervención del revisor ante el estancamiento.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
