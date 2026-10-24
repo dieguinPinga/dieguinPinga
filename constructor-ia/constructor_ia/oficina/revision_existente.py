@@ -84,6 +84,9 @@ DEFECTOS = {
 }
 
 MAX_CARACTERES_DIAGNOSTICO = 2500
+# Límite de salida del revisor en `oficina revisar-existente` (7.3b: con 1024 la revisión causal con caso sintético
+# se cortaba). `oficina programar` conserva su propio revisor de 1024.
+NUM_PREDICT_REVISOR = 2048
 MARCAS_MINIMAS = 40      # la auditoría busca entradas y salidas ocultas de al menos este largo (las cortas, como
                          # «[[]]», aparecen por azar)
 

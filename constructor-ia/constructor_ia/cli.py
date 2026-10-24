@@ -1438,7 +1438,8 @@ def _oficina_revision_existente(args, cfg, carpeta) -> int:
         return 2
     conf = RE.ConfigExperimento(
         programador=PG.modelo_remoto(args.modelo),
-        revisor=PG.modelo_remoto(args.revisor_modelo or args.modelo, num_predict=1024, timeout_s=600),
+        revisor=PG.modelo_remoto(args.revisor_modelo or args.modelo, num_predict=RE.NUM_PREDICT_REVISOR,
+                                 timeout_s=600),
         mision=args.mision, max_revisiones=args.max_revisiones, max_reparaciones=args.max_reparaciones,
         max_segundos=args.max_segundos, variante=args.variante)
     print(f"[INFO] corrida en {destino}: hasta {conf.max_revisiones} revisiones y {conf.max_reparaciones} "

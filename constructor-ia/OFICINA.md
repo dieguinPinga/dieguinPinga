@@ -1608,6 +1608,30 @@ Para atribuir el resultado, miren en `reparacion-N/reparacion.json`:
 - `localizacion.citas`, que corresponde a la corrección A;
 - `localizacion.relaciones`, que corresponde a la corrección B.
 
+## Experimento 7.3b — revisor con 2048 tokens de salida
+
+**Corrida `20261024-040804`:** se detuvo antes del programador. Las dos respuestas del revisor (`gemma4:12b`)
+llegaron a los 1024 tokens y quedaron con el JSON incompleto.
+
+**Cambio (único):** el revisor de `oficina revisar-existente` usa `num_predict` = 2048
+(`revision_existente.NUM_PREDICT_REVISOR`, aplicado en `cli._oficina_revision_existente`). Antes era 1024.
+
+**Sin cambios:**
+- el revisor de `oficina programar`, que sigue en 1024;
+- el programador: `num_ctx` 8192, `num_predict` 2048 y temperatura 0.2;
+- los modelos, los plazos, los intentos, el presupuesto de 2400 s;
+- los localizadores A y B, los prompts, los parches y la misión.
+
+Prueba: `tests/test_oficina_revisor_2048.py` (2).
+- En `revisar-existente`, el pedido al revisor sale con 2048, el del programador con lo mismo de antes, y
+  `informe.json` lo registra.
+- En `programar --revisor`, el revisor sigue con 1024.
+
+Suite completa: 677 pruebas, OK (764 s).
+
+Repetir 7.3b en un laboratorio nuevo (por ejemplo `oficina-revision-7-3c`) con los mismos comandos de la sección
+anterior.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
