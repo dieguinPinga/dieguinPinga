@@ -75,7 +75,7 @@ python3 -m unittest discover -s tests -t . -v
 
 ```
 Ubuntu 24.04.5 (contenedor), Python 3.13.16, bubblewrap 0.9.0, x86_64, sin systemd de usuario
-Ran 787 tests in 971.523s   (rama del piloto de microtareas, protocolo v2 + elección + forense + E0 + evaluación a ciegas + ciclo v1.3.4 + experimento de sugerencias + agente de datos fases 1, 2, 2b y 2c + oficina etapas 1 a 3 con el escenario almacén y dos misiones de programación con autocorrección, revisión causal, hipótesis verificables, su estabilización y la revisión autónoma de una solución existente con retroalimentación específica, diagnóstico previo y parches mínimos, con las respuestas reales de X07 v1.2, v1.3 y v1.3.3, de la primera M1 y de la segunda M2 del agente con Qwen)
+Ran 799 tests in 1058.810s   (rama del piloto de microtareas, protocolo v2 + elección + forense + E0 + evaluación a ciegas + ciclo v1.3.4 + experimento de sugerencias + agente de datos fases 1, 2, 2b y 2c + oficina etapas 1 a 3 con el escenario almacén y dos misiones de programación con autocorrección, revisión causal, hipótesis verificables, su estabilización y la revisión autónoma de una solución existente con retroalimentación específica, diagnóstico previo y parches mínimos, con las respuestas reales de X07 v1.2, v1.3 y v1.3.3, de la primera M1 y de la segunda M2 del agente con Qwen)
 OK
 ```
 

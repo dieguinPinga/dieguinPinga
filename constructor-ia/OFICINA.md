@@ -2670,7 +2670,7 @@ auditoría comprueba que no llevan la causa, la referencia ni la batería.
 - **Regresiones:** el 7.12 y el 7.11 siguen funcionando.
 - **CLI:** preflight con presupuesto, huellas y estrategias, y una corrida simulada.
 
-Suite completa: en curso al momento de este commit (se registra en el siguiente).
+Suite completa: 799 pruebas, OK (1059 s).
 
 ### Instalación en la VivoBook y preflight
 
