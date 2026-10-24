@@ -811,15 +811,19 @@ público, donde su hipótesis predice una discrepancia. El coordinador lo **cont
    - primero con la **implementación de referencia autorizada**: si no procesa el caso, el caso queda fuera del
      contrato (inconclusa), y su salida es lo que el contrato pide;
    - después con el **código del programador** (el punto de partida del próximo intento).
-5. **Clasificación:**
-   - **confirmada:** el programa devuelve algo distinto (o lanza una excepción);
-   - **refutada:** devuelve lo mismo, así que la hipótesis queda **sin confirmar** y no se presenta como un defecto;
+5. **Clasificación** (campos separados desde la estabilización, ver más abajo):
+   - **discrepancia demostrada:** el programa devuelve algo distinto (o lanza una excepción). Demuestra que el
+     programa se comporta mal **en ese caso**; la explicación causal del revisor queda «compatible, no demostrada»;
+   - **discrepancia no observada:** devuelve lo mismo; la hipótesis no tiene respaldo en el caso y no se presenta
+     como un defecto;
    - **inconclusa:** caso inválido, privado, salida demasiado grande o fallo del sandbox.
 6. **Lo que recibe el programador:**
-   - el diagnóstico del revisor, con una línea «ESTADO DE LA HIPÓTESIS: CONFIRMADA / NO CONFIRMADA / SIN CONTRASTAR»;
-   - si está confirmada, un bloque aparte, **«EVIDENCIA VERIFICADA POR EL COORDINADOR (caso sintético del revisor; NO
-     es una prueba oculta)»**, con el caso, lo que pide el contrato (salida de la referencia), lo que devolvió su
-     código, las claves distintas y la propiedad incumplida.
+   - el diagnóstico del revisor, con una línea de estado que distingue el comportamiento demostrado de la causa
+     (que sigue siendo una hipótesis), o «SIN CONTRASTAR»;
+   - si hay discrepancia demostrada, un bloque aparte, **«EVIDENCIA VERIFICADA POR EL COORDINADOR (caso sintético del
+     revisor; NO es una prueba oculta)»**, con el caso, lo que pide el contrato (salida de la referencia), lo que
+     devolvió su código, las claves distintas, «DEMOSTRADO: en esta entrada tu código no cumple el contrato» y
+     «NO DEMOSTRADO: la causa», con la propiedad que propone el revisor.
 
    El caso sintético es público (lo escribió el revisor) y nunca reemplaza a la evaluación.
 7. **Evaluación:** el evaluador central sigue ejecutando la **batería original de nueve casos**, sin cambios.
@@ -831,9 +835,11 @@ público, donde su hipótesis predice una discrepancia. El coordinador lo **cont
 | hipótesis propuesta | `contraste.hipotesis` y `diagnostico.principal` |
 | caso sintético | `contraste.caso` |
 | validez según el contrato | `contraste.validez` (válido o no, y motivo) |
-| resultado de la referencia y del programa | `contraste.referencia` y `contraste.programa` (estado y salida) |
-| hipótesis confirmada, refutada o inconclusa | `contraste.resultado` y `contraste.motivo` |
-| ¿se modificó la propiedad señalada? | `efecto.atencion` (las líneas citadas cambiaron) y `efecto.tipo_de_cambio` |
+| ejecución y salida de la referencia y del programa | `contraste.referencia` y `contraste.candidato` (`ejecucion`, `salida`, `detalle`) |
+| discrepancia entre referencia y programa | `contraste.discrepancia` (demostrada, no_observada, inconclusa) y `contraste.comportamiento_candidato` |
+| validez de la hipótesis causal | `contraste.hipotesis_causal` (compatible_no_demostrada, sin_respaldo_en_el_caso, sin_evaluar) y `contraste.motivo` |
+| ¿se modificó la propiedad señalada? (atención textual) | `efecto.atencion_textual` (cambió líneas citadas, no cambió las líneas citadas, sin citas verificadas) y `efecto.tipo_de_cambio` |
+| ¿se resolvió el problema? (resolución funcional) | `efecto.resolucion_funcional`, que resume las dos filas siguientes |
 | ¿la corrección eliminó la discrepancia sintética? | `efecto.discrepancia_sintetica`: eliminada, persiste o inconclusa (se vuelve a contrastar el intento siguiente) |
 | ¿mejoró, se mantuvo o empeoró en los casos originales? | `efecto.originales`, con `aprobados_base` y `aprobados` |
 
@@ -885,6 +891,87 @@ python3 -m constructor_ia oficina comprobar-programacion --carpeta $C --trabajad
 python3 -m constructor_ia oficina encolar-programacion --carpeta $C --mision conciliar_movimientos
 python3 -m constructor_ia oficina programar --carpeta $C --trabajador pulenta --mision conciliar_movimientos \
     --autorizo-inferencia-remota --revisor --hipotesis-verificables
+```
+
+## Estabilización del experimento 6 (implementado, SIN inferencias)
+
+La sexta experiencia real (`b53656b`) mostró tres problemas. Ninguno cambia contratos, pruebas ocultas, sandbox,
+roles, modelos ni límites de tokens; sin `--revisor` todo funciona como antes.
+
+### 1. Código largo y respuestas cortadas
+
+**Síntoma:** Gemma gastaba tokens en comentarios especulativos, y el tercer intento se cortó a 2048 tokens con un
+`elif` incompleto.
+
+**Corrección** (`oficina/autocorreccion.py`):
+- **Reglas de concisión:** solo en los pedidos al programador (el revisor conserva su prompt), el sistema agrega
+  «El código va SIN comentarios…» y el límite real de tokens de la respuesta (`num_predict`).
+- **Punto de partida sin comentarios:** el código que se le devuelve al programador pierde los comentarios de línea
+  completa. Se usa `tokenize`, así que no se tocan los strings ni los comentarios al final de una línea, y un código
+  que no tokeniza se deja igual. El `solucion.py` histórico de cada intento queda intacto.
+- **Respuestas cortadas:** se registra `done_reason` en el intento (`truncada` si es `length`). Un intento que no se
+  pudo ejecutar (cortado, sin código o sin cargar) **nunca** es la mejor versión ni el punto de partida:
+  - el siguiente pedido avisa «Tu intento N SE CORTÓ al llegar al límite de … tokens» y parte de la mejor versión
+    ejecutada («el punto de partida es el intento K (p de t)»);
+  - si no hay ninguna versión ejecutada, vuelve al pedido inicial del contrato.
+
+### 2. Contraste: ejecución, salida, discrepancia y causa, por separado
+
+**Síntoma:** la referencia producía la salida correcta, pero quedaba registrada como `estado: fallo` y `ok: false`.
+El arnés siempre compara contra una expectativa y en el contraste no hay ninguna.
+
+**Corrección** (`oficina/contraste.py`, `ejecutar`):
+- Cada ejecución registra solo `ejecucion` (completa, excepcion, timeout, error_de_carga…), `salida` y `detalle`. El
+  veredicto del arnés se ignora, porque se le pasa una expectativa centinela.
+- El resultado separa:
+  - `validez` del caso;
+  - `referencia` y `candidato`, cada uno con su ejecución y su salida;
+  - `discrepancia`;
+  - `comportamiento_candidato`;
+  - `hipotesis_causal`.
+- Una discrepancia demostrada prueba el comportamiento incorrecto del programa en ese caso, **no** la explicación del
+  revisor, que queda `compatible_no_demostrada`.
+- El texto al programador también lo separa: «DEMOSTRADO…» y «NO DEMOSTRADO: la causa…».
+
+### 3. Atención textual ≠ resolución funcional
+
+**Síntoma:** la segunda revisión quedó «no atendida» aunque el programa pasó de un error de sintaxis a 6/9 y eliminó
+la discrepancia sintética.
+
+**Corrección:**
+- `efecto.atencion_textual` mide solo si cambiaron las líneas citadas.
+- `efecto.resolucion_funcional` mide lo que importa: la discrepancia sintética (eliminada, persiste o inconclusa) y
+  los casos originales (mejoró, se mantuvo o empeoró).
+- La similitud se calcula contra el punto de partida que realmente se envió.
+- El seguimiento del coordinador solo insiste si las líneas siguen iguales **y** la discrepancia no se eliminó **y**
+  los originales no mejoraron.
+- `programar` imprime ambas métricas.
+
+### Pruebas
+
+`tests/test_oficina_estabilizacion.py` (8), sin inferencias, con Ollama falso y sandbox real:
+- quitar comentarios solo de línea completa;
+- las reglas de concisión y el límite de tokens solo en el pedido al programador;
+- el punto de partida sin comentarios, con el histórico intacto;
+- un intento cortado (`done_reason: length`, `elif` incompleto) no es ni base ni mejor versión;
+- todo cortado → vuelve al contrato;
+- una reparación por otro camino: no cambió las líneas citadas, pero discrepancia eliminada y originales mejoró;
+- seguimiento solo mientras el problema funcional persiste;
+- evidencia que separa el comportamiento de la causa.
+
+`test_oficina_hipotesis.py` y `test_oficina_revisor.py` se adaptaron a los campos nuevos. Las ejecuciones de la
+referencia ya no tienen `ok`, `estado` ni `got`.
+
+Suite completa: 606 pruebas, OK (667 s).
+
+### Repetir la sexta experiencia (cuando la autoricen)
+
+Mismos comandos que arriba, en una carpeta nueva (por ejemplo `oficina-programacion-6b`). Antes, las pruebas sin
+inferencias:
+
+```bash
+python3 -m unittest tests.test_oficina_estabilizacion tests.test_oficina_hipotesis tests.test_oficina_revisor \
+    tests.test_oficina_autocorreccion tests.test_oficina_conciliar tests.test_oficina_programacion   # 58 pruebas
 ```
 
 ### Lo que falta (siguientes etapas)

@@ -26,7 +26,9 @@ Lo que se le envió al modelo en cada reintento queda en «intento-N/retroalimen
 from __future__ import annotations
 
 import difflib
+import io
 import json
+import tokenize
 
 from ..engine import Engine
 
@@ -85,10 +87,53 @@ def _texto_pistas(p: dict[int, list[str]]) -> str:
             + "\n".join(f"- caso oculto {n}: " + "; ".join(v) for n, v in sorted(p.items())))
 
 
+CONCISION = (
+    "\nReglas de la oficina para esta respuesta:\n"
+    "- El código va SIN comentarios, salvo como mucho uno de una línea por función. Nada de razonamientos, dudas, "
+    "alternativas ni explicaciones dentro del código: decidí y escribilo.\n"
+    "- La respuesta tiene un límite de {limite} tokens. Si no entra completa se corta y el intento se pierde entero: "
+    "escribí primero el archivo completo y cerrá el bloque ```.\n"
+    "- Fuera del bloque, como máximo 2 líneas.")
+
+
+def sin_comentarios(codigo: str | None) -> str | None:
+    """Quita los comentarios de LÍNEA COMPLETA (con tokenize: nunca toca textos ni docstrings). Si el código no se
+    puede tokenizar (por ejemplo, está cortado), lo devuelve igual."""
+    if codigo is None:
+        return None
+    try:
+        quitar = set()
+        for tok in tokenize.generate_tokens(io.StringIO(codigo).readline):
+            if tok.type == tokenize.COMMENT and not tok.line[:tok.start[1]].strip():
+                quitar.add(tok.start[0])
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return codigo
+    return "".join(ln for i, ln in enumerate(codigo.splitlines(keepends=True), 1) if i not in quitar)
+
+
+class _ClienteConciso:
+    """Envuelve el cliente de Ollama: SOLO a los pedidos del programador (los que usan el prompt de sistema del motor)
+    les agrega las reglas de concisión de la oficina. prompts.py no se modifica; el revisor no se ve afectado."""
+
+    def __init__(self, cliente, limite: int):
+        self._cliente, self._limite = cliente, limite
+
+    def chat(self, model, messages, cancel=None, on_progress=None, fmt=None):
+        from .. import prompts
+        if messages and messages[0].get("role") == "system" and messages[0]["content"] == prompts.BUILDER_SYSTEM:
+            messages = [dict(messages[0], content=messages[0]["content"] + CONCISION.format(limite=self._limite)),
+                        *messages[1:]]
+        return self._cliente.chat(model, messages, cancel, on_progress, fmt)
+
+    def __getattr__(self, nombre):
+        return getattr(self._cliente, nombre)
+
+
 class MotorConMemoria(Engine):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._estado: dict[str, dict] = {}
+        self.ollama = _ClienteConciso(self.ollama, self.cfg.builder.num_predict)
 
     # Ciclo ------------------------------------------------------------------------------------------------------
     def run(self, mid, cancel):
@@ -117,6 +162,7 @@ class MotorConMemoria(Engine):
         base_n = None
         if n > 1 and st["ultimo"] is not None:
             last_code, report, base_n = self._preparar(st)
+            st["base_enviada"] = last_code
             report = self._complementar(mid, n, st, description, spec, last_code, report, cancel)
             self.files.save(mid, f"intento-{n}/retroalimentacion.md",
                             f"Punto de partida: intento {base_n}\n\n{report}", "retroalimentacion", n)
@@ -130,8 +176,8 @@ class MotorConMemoria(Engine):
 
     # Interno ----------------------------------------------------------------------------------------------------
     def _registrar(self, mid, n, spec, description, st, out, base_n):
-        fila = self.db.one("SELECT passed, total, test_status, result_json FROM attempts WHERE mission_id=? AND n=?",
-                           (mid, n))
+        fila = self.db.one("SELECT passed, total, test_status, result_json, done_reason FROM attempts "
+                           "WHERE mission_id=? AND n=?", (mid, n))
         ejecutado = fila is not None and fila["test_status"] in ("aprobadas", "fallidas")
         resultado = json.loads(fila["result_json"]) if ejecutado and fila["result_json"] else None
         total = (fila["total"] if ejecutado else None) or len(spec.get("cases", []))
@@ -144,38 +190,55 @@ class MotorConMemoria(Engine):
                    "fallidos": sorted(c["n"] for c in (resultado or {}).get("cases", [])
                                       if not c.get("ok") and not c.get("visible")),
                    "fallidos_todos": sorted(c["n"] for c in (resultado or {}).get("cases", []) if not c.get("ok")),
-                   "ejecutado": ejecutado}
-        base_codigo = next((h["codigo"] for h in st["historial"] if h["n"] == base_n), None)
+                   "ejecutado": ejecutado,
+                   "truncada": bool(fila is not None and fila["done_reason"] == "length")}
+        base_codigo = st.get("base_enviada") if base_n is not None else None
         entrada["similitud_con_base"], entrada["tipo_de_cambio"] = similitud(base_codigo, codigo)
         for c in entrada["fallidos"]:
             st["fallas"].setdefault(c, []).append(n)
         st["historial"].append(entrada)
         st["ultimo"] = entrada
-        if codigo is not None and (st["mejor"] is None or entrada["puntaje"] > st["mejor"]["puntaje"]):
+        # Solo un intento que se pudo EJECUTAR (sin cortes ni errores de sintaxis) puede ser la mejor versión.
+        if codigo is not None and ejecutado and (st["mejor"] is None or entrada["puntaje"] > st["mejor"]["puntaje"]):
             st["mejor"] = entrada
 
-    def _preparar(self, st) -> tuple[str | None, str, int]:
+    def _preparar(self, st) -> tuple[str | None, str, int | None]:
         ult, mej = st["ultimo"], st["mejor"]
         avisos = []
-        if mej is not None and ult["puntaje"] < mej["puntaje"]:
+        if ult.get("truncada"):
+            avisos.append(f"Tu intento {ult['n']} SE CORTÓ al llegar al límite de {self.cfg.builder.num_predict} tokens "
+                          "y quedó incompleto (no se pudo ejecutar). Escribí una versión más corta: sin comentarios, sin "
+                          "código innecesario, y cerrá el bloque.")
+        if not ult["ejecutado"]:
+            # Un código cortado o con errores de sintaxis nunca es el punto de partida: se vuelve a la mejor versión
+            # ejecutable o, si no hay ninguna, se empieza de nuevo desde el contrato.
+            base = mej
+            if mej is not None:
+                avisos.append(f"Como tu intento {ult['n']} no se pudo ejecutar, el punto de partida es el intento "
+                              f"{mej['n']} ({mej['puntaje']} de {mej['total']}).")
+        elif mej is not None and ult["puntaje"] < mej["puntaje"]:
             base = mej
             avisos.append(f"ATENCIÓN, REGRESIÓN: tu intento {ult['n']} aprobó {ult['puntaje']} de {ult['total']} casos, "
                           f"MENOS que el intento {mej['n']} ({mej['puntaje']} de {mej['total']}). El coordinador conserva "
                           f"la mejor versión: abajo va la del intento {mej['n']} como punto de partida. Corregí solo lo "
                           "que falla en ella, sin reescribir lo que ya funciona.")
         else:
-            base = ult if ult["codigo"] is not None else (mej or ult)
+            base = ult
         if ult.get("identico_a"):
             avisos.append(f"Tu intento {ult['n']} devolvió exactamente el mismo código que el intento "
                           f"{ult['identico_a']}: las pruebas dan el mismo resultado. Hace falta cambiar la lógica, no "
                           "solo los comentarios.")
-        persistentes = {c: ns for c, ns in st["fallas"].items() if len(ns) >= 2 and c in base["fallidos"]}
+        persistentes = {c: ns for c, ns in st["fallas"].items() if len(ns) >= 2 and base and c in base["fallidos"]}
         for c, ns in sorted(persistentes.items()):
             avisos.append(f"El caso oculto {c} falló en los intentos {', '.join(map(str, ns))}: las correcciones "
                           "anteriores no cambiaron la regla responsable. Volvé a leer en el contrato la regla que ese "
                           "caso ejercita y comprobá que tu código la aplique tal cual, en el orden indicado.")
-        informe = base["informe"] + ("\n\n" + "\n".join(avisos) if avisos else "")
-        return base["codigo"], informe, base["n"]
+        origen = base if base is not None else ult
+        informe = origen["informe"] + ("\n\n" + "\n".join(avisos) if avisos else "")
+        if base is None:
+            return None, informe, None
+        # El código de partida va sin comentarios de línea completa: menos tokens y nada de especulaciones viejas.
+        return sin_comentarios(base["codigo"]), informe, base["n"]
 
 
 class MotorConRevisor(MotorConMemoria):
@@ -222,12 +285,13 @@ class MotorConRevisor(MotorConMemoria):
             caso, motivo = CT.leer_caso(reg["diagnostico"].get("caso_sintetico"))
             reg["contraste"] = CT.contrastar(self.executor, cfg.contraste, base_code, caso, motivo)
             reg["contraste"]["hipotesis"] = reg["diagnostico"]["principal"]["propiedad_a_cambiar"]
-            estado = reg["contraste"]["resultado"]
+            estado = reg["contraste"]["discrepancia"]
             self.files.save(mid, f"intento-{n}/revision.json", json.dumps(reg, ensure_ascii=False, indent=2,
                                                                           default=str), "revision", n)
-            self._event(mid, "revision", f"Hipótesis del revisor {estado}: {reg['contraste']['motivo']}")
+            self._event(mid, "revision", f"Caso sintético: discrepancia {estado} · hipótesis causal "
+                        f"{reg['contraste']['hipotesis_causal']} · {reg['contraste']['motivo']}")
         texto = RV.texto_para_programador(reg["diagnostico"], cfg.max_caracteres, estado)
-        if estado == "confirmada":
+        if estado == "demostrada":
             from . import contraste as CT
             texto += "\n\n" + CT.texto_para_programador(reg["contraste"], cfg.contraste.funcion,
                                                          reg["diagnostico"]["principal"]["propiedad_a_cambiar"])
@@ -246,10 +310,11 @@ class MotorConRevisor(MotorConMemoria):
             "intento": n, "aprobados": e["puntaje"], "total": e["total"],
             "similitud_con_base": e["similitud_con_base"], "tipo_de_cambio": e["tipo_de_cambio"],
             "citas_verificadas": len(citas), "citas_que_siguen_igual": persisten,
-            # «atendida»: cambió al menos una de las líneas citadas (una corrección puede conservar otras líneas
-            # correctas); «no atendida»: todas siguen iguales.
-            "atencion": ("sin citas verificadas" if not citas else "no atendida" if len(persisten) == len(citas)
-                         else "atendida"),
+            # ATENCIÓN TEXTUAL (¿cambió las líneas que citó el revisor?) y RESOLUCIÓN FUNCIONAL (¿desapareció la
+            # discrepancia sintética? ¿mejoraron los casos originales?) son métricas DISTINTAS: un programa puede
+            # resolver el problema por otro camino sin tocar las líneas citadas, o tocarlas sin resolver nada.
+            "atencion_textual": ("sin citas verificadas" if not citas else "no cambió las líneas citadas"
+                                 if len(persisten) == len(citas) else "cambió líneas citadas"),
             "citas_cambiadas": len(citas) - len(persisten),
             "persisten_casos": sorted(set(e["fallidos_todos"]) & set(
                 next((h["fallidos_todos"] for h in st["historial"] if h["n"] == e["base"]), [])))}
@@ -259,15 +324,23 @@ class MotorConRevisor(MotorConMemoria):
                                            "empeoró" if e["puntaje"] < base_puntaje else "se mantuvo")
             rev["efecto"]["aprobados_base"] = base_puntaje
         ct = rev.get("contraste")
-        if ct and ct["resultado"] == "confirmada" and e["codigo"] is not None and self.revisor.contraste is not None:
+        if ct and ct["discrepancia"] == "demostrada" and e["codigo"] is not None and self.revisor.contraste is not None:
             from . import contraste as CT
             otra = CT.contrastar(self.executor, self.revisor.contraste, e["codigo"], ct["caso"], None)
-            rev["efecto"]["discrepancia_sintetica"] = ("eliminada" if otra["resultado"] == "refutada" else
-                                                       "persiste" if otra["resultado"] == "confirmada" else
+            rev["efecto"]["discrepancia_sintetica"] = ("eliminada" if otra["discrepancia"] == "no_observada" else
+                                                       "persiste" if otra["discrepancia"] == "demostrada" else
                                                        "inconclusa")
+        ef = rev["efecto"]
+        ef["resolucion_funcional"] = (
+            "discrepancia eliminada" + (f", originales {ef['originales']}" if ef.get("originales") else "")
+            if ef.get("discrepancia_sintetica") == "eliminada" else
+            "discrepancia persiste" + (f", originales {ef['originales']}" if ef.get("originales") else "")
+            if ef.get("discrepancia_sintetica") == "persiste" else
+            f"originales {ef['originales']}" if ef.get("originales") else "sin datos")
         self.files.save(mid, f"intento-{n}/revision.json", json.dumps(rev, ensure_ascii=False, indent=2, default=str),
                         "revision", n)
-        self._event(mid, "revision", f"Efecto de la revisión en el intento {n}: {rev['efecto']['atencion']} · "
+        self._event(mid, "revision", f"Efecto de la revisión en el intento {n}: {ef['atencion_textual']} · "
+                    f"{ef['resolucion_funcional']} · "
                     f"{e['tipo_de_cambio']} (similitud {e['similitud_con_base']}) · {e['puntaje']}/{e['total']}")
 
     def _seguimiento(self, st) -> str:
@@ -279,7 +352,10 @@ class MotorConRevisor(MotorConMemoria):
         if not rev or ult["puntaje"] >= ult["total"]:
             return ""
         ef = rev["efecto"]
-        if not ef["citas_que_siguen_igual"]:
+        # Se avisa solo si el problema FUNCIONAL sigue: si la discrepancia desapareció o los casos mejoraron, que no
+        # se hayan tocado las líneas citadas no importa.
+        if not ef["citas_que_siguen_igual"] or ef.get("discrepancia_sintetica") == "eliminada" or \
+                ef.get("originales") == "mejoró":
             return ""
         return ("\n\nSEGUIMIENTO DEL COORDINADOR: tu intento " + str(ult["n"]) + " no cambió las líneas que señaló "
                 "el revisor (" + "; ".join(f"«{c}»" for c in ef["citas_que_siguen_igual"]) + ") y "

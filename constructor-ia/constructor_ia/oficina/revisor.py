@@ -179,10 +179,11 @@ INICIO = "════ DIAGNÓSTICO DEL REVISOR — rol distinto; NO es un resul
 FIN = "════ FIN DEL DIAGNÓSTICO DEL REVISOR ════"
 
 
-ESTADOS_HIPOTESIS = {
-    "confirmada": "CONFIRMADA por un caso sintético ejecutado por el coordinador (ver la evidencia)",
-    "refutada": "NO CONFIRMADA: en el caso sintético del revisor tu código ya hace lo que pide el contrato; no es un "
-                "defecto demostrado y la causa puede ser otra",
+ESTADOS_HIPOTESIS = {      # clave: la discrepancia del caso sintético (oficina/contraste.py)
+    "demostrada": "el caso sintético DEMOSTRÓ que tu código no cumple el contrato en esa entrada (ver la evidencia). "
+                  "La explicación causal de abajo es compatible con eso, pero NO está demostrada",
+    "no_observada": "el caso sintético NO mostró ninguna discrepancia: en esa entrada tu código ya cumple el contrato. "
+                    "La hipótesis no tiene respaldo ahí y la causa puede ser otra",
     "inconclusa": "SIN CONTRASTAR (el caso sintético no se pudo usar); tomala solo como hipótesis",
 }
 

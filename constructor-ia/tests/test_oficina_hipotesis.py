@@ -26,7 +26,7 @@ A = REFERENCIA_CONCILIAR.replace(
     '        aplicados[mid] = {"id": mid, "tipo": tipo, "producto": prod, "efecto": efecto}',
     '        if tipo != "anulacion":\n'
     '            aplicados[mid] = {"id": mid, "tipo": tipo, "producto": prod, "efecto": efecto}')
-A2, A3, A4 = (A + f"\n# variante {i}\n" for i in (2, 3, 4))
+A2, A3, A4 = (A + f"\n_VARIANTE = {i}\n" for i in (2, 3, 4))
 
 
 def mov(i, tipo, **k):
@@ -72,14 +72,21 @@ class ContrasteTests(unittest.TestCase):
 
     def test_a_real_discrepancy_confirms_the_hypothesis(self):
         r = self.contrastar(A, CASO_DE_ANULACION)
-        self.assertEqual((r["resultado"], r["validez"]["valido"]), ("confirmada", True))
+        self.assertEqual((r["discrepancia"], r["comportamiento_candidato"], r["hipotesis_causal"], r["validez"]["valido"]),
+                         ("demostrada", "incorrecto_en_el_caso", "compatible_no_demostrada", True),
+                         "la discrepancia se demuestra; la explicación causal queda solo compatible")
+        self.assertEqual((r["referencia"]["ejecucion"], r["candidato"]["ejecucion"]), ("completa", "completa"))
         self.assertEqual(r["referencia"]["salida"]["inconsistencias"], [{"id": 4, "motivo": "anulacion_de_anulacion"}])
-        self.assertEqual(r["programa"]["salida"]["inconsistencias"], [{"id": 4, "motivo": "anulacion_inexistente"}])
-        self.assertEqual(CT.diferencias(r["referencia"]["salida"], r["programa"]["salida"]), ["inconsistencias"])
+        self.assertEqual(r["candidato"]["salida"]["inconsistencias"], [{"id": 4, "motivo": "anulacion_inexistente"}])
+        self.assertEqual(CT.diferencias(r["referencia"]["salida"], r["candidato"]["salida"]), ["inconsistencias"])
+        for k in ("ok", "estado", "got"):
+            self.assertNotIn(k, r["referencia"], "sin el veredicto del arnés contra una expectativa ajena")
 
     def test_no_discrepancy_leaves_the_hypothesis_unconfirmed(self):
-        self.assertEqual(self.contrastar(A, CASO_SIN_DISCREPANCIA)["resultado"], "refutada")
-        self.assertEqual(self.contrastar(REFERENCIA_CONCILIAR, CASO_DE_ANULACION)["resultado"], "refutada",
+        r = self.contrastar(A, CASO_SIN_DISCREPANCIA)
+        self.assertEqual((r["discrepancia"], r["comportamiento_candidato"], r["hipotesis_causal"]),
+                         ("no_observada", "correcto_en_el_caso", "sin_respaldo_en_el_caso"))
+        self.assertEqual(self.contrastar(REFERENCIA_CONCILIAR, CASO_DE_ANULACION)["discrepancia"], "no_observada",
                          "con la referencia no hay discrepancia que mostrar")
 
     def test_cases_outside_the_contract_are_inconclusive(self):
@@ -95,9 +102,9 @@ class ContrasteTests(unittest.TestCase):
         for nombre, (caso, esperado) in malos.items():
             with self.subTest(nombre):
                 r = self.contrastar(A, caso)
-                self.assertEqual(r["resultado"], "inconclusa")
+                self.assertEqual((r["discrepancia"], r["hipotesis_causal"]), ("inconclusa", "sin_evaluar"))
                 self.assertIn(esperado, r["motivo"])
-                self.assertIsNone(r["programa"], "un caso inválido nunca se ejecuta con el programa")
+                self.assertIsNone(r["candidato"], "un caso inválido nunca se ejecuta con el programa")
 
     def test_a_case_equal_to_a_private_input_is_never_executed_nor_revealed(self):
         args, kwargs, _, _ = casos_conciliar()[5]                  # entrada de un caso oculto
@@ -109,7 +116,7 @@ class ContrasteTests(unittest.TestCase):
                 raise AssertionError("no debía ejecutarse")
         caso, motivo = CT.leer_caso({"args": args, "kwargs": kwargs})
         r = CT.contrastar(Espia(), self.ct, A, caso, motivo)
-        self.assertEqual(r["resultado"], "inconclusa")
+        self.assertEqual(r["discrepancia"], "inconclusa")
         self.assertIn("coincide con la entrada de un caso privado", r["motivo"])
         self.assertIsNone(r["referencia"])
         self.assertEqual(llamadas, [])
@@ -118,7 +125,7 @@ class ContrasteTests(unittest.TestCase):
         rota = CT.Contraste("conciliar_movimientos", "def conciliar_movimientos(*a, **k):\n    raise ValueError('x')\n",
                             VALIDADORES["conciliar_movimientos"])
         r = self.contrastar(A, CASO_DE_ANULACION, rota)
-        self.assertEqual(r["resultado"], "inconclusa")
+        self.assertEqual((r["discrepancia"], r["referencia"]["ejecucion"]), ("inconclusa", "excepcion"))
         self.assertIn("la referencia no procesa el caso", r["motivo"])
         enorme = CT.Contraste("conciliar_movimientos", "def conciliar_movimientos(*a, **k):\n    return 'x' * 5000\n",
                               VALIDADORES["conciliar_movimientos"])
@@ -127,8 +134,8 @@ class ContrasteTests(unittest.TestCase):
     def test_programs_that_crash_on_the_case_confirm_the_discrepancy(self):
         r = self.contrastar("def conciliar_movimientos(m, s=None, c=None):\n    raise KeyError('anula')\n",
                             CASO_DE_ANULACION)
-        self.assertEqual(r["resultado"], "confirmada")
-        self.assertIn("KeyError", str(r["programa"]["salida"]))
+        self.assertEqual((r["discrepancia"], r["candidato"]["ejecucion"]), ("demostrada", "excepcion"))
+        self.assertIn("KeyError", str(r["candidato"]["salida"]))
 
 
 @unittest.skipUnless(bwrap_works(), "bubblewrap no disponible")
@@ -172,20 +179,23 @@ class CicloTests(unittest.TestCase):
             self.assertNotIn(privado, texto_revisor)
         rv = self.revision(taller, r, 3)
         ct = rv["contraste"]
-        self.assertEqual((ct["resultado"], ct["validez"]["valido"]), ("confirmada", True))
+        self.assertEqual((ct["discrepancia"], ct["hipotesis_causal"], ct["validez"]["valido"]),
+                         ("demostrada", "compatible_no_demostrada", True))
         self.assertEqual(ct["hipotesis"], "el registro de aplicados tiene que incluir las anulaciones aplicadas")
         self.assertEqual(ct["caso"]["args"], CASO_DE_ANULACION["args"])
         self.assertIn("salida", ct["referencia"])
         tercero = fake.requests[3]["messages"][1]["content"]
-        self.assertIn("ESTADO DE LA HIPÓTESIS: CONFIRMADA por un caso sintético", tercero)
+        self.assertIn("ESTADO DE LA HIPÓTESIS: el caso sintético DEMOSTRÓ que tu código no cumple", tercero)
+        self.assertIn("NO DEMOSTRADO: la causa.", tercero)
         self.assertIn("EVIDENCIA VERIFICADA POR EL COORDINADOR (caso sintético del revisor; NO es una prueba oculta)",
                       tercero)
         self.assertIn('"motivo": "anulacion_de_anulacion"', tercero, "lo que pide el contrato para el caso sintético")
         self.assertIn("claves distintas: 'inconsistencias'", tercero)
         self.assertNotIn("2026-05-06", tercero)
         ef = rv["efecto"]
-        self.assertEqual((ef["atencion"], ef["discrepancia_sintetica"], ef["originales"], ef["aprobados"]),
-                         ("atendida", "eliminada", "mejoró", 9))
+        self.assertEqual((ef["atencion_textual"], ef["discrepancia_sintetica"], ef["originales"], ef["aprobados"]),
+                         ("cambió líneas citadas", "eliminada", "mejoró", 9))
+        self.assertEqual(ef["resolucion_funcional"], "discrepancia eliminada, originales mejoró")
         ok, detalle = PG.verificar(cola, d, self.cfg, self.ex, r["tarea"])
         self.assertTrue(ok, detalle)
         self.assertIn("9/9", detalle, "la evaluación sigue siendo la batería original")
@@ -194,9 +204,9 @@ class CicloTests(unittest.TestCase):
         r, fake, taller, *_ = self.correr(
             [bloque(A), bloque(A2), json.dumps(diagnostico(CASO_SIN_DISCREPANCIA)), bloque(A3), bloque(A4)],
             max_revisiones=1)
-        self.assertEqual(self.revision(taller, r, 3)["contraste"]["resultado"], "refutada")
+        self.assertEqual(self.revision(taller, r, 3)["contraste"]["discrepancia"], "no_observada")
         tercero = fake.requests[3]["messages"][1]["content"]
-        self.assertIn("ESTADO DE LA HIPÓTESIS: NO CONFIRMADA", tercero)
+        self.assertIn("ESTADO DE LA HIPÓTESIS: el caso sintético NO mostró ninguna discrepancia", tercero)
         self.assertNotIn("EVIDENCIA VERIFICADA", tercero)
 
     def test_an_invalid_case_is_inconclusive_and_marked_as_such(self):
@@ -204,7 +214,7 @@ class CicloTests(unittest.TestCase):
             [bloque(A), bloque(A2), json.dumps(diagnostico({"args": "no"})), bloque(A3), bloque(A4)],
             max_revisiones=1)
         ct = self.revision(taller, r, 3)["contraste"]
-        self.assertEqual((ct["resultado"], ct["validez"]["valido"]), ("inconclusa", False))
+        self.assertEqual((ct["discrepancia"], ct["validez"]["valido"]), ("inconclusa", False))
         self.assertIn("ESTADO DE LA HIPÓTESIS: SIN CONTRASTAR", fake.requests[3]["messages"][1]["content"])
 
     def test_an_ignored_confirmed_discrepancy_is_measured(self):
@@ -212,8 +222,9 @@ class CicloTests(unittest.TestCase):
             [bloque(A), bloque(A2), json.dumps(diagnostico(CASO_DE_ANULACION)), bloque(A3), bloque(A4)],
             max_revisiones=1)
         ef = self.revision(taller, r, 3)["efecto"]
-        self.assertEqual((ef["atencion"], ef["discrepancia_sintetica"], ef["originales"]),
-                         ("no atendida", "persiste", "se mantuvo"))
+        self.assertEqual((ef["atencion_textual"], ef["discrepancia_sintetica"], ef["originales"]),
+                         ("no cambió las líneas citadas", "persiste", "se mantuvo"))
+        self.assertEqual(ef["resolucion_funcional"], "discrepancia persiste, originales se mantuvo")
         self.assertEqual(r["informe"]["estado"], "fallida")
         self.assertEqual(r["informe"]["mejor"]["aprobados"], 8, "se conserva la mejor versión")
 

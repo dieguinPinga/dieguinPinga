@@ -1343,10 +1343,12 @@ def _oficina_programacion(args, cfg, carpeta) -> int:
                   + (f" · {rv['motivo']}" if rv.get("motivo") else ""))
             if rv.get("contraste"):
                 ct = rv["contraste"]
-                print(f"    hipótesis {ct['resultado']}: {ct['motivo']}")
+                print(f"    caso sintético: discrepancia {ct['discrepancia']} · hipótesis causal "
+                      f"{ct['hipotesis_causal']} · {ct['motivo']}")
             if rv.get("efecto"):
                 ef = rv["efecto"]
-                print(f"    efecto en el intento {ef['intento']}: {ef['atencion']} · {ef['tipo_de_cambio']} "
+                print(f"    efecto en el intento {ef['intento']}: {ef['atencion_textual']} · "
+                      f"{ef.get('resolucion_funcional')} · {ef['tipo_de_cambio']} "
                       f"(similitud {ef['similitud_con_base']}) · {ef['aprobados']}/{ef['total']}"
                       + (f" · originales {ef['originales']}" if ef.get("originales") else "")
                       + (f" · discrepancia sintética {ef['discrepancia_sintetica']}"

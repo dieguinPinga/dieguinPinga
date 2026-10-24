@@ -25,7 +25,7 @@ A = REFERENCIA_CONCILIAR.replace(
     '        aplicados[mid] = {"id": mid, "tipo": tipo, "producto": prod, "efecto": efecto}',
     '        if tipo != "anulacion":\n'
     '            aplicados[mid] = {"id": mid, "tipo": tipo, "producto": prod, "efecto": efecto}')
-A2, A3, A4 = (A + f"\n# variante {i}\n" for i in (2, 3, 4))     # distinto código, el mismo error
+A2, A3, A4 = (A + f"\n_VARIANTE = {i}\n" for i in (2, 3, 4))     # distinto código, el mismo error
 D = A.replace('sorted(movimientos, key=lambda x: (x["fecha"], x["id"]))', "movimientos")   # peor que A
 
 # Una revisión causal como la que se espera de un revisor: cita líneas LITERALES del código candidato.
@@ -151,7 +151,7 @@ class RevisorEnElCicloTests(unittest.TestCase):
         self.assertEqual((rev["model"], rev["format"], rev["options"]["num_predict"]), ("gemma4:12b", "json", 1024))
         pedido = rev["messages"][1]["content"]
         self.assertIn("CONTRATO DE LA MISIÓN", pedido)
-        self.assertIn("| # variante 2", pedido, "revisa el candidato vigente (el intento 2, igual puntaje)")
+        self.assertIn("| _VARIANTE = 2", pedido, "revisa el candidato vigente (el intento 2, igual puntaje)")
         self.assertIn("Caso oculto caso 6: fallo", pedido)
         for privado in ("2026-05-06", "anulacion_de_anulacion\\\", \\\"id"):
             self.assertNotIn(privado, json.dumps(rev["messages"], ensure_ascii=False))
@@ -166,7 +166,7 @@ class RevisorEnElCicloTests(unittest.TestCase):
         self.assertIn("estancamiento", rj["criterio"])
         self.assertEqual(rj["diagnostico"]["principal"]["regla_del_contrato"], "anulacion_de_anulacion")
         self.assertIn("mensajes", rj, "el pedido completo al revisor queda para auditoría")
-        self.assertEqual((rj["efecto"]["atencion"], rj["efecto"]["aprobados"]), ("atendida", 9),
+        self.assertEqual((rj["efecto"]["atencion_textual"], rj["efecto"]["aprobados"]), ("cambió líneas citadas", 9),
                          "la línea citada cambió en el intento siguiente")
         self.assertEqual([x["estado"] for x in resumen["revisiones"]], ["hecha"])
         self.assertIn(RV.INICIO, taller.files.read_rel(inf["mision_taller"], "intento-3/retroalimentacion.md"))
@@ -191,7 +191,7 @@ class RevisorEnElCicloTests(unittest.TestCase):
         self.assertIn("[código omitido", tercero)
         self.assertNotIn("return {}", tercero, "el código del revisor no llega como solución")
         self.assertNotIn("def x(): pass", tercero)
-        self.assertIn("# variante 2", tercero, "el punto de partida sigue siendo el código del programador")
+        self.assertIn("_VARIANTE = 2", tercero, "el punto de partida sigue siendo el código del programador")
         mejor = taller.files.read_rel(inf["mision_taller"], "mejor/solucion.py")
         self.assertNotIn("return {}", mejor)
         ok, detalle = PG.verificar(cola, d, self.cfg, self.ex, r["tarea"])
@@ -240,8 +240,8 @@ class RevisorEnElCicloTests(unittest.TestCase):
         mid = r["informe"]["mision_taller"]
         rj = json.loads(taller.files.read_rel(mid, "intento-3/revision.json"))
         ef = rj["efecto"]
-        self.assertEqual((ef["atencion"], ef["tipo_de_cambio"], ef["persisten_casos"]),
-                         ("no atendida", "edición acotada", [6]))
+        self.assertEqual((ef["atencion_textual"], ef["tipo_de_cambio"], ef["persisten_casos"]),
+                         ("no cambió las líneas citadas", "edición acotada", [6]))
         self.assertGreater(ef["similitud_con_base"], 0.95)
         self.assertEqual(ef["citas_que_siguen_igual"], ['if tipo != "anulacion":', 'ref = aplicados.get(m.get("anula"))'])
         cuarto = fake.requests[4]["messages"][1]["content"]
