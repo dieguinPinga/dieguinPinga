@@ -13,7 +13,14 @@ parche es un dato (texto original exacto → texto de reemplazo) y la única ope
    - cada ancla se lleva a su sentencia en el árbol sintáctico; si su bloque tiene menos de MIN_HERMANAS
      sentencias, se sube a la sentencia que lo contiene; la zona es esa sentencia con hasta HERMANAS vecinas antes y
      después (se achica hasta caber en MAX_LINEAS_ZONA);
-   - zonas superpuestas o contiguas se unen. Sin anclas: la función completa (queda registrado).
+   - zonas superpuestas o contiguas se unen. Sin anclas: la función completa (queda registrado);
+   - RELACIONES LECTURA → ESCRITURA (corrección B del 7.3, `relaciones_lectura_escritura`): si una variable se LEE
+     en una zona anclada y el revisor la NOMBRA en su diagnóstico causal (regla, secuencia causal, rama inaccesible,
+     propiedad a cambiar, hechos), se agregan las zonas de sus ESCRITURAS en la misma función (reasignación, `x[k] =`,
+     `del x[k]`, `x.add/append/update/...`), salvo la inicialización de primer nivel (que ya es contexto de solo
+     lectura). Sin transitividad, con a lo sumo MAX_ZONAS_RELACIONADAS zonas nuevas, dentro de MAX_LINEAS_ZONAS, y
+     cada una registrada con la lectura y la escritura que la justifican. Las referencias «línea N» del texto NO se
+     interpretan.
    Nunca se usan las pruebas ocultas.
 2. PARCHE (`interpretar_parche` + `aplicar`): JSON {"cambios": [{"original", "reemplazo"}], "justificacion"}.
    Se rechaza si: no es JSON o falta algo; no hay cambios o son más de MAX_CAMBIOS; un original está vacío, no
@@ -150,23 +157,152 @@ def literales_de_la_diferencia(comp: dict | None) -> list[str]:
     return sorted(set(out))
 
 
+def _unir(rangos) -> list[tuple[int, int]]:
+    unidas: list[list[int]] = []
+    for a, b in sorted(rangos):
+        if unidas and a <= unidas[-1][1] + 1:
+            unidas[-1][1] = max(unidas[-1][1], b)
+        else:
+            unidas.append([a, b])
+    return [(a, b) for a, b in unidas]
+
+
+def _lineas_totales(zonas) -> int:
+    return sum(b - a + 1 for a, b in _unir(zonas))
+
+
+# Corrección B: relaciones lectura → escritura ---------------------------------------------------------------------
+
+MAX_ZONAS_RELACIONADAS = 2
+MIN_LARGO_VARIABLE = 3          # «m», «n», «i»… coincidirían con palabras sueltas del texto
+MUTADORES = {"add", "append", "extend", "insert", "update", "setdefault", "pop", "popitem", "remove", "discard",
+             "clear"}
+_FUNCIONES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _funcion_que_contiene(tree: ast.AST, linea: int):
+    """La función más interna que contiene la línea (o None)."""
+    mejor = None
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.lineno <= linea <= (n.end_lineno or n.lineno):
+            if mejor is None or n.lineno >= mejor.lineno:
+                mejor = n
+    return mejor
+
+
+def _nodos_propios(fn):
+    """Los nodos de la función sin entrar en funciones, lambdas ni clases anidadas (otra función = otro alcance)."""
+    pila = [n for n in fn.body if not isinstance(n, _FUNCIONES)]
+    while pila:
+        n = pila.pop()
+        yield n
+        for h in ast.iter_child_nodes(n):
+            if not isinstance(h, _FUNCIONES):
+                pila.append(h)
+
+
+def _base(n):
+    """El nombre en la base de x[...][...] o x.attr."""
+    while isinstance(n, (ast.Subscript, ast.Attribute, ast.Starred)):
+        n = n.value
+    return n.id if isinstance(n, ast.Name) else None
+
+
+def _objetivos(t):
+    if isinstance(t, (ast.Tuple, ast.List)):
+        for x in t.elts:
+            yield from _objetivos(x)
+    elif isinstance(t, ast.Starred):
+        yield from _objetivos(t.value)
+    else:
+        yield t
+
+
+def escrituras(fn, variable: str) -> list[dict]:
+    """Escrituras de la variable en la función, salvo la inicialización de primer nivel."""
+    primer_nivel = set()
+    for st in fn.body:
+        if isinstance(st, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr)):
+            primer_nivel.update(range(st.lineno, (st.end_lineno or st.lineno) + 1))
+    out = []
+    for n in _nodos_propios(fn):
+        tipo = None
+        if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor, ast.Delete)):
+            objetivos = n.targets if isinstance(n, (ast.Assign, ast.Delete)) else [n.target]
+            for o in (x for t in objetivos for x in _objetivos(t)):
+                if isinstance(o, ast.Name) and o.id == variable:
+                    tipo = "eliminación" if isinstance(n, ast.Delete) else "reasignación"
+                elif isinstance(o, (ast.Subscript, ast.Attribute)) and _base(o) == variable:
+                    tipo = "eliminación de un elemento" if isinstance(n, ast.Delete) else "asignación de un elemento"
+        elif isinstance(n, ast.NamedExpr) and n.target.id == variable:
+            tipo = "reasignación"
+        elif (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in MUTADORES
+              and _base(n.func.value) == variable and isinstance(n.func.value, ast.Name)):
+            tipo = f"llamada .{n.func.attr}()"
+        if tipo and n.lineno not in primer_nivel:
+            out.append({"linea": n.lineno, "tipo": tipo})
+    return sorted({(e["linea"], e["tipo"]): e for e in out}.values(), key=lambda e: e["linea"])
+
+
+def lecturas(fn, zonas) -> dict[str, int]:
+    """{variable: primera línea donde se LEE dentro de las zonas} (nombres en contexto de carga)."""
+    out: dict[str, int] = {}
+    for n in _nodos_propios(fn):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) and any(a <= n.lineno <= b for a, b in zonas):
+            out[n.id] = min(out.get(n.id, n.lineno), n.lineno)
+    return out
+
+
+def nombrada_en(variable: str, texto: str) -> bool:
+    return len(variable) >= MIN_LARGO_VARIABLE and re.search(rf"(?<![\w]){re.escape(variable)}(?![\w])",
+                                                             texto) is not None
+
+
+def relaciones_lectura_escritura(tree: ast.AST, ancladas: list[tuple[int, int]], texto_causal: str) -> list[dict]:
+    """Candidatas a zona por relación lectura → escritura, cada una con su resultado (agregada o por qué no)."""
+    out, aceptadas = [], []
+    funciones = {}
+    for a, b in ancladas:
+        fn = _funcion_que_contiene(tree, a)
+        if fn is not None:
+            funciones.setdefault(id(fn), (fn, []))[1].append((a, b))
+    for fn, zonas in funciones.values():
+        leidas = lecturas(fn, zonas)
+        for variable in sorted(leidas, key=lambda v: (leidas[v], v)):
+            if not nombrada_en(variable, texto_causal):
+                continue
+            for e in escrituras(fn, variable):
+                r = {"variable": variable, "lectura": leidas[variable], "escritura": e["linea"],
+                     "tipo_escritura": e["tipo"], "zona": None, "resultado": None}
+                out.append(r)
+                if any(a <= e["linea"] <= b for a, b in list(ancladas) + aceptadas):
+                    r["resultado"] = "ya cubierta"
+                    continue
+                z = _zona(tree, e["linea"])
+                r["zona"] = z
+                if len(aceptadas) >= MAX_ZONAS_RELACIONADAS:
+                    r["resultado"] = f"límite de {MAX_ZONAS_RELACIONADAS} zonas relacionadas"
+                elif _lineas_totales(list(ancladas) + aceptadas + [z]) > MAX_LINEAS_ZONAS:
+                    r["resultado"] = f"límite de {MAX_LINEAS_ZONAS} líneas"
+                else:
+                    r["resultado"] = "agregada"
+                    aceptadas.append(z)
+    return out
+
+
 def localizar(codigo: str, funcion: str, citas: list[str], literales: list[str],
-              citas_no_verificadas: list[str] = ()) -> dict:
-    """{"zonas": [(a, b)], "anclas": [...], "citas": [...], "metodo": ...}. Determinista y sin pruebas ocultas.
-    «citas» registra cada cita del revisor: las verificadas con sus líneas (o por qué no anclaron) y las no
-    verificadas como descartadas."""
+              citas_no_verificadas: list[str] = (), texto_causal: str = "") -> dict:
+    """{"zonas": [(a, b)], "anclas": [...], "citas": [...], "relaciones": [...], "metodo": ...}. Determinista y sin
+    pruebas ocultas. «citas» registra cada cita del revisor: las verificadas con sus líneas (o por qué no anclaron)
+    y las no verificadas como descartadas. «relaciones»: las zonas por lectura → escritura (corrección B), solo si
+    hay texto causal del revisor."""
     tree = ast.parse(codigo)
     registro: list[dict] = []
     an = anclas(codigo, citas, literales, registro)
     registro += [{"texto": c, "verificada": False, "lineas": [], "motivo": "no verificada: no aparece en el código"}
                  for c in citas_no_verificadas]
     rangos = sorted(z for z in (_zona(tree, a["linea"]) for a in an) if z)
-    unidas: list[list[int]] = []
-    for a, b in rangos:
-        if unidas and a <= unidas[-1][1] + 1:
-            unidas[-1][1] = max(unidas[-1][1], b)
-        else:
-            unidas.append([a, b])
+    unidas = _unir(rangos)
     zonas, total = [], 0
     for a, b in unidas:
         if total + (b - a + 1) > MAX_LINEAS_ZONAS:
@@ -174,12 +310,16 @@ def localizar(codigo: str, funcion: str, citas: list[str], literales: list[str],
         zonas.append((a, b))
         total += b - a + 1
     if zonas:
-        return {"zonas": zonas, "anclas": an, "citas": registro,
-                "metodo": "anclas (citas comprobadas y evidencia sintética)"}
+        rel = relaciones_lectura_escritura(tree, zonas, texto_causal) if texto_causal else []
+        extra = [r["zona"] for r in rel if r["resultado"] == "agregada"]
+        return {"zonas": _unir(zonas + extra), "anclas": an, "citas": registro, "relaciones": rel,
+                "metodo": "anclas (citas comprobadas y evidencia sintética)"
+                          + (" y relaciones lectura → escritura" if extra else "")}
     fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == funcion),
               None)
     a, b = (fn.lineno, fn.end_lineno) if fn else (1, len(codigo.splitlines()))
-    return {"zonas": [(a, b)], "anclas": an, "citas": registro, "metodo": "sin anclas: la función completa"}
+    return {"zonas": [(a, b)], "anclas": an, "citas": registro, "relaciones": [],
+            "metodo": "sin anclas: la función completa"}
 
 
 def contexto_de_lectura(codigo: str, funcion: str, zonas: list[tuple[int, int]]) -> list[int]:

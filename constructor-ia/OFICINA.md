@@ -1524,6 +1524,90 @@ PY
 - **A no la explica:** la línea 44 o `aplicados` aparecen solo en las líneas «menciona …», o en citas con
   `verificada=False`. Corresponde investigar B (o C) antes de repetir.
 
+## Experimento 7.3 — corrección B del localizador (relaciones lectura → escritura)
+
+**Verificación en la VivoBook** (corrida real `20261024-031338`, con `24d18a7`): la corrección A **no** explicaba la
+pérdida de las líneas 41–46.
+- Las únicas citas verificadas de Gemma eran las líneas 31 y 32, que ya anclaban en `f66aab9`.
+- La relación causal estaba en `rama_inaccesible`: «`aplicados` solo guarda movimientos que no son anulaciones»
+  (línea 44), y esa prosa no llegaba al localizador.
+
+**Corrección B** (`parches.relaciones_lectura_escritura`, `escrituras`, `lecturas`; lo único que cambia):
+1. **Lecturas:** en las zonas **ancladas** (citas y literales, después de los límites) se buscan las variables que
+   se **leen**, es decir, nombres en contexto de carga. Por ejemplo, `aplicados` en `ref = aplicados.get(...)`,
+   línea 27.
+2. **Mención del revisor:** solo cuentan las variables que el revisor **nombra** en su diagnóstico causal:
+   - se usan regla, secuencia causal, rama inaccesible, propiedad a cambiar y hechos
+     (`revision_existente.texto_causal_del_revisor`);
+   - no se usan las citas (ya son anclas) ni las hipótesis secundarias;
+   - el nombre se compara como identificador completo y debe tener al menos 3 caracteres.
+3. **Escrituras:** se toman las de esa variable en la **misma función**:
+   - cuentan la reasignación, `x[k] = …`, `del x[k]` y las llamadas `x.add/append/extend/insert/update/setdefault/
+     pop/popitem/remove/discard/clear()`;
+   - no cuentan las funciones anidadas ni otras funciones;
+   - tampoco la inicialización de primer nivel, que ya es contexto de solo lectura.
+4. **Zonas nuevas:** cada escritura que no está cubierta suma su zona con el mismo `_zona`.
+   - Límites: como máximo 2 zonas relacionadas, y siempre dentro del tope de 80 líneas.
+   - No hay transitividad: las lecturas de una zona agregada no agregan otras.
+5. **Registro:** `localizacion.relaciones` guarda variable, línea de lectura, línea de escritura, tipo, zona y
+   resultado («agregada», «ya cubierta» o el límite alcanzado).
+
+**Lo que no se hace:**
+- interpretar referencias «línea N» (C);
+- usar casos ocultos, la batería independiente o la implementación de referencia;
+- cambiar los modelos, los límites, el prompt del parche, la validación o la aplicación.
+
+**Límite conocido:** una palabra común igual a la variable, como «los movimientos aplicados», cuenta como mención.
+Lo fija una prueba.
+
+**Resultado con un diagnóstico equivalente al real:** zonas `[(27, 37), (41, 46)]`, con la relación `aplicados`:
+lectura en la línea 27 → escritura en la 45 (`aplicados[mid] = …`) → zona 41–46.
+
+**Pruebas:** `tests/test_oficina_lectura_escritura.py` (16).
+- **Fundamental:** sin texto causal la zona es 27–37, como en la corrida real; con el diagnóstico real, 27–37 y
+  41–46, con la relación registrada.
+- **Origen del texto causal:** sale solo de la prosa principal y de los hechos.
+- **Negativas:**
+  - una variable no nombrada no agrega zonas;
+  - «línea 44» no ancla nada;
+  - una variable nombrada pero que no se lee en una zona anclada no agrega zonas;
+  - solo coinciden identificadores completos;
+  - la inicialización de primer nivel queda afuera;
+  - no hay transitividad (`tipo`);
+  - una escritura ya cubierta solo se registra;
+  - los nombres cortos se ignoran;
+  - las funciones anidadas y las otras funciones quedan afuera.
+- **Límites:** como máximo 2 zonas relacionadas y el tope de líneas.
+- **Simulación:**
+  - con el diagnóstico equivalente al real, el parche estilo Qwen sobre la línea 43 se aplica, elimina la
+    discrepancia y aprueba 9/9;
+  - sin la mención causal, el mismo parche sigue fuera de zona.
+
+En `test_oficina_localizador.py`, la prueba de citas no verificadas usa ahora una prosa sin nombres de variables,
+para medir solo la corrección A.
+
+Suite completa: 675 pruebas, OK (770 s).
+
+### Repetir 7.3 (carpeta NUEVA; mismos modelos, defecto y límites)
+
+```bash
+cd <worktree> && git pull --ff-only
+python3 -m unittest tests.test_oficina_lectura_escritura tests.test_oficina_localizador tests.test_oficina_parches
+L=~/constructor-ia-piloto/data/oficina-revision-7-3b
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.3                 # preflight
+python3 -m constructor_ia oficina revisar-existente --carpeta $L --trabajador pulenta \
+    --mision conciliar_movimientos --defecto anulaciones_no_registradas \
+    --modelo qwen2.5-coder:7b --revisor-modelo gemma4:12b --variante 7.3 --autorizo-inferencia-remota
+```
+
+Para atribuir el resultado, miren en `reparacion-N/reparacion.json`:
+- `localizacion.citas`, que corresponde a la corrección A;
+- `localizacion.relaciones`, que corresponde a la corrección B.
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

@@ -26,9 +26,10 @@ CITA_DOS_LINEAS = 'if tipo != "anulacion":\n            ' + REGISTRO
 CITA_EN_UNA_LINEA = 'if tipo != "anulacion": ' + REGISTRO
 
 
-def revision_con_citas(citas):
+def revision_con_citas(citas, **otros):
     d = diagnostico(CASO_DE_ANULACION)
     d["hipotesis_principal"]["citas_del_codigo"] = citas
+    d["hipotesis_principal"].update(otros)
     return json.dumps(d, ensure_ascii=False)
 
 
@@ -96,7 +97,11 @@ class CicloTests(Base):
         self.assertNotIn(REFERENCIA_CONCILIAR, fake.requests[1]["messages"][1]["content"])
 
     def test_unverified_citations_are_recorded_in_the_run(self):
-        inf, _, _ = self.correr([revision_con_citas(["línea 44: aplicados solo guarda no anulaciones"]),
+        # Prosa causal sin nombrar variables: mide solo la corrección A (la B no interviene).
+        inf, _, _ = self.correr([revision_con_citas(["línea 44: aplicados solo guarda no anulaciones"],
+                                                    secuencia_causal=["la anulación 4 apunta a la 3",
+                                                                      "sale otro motivo"],
+                                                    propiedad_a_cambiar="detectar la anulación de una anulación"),
                                  parche(COMO_QWEN)], variante="7.3", max_reparaciones=1)
         rep = inf["reparaciones"][0]
         self.assertEqual(rep["localizacion"]["zonas"], [(27, 37)])

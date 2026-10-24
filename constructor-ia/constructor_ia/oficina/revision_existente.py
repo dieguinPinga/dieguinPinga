@@ -188,6 +188,14 @@ def preparar(executor, mision: str, codigo: str | None = None, defecto: str | No
     return prep
 
 
+def texto_causal_del_revisor(diag: dict) -> str:
+    """7.3, corrección B: el diagnóstico CAUSAL de la hipótesis principal en prosa (regla, secuencia causal, rama
+    inaccesible, propiedad a cambiar) y los hechos. Ni las citas (ya son anclas) ni las hipótesis secundarias."""
+    p = diag["principal"]
+    return "\n".join([p.get("regla_del_contrato") or "", *p.get("secuencia_causal", []), p.get("rama_inaccesible") or "",
+                      p.get("propiedad_a_cambiar") or "", *diag.get("hechos", [])])
+
+
 def mensajes_reparacion(descripcion: str, spec: dict, codigo: str, diagnostico: str, evidencia: str, aviso: str,
                         budget: int, historial: list[str] | None = None, base_n: int = 0,
                         propio: str = "") -> list[dict]:
@@ -698,6 +706,7 @@ class Experimento:
         citas = [c["texto"] for c in demostrada["diagnostico"]["principal"]["citas"] if c["verificada"]]
         citas_no_verificadas = [c["texto"] for c in demostrada["diagnostico"]["principal"]["citas"]
                                 if not c["verificada"]]
+        texto_causal = texto_causal_del_revisor(demostrada["diagnostico"])
         comp_base = comparar_salidas(esperado, ct["candidato"]["salida"])
         parches: list[dict] = []
         for n in range(1, self.cfg.max_reparaciones + 1):
@@ -724,9 +733,9 @@ class Experimento:
                     break
             if self.cfg.variante == "7.3":
                 loc = PA.localizar(base, self.contraste.funcion, citas, PA.literales_de_la_diferencia(comp_base),
-                                   citas_no_verificadas)
+                                   citas_no_verificadas, texto_causal)
                 rep["localizacion"] = {"zonas": loc["zonas"], "anclas": loc["anclas"], "citas": loc["citas"],
-                                       "metodo": loc["metodo"]}
+                                       "relaciones": loc["relaciones"], "metodo": loc["metodo"]}
                 msgs = PA.mensajes_parche(self.descripcion, self.spec, base, loc, diagnostico, evidencia, aviso, budget,
                                           historial, base_n)
                 gen, error = self._programar(n, msgs, cancel, etapa="parche")
