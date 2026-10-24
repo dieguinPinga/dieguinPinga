@@ -2442,6 +2442,106 @@ python3 -m constructor_ia oficina reparar-coordinado-11 --corrida $R --carpeta $
     --mostrar-pedido                                      # no infiere ni escribe
 ```
 
+## Experimento 7.12: torneo de seis soluciones independientes (implementado, SIN inferencias)
+
+**Objetivo:** evaluar seis propuestas independientes para reparar el mismo defecto, sin un diagnóstico inicial único
+ni la aprobación de un revisor.
+
+**Qué es:** `oficina reparar-torneo-12` (`oficina/reparacion_torneo_12.py`), un orquestador propio. Reutiliza, sin
+modificarlas, la sesión con auditoría del 7.10, los diagnósticos del 7.8 y el 7.11, el plan del 7.11 y la validación,
+normalización, contraste, ejemplos visibles y batería de siempre. Los experimentos 7.5 a 7.11 no cambian.
+
+### Candidatos (estrategias distintas; ninguna instrucción contiene la solución)
+
+| | Estrategia | Cadena |
+|---|---|---|
+| A | qwen parchea directamente, buscando el cambio mínimo | parche (qwen) |
+| B | qwen parchea directamente, siguiendo la traza del caso | parche (qwen) |
+| C | gemma diagnostica (causa y comportamiento a preservar) y qwen parchea | diagnóstico (gemma) → parche (qwen) |
+| D | gemma localiza origen y manifestación y qwen parchea | localización (gemma) → parche (qwen) |
+| E | gemma parchea directamente | parche (gemma) |
+| F | qwen planifica y después parchea su propio plan | plan (qwen) → parche (qwen) |
+
+- **Independencia:** cada candidato recibe solo el contrato, los ejemplos visibles, las zonas del código defectuoso y
+  la discrepancia sintética, más lo que produjo **su propia** cadena. Nunca recibe diagnósticos, planes, parches ni
+  resultados de otro candidato.
+- **Secuencia:** las inferencias van una por vez, porque hay una sola GPU. La independencia no depende de la
+  simultaneidad.
+- **Sandbox:** las ejecuciones también van una por vez.
+
+### Torneo (en orden, sin saltear etapas)
+
+1. **Validez del parche y zonas autorizadas**, con la normalización segura de sangría.
+2. **Compilación y ejecución segura** en el sandbox (bwrap, seccomp, límites).
+3. **Caso sintético corregido.**
+4. **Ejemplos visibles.**
+5. **Batería independiente de 9 casos:** solo si pasó las etapas 1 a 4, y **una vez por programa distinto**.
+
+**Copias independientes:** cada parche se aplica sobre una **copia** del código defectuoso **original**, un texto
+inmutable. Su huella se verifica antes y después de cada candidato, y la corrida de origen no se toca.
+
+**Éxito:** al menos un candidato corrige el caso sintético **y** aprueba 9/9.
+- **Ganadores:** son **todos** los que lo logran.
+- **Desempate determinista:** menos líneas cambiadas, después sin normalización, después la letra. No afirma que el
+  parche más chico sea el más correcto.
+- **Lo que nunca decide:** las explicaciones, una aprobación de Gemma ni la coincidencia aproximada de líneas.
+
+**Duplicados:**
+- la **misma respuesta de parche**, ignorando espacios finales;
+- el **mismo programa resultante**: otro texto, el mismo árbol sintáctico.
+
+Se registran (`duplicado_de`, `tipo_de_duplicado`) y el informe cuenta los programas distintos. Seis respuestas no son
+necesariamente seis soluciones.
+
+**Presupuesto:** 9 llamadas (un intento por etapa, sin reintentos), 6 parches y 2400 s. Lo que no entra queda «no
+ejecutado» con su motivo. La auditoría de fugas revisa cada pedido.
+
+### Registro (`<carpeta>/experimento-7-12/reparacion-<fecha>/`)
+
+**Por candidato (`candidato-X/`):**
+- un `pedido.json` y un `respuesta.txt` por etapa;
+- `candidato.json`: modelo y estrategia, diagnóstico o plan, parche (original y normalizado), huella del programa,
+  resultado de cada etapa, salida en el caso, batería, duplicados, llamadas con tokens y tiempos, y el motivo de
+  aceptación, rechazo o duplicación;
+- `solucion.py`, si el parche se aplicó.
+
+**En `informe.json`:**
+- la **tabla** comparativa de A a F;
+- los ganadores y el desempate;
+- los programas distintos y los duplicados;
+- la auditoría y el consumo.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_torneo_12.py` (10), con candidatos simulados y el sandbox real.
+- **Independencia:** marcas únicas por candidato; cada pedido tiene solo la de su propia cadena y ningún resultado.
+- **Sin contaminación:** el parche de A no aparece en B, y las huellas del original y de la corrida no cambian.
+- **Solo uno de seis pasa:** A–E fallan en distintas etapas, C pasa lo observable pero falla la batería, y F da 9/9.
+- **Ninguno pasa.**
+- **Duplicados:** respuestas idénticas y el mismo programa con otro texto; la batería se reutiliza y el desempate es
+  determinista.
+- **Cambios fuera de zona:** se rechazan en la etapa 1.
+- **Sin fugas** de la batería ni de la causa.
+- **Cadena inválida:** un diagnóstico inválido corta solo a su candidato; también se prueban el presupuesto y el
+  registro.
+- **Regresiones:** el 7.11 y el 7.10 siguen funcionando.
+- **CLI.**
+
+Suite completa: 787 pruebas, OK (972 s).
+
+### Instalación en la VivoBook y preflight
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_torneo_12 tests.test_oficina_reparacion_coordinada_11   # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-torneo-7-12                                                    # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-torneo-12 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                         # pedido de A y las seis estrategias; no infiere ni escribe
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.
