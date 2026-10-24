@@ -95,7 +95,7 @@ def mensajes(f: dict, aviso: str = "") -> list[dict]:
                f"del código.\n\n{PA.texto_zonas(f['codigo'], spec['function'], {'zonas': f['zonas']})}\n\n"
                f"{f.get('titulo_causa', TITULO_CAUSA)}:\n{f['causa']}\n\n"
                + (f"AVISO DEL COORDINADOR:\n{aviso}\n\n" if aviso else "")
-               + PEDIDO)
+               + f.get("pedido", PEDIDO))
     return [{"role": "system", "content": PA.SISTEMA_PARCHE}, {"role": "user", "content": usuario}]
 
 
@@ -216,7 +216,9 @@ def carpeta_de_reparacion(carpeta: Path, corrida: Path, experimento: str = "expe
 
 
 def correr(destino: Path, f: dict, executor, cliente, gate, modelo, max_segundos: float = 2400.0,
-           cancel: threading.Event | None = None, normalizar: bool = False) -> dict:
+           cancel: threading.Event | None = None, normalizar: bool = False, retroalimentacion=None) -> dict:
+    """retroalimentacion (opcional, 7.8): función que arma el aviso para el intento siguiente cuando un parche se
+    aplica pero no corrige el defecto; por omisión, la retroalimentación del 7.1 de siempre."""
     destino = Path(destino)
 
     def guardar(rel, contenido):
@@ -324,6 +326,11 @@ def correr(destino: Path, f: dict, executor, cliente, gate, modelo, max_segundos
                                            RE.comparar_salidas(esperado, salida), RE.cambio_de_codigo(codigo, nuevo),
                                            mismo, [0] if salida is not None and salida == ref_caso["candidato"]
                                            ["salida"] else [], disc)
+        if retroalimentacion is not None:
+            aviso = retroalimentacion(n=n, caso=f["caso"], funcion=funcion, esperado=esperado, cand=cand, disc=disc,
+                                      visibles=vis, normalizado="parche_normalizado" in reg)
+            guardar(f"intento-{n}/retroalimentacion.md", aviso)
+            continue
         guardar(f"intento-{n}/retroalimentacion.md", retro)
         aviso = (f"Tu parche del intento {n} se aplicó"
                  + (" (el coordinador ajustó solo su sangría)" if "parche_normalizado" in reg else "")

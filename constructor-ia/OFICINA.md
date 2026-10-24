@@ -2009,6 +2009,95 @@ python3 -m constructor_ia oficina reparar-coordinado --corrida $R --carpeta $L -
     --autorizo-inferencia-remota                         # hasta 2 diagnósticos + 3 parches
 ```
 
+## Experimento 7.8: diagnóstico causal con preservación de comportamiento (implementado, SIN inferencias)
+
+**Contexto (7.7):**
+- Gemma identificó la causa: las anulaciones aplicadas no se registraban en `aplicados`.
+- Qwen propuso tres veces `if tipo != "anulacion":` → `if tipo == "anulacion":`. Los parches se aplicaban, pero
+  dejaban de registrar los ingresos y egresos, y la discrepancia seguía.
+
+**Objetivo:** que Gemma diagnostique también qué comportamiento correcto hay que preservar, y que Qwen lo use.
+
+**Qué es:** un experimento independiente, `oficina reparar-coordinado-8` (`oficina/reparacion_coordinada_8.py`), que
+reutiliza el recorrido del 7.7 (`reparacion_coordinada.correr`).
+- **Cambio en el 7.7 y en el ciclo de reparación:** solo puntos de extensión opcionales, que por omisión no hacen
+  nada:
+  - `ajustes` en `reparacion_coordinada.correr`;
+  - `pedido` y `retroalimentacion` en `reparacion_guiada`.
+
+  Las pruebas del 7.5, 7.6 y 7.7 pasan sin cambios.
+- **Lo que no cambia:** el coordinador general, los parches, el sandbox, los límites, la auditoría y la batería.
+
+### Diferencias con el 7.7 (todas generadas o medidas, ninguna escrita por el equipo)
+
+1. **Diagnosticadora** (`SISTEMA_DIAGNOSTICO_8`): además de causa, citas, mecanismo y relación, describe:
+   - el `comportamiento_defectuoso`: qué hace mal y cuándo;
+   - el `comportamiento_a_preservar`: lista de lo que hoy funciona según el contrato y podría romperse al corregir.
+
+   Los dos campos se validan (no pueden faltar ni estar vacíos). Si faltan, el diagnóstico es insuficiente y se le
+   pide otra vez; como máximo 2 diagnósticos, sin sustitución.
+2. **Programador:** recibe esos campos **completos** dentro del diagnóstico. Se le pide (`PEDIDO_8`) que en
+   `justificacion` explique cómo su parche corrige el comportamiento defectuoso sin romper cada comportamiento a
+   preservar. No se le dice qué condición cambiar ni cómo, y la justificación queda en `parche.json`.
+3. **Retroalimentación** si un parche se aplica y no corrige el caso: solo que **la discrepancia persiste** y la
+   diferencia observable del caso sintético:
+   - la entrada;
+   - lo que pide el contrato;
+   - lo que devuelve el código con su parche;
+   - las claves distintas y lo que falta o sobra;
+   - si rompió un ejemplo visible del contrato (público), ese informe.
+
+   No recibe el diff ni el resto de la retroalimentación del 7.1, ni nada de la batería.
+
+**Lo que se mantiene igual:** 2 diagnósticos, 3 parches y 2400 s como máximo; normalización segura de la sangría;
+auditoría de fugas; batería independiente una sola vez.
+
+**Éxito:** los cuatro criterios del 7.7. Se clasifica como «diagnóstico y reparación automáticos coordinados, con
+preservación de comportamiento», más «(con normalización de la sangría)» si correspondió. Las corridas van a
+`experimento-7-8/`.
+
+### Pruebas
+
+`tests/test_oficina_reparacion_coordinada_8.py` (11), sin inferencias, con respuestas simuladas y el sandbox real.
+- **Origen de los campos:** `comportamiento_a_preservar` y `comportamiento_defectuoso` salen de la respuesta de
+  Gemma (marca única) y llegan completos al texto del programador.
+- **Diagnósticos insuficientes:**
+  - sin el campo, vacío, en blanco o sin el comportamiento defectuoso;
+  - un diagnóstico del 7.7 tampoco alcanza;
+  - dos insuficientes detienen el experimento sin llamar al programador.
+- **Sin solución prefabricada:** los prompts del 7.8 no tienen condiciones, operadores, nombres del código ni la
+  causa del equipo.
+- **Lo que recibe el programador:** la marca única de Gemma (con `CAUSAS` vacío), el pedido de justificación y no el
+  pedido del 7.6.
+- **Parche que invierte la condición (el del 7.7):**
+  - se aplica, normalizado;
+  - la discrepancia persiste;
+  - el intento siguiente recibe solo la diferencia observable y el informe de los ejemplos visibles;
+  - lo registrado es lo enviado.
+- **Reparación exitosa:** 9/9, con la justificación registrada.
+- **Tres parches incorrectos:** se detiene.
+- **Sin fugas:** ni casos ocultos, ni sus categorías, ni el defecto, ni la referencia.
+- **El 7.7 sigue intacto:** mismo sistema y mismo pedido, sin los campos nuevos, y con la retroalimentación del 7.1.
+- **CLI.**
+
+Suite completa: 735 pruebas, OK (879 s).
+
+### Verificar sin inferencias y después una corrida real independiente
+
+```bash
+cd <worktree> && git pull --ff-only && cd constructor-ia
+python3 -m unittest tests.test_oficina_reparacion_coordinada_8 tests.test_oficina_reparacion_coordinada \
+    tests.test_oficina_normalizacion_sangria tests.test_oficina_reparacion_guiada          # sin inferencias
+R=~/constructor-ia-piloto/data/oficina-revision-7-3c/experimento-7/corrida-<la de 7.3c>
+L=~/constructor-ia-piloto/data/oficina-coordinada-7-8                                     # laboratorio nuevo
+python3 -m constructor_ia oficina registrar --carpeta $L --id pulenta --url http://<IP o .ts.net>:11435 \
+    --modelo gemma4:12b --modelo qwen2.5-coder:7b --nodo rampern --gpu "RTX 4070" --vram-gb 8 --ram-gb 32
+python3 -m constructor_ia oficina reparar-coordinado-8 --corrida $R --carpeta $L --trabajador pulenta \
+    --mostrar-pedido                                   # preparación: muestra el pedido a Gemma; no infiere ni escribe
+python3 -m constructor_ia oficina reparar-coordinado-8 --corrida $R --carpeta $L --trabajador pulenta \
+    --autorizo-inferencia-remota                       # hasta 2 diagnósticos + 3 parches
+```
+
 ### Lo que falta (siguientes etapas)
 
 4. Coordinador concurrente con un escritor único y propuestas verificadas centralmente.

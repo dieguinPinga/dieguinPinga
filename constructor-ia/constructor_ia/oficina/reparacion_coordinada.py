@@ -182,8 +182,15 @@ def carpeta(carpeta_lab: Path, corrida: Path) -> Path:
 
 
 def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, programador, max_segundos: float = 2400.0,
-           cancel: threading.Event | None = None) -> dict:
+           cancel: threading.Event | None = None, ajustes: dict | None = None) -> dict:
+    """ajustes (opcional; lo usa el 7.8): reemplaza piezas del recorrido sin cambiarlo — «version», «clasificacion»,
+    «mensajes_diagnostico», «interpretar», «texto», «pedido» (para el programador) y «retroalimentacion». Sin
+    ajustes, es exactamente el 7.7."""
     destino = Path(destino)
+    aj = ajustes or {}
+    _mensajes = aj.get("mensajes_diagnostico", mensajes_diagnostico)
+    _interpretar = aj.get("interpretar", interpretar_diagnostico)
+    _texto = aj.get("texto", texto_para_el_programador)
 
     def guardar(rel, contenido):
         p = destino / rel
@@ -195,7 +202,7 @@ def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, prog
     spec, funcion = m["spec"], m["spec"]["function"]
     ct = discrepancia(executor, f)
     disc = texto_discrepancia(funcion, ct)
-    inf = {"experimento": VERSION_COORDINADA, "corrida": f["corrida"], "mision": f["mision"], "zonas": f["zonas"],
+    inf = {"experimento": aj.get("version", VERSION_COORDINADA), "corrida": f["corrida"], "mision": f["mision"], "zonas": f["zonas"],
            "diagnosticador": diagnosticador.name, "programador": programador.name, "archivos_leidos": f["archivos"],
            "caso_sintetico": f["caso"], "diagnosticos": [], "diagnostico_usado": None, "reparacion": None,
            "detenido": None, "inicio": time.time()}
@@ -204,7 +211,7 @@ def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, prog
         if segundos >= max_segundos:
             inf["detenido"] = f"límite de tiempo de inferencia ({segundos:.0f} s de {max_segundos:.0f} s)"
             break
-        msgs = mensajes_diagnostico(f, disc, nota)
+        msgs = _mensajes(f, disc, nota)
         pedidos.append(msgs)
         guardar(f"diagnostico-{k}/pedido.json", msgs)
         auditoria = RE.auditar(pedidos, spec, f["defecto"], m["description"])
@@ -233,7 +240,7 @@ def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, prog
         segundos += reg["segundos"]
         guardar(f"diagnostico-{k}/respuesta.txt", gen.text)
         try:
-            reg["diagnostico"] = interpretar_diagnostico(gen.text, f["codigo"], f["zonas"], funcion)
+            reg["diagnostico"] = _interpretar(gen.text, f["codigo"], f["zonas"], funcion)
             reg["valido"] = True
         except ValueError as e:
             reg["motivo"] = str(e) + (" (la respuesta se cortó por el límite de tokens)" if gen.truncated else "")
@@ -246,22 +253,25 @@ def correr(destino: Path, f: dict, executor, cliente, gate, diagnosticador, prog
         # Sin un diagnóstico válido NO se sigue: nunca se sustituye por la causa conocida.
         inf["detenido"] = inf["detenido"] or (f"la diagnosticadora no produjo un diagnóstico válido en "
                                               f"{len(inf['diagnosticos'])} intento(s)")
-        return _cerrar(inf, destino, guardar, None)
-    texto = texto_para_el_programador(valido)
+        return _cerrar(inf, destino, guardar, None, aj)
+    texto = _texto(valido)
     inf["diagnostico_usado"] = {"texto": texto, "huella": hashlib.sha256(texto.encode()).hexdigest()}
     f2 = dict(f, causa=texto, titulo_causa=TITULO_DIAGNOSTICO)
+    if "pedido" in aj:
+        f2["pedido"] = aj["pedido"]
     rep = RGD.correr(destino / "reparacion", f2, executor, cliente, gate, programador,
-                     max_segundos=max(0.0, max_segundos - segundos), cancel=cancel, normalizar=True)
+                     max_segundos=max(0.0, max_segundos - segundos), cancel=cancel, normalizar=True,
+                     retroalimentacion=aj.get("retroalimentacion"))
     inf["reparacion"] = {k: rep[k] for k in ("intentos", "llamadas", "verificacion", "criterios", "exito", "motivo",
                                              "clasificacion", "auditoria_de_fugas")}
     # ¿El programador recibió ESE diagnóstico? (comprobado sobre lo que efectivamente se envió)
     enviados = [json.loads(p.read_text())[1]["content"] for p in sorted((destino / "reparacion").glob(
         "intento-*/pedido.json"))]
     inf["diagnostico_en_cada_pedido_del_programador"] = bool(enviados) and all(texto in e for e in enviados)
-    return _cerrar(inf, destino, guardar, valido)
+    return _cerrar(inf, destino, guardar, valido, aj)
 
 
-def _cerrar(inf: dict, destino: Path, guardar, valido) -> dict:
+def _cerrar(inf: dict, destino: Path, guardar, valido, aj: dict | None = None) -> dict:
     rep = inf.get("reparacion") or {}
     ev = evaluar_diagnostico(valido)
     inf["evaluacion_del_diagnostico"] = ev
@@ -275,7 +285,7 @@ def _cerrar(inf: dict, destino: Path, guardar, valido) -> dict:
         "4_bateria_independiente_completa": bool(rep.get("verificacion") and rep["verificacion"]["ok"]),
     }
     inf["exito"] = all(inf["criterios"].values()) and bool(rep.get("exito"))
-    inf["clasificacion"] = (CLASIFICACION + (" (con normalización de la sangría)" if verificado and
+    inf["clasificacion"] = ((aj or {}).get("clasificacion", CLASIFICACION) + (" (con normalización de la sangría)" if verificado and
                                              verificado.get("sangria_normalizada") else "")) if inf["exito"] else None
     inf["motivo"] = inf["detenido"] or rep.get("motivo")
     inf["fin"] = time.time()

@@ -6,4 +6,4 @@ Etapa 3: programación con un modelo remoto sobre el motor original (remoto.py, 
 real solo con autorización expresa. Base y carpeta propias
 (nunca la base de la aplicación ni la memoria del agente de datos); no toca servicios ni configura Tailscale.
 """
-VERSION = "oficina 0.16-reparacion-coordinada"
+VERSION = "oficina 0.17-preservacion-comportamiento"

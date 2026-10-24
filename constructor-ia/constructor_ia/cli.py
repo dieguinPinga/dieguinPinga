@@ -1217,7 +1217,7 @@ def cmd_oficina(args) -> int:
         return _oficina_sonda_comprension(args, cfg, carpeta)
     if args.accion == "reparar-guiado":
         return _oficina_reparacion_guiada(args, cfg, carpeta)
-    if args.accion == "reparar-coordinado":
+    if args.accion in ("reparar-coordinado", "reparar-coordinado-8"):
         return _oficina_reparacion_coordinada(args, cfg, carpeta)
     if args.accion in ("mision", "cola", "recuperar", "cancelar"):
         cola = CO.Cola(carpeta / "oficina.db")
@@ -1605,12 +1605,16 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
     from .oficina import registro as RG
     from .oficina import remoto as RM
     from .oficina import reparacion_coordinada as RC
+    from .oficina import reparacion_coordinada_8 as RC8
     from .oficina import reparacion_guiada as RGD
     from .oficina import revision_existente as RE
     from .oficina.misiones_programacion import MISIONES
     from .sandbox.executor import Executor
 
-    print(f"{RC.VERSION_COORDINADA}: corrida {args.corrida}, diagnosticadora {args.diagnosticador_modelo}, "
+    ocho = args.accion == "reparar-coordinado-8"          # experimento 7.8 (preservación de comportamiento)
+    nombre = "7.8" if ocho else "7.7"
+    print(f"{RC8.VERSION_8 if ocho else RC.VERSION_COORDINADA}: corrida {args.corrida}, diagnosticadora "
+          f"{args.diagnosticador_modelo}, "
           f"programador {args.modelo}")
     try:
         f = RC.preparar(Path(args.corrida))
@@ -1655,16 +1659,17 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
         return 3
     if not args.autorizo_inferencia_remota:
         if args.mostrar_pedido:
-            print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in RC.mensajes_diagnostico(f, disc)))
+            pedir = RC8.mensajes_diagnostico if ocho else RC.mensajes_diagnostico
+            print("\n".join(f"--- {m['role']} ---\n{m['content']}" for m in pedir(f, disc)))
         print(f"Preparación completa: listo para autorizar con --autorizo-inferencia-remota (hasta "
               f"{RC.MAX_DIAGNOSTICOS} diagnósticos y {RGD.MAX_INTENTOS} parches).")
         return 0
     try:
-        destino = RC.carpeta(carpeta, Path(args.corrida))
+        destino = (RC8.carpeta if ocho else RC.carpeta)(carpeta, Path(args.corrida))
     except RC.ErrorCoordinada as e:
         print(f"oficina: {e}", file=sys.stderr)
         return 2
-    inf = RC.correr(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]),
+    inf = (RC8.correr if ocho else RC.correr)(destino, f, ex, RM.ClienteRemoto(t["url"]), RM.compuerta(t["url"]),
                     PG.modelo_remoto(args.diagnosticador_modelo, num_predict=RE.NUM_PREDICT_REVISOR, timeout_s=600),
                     PG.modelo_remoto(args.modelo), max_segundos=args.max_segundos)
     for d in inf["diagnosticos"]:
@@ -1676,7 +1681,7 @@ def _oficina_reparacion_coordinada(args, cfg, carpeta) -> int:
               + (f" · discrepancia {i['discrepancia_sintetica']}" if i["estado"] == "aplicado" else ""))
     for k, v in inf["criterios"].items():
         print(f"  criterio {k}: {'sí' if v else 'no'}")
-    print(f"Experimento 7.7: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'}"
+    print(f"Experimento {nombre}: {'ÉXITO' if inf['exito'] else 'SIN ÉXITO'}"
           + (f" ({inf['clasificacion']})" if inf.get("clasificacion") else "") + f" · {inf['motivo']} · registro en {destino}")
     return 0 if inf["exito"] else 1
 
@@ -1939,17 +1944,21 @@ def main(argv=None) -> int:
                    help="experimento 7.6: si un parche no coincide literalmente, ajustar SOLO su sangría inicial")
     o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
     o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
-    o = osub.add_parser("reparar-coordinado", help="experimento 7.7: diagnóstico (gemma) y reparación (qwen) "
-                                                   "coordinados sobre las zonas de una corrida 7.3 (sin "
-                                                   "--autorizo-inferencia-remota no infiere)")
-    o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
-    o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")
-    o.add_argument("--trabajador", required=True)
-    o.add_argument("--modelo", default="qwen2.5-coder:7b", help="programador")
-    o.add_argument("--diagnosticador-modelo", dest="diagnosticador_modelo", default="gemma4:12b")
-    o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0)
-    o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
-    o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
+    for nombre, ayuda in (("reparar-coordinado", "experimento 7.7: diagnóstico (gemma) y reparación (qwen) "
+                                                 "coordinados sobre las zonas de una corrida 7.3 (sin "
+                                                 "--autorizo-inferencia-remota no infiere)"),
+                          ("reparar-coordinado-8", "experimento 7.8: como el 7.7, con el comportamiento a preservar "
+                                                   "diagnosticado por gemma y la diferencia observable como "
+                                                   "retroalimentación (sin --autorizo-inferencia-remota no infiere)")):
+        o = osub.add_parser(nombre, help=ayuda)
+        o.add_argument("--corrida", required=True, help="carpeta corrida-* de revisar-existente 7.3 (solo lectura)")
+        o.add_argument("--carpeta", required=True, help="laboratorio propio (no la corrida)")
+        o.add_argument("--trabajador", required=True)
+        o.add_argument("--modelo", default="qwen2.5-coder:7b", help="programador")
+        o.add_argument("--diagnosticador-modelo", dest="diagnosticador_modelo", default="gemma4:12b")
+        o.add_argument("--max-segundos", dest="max_segundos", type=float, default=2400.0)
+        o.add_argument("--mostrar-pedido", dest="mostrar_pedido", action="store_true")
+        o.add_argument("--autorizo-inferencia-remota", dest="autorizo_inferencia_remota", action="store_true")
     o = osub.add_parser("encolar-programacion", help="encola una misión de programación (no ejecuta nada)")
     o.add_argument("--mision", default="resumen_ventas")
     o.add_argument("--modelo", default="gemma4:12b")
