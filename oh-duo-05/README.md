@@ -29,6 +29,8 @@ crean en un directorio temporal. Los pasos son:
 | 7 | puente, 5 pruebas | SDK real en proceso; ver detalle abajo |
 | 8 | integración, 7 pruebas | bwrap real, puente HTTP real, SDK real y la cadena completa, control contra intervenida |
 | 9 | ensayo del protocolo | `comparar_qwen_p1.sh --simulado`: el mismo script de las corridas reales, con el modelo simulado; el par tiene que salir válido |
+| 10 | herramienta de diagnóstico, 4 pruebas | `diagnostico/analizar_par.py` contra el SDK real: detector stuck reproducido y contexto del mensaje |
+| 11 | experimento A1 simulado | 10 pruebas (`ollama_estado.py`, `comparar_a1.py`) y `reproducibilidad/a1.sh --simulado`: 3 corridas en bwrap, tiene que dar REPRODUCIBLE. Procedimiento real: [`reproducibilidad/A1.md`](reproducibilidad/A1.md) |
 
 Las pruebas del puente verifican:
 - entrega durante `run()` con el límite intacto;

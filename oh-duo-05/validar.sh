@@ -13,6 +13,8 @@
 #   8. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
 #   9. ensayo del protocolo (comparar_qwen_p1.sh --simulado): el mismo script que usarán las corridas reales
 #  10. herramienta de diagnóstico (diagnostico/analizar_par.py) contra el SDK real: stuck y contexto (4 pruebas)
+#  11. experimento A1: estado de Ollama y comparación de trayectorias (10 pruebas) y ensayo completo
+#      reproducibilidad/a1.sh --simulado (3 corridas en bwrap con Ollama simulado; tiene que dar REPRODUCIBLE)
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
 set -u
@@ -88,6 +90,15 @@ puente() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -
 
 diagnostico_par() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_diagnostico.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2); }
 
+a1() {
+    ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_a1.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2) || return 1
+    OH5_INFORME="$SALIDA/a1-simulado" bash "$AQUI/reproducibilidad/a1.sh" --simulado --etiqueta validacion \
+        > "$SALIDA/a1-simulado.log" 2>&1 || { tail -n 20 "$SALIDA/a1-simulado.log"; return 1; }
+    local c; c="$(ls "$SALIDA"/a1-simulado/*/comparacion_a1.json)"
+    grep -E "^# |^\| a1-" "$(dirname "$c")/comparacion_a1.md"
+    python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r["veredicto"] == "REPRODUCIBLE" and all(c["stuck"].get("disponible") for c in r["corridas"]) else 1)' "$c"
+}
+
 integracion() {
     ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_integracion.py -v ) > "$SALIDA/integracion.txt" 2>&1
     local r=$?
@@ -109,6 +120,7 @@ if [ ${#FALLAS[@]} -eq 0 ]; then
     paso "8 integración (bwrap real, control vs intervenida)" integracion
     paso "9 ensayo del protocolo (simulado, sin inferencia)" protocolo
     paso "10 herramienta de diagnóstico (SDK real)" diagnostico_par
+    paso "11 experimento A1 (simulado, sin inferencia)" a1
 fi
 echo
 if [ ${#FALLAS[@]} -eq 0 ]; then

@@ -56,33 +56,47 @@ def bucle_p1():
 
 
 class Servidor:
-    def __init__(self, respuesta, demora: float = 0.2):
+    """estado_ollama=False: /api/ps siempre muestra el modelo cargado (pruebas de integración).
+    estado_ollama=True: imita a Ollama: el modelo se carga con el primer pedido, cada pedido renueva su
+    expires_at, y POST /api/generate {"keep_alive": 0} sin prompt lo descarga (sin generar nada).
+    `otros` agrega modelos cargados por «otro proceso» (para probar que A1 no los toca)."""
+
+    def __init__(self, respuesta, demora: float = 0.2, estado_ollama: bool = False):
         self.respuesta, self.demora, self.pedidos = respuesta, demora, []
+        self.estado_ollama, self.cargado, self.vence, self.otros, self.descargas = estado_ollama, False, None, [], []
         yo = self
 
         class H(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                d = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if self.path == "/api/show":
-                    b = b'{"capabilities":["completion"],"model_info":{"x.context_length":32768}}'
-                else:
-                    if len(d["messages"]) <= 2:            # conversación nueva
-                        yo.pedidos.clear()
-                    yo.pedidos.append(d["messages"])
-                    time.sleep(yo.demora)
-                    b = json.dumps({"message": {"role": "assistant", "content": yo.respuesta(len(yo.pedidos), d["messages"])},
-                                    "done": True, "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 10}).encode()
+            def _json(self, d):
+                b = json.dumps(d).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(b)))
                 self.end_headers()
                 self.wfile.write(b)
 
+            def do_POST(self):
+                d = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/show":
+                    return self._json({"capabilities": ["completion"], "model_info": {"x.context_length": 32768}})
+                if self.path == "/api/generate":
+                    yo.descargas.append(d)
+                    if d.get("keep_alive") == 0 and not d.get("prompt"):
+                        yo.cargado = False
+                    return self._json({"model": d.get("model"), "done": True, "done_reason": "unload"})
+                yo.cargado, yo.vence = True, f"2099-01-01T00:00:{len(yo.pedidos) % 60:02d}Z"
+                if len(d["messages"]) <= 2:            # conversación nueva
+                    yo.pedidos.clear()
+                yo.pedidos.append(d["messages"])
+                time.sleep(yo.demora)
+                self._json({"message": {"role": "assistant", "content": yo.respuesta(len(yo.pedidos), d["messages"])},
+                            "done": True, "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 10})
+
             def do_GET(self):
-                b = b'{"version":"0.0-simulado","models":[{"name":"qwen2.5-coder:7b"}]}'   # /api/ps: ya cargado
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(b)))
-                self.end_headers()
-                self.wfile.write(b)
+                if not yo.estado_ollama:
+                    return self._json({"version": "0.0-simulado", "models": [{"name": "qwen2.5-coder:7b"}]})   # ya cargado
+                modelos = ([{"name": "qwen2.5-coder:7b", "expires_at": yo.vence, "size": 1, "size_vram": 1}] if yo.cargado else []) \
+                    + [{"name": n, "expires_at": "2099-01-01T00:00:00Z"} for n in yo.otros]
+                self._json({"version": "0.0-simulado", "models": modelos})
 
             def log_message(self, *a):
                 pass
@@ -96,9 +110,10 @@ class Servidor:
         self.srv.server_close()
 
 
-if __name__ == "__main__":      # python3 simulado.py ARCHIVO_PUERTO: sirve bucle_p1 hasta que lo maten
+if __name__ == "__main__":      # python3 simulado.py ARCHIVO_PUERTO [demora] [estado]: sirve bucle_p1 hasta que lo maten
     import sys
     from pathlib import Path
-    srv = Servidor(bucle_p1(), demora=float(sys.argv[2]) if len(sys.argv) > 2 else 0.2)
+    srv = Servidor(bucle_p1(), demora=float(sys.argv[2]) if len(sys.argv) > 2 else 0.2,
+                   estado_ollama=len(sys.argv) > 3 and sys.argv[3] == "estado")
     Path(sys.argv[1]).write_text(str(srv.puerto))
     threading.Event().wait()

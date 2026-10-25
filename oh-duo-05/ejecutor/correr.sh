@@ -134,7 +134,7 @@ for _ in $(seq 50); do [ -S "$SOCK/ollama.sock" ] && break; sleep 0.1; done
 AGENTE=(bwrap "${COMUN[@]}" "${MONTAJES[@]}"
         --setenv OH_MODELO "$MODELO" --setenv OH_SEMILLA "$SEMILLA" --setenv OH_NUM_CTX "$NUM_CTX"
         --setenv OH_MAX_ITER "$MAX_ITER" --setenv OH_MAX_SEG "$MAX_SEG" --setenv OH_GRACIA "$GRACIA"
-        --setenv OH_MODULO "$MODULO"
+        --setenv OH_MODULO "$MODULO" --setenv OH_REGISTRO_LLM "${REGISTRO_LLM:-0}"
         --remount-ro / /opt/venv/bin/python -I /opt/oh/smoke.py)
 
 if [ "$SIN_SCOPE" = 1 ]; then

@@ -47,6 +47,9 @@ MAX_SEG = int(os.environ["OH_MAX_SEG"])
 MODULO = os.environ["OH_MODULO"]
 CODIGO, PRUEBA = f"{MODULO}.py", f"test_{MODULO}.py"
 GRACIA = int(os.environ["OH_GRACIA"])
+# Registro de cada pedido y respuesta cruda del modelo en /estado/llm/ (lo usa el experimento A1). No cambia
+# lo que se le envía al modelo; por omisión está apagado.
+REGISTRO_LLM = os.environ.get("OH_REGISTRO_LLM", "0") == "1"
 WORK, ESTADO = Path("/work"), Path("/estado")
 # Un pedido bloqueado dura como mucho LLM_TIMEOUT × (1 + LLM_REINTENTOS) más la espera entre intentos (8–64 s).
 LLM_TIMEOUT, LLM_REINTENTOS = 300, 1
@@ -84,6 +87,8 @@ llm = LLM(
     caching_prompt=False,
     timeout=LLM_TIMEOUT,
     num_retries=LLM_REINTENTOS,
+    log_completions=REGISTRO_LLM,
+    log_completions_folder=str(ESTADO / "llm"),
 )
 agent = Agent(
     llm=llm,

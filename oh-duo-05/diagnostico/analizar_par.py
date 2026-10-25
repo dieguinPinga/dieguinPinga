@@ -78,6 +78,7 @@ def stuck_reproducido(d: Path) -> dict:
     antes de cada paso del agente. Devuelve el primer punto en que daría stuck y con qué patrón."""
     try:
         os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")   # sin esto litellm baja su tabla por red
         import openhands.tools.file_editor  # noqa: F401   registran sus tipos para deserializar
         import openhands.tools.terminal  # noqa: F401
         from openhands.sdk.conversation.stuck_detector import MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION as VENTANA
@@ -136,6 +137,7 @@ def contexto_reconstruido(d: Path, hasta: int, buscado: str) -> dict:
     `hasta`), con la misma función que usa el agente sin condensador: ¿está el texto del coordinador y dónde?"""
     try:
         os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
+        os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")   # sin esto litellm baja su tabla por red
         import openhands.tools.file_editor  # noqa: F401
         import openhands.tools.terminal  # noqa: F401
         from openhands.sdk.event.base import Event, LLMConvertibleEvent
