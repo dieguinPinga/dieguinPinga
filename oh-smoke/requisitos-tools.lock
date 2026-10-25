@@ -1,0 +1,5 @@
+# openhands-tools se instala SIN sus dependencias (evita browser-use, posthog, clientes de Google, etc.).
+# Lo que necesitan TerminalTool y FileEditorTool ya está en requisitos.lock.
+# Instalar con: venv/bin/pip install --require-hashes --no-deps -r requisitos-tools.lock
+openhands-tools==1.58.1 \
+    --hash=sha256:ff559d9dce2ccae7b8d01fa99bff1b142b40eb88fca8c5be9b39787131be8385
