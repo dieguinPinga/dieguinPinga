@@ -1,0 +1,1 @@
+Approach: minimal correction. First identify the single causal defect behind the failing tests. Preserve all existing behavior and change only what is strictly necessary in {CODIGO}: prefer the smallest edit that makes the code agree with its documented behavior, and do not refactor, rename or rewrite unrelated code.

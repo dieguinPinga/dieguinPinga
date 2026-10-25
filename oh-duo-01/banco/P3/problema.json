@@ -1,0 +1,5 @@
+{
+ "id": "P3",
+ "modulo": "paginacion",
+ "descripcion_del_defecto": "La cantidad de páginas se redondea hacia abajo, así que la última página incompleta queda fuera de rango."
+}

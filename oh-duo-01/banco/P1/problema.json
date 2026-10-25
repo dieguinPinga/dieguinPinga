@@ -1,0 +1,5 @@
+{
+ "id": "P1",
+ "modulo": "intervalos",
+ "descripcion_del_defecto": "Al unir un intervalo contenido en el anterior se toma su fin en lugar del máximo de los dos."
+}

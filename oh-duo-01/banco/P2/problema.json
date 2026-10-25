@@ -1,0 +1,5 @@
+{
+ "id": "P2",
+ "modulo": "inventario",
+ "descripcion_del_defecto": "Un retiro fallido de un producto desconocido lo registra con stock cero."
+}

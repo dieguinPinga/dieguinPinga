@@ -1,0 +1,1 @@
+Approach: invariant-based reasoning. First reconstruct the contract of {CODIGO} from its docstring and tests: list the properties that must always hold, including edge cases, and find where the code contradicts them. Then correct those contradictions in {CODIGO} so that every documented property holds, keeping the public interface unchanged.

@@ -1,0 +1,5 @@
+{
+ "id": "P6",
+ "modulo": "luhn",
+ "descripcion_del_defecto": "Los dígitos se recorren desde la izquierda en lugar de desde la derecha, así que falla con largos pares."
+}

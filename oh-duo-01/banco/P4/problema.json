@@ -1,0 +1,5 @@
+{
+ "id": "P4",
+ "modulo": "rle",
+ "descripcion_del_defecto": "Al decodificar, cada dígito reemplaza la cantidad leída en lugar de agregarse, así que fallan las cantidades de dos o más cifras."
+}
