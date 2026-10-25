@@ -1,0 +1,7 @@
+{
+ "id": "O02",
+ "categoria": "omisión",
+ "modulo": "numeros",
+ "funcion": "leer_numeros",
+ "descripcion_del_defecto": "Falta descartar las líneas de comentario antes de convertirlas."
+}

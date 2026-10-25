@@ -1,0 +1,7 @@
+{
+ "id": "C03",
+ "categoria": "cálculo",
+ "modulo": "reloj",
+ "funcion": "a_hms",
+ "descripcion_del_defecto": "Los minutos se calculan sobre el total en lugar de sobre el resto de la hora."
+}

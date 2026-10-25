@@ -1,0 +1,7 @@
+{
+ "id": "C04",
+ "categoria": "cálculo",
+ "modulo": "poligono",
+ "funcion": "area",
+ "descripcion_del_defecto": "La fórmula del área omite la división por dos."
+}

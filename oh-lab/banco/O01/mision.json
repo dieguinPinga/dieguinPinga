@@ -1,0 +1,7 @@
+{
+ "id": "O01",
+ "categoria": "omisión",
+ "modulo": "unicos",
+ "funcion": "unicos",
+ "descripcion_del_defecto": "Falta registrar cada elemento como visto, así que no se elimina ningún repetido."
+}

@@ -1,0 +1,7 @@
+{
+ "id": "S01",
+ "categoria": "sobrescritura",
+ "modulo": "palabras",
+ "funcion": "contar_palabras",
+ "descripcion_del_defecto": "Cada aparición reemplaza el conteo por uno en lugar de sumarlo."
+}

@@ -1,0 +1,7 @@
+{
+ "id": "K01",
+ "categoria": "condición",
+ "modulo": "calendario",
+ "funcion": "es_bisiesto",
+ "descripcion_del_defecto": "La excepción de los años divisibles por 400 usa «y» en lugar de «o»."
+}

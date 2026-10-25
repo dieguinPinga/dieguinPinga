@@ -1,0 +1,7 @@
+{
+ "id": "K02",
+ "categoria": "condición",
+ "modulo": "imc",
+ "funcion": "clasificar",
+ "descripcion_del_defecto": "El límite superior de «normal» es inclusivo (<= 25) en lugar de exclusivo."
+}

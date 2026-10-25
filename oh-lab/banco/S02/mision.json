@@ -1,0 +1,7 @@
+{
+ "id": "S02",
+ "categoria": "sobrescritura",
+ "modulo": "grupos",
+ "funcion": "agrupar",
+ "descripcion_del_defecto": "Cada registro reemplaza la lista de su grupo en lugar de agregarse."
+}

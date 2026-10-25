@@ -1,0 +1,7 @@
+{
+ "id": "S03",
+ "categoria": "sobrescritura",
+ "modulo": "aplanar",
+ "funcion": "aplanar",
+ "descripcion_del_defecto": "Cada sublista reemplaza el resultado acumulado en lugar de agregarse."
+}

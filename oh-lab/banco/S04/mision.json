@@ -1,0 +1,7 @@
+{
+ "id": "S04",
+ "categoria": "sobrescritura",
+ "modulo": "config",
+ "funcion": "fusionar",
+ "descripcion_del_defecto": "Una sección anidada de la configuración extra reemplaza a la de base en lugar de combinarse."
+}

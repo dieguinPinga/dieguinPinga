@@ -1,0 +1,7 @@
+{
+ "id": "C02",
+ "categoria": "cálculo",
+ "modulo": "percentil",
+ "funcion": "percentil",
+ "descripcion_del_defecto": "Usa el rango como índice desde cero (corrimiento de una posición)."
+}

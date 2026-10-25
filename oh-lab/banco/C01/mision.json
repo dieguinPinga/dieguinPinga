@@ -1,0 +1,7 @@
+{
+ "id": "C01",
+ "categoria": "cálculo",
+ "modulo": "promedio",
+ "funcion": "promedio_ponderado",
+ "descripcion_del_defecto": "Divide por la cantidad de pesos en lugar de por su suma."
+}
