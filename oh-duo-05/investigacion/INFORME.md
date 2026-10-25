@@ -98,16 +98,16 @@ fin_puente = threading.Event()
 
 
 def puente():
-    leido, vistos = 0, set()
+    leido, pendiente, vistos = 0, "", set()
     while not fin_puente.is_set():
         try:
             if BUZON.is_file():
-                with open(BUZON, encoding="utf-8") as f:
+                with open(BUZON, encoding="utf-8") as f:    # mismo patrón que el seguimiento en vivo de OH-DUO-04
                     f.seek(leido)
-                    datos = f.read()
-                completas, _, resto = datos.rpartition("\n")      # una línea a medio escribir espera
-                leido += len(completas.encode()) + (1 if completas or datos.startswith("\n") else 0)
-                for linea in filter(None, completas.splitlines()):
+                    pendiente += f.read()
+                    leido = f.tell()
+                *completas, pendiente = pendiente.split("\n")  # una línea a medio escribir espera
+                for linea in filter(None, completas):
                     m = json.loads(linea)
                     registro = {"id": m["id"], "sha256": m["sha256"], "momento": time.time()}
                     if m["id"] in vistos:
