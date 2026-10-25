@@ -12,7 +12,8 @@
 #   7. puente con el SDK real, en proceso (5 pruebas)
 #   8. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
 #   9. ensayo del protocolo (comparar_qwen_p1.sh --simulado): el mismo script que usarán las corridas reales
-#  10. herramienta de diagnóstico (diagnostico/analizar_par.py) contra el SDK real: stuck y contexto (4 pruebas)
+#  10. herramientas de diagnóstico contra el SDK real: analizar_par.py (stuck y contexto, 4 pruebas) y
+#      auditar_b1.py (ediciones reconstruidas, pruebas protegidas, reversiones, pensamientos; 5 pruebas)
 #  11. experimento A1: estado de Ollama y comparación de trayectorias (17 pruebas) y ensayo completo
 #      reproducibilidad/a1.sh --simulado (3 corridas en bwrap con Ollama simulado; tiene que dar REPRODUCIBLE)
 #  12. experimento B1: comprobaciones contra A1 y contrafáctico (11 pruebas) y ensayo completo
@@ -90,7 +91,10 @@ despachador() { ( cd "$AQUI" && python3 -I -m unittest discover -s tests -p test
 
 puente() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_puente.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2); }
 
-diagnostico_par() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_diagnostico.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2); }
+diagnostico_par() {
+    ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_diagnostico.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2) || return 1
+    ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_auditoria.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2)
+}
 
 a1() {
     ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_a1.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2) || return 1
