@@ -1,0 +1,35 @@
+{
+ "problema": "P1",
+ "modulo": "intervalos",
+ "programador": "gemma",
+ "modelo": "gemma4:12b",
+ "enfoque": "razonamiento por invariantes",
+ "semilla": 11,
+ "inicio": "2026-10-25T05:55:28+00:00",
+ "fin": "2026-10-25T05:55:44+00:00",
+ "segundos": 15.1,
+ "salida_correr": 0,
+ "estado_ejecucion": "finalizada",
+ "motivo": "finish",
+ "visibles_pasan": true,
+ "modelos_cargados_antes": null,
+ "cambio_de_modelo": null,
+ "llamadas_llm": 6,
+ "tokens_prompt": 57000,
+ "tokens_generados": 420,
+ "segundos_agente": 0.9,
+ "acciones": [
+  "terminal",
+  "file_editor",
+  "file_editor",
+  "file_editor",
+  "terminal",
+  "finish"
+ ],
+ "estado_final_sdk": "finished",
+ "originales_intactos": "ok",
+ "congelado": {
+  "archivos": 2,
+  "omitidos": []
+ }
+}

@@ -1,0 +1,22 @@
+{
+ "repeticion_equivalente_sin_cambio": 3,
+ "fallos_iguales_sin_cambio": 3,
+ "ediciones_rechazadas_o_sin_efecto": 2,
+ "iteraciones_finales_sin_progreso": 8,
+ "limite_de_iteraciones": 30,
+ "patrones_protegidos": [
+  "test_*.py"
+ ],
+ "equivalencia_pruebas": true,
+ "escritura_por_terminal": [
+  "\\bsed\\s+-i",
+  "(^|[^<>2&])>{1,2}\\s*\\S",
+  "\\btee\\b",
+  "\\bmv\\b",
+  "\\bcp\\b",
+  "\\brm\\b",
+  "\\btruncate\\b",
+  "\\bpatch\\b",
+  "open\\([^)]*['\\\"][wa]"
+ ]
+}
