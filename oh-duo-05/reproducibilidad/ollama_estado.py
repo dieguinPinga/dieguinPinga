@@ -13,6 +13,9 @@ Señales de actividad (cualquiera aborta, salida 3):
   - si Ollama corre en esta máquina: conexiones TCP establecidas con su puerto, o uso de la GPU por encima
     del umbral en las muestras de nvidia-smi;
   - hay un correr.sh o un agente de OH-DUO en ejecución.
+Las señales locales (conexiones, GPU) describen el Ollama y la GPU DE ESTA MÁQUINA: se usan cuando la URL es
+local. El Ollama simulado de las pruebas (`--simulado`, que exige /api/version = "0.0-simulado") no es ese
+Ollama ni usa la GPU: con él se omiten, porque si no la prueba mediría el estado del Ollama real de la máquina.
 Descarga: POST /api/generate {"model": M, "keep_alive": 0} sin prompt, que según la API de Ollama descarga el
 modelo sin generar nada. Se envía solo si M está cargado y la observación no vio actividad.
 """
@@ -30,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MODELO = "qwen2.5-coder:7b"
+VERSION_SIMULADA = "0.0-simulado"      # la que informa tests/simulado.py
 UMBRAL_GPU = 15          # % de uso de la GPU que se considera actividad
 
 
@@ -118,19 +122,26 @@ def entorno_ollama() -> dict:
     return out
 
 
-def foto(url: str) -> dict:
+def foto(url: str, senales_locales: bool | None = None) -> dict:
+    """senales_locales=None: se miran la GPU y las conexiones si la URL es de esta máquina (lo de siempre).
+    False: solo para el Ollama simulado, que lo tiene que declarar en /api/version."""
     local = es_local(url)
-    return {"momento": ahora(), "url": url, "version": pedir(url, "/api/version").get("version"), "cargados": cargados(url),
-            "ollama_local": local, "gpu": gpu() if local else None, "conexiones": conexiones(url) if local else None,
-            "entorno_ollama": entorno_ollama() if local else None, "procesos_oh": procesos_oh()}
+    version = pedir(url, "/api/version").get("version")
+    if senales_locales is False and version != VERSION_SIMULADA:
+        raise ValueError(f"las señales locales solo se pueden omitir con el Ollama simulado (versión {version!r})")
+    mirar = local if senales_locales is None else senales_locales
+    return {"momento": ahora(), "url": url, "version": version, "cargados": cargados(url),
+            "ollama_local": local, "senales_locales": mirar, "gpu": gpu() if mirar else None,
+            "conexiones": conexiones(url) if mirar else None, "entorno_ollama": entorno_ollama() if mirar else None,
+            "procesos_oh": procesos_oh()}
 
 
 def inactivo(url: str, modelo: str = MODELO, ventana: float = 20, muestras: int = 4, umbral_gpu: float = UMBRAL_GPU,
-             dormir=time.sleep) -> tuple[bool, list[str], list[dict]]:
+             dormir=time.sleep, senales_locales: bool | None = None) -> tuple[bool, list[str], list[dict]]:
     """Observa Ollama `ventana` segundos. Devuelve (inactivo, motivos de actividad, fotos)."""
     fotos, motivos = [], []
     for k in range(muestras):
-        fotos.append(foto(url))
+        fotos.append(foto(url, senales_locales))
         if k < muestras - 1:
             dormir(ventana / (muestras - 1))
     for f in fotos:
@@ -147,7 +158,7 @@ def inactivo(url: str, modelo: str = MODELO, ventana: float = 20, muestras: int 
             motivos.append(f"el vencimiento de {nombre} cambió durante la observación: alguien lo está usando")
     if any(f["procesos_oh"] for f in fotos):
         motivos.append(f"hay procesos de OH-DUO en ejecución: {fotos[-1]['procesos_oh'] or fotos[0]['procesos_oh']}")
-    if fotos[0]["ollama_local"]:
+    if fotos[0]["senales_locales"]:
         if any((f["conexiones"] or 0) > 0 for f in fotos):
             motivos.append(f"conexiones abiertas con Ollama: {[f['conexiones'] for f in fotos]}")
         usos = [float(g["uso_pct"]) for f in fotos for g in (f["gpu"] or []) if g.get("uso_pct", "").replace(".", "").isdigit()]
@@ -169,14 +180,15 @@ def descargar(url: str, modelo: str = MODELO, espera: float = 60, dormir=time.sl
     return {"enviado": True, "motivo": "descargado"}
 
 
-def preparar(url: str, modelo: str = MODELO, ventana: float = 20, dormir=time.sleep) -> dict:
-    ok, motivos, fotos = inactivo(url, modelo, ventana, dormir=dormir)
+def preparar(url: str, modelo: str = MODELO, ventana: float = 20, dormir=time.sleep,
+             senales_locales: bool | None = None) -> dict:
+    ok, motivos, fotos = inactivo(url, modelo, ventana, dormir=dormir, senales_locales=senales_locales)
     r = {"momento": ahora(), "observacion": fotos, "actividad": motivos}
     if not ok:
         r["resultado"] = "abortado"
         return r
     r["descarga"] = descargar(url, modelo, dormir=dormir)
-    r["inicial"] = foto(url)
+    r["inicial"] = foto(url, senales_locales)
     if r["inicial"]["cargados"]:
         r["resultado"] = "abortado"
         r["actividad"].append(f"después de descargar quedan modelos cargados: {[m['name'] for m in r['inicial']['cargados']]}")
@@ -198,15 +210,18 @@ def main(argv=None) -> int:
     ap.add_argument("--modelo", default=MODELO)
     ap.add_argument("--ventana", type=float, default=20)
     ap.add_argument("--salida", type=Path)
+    ap.add_argument("--simulado", action="store_true",
+                    help="Ollama simulado de las pruebas: sin señales locales (exige su versión 0.0-simulado)")
     a = ap.parse_args(argv)
+    sl = False if a.simulado else None
     try:
         if a.modo == "foto":
             r, codigo = foto(a.url), 0
         elif a.modo == "inactivo":
-            ok, motivos, fotos = inactivo(a.url, a.modelo, a.ventana)
+            ok, motivos, fotos = inactivo(a.url, a.modelo, a.ventana, senales_locales=sl)
             r, codigo = {"inactivo": ok, "actividad": motivos, "observacion": fotos}, 0 if ok else 3
         elif a.modo == "preparar":
-            r = preparar(a.url, a.modelo, a.ventana)
+            r = preparar(a.url, a.modelo, a.ventana, senales_locales=sl)
             codigo = 0 if r["resultado"] == "en_frio" else 3
         else:
             r = despues(a.url, a.modelo)

@@ -49,9 +49,11 @@ if [ "$MODO" = simulado ]; then
     for _ in $(seq 50); do [ -s "$BASE/puerto" ] && break; sleep 0.1; done
     export OLLAMA_URL="http://127.0.0.1:$(cat "$BASE/puerto")"
     VENTANA=1
+    SIMULADO=(--simulado)     # el simulado no es el Ollama de esta máquina: sin señales de su GPU ni sus conexiones
 else
     CORRIDAS="$AQUI/corridas" INFORMES="$AQUI/informes"
     export OLLAMA_URL="${OLLAMA_URL:-http://100.92.153.59:11435}"
+    SIMULADO=()
 fi
 DEST="$INFORMES/$NOMBRE"
 fallo() { echo "ABORTADO: $*"; echo "Registros (se conservan): $DEST"; exit 1; }
@@ -77,7 +79,7 @@ curl -sSf -m 5 "$OLLAMA_URL/api/version" > "$DEST/ollama_version.json" || fallo 
 if [ "$MODO" = real ]; then
     curl -sSf -m 5 "$OLLAMA_URL/api/tags" | grep -q '"qwen2.5-coder:7b"' || fallo "qwen2.5-coder:7b no está en Ollama"
 fi
-python3 -I "$AQUI/reproducibilidad/ollama_estado.py" inactivo --url "$OLLAMA_URL" --ventana "$VENTANA" \
+python3 -I "$AQUI/reproducibilidad/ollama_estado.py" inactivo --url "$OLLAMA_URL" --ventana "$VENTANA" "${SIMULADO[@]}" \
     --salida "$DEST/estado_ollama/inicio.json" || fallo "Ollama está en uso (ver arriba); no se descarga nada"
 
 python3 -I - "$AQUI" "$DEST/experimento.json" "$MODO" "$SEMILLA" "$OLLAMA_URL" "$NOMBRE" "$N" <<'EOF'
@@ -114,7 +116,7 @@ fi
 for k in $(seq $N); do
     C="$NOMBRE-r$k"
     echo; echo "== 3.$k corrida $C"
-    python3 -I "$AQUI/reproducibilidad/ollama_estado.py" preparar --url "$OLLAMA_URL" --ventana "$VENTANA" \
+    python3 -I "$AQUI/reproducibilidad/ollama_estado.py" preparar --url "$OLLAMA_URL" --ventana "$VENTANA" "${SIMULADO[@]}" \
         --salida "$DEST/estado_ollama/$C-antes.json" || fallo "no se pudo arrancar $C en frío (Ollama en uso o el modelo no se descargó)"
     python3 -I "$AQUI/cadena.py" --corrida "$CORRIDAS/$C" --salida "$INFORMES/$C" --maximo 1 > "$DEST/$C.cadena.log" 2>&1 &
     CAD=$!

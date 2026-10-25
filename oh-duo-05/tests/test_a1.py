@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 AQUI = Path(__file__).resolve().parent
 sys.path.insert(0, str(AQUI))
@@ -39,13 +40,16 @@ def chat(url):
 
 
 class EstadoOllama(unittest.TestCase):
+    """Contra el Ollama simulado: no es el Ollama de esta máquina ni usa su GPU, así que las pruebas declaran
+    senales_locales=False (si no, medirían el Ollama real de la máquina, como pasó en la VivoBook)."""
+
     def setUp(self):
         self.srv = S.Servidor(lambda n, m: S.FIN, demora=0.0, estado_ollama=True)
         self.addCleanup(self.srv.cerrar)
         self.url = f"http://127.0.0.1:{self.srv.puerto}"
 
     def test_inactivo_sin_modelos(self):
-        ok, motivos, fotos = O.inactivo(self.url, ventana=0, dormir=NADA)
+        ok, motivos, fotos = O.inactivo(self.url, ventana=0, dormir=NADA, senales_locales=False)
         self.assertTrue(ok, motivos)
         self.assertEqual(fotos[0]["cargados"], [])
         self.assertEqual(fotos[0]["version"], "0.0-simulado")
@@ -53,7 +57,7 @@ class EstadoOllama(unittest.TestCase):
     def test_otro_modelo_cargado_aborta_y_no_toca_nada(self):
         chat(self.url)                                   # qwen cargado y ocioso
         self.srv.otros = ["gemma4:12b"]
-        r = O.preparar(self.url, ventana=0, dormir=NADA)
+        r = O.preparar(self.url, ventana=0, dormir=NADA, senales_locales=False)
         self.assertEqual(r["resultado"], "abortado")
         self.assertIn("gemma4:12b", r["actividad"][0])
         self.assertEqual(self.srv.descargas, [])         # no se pidió ninguna descarga
@@ -70,7 +74,7 @@ class EstadoOllama(unittest.TestCase):
         h = threading.Thread(target=otro_proceso, daemon=True)
         h.start()
         try:
-            r = O.preparar(self.url, ventana=0.6)
+            r = O.preparar(self.url, ventana=0.6, senales_locales=False)
         finally:
             fin.set()
             h.join()
@@ -80,14 +84,14 @@ class EstadoOllama(unittest.TestCase):
 
     def test_descarga_solo_qwen_sin_prompt_y_verifica_en_frio(self):
         chat(self.url)
-        r = O.preparar(self.url, ventana=0, dormir=NADA)
+        r = O.preparar(self.url, ventana=0, dormir=NADA, senales_locales=False)
         self.assertEqual(r["resultado"], "en_frio", r["actividad"])
         self.assertEqual(self.srv.descargas, [{"model": QWEN, "keep_alive": 0}])     # sin prompt: no genera
         self.assertEqual(r["inicial"]["cargados"], [])
         self.assertEqual(r["descarga"], {"enviado": True, "motivo": "descargado"})
 
     def test_sin_cargar_no_envia_nada(self):
-        r = O.preparar(self.url, ventana=0, dormir=NADA)
+        r = O.preparar(self.url, ventana=0, dormir=NADA, senales_locales=False)
         self.assertEqual(r["resultado"], "en_frio")
         self.assertEqual(r["descarga"]["enviado"], False)
         self.assertEqual(self.srv.descargas, [])
@@ -99,6 +103,77 @@ class EstadoOllama(unittest.TestCase):
         r = O.despues(self.url)
         self.assertTrue(r["contaminada"])
         self.assertEqual(r["otros_modelos_aparecieron"], ["llama3:8b"])
+
+
+class SenalesLocales(unittest.TestCase):
+    """Las protecciones que dependen de la máquina (ss, nvidia-smi, pgrep), con salidas simuladas: así se prueban
+    también donde esas herramientas no existen."""
+
+    def setUp(self):
+        self.srv = S.Servidor(lambda n, m: S.FIN, demora=0.0, estado_ollama=True)
+        self.addCleanup(self.srv.cerrar)
+        self.url = f"http://127.0.0.1:{self.srv.puerto}"
+
+    def salida(self, texto, codigo=0):
+        return mock.Mock(stdout=texto, returncode=codigo)
+
+    def test_por_omision_una_url_local_mira_conexiones_y_gpu(self):
+        with mock.patch.object(O, "conexiones", return_value=0) as c, mock.patch.object(O, "gpu", return_value=[]) as g:
+            ok, motivos, fotos = O.inactivo(self.url, ventana=0, dormir=NADA)       # sin senales_locales: lo de siempre
+        self.assertTrue(fotos[0]["senales_locales"])
+        self.assertTrue(c.called and g.called)
+        self.assertTrue(ok, motivos)
+
+    def test_conexion_abierta_aborta(self):
+        with mock.patch.object(O, "conexiones", return_value=1), mock.patch.object(O, "gpu", return_value=[]):
+            r = O.preparar(self.url, ventana=0, dormir=NADA)
+        self.assertEqual(r["resultado"], "abortado")
+        self.assertIn("conexiones abiertas con Ollama", r["actividad"][0])
+        self.assertEqual(self.srv.descargas, [])
+
+    def test_gpu_en_uso_aborta(self):
+        uso = [{"uso_pct": "32", "memoria_usada_mib": "900"}]
+        with mock.patch.object(O, "conexiones", return_value=0), mock.patch.object(O, "gpu", return_value=uso):
+            r = O.preparar(self.url, ventana=0, dormir=NADA)
+        self.assertEqual(r["resultado"], "abortado")
+        self.assertIn("la GPU está en uso", r["actividad"][0])
+        self.assertEqual(self.srv.descargas, [])
+
+    def test_procesos_de_oh_duo_abortan_tambien_con_el_simulado(self):
+        with mock.patch.object(O, "procesos_oh", return_value=["123 bash /x/correr.sh 11"]):
+            r = O.preparar(self.url, ventana=0, dormir=NADA, senales_locales=False)
+        self.assertEqual(r["resultado"], "abortado")
+        self.assertIn("procesos de OH-DUO", r["actividad"][0])
+
+    def test_solo_el_simulado_puede_omitir_las_senales_locales(self):
+        real = S.Servidor(lambda n, m: S.FIN, demora=0.0, estado_ollama=True)
+        self.addCleanup(real.cerrar)
+        with mock.patch.object(O, "pedir", side_effect=lambda u, r, *a, **k: {"version": "0.12.6"} if r == "/api/version"
+                               else {"models": []}):
+            with self.assertRaises(ValueError):
+                O.inactivo(f"http://127.0.0.1:{real.puerto}", ventana=0, dormir=NADA, senales_locales=False)
+            with self.assertRaises(SystemExit):
+                with mock.patch.object(sys, "exit", side_effect=SystemExit):
+                    sys.exit(O.main(["preparar", "--url", f"http://127.0.0.1:{real.puerto}", "--simulado"]) or 0)
+        self.assertEqual(real.descargas, [])
+
+    def test_conexiones_cuenta_el_lado_servidor_de_los_puertos_de_ollama(self):
+        ss = ("0 0 127.0.0.1:11434 127.0.0.1:51234\n"       # alguien conectado al Ollama de la máquina: cuenta
+              "0 0 127.0.0.1:51234 127.0.0.1:11434\n"       # el mismo, del lado cliente: no se cuenta dos veces
+              "0 0 100.92.153.59:11435 100.1.2.3:40000\n"   # cliente remoto en el puerto de la URL: cuenta
+              "0 0 127.0.0.1:22 127.0.0.1:50000\n")
+        with mock.patch.object(O.subprocess, "run", return_value=self.salida(ss)):
+            self.assertEqual(O.conexiones("http://100.92.153.59:11435"), 2)
+        with mock.patch.object(O.subprocess, "run", side_effect=OSError("sin ss")):
+            self.assertIsNone(O.conexiones("http://100.92.153.59:11435"))
+
+    def test_gpu_lee_nvidia_smi(self):
+        linea = "NVIDIA GeForce RTX 4070 Laptop GPU, 550.54, 900, 8188, 32, 50, 1500, 20.1\n"
+        with mock.patch.object(O.subprocess, "run", return_value=self.salida(linea)):
+            (g,) = O.gpu()
+        self.assertEqual((g["uso_pct"], g["memoria_usada_mib"], g["memoria_total_mib"]), ("32", "900", "8188"))
+        with mock.patch.object(O.subprocess, "run", return_value=self.salida("", 9)):
+            self.assertIsNone(O.gpu())
 
 
 @unittest.skipUnless(SDK, "el SDK de OpenHands no está en este Python")
