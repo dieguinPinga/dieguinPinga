@@ -18,6 +18,8 @@
 #      reproducibilidad/a1.sh --simulado (3 corridas en bwrap con Ollama simulado; tiene que dar REPRODUCIBLE)
 #  12. experimento B1: comprobaciones contra A1 y contrafáctico (11 pruebas) y ensayo completo
 #      reproducibilidad/b1.sh --simulado contra el A1 simulado del paso 11 (3 corridas; las 3 tienen que ser válidas)
+#  13. experimento E1: pruebas (7) y dos ensayos completos de e1/e1.sh --simulado contra el A1 del paso 11, con
+#      modelos simulados cuya etapa de ruptura se conoce de antemano (arregla → ninguna; rechazo → aplicación)
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
 set -u
@@ -116,6 +118,24 @@ b1() {
     python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); s=r["resumen"]; sys.exit(0 if not r["problemas_globales"] and s["validas"] == s["total"] == 3 and s["con_cambio_de_conducta"] == 3 and s["resueltas"] == 3 else 1)' "$c"
 }
 
+e1() {
+    ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_e1.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2) || return 1
+    local a1dir; a1dir="$(ls -d "$SALIDA"/a1-simulado/a1-p1-s11-validacion 2>/dev/null)"
+    [ -n "$a1dir" ] || { echo "falta el A1 simulado del paso 11"; return 1; }
+    local v esperada c
+    for v in arregla:ninguna rechazo_sin_recuperacion:aplicacion; do
+        esperada="${v#*:}"; v="${v%%:*}"
+        OH5_INFORME="$SALIDA/e1-simulado" bash "$AQUI/e1/e1.sh" --simulado --a1 "$a1dir" --variante "$v" --etiqueta "$v" \
+            > "$SALIDA/e1-$v.log" 2>&1 || { tail -n 20 "$SALIDA/e1-$v.log"; return 1; }
+        c="$SALIDA/e1-simulado/e1-p1-s11-$v/informe_e1.json"
+        grep -E "^\| E1-" "$(dirname "$c")/informe_e1.md"
+        python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); e=sys.argv[2]
+c=r["condiciones"]; ok=set(c)=={"E1-AB","E1-C"} and all(x["etapa_de_ruptura"].startswith(e) and x["etapas"]["0_validez"]["ok"] for x in c.values())
+ok=ok and r["a0"]["evaluacion"]["identico_a_la_referencia"]
+sys.exit(0 if ok else 1)' "$c" "$esperada" || { echo "  $v: no dio la etapa esperada ($esperada)"; return 1; }
+    done
+}
+
 integracion() {
     ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_integracion.py -v ) > "$SALIDA/integracion.txt" 2>&1
     local r=$?
@@ -139,6 +159,7 @@ if [ ${#FALLAS[@]} -eq 0 ]; then
     paso "10 herramienta de diagnóstico (SDK real)" diagnostico_par
     paso "11 experimento A1 (simulado, sin inferencia)" a1
     paso "12 experimento B1 (simulado, sin inferencia)" b1
+    paso "13 experimento E1 (simulado, sin inferencia)" e1
 fi
 echo
 if [ ${#FALLAS[@]} -eq 0 ]; then

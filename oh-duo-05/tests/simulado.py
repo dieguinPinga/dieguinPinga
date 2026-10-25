@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import re
 import threading
 import time
 
@@ -52,6 +53,52 @@ def bucle_p1():
             return BUCLE_P1[(n - 1) % len(BUCLE_P1)]
         return ARREGLO_P1[min(n - estado["desde"], len(ARREGLO_P1) - 1)]
     respuesta.estado = estado
+    return respuesta
+
+
+# ---- E1: mismas respuestas que bucle_p1 hasta que aparecen las preguntas de e1/plan.py
+MARCA_A = "Before changing anything, stop and diagnose"
+MARCA_B = "apply exactly the corrected line you stated"
+DIAGNOSTICO = ("(1) test_intervalo_contenido expected [(1, 10)] but got [(1, 3)]. (2) The line "
+               "resultado[-1] = (resultado[-1][0], fin) keeps the end of the new interval. "
+               "(3) resultado[-1] = (resultado[-1][0], max(resultado[-1][1], fin))")
+CULPA = "(1) test_intervalo_contenido expected [(1, 10)] but got [(1, 3)]. The test expectation is wrong; [(1, 3)] is correct."
+VARIANTES_E1 = {
+    "arregla": (DIAGNOSTICO, ARREGLO_P1),
+    "no_entiende": (CULPA, [E(command="str_replace", path="/work/test_intervalos.py", old_str="[(1, 10)])", new_str="[(1, 3)])")]
+                    + [T("python3 -m unittest -v")] * 5),
+    # como el primer intento de A1: reemplazar un texto que no existe por la salida esperada
+    "formula_mal": (DIAGNOSTICO, [E(command="str_replace", path="/work/intervalos.py", old_str="return [(1, 3)]",
+                                    new_str="return [(1, 10)]"), T("python3 -m unittest -v"),
+                                  E(command="view", path="/work/intervalos.py")] + [T("python3 -m unittest -v")] * 3),
+    # la corrección bien pensada, con un old_str que no coincide (sin espacio), y no lo vuelve a intentar
+    "rechazo_sin_recuperacion": (DIAGNOSTICO, [E(command="str_replace", path="/work/intervalos.py", old_str="(resultado[-1][0],fin)",
+                                                 new_str="(resultado[-1][0], max(resultado[-1][1], fin))")]
+                                 + [T("python3 -m unittest -v")] * 5),
+    "rechazo_con_recuperacion": (DIAGNOSTICO, [E(command="str_replace", path="/work/intervalos.py", old_str="(resultado[-1][0],fin)",
+                                                 new_str="(resultado[-1][0], max(resultado[-1][1], fin))")] + ARREGLO_P1),
+}
+
+
+def bucle_e1(variante: str = "arregla"):
+    diagnostico, pasos_b = VARIANTES_E1[variante]
+
+    def respuesta(n: int, mensajes: list) -> str:
+        ultimo = str(mensajes[-1].get("content")) if mensajes else ""
+        if "return the complete corrected intervalos.py" in ultimo:     # E1-A0: pedido directo, sin agente
+            codigo, pruebas = (re.findall(r"```python\n(.*?)```", ultimo, re.S) + ["", ""])[:2]
+            if variante != "no_entiende":
+                codigo = codigo.replace("(resultado[-1][0], fin)", "(resultado[-1][0], max(resultado[-1][1], fin))")
+            return f"Here is the corrected module:\n\n```python\n{codigo}\n\n{pruebas}```\n"   # con las pruebas, como la prueba manual
+        textos = [json.dumps(x, ensure_ascii=False) for x in mensajes]
+        ib = max((i for i, t in enumerate(textos) if MARCA_B in t), default=None)
+        ia = max((i for i, t in enumerate(textos) if MARCA_A in t), default=None)
+        if ib is not None:
+            k = sum(1 for x in mensajes[ib + 1:] if x.get("role") == "assistant")
+            return pasos_b[min(k, len(pasos_b) - 1)]
+        if ia is not None:
+            return diagnostico                       # texto sin herramienta: el SDK termina el run
+        return BUCLE_P1[(n - 1) % len(BUCLE_P1)]
     return respuesta
 
 
@@ -110,10 +157,11 @@ class Servidor:
         self.srv.server_close()
 
 
-if __name__ == "__main__":      # python3 simulado.py ARCHIVO_PUERTO [demora] [estado]: sirve bucle_p1 hasta que lo maten
+if __name__ == "__main__":      # python3 simulado.py ARCHIVO_PUERTO [demora] [estado] [variante E1]: sirve hasta que lo maten
     import sys
     from pathlib import Path
-    srv = Servidor(bucle_p1(), demora=float(sys.argv[2]) if len(sys.argv) > 2 else 0.2,
+    srv = Servidor(bucle_e1(sys.argv[4]) if len(sys.argv) > 4 else bucle_p1(),
+                   demora=float(sys.argv[2]) if len(sys.argv) > 2 else 0.2,
                    estado_ollama=len(sys.argv) > 3 and sys.argv[3] == "estado")
     Path(sys.argv[1]).write_text(str(srv.puerto))
     threading.Event().wait()
