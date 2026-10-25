@@ -31,6 +31,7 @@ crean en un directorio temporal. Los pasos son:
 | 9 | ensayo del protocolo | `comparar_qwen_p1.sh --simulado`: el mismo script de las corridas reales, con el modelo simulado; el par tiene que salir válido |
 | 10 | herramienta de diagnóstico, 4 pruebas | `diagnostico/analizar_par.py` contra el SDK real: detector stuck reproducido y contexto del mensaje |
 | 11 | experimento A1 simulado | 17 pruebas (`ollama_estado.py`, `comparar_a1.py`) y `reproducibilidad/a1.sh --simulado`: 3 corridas en bwrap, tiene que dar REPRODUCIBLE. Procedimiento real: [`reproducibilidad/A1.md`](reproducibilidad/A1.md) |
+| 12 | experimento B1 simulado | 11 pruebas (`preparar_b1.py`, `comparar_b1.py`) y `reproducibilidad/b1.sh --simulado` contra el A1 del paso 11: las 3 corridas tienen que ser válidas. Procedimiento real: [`reproducibilidad/B1.md`](reproducibilidad/B1.md) |
 
 Las pruebas del puente verifican:
 - entrega durante `run()` con el límite intacto;

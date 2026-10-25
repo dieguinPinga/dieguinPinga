@@ -82,10 +82,10 @@ fi
 python3 -I "$AQUI/reproducibilidad/ollama_estado.py" inactivo --url "$OLLAMA_URL" --ventana "$VENTANA" "${SIMULADO[@]}" \
     --salida "$DEST/estado_ollama/inicio.json" || fallo "Ollama está en uso (ver arriba); no se descarga nada"
 
-python3 -I - "$AQUI" "$DEST/experimento.json" "$MODO" "$SEMILLA" "$OLLAMA_URL" "$NOMBRE" "$N" <<'EOF'
+python3 -I - "$AQUI" "$DEST/experimento.json" "$MODO" "$SEMILLA" "$OLLAMA_URL" "$NOMBRE" "$N" "$CORRIDAS" <<'EOF'
 import hashlib, json, os, sys
 from pathlib import Path
-aqui, salida, modo, semilla, url, nombre, n = sys.argv[1:]
+aqui, salida, modo, semilla, url, nombre, n, corridas = sys.argv[1:]
 aqui = Path(aqui)
 def raiz(m):
     return next((p for p in (aqui.parent / m, Path.home() / m) if p.is_dir()), None)
@@ -97,7 +97,7 @@ json.dump({"experimento": "A1 reproducibilidad", "modo": modo, "problema": "P1",
            "semilla": int(semilla), "temperatura": 0.2, "ollama": url, "coordinador": "observa y decide, no envía",
            "limites": {k: os.environ[k] for k in ("MAX_ITER", "MAX_SEG", "GRACIA", "NUM_CTX", "REGISTRO_LLM")},
            "arranque": "en frío: modelo descargado y sin otros modelos cargados antes de cada corrida",
-           "corridas": [f"{nombre}-r{k}" for k in range(1, int(n) + 1)],
+           "corridas": [f"{nombre}-r{k}" for k in range(1, int(n) + 1)], "corridas_dir": corridas,
            "huellas": {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in archivos}},
           open(salida, "w"), ensure_ascii=False, indent=1)
 EOF

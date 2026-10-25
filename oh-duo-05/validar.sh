@@ -15,6 +15,8 @@
 #  10. herramienta de diagnóstico (diagnostico/analizar_par.py) contra el SDK real: stuck y contexto (4 pruebas)
 #  11. experimento A1: estado de Ollama y comparación de trayectorias (17 pruebas) y ensayo completo
 #      reproducibilidad/a1.sh --simulado (3 corridas en bwrap con Ollama simulado; tiene que dar REPRODUCIBLE)
+#  12. experimento B1: comprobaciones contra A1 y contrafáctico (11 pruebas) y ensayo completo
+#      reproducibilidad/b1.sh --simulado contra el A1 simulado del paso 11 (3 corridas; las 3 tienen que ser válidas)
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
 set -u
@@ -99,6 +101,17 @@ a1() {
     python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); sys.exit(0 if r["veredicto"] == "REPRODUCIBLE" and all(c["stuck"].get("disponible") for c in r["corridas"]) else 1)' "$c"
 }
 
+b1() {
+    ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_b1.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2) || return 1
+    local a1dir; a1dir="$(ls -d "$SALIDA"/a1-simulado/a1-p1-s11-validacion 2>/dev/null)"
+    [ -n "$a1dir" ] || { echo "falta el A1 simulado del paso 11"; return 1; }
+    OH5_INFORME="$SALIDA/b1-simulado" bash "$AQUI/reproducibilidad/b1.sh" --simulado --a1 "$a1dir" --etiqueta validacion \
+        > "$SALIDA/b1-simulado.log" 2>&1 || { tail -n 20 "$SALIDA/b1-simulado.log"; return 1; }
+    local c; c="$(ls "$SALIDA"/b1-simulado/*/comparacion_b1.json)"
+    grep -E "^# |^Corridas válidas|^\| b1-" "$(dirname "$c")/comparacion_b1.md"
+    python3 -I -c 'import json,sys; r=json.load(open(sys.argv[1])); s=r["resumen"]; sys.exit(0 if not r["problemas_globales"] and s["validas"] == s["total"] == 3 and s["con_cambio_de_conducta"] == 3 and s["resueltas"] == 3 else 1)' "$c"
+}
+
 integracion() {
     ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_integracion.py -v ) > "$SALIDA/integracion.txt" 2>&1
     local r=$?
@@ -121,6 +134,7 @@ if [ ${#FALLAS[@]} -eq 0 ]; then
     paso "9 ensayo del protocolo (simulado, sin inferencia)" protocolo
     paso "10 herramienta de diagnóstico (SDK real)" diagnostico_par
     paso "11 experimento A1 (simulado, sin inferencia)" a1
+    paso "12 experimento B1 (simulado, sin inferencia)" b1
 fi
 echo
 if [ ${#FALLAS[@]} -eq 0 ]; then
