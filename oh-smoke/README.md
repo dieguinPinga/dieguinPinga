@@ -21,15 +21,43 @@ toma como respuesta final y termina la conversación (`response_dispatch.py`). E
 VivoBook                                      sandbox (bwrap --unshare-all, sin red, sin /home, entorno vacío)
 relay.py host  ◄── /tmp/oh-smoke.*/ollama.sock ──►  127.0.0.1:11435 (hilo en smoke.py)
    │ solo GET version/tags/ps, POST show/chat,         OpenHands: agente + terminal + editor
-   │ solo el modelo indicado, cuerpo ≤ 4 MiB           /work = copia de tarea/ (único lugar escribible)
+   │ solo el modelo indicado, cuerpo ≤ 4 MiB           /work, /estado, /sock y /tmp (tmpfs): escribibles
    ▼
 http://100.92.153.59:11435 (Pulenta)
 ```
 
 - `systemd-run --user --scope`: MemoryMax 2G, sin swap, TasksMax 256, CPUQuota 200 %.
-- Las pruebas ocultas (`ocultas/`) nunca entran al sandbox del agente; corren después en otro sandbox sin red,
-  con el resultado montado en solo lectura.
+- **Rutas escribibles para el agente:** solo `resultados/<corrida>/work` (copia de `tarea/`),
+  `resultados/<corrida>/estado`, el directorio temporal del socket y un `/tmp` en memoria. `tarea/`, `ocultas/`,
+  `control/`, el proyecto, `/home` y los servicios no se montan. `venv/`, `smoke.py` y `relay.py` van en solo
+  lectura. `correr.sh` verifica todo esto en el control previo y compara al final las huellas de los originales.
+- **Evaluación fuera del sandbox del agente:** al terminar, `correr.sh` copia solo `duracion.py` (si es un
+  archivo regular, sin seguir enlaces) junto con la prueba visible original, y corre las visibles y las ocultas
+  en otro sandbox sin red, en solo lectura. Las ocultas nunca entran al sandbox del agente.
+- **Control previo, sin usar la GPU:** antes del agente, la misma evaluación tiene que reprobar el `duracion.py`
+  original y aprobar `control/duracion.py`, sin errores de importación, y el sandbox tiene que pasar sus
+  comprobaciones. Si algo falla, la corrida se detiene antes de llamar a Ollama.
+- **Plazos:** a los `MAX_SEG` (900 s) se pide pausa al agente. Con `GRACIA` (60 s) más sin cerrar (pedido
+  bloqueado: hasta 2 × 300 s más la espera, o un comando largo), `smoke.py` registra lo que haya y sale. El
+  corte externo es `MAX_SEG + GRACIA + 180` s. Al salir se cierra el puente, y con él cualquier pedido en curso.
 - `num_ctx` viaja en cada pedido (16384) y el puente lo registra en `puente.jsonl`.
+
+### Lo que el puente NO aísla
+
+El puente impide conectarse a cualquier otro destino, pero **no es aislamiento absoluto de información**.
+Cualquier proceso del sandbox, también un comando que escriba el agente, puede mandar texto a Ollama dentro de
+un pedido a `/api/chat` (por ejemplo el contenido de `/work`) y leer la respuesta. Ese texto llega a Pulenta y
+puede quedar en sus registros. También puede consultar `/api/tags`, `/api/ps` y `/api/show`, y pedir
+inferencias al modelo permitido con las opciones que quiera, o sea consumir GPU y tiempo de Pulenta. En este
+sandbox solo hay datos sintéticos.
+
+### Riesgos que quedan (aceptados para este smoke test)
+
+- Los criterios 1 y 2 se leen de los eventos del SDK dentro del mismo sandbox y con el mismo usuario que los
+  comandos del agente, que en teoría podría alterar `/estado`. Los criterios 3 a 6 se calculan afuera.
+- En la evaluación, la solución del agente corre en el mismo proceso que las pruebas ocultas (no hay un arnés
+  separado con resultado firmado como en `constructor-ia`).
+- No hay filtro seccomp propio (sí namespaces, `--cap-drop ALL`, `no_new_privs` de bwrap y límites de cgroup).
 
 ## Instalación (sin sudo, nada global)
 
@@ -59,7 +87,7 @@ cd ~/oh-smoke && chmod +x correr.sh
 Variables opcionales: `OLLAMA_URL` (por omisión `http://100.92.153.59:11435`), `MODELO`, `NUM_CTX` (16384),
 `MAX_ITER` (30), `MAX_SEG` (900). Cada corrida queda en `resultados/<fecha>-s<semilla>/`:
 `resultado_final.json`, `estado/eventos.json` (todo lo que hizo el agente), `puente.jsonl`, `cambios.diff`,
-`visibles.txt`, `ocultas.txt`, `api_ps.json` y `agente.log`.
+`eval.visibles.txt`, `eval.ocultas.txt`, `control/` (control previo), `api_ps.json` y `agente.log`.
 
 ## Criterios (fijados antes de correr)
 

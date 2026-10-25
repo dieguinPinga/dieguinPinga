@@ -1,15 +1,17 @@
 """Smoke test: el motor de OpenHands, sin agregados, con Qwen en modo de herramientas por prompt.
 
 Corre DENTRO del sandbox (lo lanza correr.sh). Montajes:
-  /work    copia de tarea/ (lo único escribible por el agente)
-  /estado  eventos, métricas y resultado (escribible; el agente no lo conoce)
+  /work    copia de tarea/ en resultados/<corrida>/work
+  /estado  eventos y métricas de esta corrida
   /sock    socket Unix del puente hacia Ollama
 No hay red: Ollama se alcanza solo por relay.interno → /sock/ollama.sock → relay.py host.
+
+Este proceso y los comandos del agente comparten sandbox y usuario, así que acá solo se registra lo que dicen
+los eventos del SDK. Los criterios que dependen del código (cambios, pruebas visibles y ocultas) los evalúa
+correr.sh afuera, sobre una copia, en otro sandbox.
 """
-import hashlib
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -33,7 +35,10 @@ SEMILLA = int(os.environ["OH_SEMILLA"])
 NUM_CTX = int(os.environ["OH_NUM_CTX"])
 MAX_ITER = int(os.environ["OH_MAX_ITER"])
 MAX_SEG = int(os.environ["OH_MAX_SEG"])
+GRACIA = int(os.environ["OH_GRACIA"])
 WORK, ESTADO = Path("/work"), Path("/estado")
+# Un pedido bloqueado dura como mucho LLM_TIMEOUT × (1 + LLM_REINTENTOS) más la espera entre intentos (8–64 s).
+LLM_TIMEOUT, LLM_REINTENTOS = 300, 1
 
 TAREA = (
     "The repository in the current directory contains duracion.py and its tests in test_duracion.py.\n"
@@ -46,10 +51,6 @@ TAREA = (
 
 # Mensajes que el SDK reinyecta como «user» cuando la llamada por prompt está mal formada.
 FORMATO_INVALIDO = ("for function '", "not found in available tools", "is expected to be")
-
-
-def huella(p: Path) -> str:
-    return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
 # num_ctx viaja en cada pedido (options.num_ctx); el puente lo registra para verificarlo.
@@ -68,8 +69,8 @@ llm = LLM(
     # El SDK descarta temperature en modelos que «admiten reasoning_effort»; Qwen 2.5 Coder no razona.
     capability_overrides={"supports_sampling_params": True},
     caching_prompt=False,
-    timeout=600,
-    num_retries=2,
+    timeout=LLM_TIMEOUT,
+    num_retries=LLM_REINTENTOS,
 )
 agent = Agent(
     llm=llm,
@@ -78,37 +79,40 @@ agent = Agent(
     include_default_tools=["FinishTool"],
 )
 
-huella_pruebas = huella(WORK / "test_duracion.py")
-huella_codigo = huella(WORK / "duracion.py")
 conv = Conversation(agent=agent, workspace=str(WORK), persistence_dir=str(ESTADO / "conversacion"),
                     max_iteration_per_run=MAX_ITER, stuck_detection=True, visualizer=None)
 conv.send_message(TAREA)
 
-vencido = threading.Event()
+# Plazo: a los MAX_SEG se pide pausa (el SDK la aplica al terminar el paso en curso). Si el paso sigue
+# bloqueado (pedido al LLM o comando largo) GRACIA segundos después, se registra lo que haya y se sale igual.
+error = []
 
 
-def vencer():
-    vencido.set()
-    conv.pause()
+def correr():
+    try:
+        conv.run()
+    except Exception as e:  # se registra; la evaluación sigue
+        error.append(repr(e))
 
 
-reloj = threading.Timer(MAX_SEG, vencer)
-reloj.start()
 inicio = time.time()
-error = None
-try:
-    conv.run()
-except Exception as e:  # se registra; la evaluación sigue
-    error = repr(e)
-finally:
-    reloj.cancel()
+hilo = threading.Thread(target=correr, daemon=True)
+hilo.start()
+hilo.join(MAX_SEG)
+vencio_tiempo = hilo.is_alive()
+if vencio_tiempo:
+    # pause() toma el candado del estado, que el paso en curso retiene mientras espera al LLM: se pide en
+    # otro hilo para no quedar bloqueados también acá.
+    threading.Thread(target=conv.pause, daemon=True).start()
+    hilo.join(GRACIA)
+corte_forzado = hilo.is_alive()
 segundos = round(time.time() - inicio, 1)
 
 # --- Lectura de eventos (solo lo que el SDK registró) ---
 eventos, acciones = [], []
 corrio_pruebas = vio_fallo = edito_codigo = termino_con_finish = False
 mensajes_sin_herramienta = errores_formato = 0
-for ev in conv.state.events:
+for ev in list(conv.state.events):
     fila = {"tipo": type(ev).__name__, "fuente": getattr(ev, "source", None)}
     if isinstance(ev, ActionEvent):
         accion = ev.action.model_dump(mode="json") if ev.action else None
@@ -138,29 +142,24 @@ for ev in conv.state.events:
     eventos.append(fila)
 (ESTADO / "eventos.json").write_text(json.dumps(eventos, ensure_ascii=False, indent=1), encoding="utf-8")
 
-# --- Pruebas visibles al final (las corre el arnés, no el agente) ---
-visibles = subprocess.run(["/usr/bin/python3", "-B", "-m", "unittest", "-v"], cwd=WORK,
-                          capture_output=True, text=True, timeout=60)
-(ESTADO / "visibles.txt").write_text(visibles.stdout + visibles.stderr, encoding="utf-8")
-
 m = conv.conversation_stats.get_combined_metrics()
 uso = m.accumulated_token_usage
 resultado = {
     "modelo": MODELO, "semilla": SEMILLA, "num_ctx": NUM_CTX, "max_iter": MAX_ITER, "max_seg": MAX_SEG,
-    "estado_final": str(conv.state.execution_status.value), "vencio_tiempo": vencido.is_set(), "error": error,
+    "estado_final": str(conv.state.execution_status.value), "vencio_tiempo": vencio_tiempo,
+    "corte_forzado": corte_forzado, "error": error[0] if error else None,
     "segundos": segundos, "llamadas_llm": len(m.token_usages),
     "tokens_prompt": uso.prompt_tokens if uso else None, "tokens_generados": uso.completion_tokens if uso else None,
     "acciones": acciones,
     "criterios": {
         "1_llamada_a_herramienta_valida": any(a != "finish" for a in acciones),
         "2_corrio_pruebas_y_vio_fallo": corrio_pruebas and vio_fallo,
-        "3_edito_codigo_y_no_las_pruebas": huella(WORK / "duracion.py") != huella_codigo
-                                           and huella(WORK / "test_duracion.py") == huella_pruebas,
-        "4_visibles_pasan_y_termino_con_finish": visibles.returncode == 0 and termino_con_finish,
     },
+    "termino_con_finish": termino_con_finish,
     # Un mensaje de texto del agente (p. ej. JSON en vez de <function=...>) hace que el SDK dé la tarea por terminada.
     "detalle": {"edito_por_file_editor": edito_codigo, "mensajes_de_texto_del_agente": mensajes_sin_herramienta,
                 "correcciones_de_formato_del_sdk": errores_formato},
 }
 (ESTADO / "resultado.json").write_text(json.dumps(resultado, ensure_ascii=False, indent=1), encoding="utf-8")
-print(json.dumps(resultado, ensure_ascii=False, indent=1))
+print(json.dumps(resultado, ensure_ascii=False, indent=1), flush=True)
+os._exit(0)  # no esperar a un hilo bloqueado

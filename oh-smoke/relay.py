@@ -7,6 +7,18 @@
   sandbox:   relay.interno(S) — hilo que escucha 127.0.0.1:11435 dentro del espacio de red vacío y copia
       bytes al socket S. No interpreta nada: la validación está del lado del anfitrión.
 
+Qué permite y qué no (no es aislamiento absoluto de información):
+  - SÍ deja salir contenido: cualquier proceso del sandbox, también un comando que escriba el agente, puede
+    mandar a Ollama, dentro de /api/chat, cualquier texto (por ejemplo el contenido de /work) y leer la
+    respuesta. Ese texto llega a Pulenta y puede quedar en sus registros. También puede consultar /api/tags,
+    /api/ps y /api/show, y pedir inferencias al modelo permitido con las opciones que quiera (num_ctx,
+    num_predict), o sea consumir GPU y tiempo de Pulenta.
+  - NO permite conectarse a otra IP, puerto ni servicio (LAN, tailnet, internet, MariaDB, Node-RED, la
+    instancia 11434), ni usar otras rutas de Ollama (/api/pull, /api/delete, /api/create, /api/generate...),
+    ni otros modelos.
+  - Lo que hay en el sandbox es poco y no sensible: la copia de tarea/ y lo que genere el agente. No hay
+    secretos, /home, pruebas ocultas ni archivos del proyecto.
+
 Solo biblioteca estándar.
 """
 from __future__ import annotations
