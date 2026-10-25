@@ -231,7 +231,10 @@ class Sinteticos(unittest.TestCase):
                         f.write(texto[i:i + 37])
                         f.flush()
                         time.sleep(0.01)
-                (d / "supervision.json").write_text(json.dumps({"final": {"iteraciones": 30}}))
+                # como OH-DUO-03 (escritura atómica): temporal en el mismo directorio y os.replace
+                tmp = d / ".supervision.json.tmp"
+                tmp.write_text(json.dumps({"final": {"iteraciones": 30}}))
+                os.replace(tmp, d / "supervision.json")
             hilo = threading.Thread(target=escribir)
             hilo.start()
             r = C.vigilar(d, Path(t) / "salida", CFG, intervalo=0.02)

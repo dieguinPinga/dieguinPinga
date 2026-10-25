@@ -23,7 +23,7 @@ crean en un directorio temporal. Los pasos son:
 | 1 | prerrequisitos | venv, bwrap, oh-smoke, oh-supervisor y oh-duo-01..04 presentes; ningún `correr.sh` activo |
 | 2 | diagnóstico del SDK | las 10 comprobaciones de la investigación |
 | 3 | OH-DUO-01..04 idénticos a la rama | 136 archivos (`huellas_oh_duo_01_04.sha256`) |
-| 4 | regresión de OH-DUO-03 (18) y OH-DUO-04 (17) | ver la nota sobre `test_vigilar_en_vivo` en «Limitaciones» |
+| 4 | regresión de OH-DUO-03 (18) y OH-DUO-04 (17) | más 30 repeticiones de `test_vigilar_en_vivo`, sin excepciones toleradas |
 | 5 | carrera 03 → 04, 1 prueba | el `Registro` real de OH-DUO-03 y el `vigilar` real de OH-DUO-04, 40 repeticiones |
 | 6 | despachador, 12 pruebas | solo plantillas, solo corridas marcadas, sin enlaces, idempotente, simulación sin escritura |
 | 7 | puente, 5 pruebas | SDK real en proceso; ver detalle abajo |
@@ -181,10 +181,9 @@ Cuidados al interpretar:
     `fsync` y lo reemplaza con `os.replace`. El contenido y el formato son los mismos bytes que antes;
   - la prueba de lectores concurrentes de OH-DUO-03 y `tests/test_carrera.py` (cadena real 03 → 04) **fallan con la
     escritura anterior y pasan con la atómica**;
-  - **queda una falla intermitente que no está en el código:** `test_vigilar_en_vivo` de OH-DUO-04 simula al
-    observador con su propio `write_text` (línea 234 de su prueba). Sigue fallando unas 5 de cada 40 veces.
-    `validar.sh` la acepta solo si es exactamente esa prueba con `JSONDecodeError`, y lo dice. Corregirla es
-    cambiar esa línea de la prueba de OH-DUO-04, que no estaba autorizado;
+  - el simulador de `test_vigilar_en_vivo` en OH-DUO-04 (su prueba, no el coordinador) también escribe
+    `supervision.json` de forma atómica: antes fallaba unas 5 de cada 100 veces; ahora 0 de 200. `validar.sh`
+    ya no tolera ninguna falla y repite esa prueba 30 veces;
   - `cadena.py` sigue tolerando el caso por si acaso.
 - Por omisión solo se despacha `nueva_estrategia`. Las advertencias de OH-DUO-04 (A3/A5) se envían con
   `--incluir-advertencias`, que todavía no se probó con un modelo real.

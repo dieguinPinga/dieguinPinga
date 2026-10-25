@@ -5,7 +5,8 @@
 #   1. prerrequisitos (venv, bwrap, oh-smoke, oh-supervisor, oh-duo-01..04, ningún correr.sh activo)
 #   2. diagnóstico del SDK (las 10 comprobaciones de la investigación)
 #   3. OH-DUO-01..04 idénticos a los de la rama (huellas_oh_duo_01_04.sha256)
-#   4. regresión de OH-DUO-03 (18 pruebas, incluye la escritura atómica) y OH-DUO-04 (17)
+#   4. regresión de OH-DUO-03 (18 pruebas, incluye la escritura atómica) y OH-DUO-04 (17, más 30 repeticiones
+#      de test_vigilar_en_vivo, que antes fallaba de forma intermitente)
 #   5. carrera OH-DUO-03 → OH-DUO-04 con el código real de los dos (40 repeticiones)
 #   6. despachador (12 pruebas, sin SDK)
 #   7. puente con el SDK real, en proceso (5 pruebas)
@@ -60,15 +61,14 @@ regresion() {
     grep -q "^OK" "$SALIDA/regresion_03.txt" || return 1
     ( cd "$RAIZ/oh-duo-04" && python3 -I -m unittest discover -s tests > "$SALIDA/regresion_04.txt" 2>&1 ); local r=$?
     tail -n 3 "$SALIDA/regresion_04.txt"
-    [ $r = 0 ] && return 0
-    # Única falla conocida: test_vigilar_en_vivo simula a OH-DUO-03 con su propio write_text (no atómico) en la
-    # prueba misma de OH-DUO-04; el código real ya no tiene la carrera (paso 5). Ver README.
-    if [ "$(grep -E '^(ERROR|FAIL):' "$SALIDA/regresion_04.txt")" = "ERROR: test_vigilar_en_vivo (test_coordinador.Sinteticos.test_vigilar_en_vivo)" ] \
-            && grep -q JSONDecodeError "$SALIDA/regresion_04.txt"; then
-        echo "  conocido: test_vigilar_en_vivo de OH-DUO-04 (su simulador escribe supervision.json sin atomicidad)"
-        return 0
-    fi
-    return 1
+    [ $r = 0 ] || return 1
+    # la prueba que antes fallaba de forma intermitente, repetida: tiene que pasar todas las veces
+    local i
+    for i in $(seq 30); do
+        ( cd "$RAIZ/oh-duo-04" && python3 -I -m unittest discover -s tests -p test_coordinador.py -k test_vigilar_en_vivo \
+            >> "$SALIDA/repeticiones_vigilar_en_vivo.txt" 2>&1 ) || { echo "  test_vigilar_en_vivo falló en la repetición $i"; return 1; }
+    done
+    echo "  test_vigilar_en_vivo: 30/30"
 }
 
 carrera() { ( cd "$AQUI" && python3 -I -m unittest discover -s tests -p test_carrera.py -v ); }
