@@ -1,0 +1,16 @@
+{
+ "coordinador": "0.1.0",
+ "ejecucion": "P1__gemma",
+ "modo": "simulacion",
+ "intervenciones_enviadas": 0,
+ "advertencias": 0,
+ "nuevas_estrategias": 0,
+ "primera_advertencia_iteracion": null,
+ "primera_estrategia_iteracion": null,
+ "iteraciones_finales": 6,
+ "anticipacion_iteraciones": null,
+ "terminacion": "finalizacion_con_finish",
+ "estancamiento_definitivo": false,
+ "cierre_recibido": true,
+ "decisiones": []
+}
