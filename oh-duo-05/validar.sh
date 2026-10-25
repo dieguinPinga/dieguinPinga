@@ -12,6 +12,7 @@
 #   7. puente con el SDK real, en proceso (5 pruebas)
 #   8. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
 #   9. ensayo del protocolo (comparar_qwen_p1.sh --simulado): el mismo script que usarán las corridas reales
+#  10. herramienta de diagnóstico (diagnostico/analizar_par.py) contra el SDK real: stuck y contexto (4 pruebas)
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
 set -u
@@ -85,6 +86,8 @@ despachador() { ( cd "$AQUI" && python3 -I -m unittest discover -s tests -p test
 
 puente() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_puente.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2); }
 
+diagnostico_par() { ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_diagnostico.py -v ) 2> >(grep -v "INFO\|^ \{10,\}" >&2); }
+
 integracion() {
     ( cd "$AQUI" && "$VENV/bin/python" -I -m unittest discover -s tests -p test_integracion.py -v ) > "$SALIDA/integracion.txt" 2>&1
     local r=$?
@@ -105,6 +108,7 @@ if [ ${#FALLAS[@]} -eq 0 ]; then
     paso "7 puente (SDK real)" puente
     paso "8 integración (bwrap real, control vs intervenida)" integracion
     paso "9 ensayo del protocolo (simulado, sin inferencia)" protocolo
+    paso "10 herramienta de diagnóstico (SDK real)" diagnostico_par
 fi
 echo
 if [ ${#FALLAS[@]} -eq 0 ]; then
