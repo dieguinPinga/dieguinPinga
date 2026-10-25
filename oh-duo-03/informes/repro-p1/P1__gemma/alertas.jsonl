@@ -1,0 +1,1 @@
+{"momento": "2026-10-25T06:11:34.865+00:00", "tipo": "cierre", "terminacion": {"tipo": "finalizacion_con_finish", "evento": 12, "iteracion": 6}, "veredicto": {"estancamiento": false, "causa": "terminó con finish", "confianza": "alta", "observaciones": []}}

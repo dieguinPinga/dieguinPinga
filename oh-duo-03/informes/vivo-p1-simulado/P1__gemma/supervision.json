@@ -1,0 +1,27 @@
+{
+ "observador": "0.1.0",
+ "ejecucion": "P1__gemma",
+ "modo": "vivo",
+ "eventos": 14,
+ "estancamiento_provisional": null,
+ "anticipacion_iteraciones": null,
+ "alertas": [],
+ "final": {
+  "iteraciones": 6,
+  "terminacion": {
+   "tipo": "finalizacion_con_finish",
+   "evento": 12,
+   "iteracion": 6
+  },
+  "veredicto": {
+   "estancamiento": false,
+   "causa": "terminó con finish",
+   "confianza": "alta",
+   "observaciones": []
+  },
+  "estado_ejecucion_sugerido": "finalizada",
+  "alertas": []
+ },
+ "coincide_con_oh_duo_02": true,
+ "notas": []
+}
