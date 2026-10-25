@@ -13,7 +13,7 @@
 #   8. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
 #   9. ensayo del protocolo (comparar_qwen_p1.sh --simulado): el mismo script que usarán las corridas reales
 #  10. herramienta de diagnóstico (diagnostico/analizar_par.py) contra el SDK real: stuck y contexto (4 pruebas)
-#  11. experimento A1: estado de Ollama y comparación de trayectorias (10 pruebas) y ensayo completo
+#  11. experimento A1: estado de Ollama y comparación de trayectorias (17 pruebas) y ensayo completo
 #      reproducibilidad/a1.sh --simulado (3 corridas en bwrap con Ollama simulado; tiene que dar REPRODUCIBLE)
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
