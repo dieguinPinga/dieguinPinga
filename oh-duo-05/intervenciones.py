@@ -15,6 +15,7 @@ Solo biblioteca estándar.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -44,6 +45,12 @@ def leer_lineas(p: Path) -> list[dict]:
 
 def texto_mensaje(e: dict) -> str:
     return " ".join(c.get("text", "") for c in (e.get("llm_message") or {}).get("content") or [] if isinstance(c, dict))
+
+
+def firma(a: dict) -> str:
+    """Huella de una acción del agente: herramienta y argumentos tal como los generó el modelo."""
+    t = a.get("tool_call") or {}
+    return hashlib.sha256(json.dumps([a.get("tool_name"), t.get("arguments")], ensure_ascii=False).encode()).hexdigest()[:16]
 
 
 def analizar_ejecucion(e: Path, E, u: dict, despachos: list[dict]) -> dict:
@@ -78,7 +85,7 @@ def analizar_ejecucion(e: Path, E, u: dict, despachos: list[dict]) -> dict:
                 "1_en_la_conversacion": True,
                 "2_accion_posterior": {"evento": despues[0], "herramienta": eventos[despues[0]].get("tool_name")} if despues else None,
                 "3_cambio_de_conducta": {"edito_el_codigo_despues": edito, "pruebas_aprueban_despues": probo_ok},
-                "acciones_despues": len(despues),
+                "acciones_despues": len(despues), "acciones_antes": sum(1 for i in acciones if i < k),
             })
     resultados = sorted((e / "instancia" / "resultados").glob("*")) if (e / "instancia").is_dir() else []
     entregas = leer_lineas(resultados[-1] / "estado" / "entregas.jsonl") if resultados else []
@@ -88,8 +95,9 @@ def analizar_ejecucion(e: Path, E, u: dict, despachos: list[dict]) -> dict:
     return {
         "ejecucion": e.name, "problema": reg.get("problema"), "programador": reg.get("programador"),
         "estado_ejecucion": reg.get("estado_ejecucion"), "visibles_pasan": reg.get("visibles_pasan"),
-        "originales_intactos": reg.get("originales_intactos"),
-        "acciones": len(acciones), "iteraciones": len(respuestas), "limite": LIMITE,
+        "originales_intactos": reg.get("originales_intactos"), "cambio_de_modelo": reg.get("cambio_de_modelo"),
+        "semilla": reg.get("semilla"), "modelo": reg.get("modelo"),
+        "acciones": len(acciones), "iteraciones": len(respuestas), "firmas": [firma(eventos[i]) for i in acciones], "limite": LIMITE,
         "dentro_del_limite": len(respuestas) <= LIMITE,
         "terminacion": det.get("terminacion"), "estancamiento": (det.get("veredicto") or {}).get("estancamiento"),
         "alertas_oh_duo_02": sorted({a.get("regla") for a in det.get("alertas") or [] if isinstance(a, dict)} - {None}),
@@ -121,6 +129,9 @@ def analizar(corrida: Path, E, u: dict, oh_duo_01: Path, despachos: Path | None 
     for e in sorted(p for p in (corrida / "ejecuciones").iterdir() if p.is_dir()):
         f = analizar_ejecucion(e, E, u, desp)
         f["categoria_con_ocultas"] = cats.get(e.name)
+        verif = corrida / "verificacion" / "verificacion.json"
+        f["fugas_ocultas"] = sum(1 for x in json.loads(verif.read_text())["auditoria_fugas"] if x["ejecucion"] == e.name) \
+            if verif.is_file() else None
         filas.append(f)
     return {"corrida": corrida.name, "verificada": bool(cats), "ejecuciones": filas}
 
@@ -135,10 +146,20 @@ def comparar(control: dict, intervenida: dict) -> dict:
                 "confirmadas_por_accion": sum(1 for x in m if x["2_accion_posterior"]),
                 "cambio_de_conducta": any(any(x["3_cambio_de_conducta"].values()) for x in m)}
         for clave in ("acciones", "iteraciones", "dentro_del_limite", "estancamiento", "visibles_pasan",
-                      "estado_ejecucion", "categoria_con_ocultas"):
+                      "estado_ejecucion", "categoria_con_ocultas", "originales_intactos", "cambio_de_modelo",
+                      "fugas_ocultas", "semilla", "modelo"):
             fila[clave] = {"control": g.get(clave) if g else None, "intervenida": f.get(clave)}
+        # validez: hasta el primer mensaje, las dos corridas tienen que haber hecho exactamente lo mismo
+        n = m[0]["acciones_antes"] if m else len(f.get("firmas", []))
+        previas_c, previas_i = (g or {}).get("firmas", [])[:n], f.get("firmas", [])[:n]
+        div = next((j for j, (a, b) in enumerate(zip(previas_c, previas_i)) if a != b),
+                   None if len(previas_c) == len(previas_i) else min(len(previas_c), len(previas_i)))
+        fila["identicas_antes_del_mensaje"] = {"acciones_comparadas": n, "identicas": div is None,
+                                              "primera_divergencia": div}
         fila["terminacion"] = {"control": ((g or {}).get("terminacion") or {}).get("tipo"),
                                "intervenida": (f.get("terminacion") or {}).get("tipo")}
+        fila["mensajes_en_control"] = len((g or {}).get("mensajes_del_coordinador", []))
+        fila["validez"] = validez(fila, f)
         filas.append(fila)
     sin_par = sorted(set(c) - {f["ejecucion"] for f in intervenida["ejecuciones"]})
     return {"control": control["corrida"], "intervenida": intervenida["corrida"], "filas": filas,
@@ -146,16 +167,53 @@ def comparar(control: dict, intervenida: dict) -> dict:
             "nota": "con una semilla por lado es un caso, no una medición: repetir con varias semillas antes de concluir"}
 
 
+def validez(fila: dict, f: dict) -> dict:
+    """Criterios del protocolo (PROTOCOLO.md): si alguno falla, el par no sirve para atribuir nada al mensaje."""
+    motivos, avisos = [], []
+    for clave in ("semilla", "modelo"):
+        if fila[clave]["control"] != fila[clave]["intervenida"]:
+            motivos.append(f"{clave} distinta")
+    if fila["mensajes_en_control"]:
+        motivos.append("el control recibió mensajes del coordinador")
+    for lado in ("control", "intervenida"):
+        if fila["dentro_del_limite"][lado] is not True:
+            motivos.append(f"{lado}: más de 30 iteraciones")
+        if fila["originales_intactos"][lado] != "ok":
+            motivos.append(f"{lado}: originales alterados")
+        if fila["fugas_ocultas"][lado] not in (0,):
+            motivos.append(f"{lado}: sin verificar o con fugas de ocultas")
+        if fila["cambio_de_modelo"][lado] is not False:      # cambia los tiempos, no las respuestas
+            avisos.append(f"{lado}: el modelo no estaba cargado en Ollama al empezar (o no se pudo saber)")
+    if not fila["identicas_antes_del_mensaje"]["identicas"]:
+        motivos.append(f"las corridas divergen antes del mensaje (acción {fila['identicas_antes_del_mensaje']['primera_divergencia']})")
+    if fila["intervenciones"] and fila["confirmadas_por_accion"] < fila["intervenciones"]:
+        motivos.append("hay mensajes entregados sin acción posterior")
+    descartes = [x for x in f["puente"]["entregas"] if x.get("resultado") in ("descartado", "rechazado_formato")]
+    if descartes:
+        motivos.append(f"el puente descartó o rechazó {len(descartes)} mensaje(s)")
+    return {"valida": not motivos, "motivos": motivos, "avisos": avisos,
+            "informativa": not motivos and fila["intervenciones"] > 0,
+            "nota": None if fila["intervenciones"] else "el coordinador no intervino: el par no mide el efecto del mensaje"}
+
+
 def markdown(r: dict) -> str:
     ls = [f"# Control `{r['control']}` vs intervenida `{r['intervenida']}`", "",
-          "| ejecución | intervenciones (confirmadas) | cambio de conducta | acciones | iteraciones | terminación | estancamiento | visibles | categoría (ocultas) |",
-          "|---|---|---|---|---|---|---|---|---|"]
+          "| ejecución | idénticas antes del mensaje | intervenciones (confirmadas) | cambio de conducta | acciones | iteraciones | terminación | estancamiento | visibles | categoría (ocultas) |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     par = lambda d: f"{d['control']} → {d['intervenida']}"  # noqa: E731
     for f in r["filas"]:
-        ls.append(f"| {f['ejecucion']} | {f['intervenciones']} ({f['confirmadas_por_accion']}) | "
+        v = f["identicas_antes_del_mensaje"]
+        ls.append(f"| {f['ejecucion']} | {'sí' if v['identicas'] else 'NO (acción ' + str(v['primera_divergencia']) + ')'} "
+                  f"({v['acciones_comparadas']} acciones) | {f['intervenciones']} ({f['confirmadas_por_accion']}) | "
                   f"{'sí' if f['cambio_de_conducta'] else 'no'} | {par(f['acciones'])} | {par(f['iteraciones'])} | "
                   f"{par(f['terminacion'])} | {par(f['estancamiento'])} | {par(f['visibles_pasan'])} | "
                   f"{par(f['categoria_con_ocultas'])} |")
+    ls.append("")
+    for f in r["filas"]:
+        v = f["validez"]
+        ls.append(f"- **{f['ejecucion']}**: par {'VÁLIDO' if v['valida'] else 'NO VÁLIDO'}"
+                  + ("" if v["valida"] else ": " + "; ".join(v["motivos"])) + (f" ({v['nota']})" if v["nota"] else "")
+                  + ("" if not v["avisos"] else " · avisos: " + "; ".join(v["avisos"])))
     ls += ["", f"_{r['nota']}._", ""]
     return "\n".join(ls)
 

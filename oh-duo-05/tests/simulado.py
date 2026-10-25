@@ -44,6 +44,8 @@ def bucle_p1():
     estado = {"desde": None}
 
     def respuesta(n: int, mensajes: list) -> str:
+        if n == 1:                                     # conversación nueva: vuelve al bucle
+            estado["desde"] = None
         if estado["desde"] is None and SENAL in json.dumps(mensajes[2:]):
             estado["desde"] = n
         if estado["desde"] is None:
@@ -76,7 +78,7 @@ class Servidor:
                 self.wfile.write(b)
 
             def do_GET(self):
-                b = b'{"version":"0.0-simulado","models":[]}'
+                b = b'{"version":"0.0-simulado","models":[{"name":"qwen2.5-coder:7b"}]}'   # /api/ps: ya cargado
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(b)))
                 self.end_headers()
@@ -92,3 +94,11 @@ class Servidor:
     def cerrar(self):
         self.srv.shutdown()
         self.srv.server_close()
+
+
+if __name__ == "__main__":      # python3 simulado.py ARCHIVO_PUERTO: sirve bucle_p1 hasta que lo maten
+    import sys
+    from pathlib import Path
+    srv = Servidor(bucle_p1(), demora=float(sys.argv[2]) if len(sys.argv) > 2 else 0.2)
+    Path(sys.argv[1]).write_text(str(srv.puerto))
+    threading.Event().wait()

@@ -247,5 +247,76 @@ class Provisionales(unittest.TestCase):
         self.assertGreaterEqual(an.call_count, 13)   # una vez por evento, más el cierre
 
 
+class EscrituraAtomica(unittest.TestCase):
+    """supervision.json se escribe en un temporal y se reemplaza con os.replace: OH-DUO-04 (o cualquier lector)
+    nunca encuentra un JSON incompleto."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_formato_y_contenido_iguales_a_los_de_antes(self):
+        inf = O.reproducir(FIX / "P1__qwen", self.tmp / "q", E, U)
+        datos = (self.tmp / "q" / "supervision.json").read_bytes()
+        self.assertEqual(datos, json.dumps(inf, ensure_ascii=False, indent=1).encode("utf-8"))   # como write_text
+        self.assertEqual(json.loads(datos), inf)
+        self.assertEqual((self.tmp / "q" / "supervision.md").read_text(encoding="utf-8"), O.markdown(inf))
+        self.assertEqual(sorted(p.name for p in (self.tmp / "q").iterdir()),
+                         ["alertas.jsonl", "supervision.json", "supervision.md"])     # sin temporales
+
+    def test_cerrar_usa_la_escritura_atomica(self):
+        reg = O.Registro(self.tmp)
+        with mock.patch.object(O, "escribir_atomico", wraps=O.escribir_atomico) as w, \
+                mock.patch.object(O, "markdown", return_value="x"):
+            reg.cerrar({"a": "ñ"})
+        w.assert_called_once()
+        self.assertEqual(w.call_args.args[0], self.tmp / "supervision.json")
+
+    def test_ningun_lector_ve_un_json_incompleto(self):
+        destino = self.tmp / "supervision.json"
+        # dos versiones grandes y distintas: escribir cada una lleva muchas llamadas al sistema
+        versiones = [json.dumps({"v": i, "relleno": [{"k": f"{i}-{j}", "texto": "á" * 50} for j in range(20000)]},
+                                ensure_ascii=False, indent=1) for i in range(2)]
+        validas = {json.loads(v)["v"] for v in versiones}
+        fin, vistas, errores = threading.Event(), [], []
+
+        def lector():
+            while not fin.is_set():
+                if destino.is_file():                     # lo mismo que hace OH-DUO-04
+                    try:
+                        vistas.append(json.loads(destino.read_text(encoding="utf-8"))["v"])
+                    except ValueError as e:
+                        errores.append(repr(e)[:100])
+
+        lectores = [threading.Thread(target=lector) for _ in range(3)]
+        for h in lectores:
+            h.start()
+        try:
+            for i in range(60):
+                O.escribir_atomico(destino, versiones[i % 2])
+        finally:
+            fin.set()
+            for h in lectores:
+                h.join()
+        self.assertEqual(errores, [])
+        self.assertTrue(vistas)
+        self.assertTrue(set(vistas) <= validas)
+        self.assertEqual([p.name for p in self.tmp.iterdir()], ["supervision.json"])
+
+    def test_un_fallo_a_mitad_conserva_el_anterior_y_no_deja_temporales(self):
+        destino = self.tmp / "supervision.json"
+        O.escribir_atomico(destino, '{"v": 1}')
+        with mock.patch.object(O.os, "fsync", side_effect=OSError("disco lleno")):
+            with self.assertRaises(OSError):
+                O.escribir_atomico(destino, '{"v": 2}')
+        self.assertEqual(json.loads(destino.read_text()), {"v": 1})
+        self.assertEqual([p.name for p in self.tmp.iterdir()], ["supervision.json"])
+
+    def test_permisos_como_write_text(self):
+        O.escribir_atomico(self.tmp / "supervision.json", "{}")
+        (self.tmp / "referencia.json").write_text("{}")
+        self.assertEqual((self.tmp / "supervision.json").stat().st_mode, (self.tmp / "referencia.json").stat().st_mode)
+
+
 if __name__ == "__main__":
     unittest.main()

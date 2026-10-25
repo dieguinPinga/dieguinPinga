@@ -20,7 +20,9 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,6 +172,23 @@ class Supervisor:
 
 # ------------------------------------------------------------------------------------------ registrador
 
+def escribir_atomico(destino: Path, texto: str) -> None:
+    """Escribe en un temporal del mismo directorio y lo pone en su lugar con os.replace: un lector (p. ej. el
+    coordinador de OH-DUO-04) ve el archivo anterior o el completo, nunca uno a medio escribir. El temporal
+    empieza con «.» y no se llama supervision.json, así que nadie lo toma por el informe."""
+    tmp = destino.with_name(f".{destino.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)   # mismos permisos que write_text (umask)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(texto)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, destino)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 class Registro:
     """alertas.jsonl se escribe línea por línea (con flush) durante la observación: si el proceso se corta,
     lo registrado hasta ese momento queda."""
@@ -185,7 +204,7 @@ class Registro:
 
     def cerrar(self, informe: dict) -> None:
         self._f.close()
-        (self.destino / "supervision.json").write_text(json.dumps(informe, ensure_ascii=False, indent=1), encoding="utf-8")
+        escribir_atomico(self.destino / "supervision.json", json.dumps(informe, ensure_ascii=False, indent=1))
         (self.destino / "supervision.md").write_text(markdown(informe), encoding="utf-8")
 
 

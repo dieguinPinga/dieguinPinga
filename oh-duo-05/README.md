@@ -22,10 +22,13 @@ crean en un directorio temporal. Los pasos son:
 |---|---|---|
 | 1 | prerrequisitos | venv, bwrap, oh-smoke, oh-supervisor y oh-duo-01..04 presentes; ningún `correr.sh` activo |
 | 2 | diagnóstico del SDK | las 10 comprobaciones de la investigación |
-| 3 | OH-DUO-01..04 sin cambios | 136 archivos idénticos a los de la rama (`huellas_oh_duo_01_04.sha256`) |
-| 4 | despachador, 12 pruebas | solo plantillas, solo corridas marcadas, sin enlaces, idempotente, simulación sin escritura |
-| 5 | puente, 5 pruebas | SDK real en proceso; ver detalle abajo |
-| 6 | integración, 7 pruebas | bwrap real, puente HTTP real, SDK real y la cadena completa, control contra intervenida |
+| 3 | OH-DUO-01..04 idénticos a la rama | 136 archivos (`huellas_oh_duo_01_04.sha256`) |
+| 4 | regresión de OH-DUO-03 (18) y OH-DUO-04 (17) | ver la nota sobre `test_vigilar_en_vivo` en «Limitaciones» |
+| 5 | carrera 03 → 04, 1 prueba | el `Registro` real de OH-DUO-03 y el `vigilar` real de OH-DUO-04, 40 repeticiones |
+| 6 | despachador, 12 pruebas | solo plantillas, solo corridas marcadas, sin enlaces, idempotente, simulación sin escritura |
+| 7 | puente, 5 pruebas | SDK real en proceso; ver detalle abajo |
+| 8 | integración, 7 pruebas | bwrap real, puente HTTP real, SDK real y la cadena completa, control contra intervenida |
+| 9 | ensayo del protocolo | `comparar_qwen_p1.sh --simulado`: el mismo script de las corridas reales, con el modelo simulado; el par tiene que salir válido |
 
 Las pruebas del puente verifican:
 - entrega durante `run()` con el límite intacto;
@@ -34,8 +37,8 @@ Las pruebas del puente verifican:
 - formato inválido y líneas a medio escribir;
 - que funciona sin buzón.
 
-El registro y la comparación quedan en `~/oh-duo-05/informes/validacion-<fecha>/`. El paso 6 tarda entre 1 y 2
-minutos y usa `systemd-run --user --scope`, igual que las corridas reales. Donde no hay sesión de usuario, se
+El registro y la comparación quedan en `~/oh-duo-05/informes/validacion-<fecha>/`. Los pasos 8 y 9 tardan entre 1 y 2
+minutos cada uno y usa `systemd-run --user --scope`, igual que las corridas reales. Donde no hay sesión de usuario, se
 corre con `SIN_SCOPE=1`.
 
 ## Arquitectura
@@ -123,7 +126,9 @@ eficacia con Qwen, que es lo que falta medir con inferencias reales.
 
 ## Cómo comparar una corrida con intervención y otra sin intervención
 
-> Requiere inferencias reales con Qwen: **no se hace en esta fase**. Queda documentado para cuando se autorice.
+> El protocolo para Qwen real en P1 está en **[`PROTOCOLO.md`](PROTOCOLO.md)** y lo ejecuta
+> `comparar_qwen_p1.sh --real --confirmo-inferencia-real`, que hace los pasos de abajo con las condiciones
+> fijadas y evalúa la validez del par. **Todavía no se ejecutó.** Abajo, el procedimiento manual equivalente.
 > Siempre en `oh-duo-05/corridas/`, nunca sobre corridas de OH-DUO-01.
 
 Se usan el mismo problema, el mismo modelo, la misma semilla y los mismos límites. Lo único que cambia es
@@ -171,13 +176,15 @@ Cuidados al interpretar:
   candado durante cada `agent.step`. Por eso el despachador exige un margen mínimo de 5 iteraciones.
 - `sender` no llega al LLM. Para el modelo, el mensaje es un mensaje de usuario más; la trazabilidad está en
   los eventos y en `entregas.jsonl`.
-- Hay una carrera **preexistente** entre OH-DUO-03 y OH-DUO-04:
-  - OH-DUO-03 escribe `supervision.json` sin hacerlo atómico, y OH-DUO-04 puede leerlo a medio escribir;
-  - `test_vigilar_en_vivo` de OH-DUO-04 falla aproximadamente 1 de cada 6 veces;
-  - no se corrigió para no modificar 01–04;
-  - `cadena.py` tolera el caso: las decisiones ya están en `decisiones.jsonl` y solo falta el resumen, que se
-    regenera con `coordinador.py simular`;
-  - la corrección propuesta es una escritura atómica (temporal + `os.replace`) en `observador.py`, pendiente
-    de autorización.
+- La carrera entre OH-DUO-03 y OH-DUO-04 sobre `supervision.json` **está corregida** en OH-DUO-03:
+  - `observador.py` escribe en un temporal del mismo directorio (`.supervision.json.<pid>.<hilo>.tmp`), hace
+    `fsync` y lo reemplaza con `os.replace`. El contenido y el formato son los mismos bytes que antes;
+  - la prueba de lectores concurrentes de OH-DUO-03 y `tests/test_carrera.py` (cadena real 03 → 04) **fallan con la
+    escritura anterior y pasan con la atómica**;
+  - **queda una falla intermitente que no está en el código:** `test_vigilar_en_vivo` de OH-DUO-04 simula al
+    observador con su propio `write_text` (línea 234 de su prueba). Sigue fallando unas 5 de cada 40 veces.
+    `validar.sh` la acepta solo si es exactamente esa prueba con `JSONDecodeError`, y lo dice. Corregirla es
+    cambiar esa línea de la prueba de OH-DUO-04, que no estaba autorizado;
+  - `cadena.py` sigue tolerando el caso por si acaso.
 - Por omisión solo se despacha `nueva_estrategia`. Las advertencias de OH-DUO-04 (A3/A5) se envían con
   `--incluir-advertencias`, que todavía no se probó con un modelo real.

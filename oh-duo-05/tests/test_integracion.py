@@ -151,6 +151,9 @@ class Integracion(unittest.TestCase):
         self.assertLess(fila["acciones"]["intervenida"], fila["acciones"]["control"])
         md = I.markdown(self.cmp)
         self.assertIn("P1__qwen", md)
+        self.assertEqual(fila["identicas_antes_del_mensaje"]["identicas"], True, fila)
+        self.assertEqual(fila["validez"], {"valida": True, "motivos": [], "avisos": [], "informativa": True,
+                                           "nota": None})
 
     def test_sin_fugas_de_ocultas(self):
         for n in self.res:

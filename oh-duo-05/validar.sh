@@ -5,9 +5,12 @@
 #   1. prerrequisitos (venv, bwrap, oh-smoke, oh-supervisor, oh-duo-01..04, ningún correr.sh activo)
 #   2. diagnóstico del SDK (las 10 comprobaciones de la investigación)
 #   3. OH-DUO-01..04 idénticos a los de la rama (huellas_oh_duo_01_04.sha256)
-#   4. despachador (12 pruebas, sin SDK)
-#   5. puente con el SDK real, en proceso (5 pruebas)
-#   6. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
+#   4. regresión de OH-DUO-03 (18 pruebas, incluye la escritura atómica) y OH-DUO-04 (17)
+#   5. carrera OH-DUO-03 → OH-DUO-04 con el código real de los dos (40 repeticiones)
+#   6. despachador (12 pruebas, sin SDK)
+#   7. puente con el SDK real, en proceso (5 pruebas)
+#   8. integración con bwrap real y la cadena completa: control vs intervenida (7 pruebas, ~1–2 min)
+#   9. ensayo del protocolo (comparar_qwen_p1.sh --simulado): el mismo script que usarán las corridas reales
 # Registro y comparación: informes/validacion-<fecha>/.
 # Variables: VENV (~/oh-smoke/venv), OH_SMOKE (~/oh-smoke), OH_SUPERVISOR (~/oh-supervisor), SIN_SCOPE (0).
 set -u
@@ -50,7 +53,33 @@ diagnostico() {
     [ "$(grep -c '^  OK ' "$SALIDA/diagnostico.txt")" = 10 ]
 }
 
-huellas() { ( cd "$RAIZ" && sha256sum --quiet -c "$AQUI/huellas_oh_duo_01_04.sha256" ) && echo "136 archivos idénticos"; }
+huellas() { ( cd "$RAIZ" && sha256sum --quiet -c "$AQUI/huellas_oh_duo_01_04.sha256" ) && echo "$(wc -l < "$AQUI/huellas_oh_duo_01_04.sha256") archivos idénticos"; }
+
+regresion() {
+    ( cd "$RAIZ/oh-duo-03" && python3 -I -m unittest discover -s tests 2>&1 | tail -n 3 ) | tee "$SALIDA/regresion_03.txt"
+    grep -q "^OK" "$SALIDA/regresion_03.txt" || return 1
+    ( cd "$RAIZ/oh-duo-04" && python3 -I -m unittest discover -s tests > "$SALIDA/regresion_04.txt" 2>&1 ); local r=$?
+    tail -n 3 "$SALIDA/regresion_04.txt"
+    [ $r = 0 ] && return 0
+    # Única falla conocida: test_vigilar_en_vivo simula a OH-DUO-03 con su propio write_text (no atómico) en la
+    # prueba misma de OH-DUO-04; el código real ya no tiene la carrera (paso 5). Ver README.
+    if [ "$(grep -E '^(ERROR|FAIL):' "$SALIDA/regresion_04.txt")" = "ERROR: test_vigilar_en_vivo (test_coordinador.Sinteticos.test_vigilar_en_vivo)" ] \
+            && grep -q JSONDecodeError "$SALIDA/regresion_04.txt"; then
+        echo "  conocido: test_vigilar_en_vivo de OH-DUO-04 (su simulador escribe supervision.json sin atomicidad)"
+        return 0
+    fi
+    return 1
+}
+
+carrera() { ( cd "$AQUI" && python3 -I -m unittest discover -s tests -p test_carrera.py -v ); }
+
+protocolo() {
+    OH5_INFORME="$SALIDA/protocolo-simulado" bash "$AQUI/comparar_qwen_p1.sh" --simulado --etiqueta validacion \
+        > "$SALIDA/protocolo-simulado.log" 2>&1 || { tail -n 20 "$SALIDA/protocolo-simulado.log"; return 1; }
+    local c; c="$(ls "$SALIDA"/protocolo-simulado/*/comparacion.json)"
+    cat "$(dirname "$c")/comparacion.md"
+    python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1]))["filas"][0]["validez"]; sys.exit(0 if v["valida"] and v["informativa"] else 1)' "$c"
+}
 
 despachador() { ( cd "$AQUI" && python3 -I -m unittest discover -s tests -p test_despachador.py -v ); }
 
@@ -69,10 +98,13 @@ echo "OH-DUO-05 · validación $(date -Is) · $(hostname)"
 paso "1 prerrequisitos" prerrequisitos || true
 if [ ${#FALLAS[@]} -eq 0 ]; then
     paso "2 diagnóstico del SDK" diagnostico
-    paso "3 OH-DUO-01..04 sin cambios" huellas
-    paso "4 despachador" despachador
-    paso "5 puente (SDK real)" puente
-    paso "6 integración (bwrap real, control vs intervenida)" integracion
+    paso "3 OH-DUO-01..04 idénticos a la rama" huellas
+    paso "4 regresión OH-DUO-03 y OH-DUO-04" regresion
+    paso "5 carrera OH-DUO-03 → OH-DUO-04 (escritura atómica)" carrera
+    paso "6 despachador" despachador
+    paso "7 puente (SDK real)" puente
+    paso "8 integración (bwrap real, control vs intervenida)" integracion
+    paso "9 ensayo del protocolo (simulado, sin inferencia)" protocolo
 fi
 echo
 if [ ${#FALLAS[@]} -eq 0 ]; then
